@@ -139,6 +139,62 @@ try {
     console.log(`bindgen: native round trip with macros, handles, callbacks, and buffers ${optimization} passed`);
   }
 
+  // NS03 round trip: unannotated C pointers default to Maybe<...>, while _Nonnull, nonnull/returns_nonnull
+  // attributes, and --nonnull emit non-Maybe handles and record borrows.
+  const nullDir = join(root, "nullability");
+  mkdirSync(nullDir);
+  const nullHeaderPath = join(nullDir, "db.h");
+  writeFileSync(nullHeaderPath, [
+    "struct db;",
+    "struct db_cfg { int seed; };",
+    "struct db *db_open(const struct db_cfg *cfg);",
+    "struct db * _Nonnull db_open_nonnull(int seed);",
+    "__attribute__((nonnull(1))) int db_read(struct db *db, const struct db_cfg *extra);",
+    "void db_close(struct db *db);",
+    "",
+  ].join("\n"));
+  const nullC = join(nullDir, "db.c");
+  writeFileSync(nullC, [
+    "#include <stdlib.h>",
+    '#include "db.h"',
+    "struct db { int val; };",
+    "struct db *db_open(const struct db_cfg *cfg) {",
+    "  if (!cfg || cfg->seed < 0) return NULL;",
+    "  struct db *d = malloc(sizeof *d); d->val = cfg->seed; return d;",
+    "}",
+    "struct db *db_open_nonnull(int seed) {",
+    "  struct db *d = malloc(sizeof *d); d->val = seed; return d;",
+    "}",
+    "int db_read(struct db *db, const struct db_cfg *extra) {",
+    "  return db->val + (extra ? extra->seed : 100);",
+    "}",
+    "void db_close(struct db *db) { free(db); }",
+    "",
+  ].join("\n"));
+  execute(compiler, [
+    "bindgen", nullHeaderPath, "-o", join(nullDir, "Db.tz"),
+    "--consume", "db_close:db", "--nonnull", "db_close:db",
+  ]);
+  writeFileSync(join(nullDir, "Main.tz"), [
+    "let bad = DbCfg { seed: -1i32 }",
+    "let missing = match Db.db_open None with | None -> 1i32 | Some _ -> 0i32",
+    "let negative = match Db.db_open (Some (ref bad)) with | None -> 2i32 | Some _ -> 0i32",
+    "let direct = Db.db_open_nonnull 7i32",
+    "let v1 = Db.db_read (ref direct) None",
+    "let extra = DbCfg { seed: 5i32 }",
+    "let v2 = Db.db_read (ref direct) (Some (ref extra))",
+    "Db.db_close direct",
+    "missing + negative + v1 + v2",
+    "",
+  ].join("\n"));
+  for (const optimization of ["-O0", "-O3"]) {
+    const dbObj = join(nullDir, "db.o");
+    execute(clang, [optimization, "-c", nullC, "-o", dbObj]);
+    const nullExe = join(nullDir, `app${optimization}`);
+    execute(compiler, ["build", nullDir, optimization, "--link", dbObj, "-o", nullExe]);
+    assert.equal(execute(nullExe, []).stdout.trim(), "122");
+  }
+
   // The command line and the tools.
   const header = join(fixtures, "basic", "sample.h");
   const fresh = join(root, "fresh");

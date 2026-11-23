@@ -669,8 +669,8 @@ clang app.o sample.c host.c -lm -o host
 | `long`, `long long` / `unsigned long`, `unsigned long long` | `i64` / `i64u` | `i64` / `i64u` | `i64` / `i64u` |
 | `float` / `double` | `f32` / `f64` | `f32` / `f64` | `f32` / `f64` |
 | 全定数が `i32` に収まる enum | `i32` | `i32` | `i32` |
-| `const struct TAG *`（生成した record） | `ref Record` | × | × |
-| 不透明な struct へのポインター | `ref Handle`（`--consume` で `Handle`） | `Handle`（`const` なしだけ） | × |
+| `const struct TAG *`（生成した record） | `Maybe<ref Record>`（`_Nonnull`・`nonnull` 属性・`--nonnull` で `ref Record`） | × | × |
+| 不透明な struct へのポインター | `Maybe<ref Handle>`（`--consume` で `Maybe<Handle>`、非 Null 指定で `ref Handle`／`Handle`） | `Maybe<Handle>`（`const` なしだけ。非 Null 指定で `Handle`） | × |
 | 関数ポインター（下の条件） | `(P1 -> P2 -> R)` | × | × |
 | `const` な要素へのポインターと直後の長さ（`--buffer`） | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | × | × |
 | `void` | 引数なしは `unit` | `unit` | × |
@@ -698,33 +698,35 @@ clang app.o sample.c host.c -lm -o host
 
 浮動小数点、`(1 << 4)` のような式、文字列、関数形式のマクロは何も出しません。64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数、`09` のような不正なリテラルは `W2002` です。`#include` 先で定義されたマクロと、`#undef` されたマクロは出しません。`#pragma push_macro`／`pop_macro` で値が戻されるマクロのように、ヘッダーの終わりの定義（`clang -E -dM`）と一致しないものは `W2002` です。
 
-### 不透明な struct と `--consume`
+### 不透明な struct と `--consume`・`--nonnull`
 
 `struct ctx;` とだけ宣言され、どこでも定義されない struct は、C のコードもポインターでしか持てません。`tsuzuri bindgen` はこれを `extern type` にし、ポインターをハンドルとして扱います。ハンドルはポインター 1 つで、Tsuzuri は参照外ししません。
+
+C のポインターは断りがない限り `NULL` になり得るため、注釈のないハンドルと `const struct TAG *` は既定で `Maybe<...>` になります。`_Nonnull`、`__attribute__((nonnull))`、`__attribute__((returns_nonnull))`、または CLI の `--nonnull 関数:対象`（`対象` は C の引数名・1 始まりの位置・`return`）がある位置だけが非 `Maybe`（`ref Counter`・`Counter`・`ref Record`）になります（`_Nullable`／`_Nullable_result` が明示された位置に `--nonnull` を付けると `E2000`）。
 
 ```c
 struct counter;
 struct counter *counter_new(long start);
-long counter_add(struct counter *counter, long amount);
+long counter_add(struct counter * _Nonnull counter, long amount);
 long counter_free(struct counter *counter);
 ```
 
 ```sh
-tsuzuri bindgen counter.h -o Counter.tz --consume counter_free:counter
+tsuzuri bindgen counter.h -o Counter.tz --consume counter_free:counter --nonnull counter_free:counter
 ```
 
 ```text
 extern type Counter
-extern "counter_new" def counter_new :: i64 -> Counter
+extern "counter_new" def counter_new :: i64 -> Maybe<Counter>
 extern "counter_add" def counter_add :: ref Counter -> i64 -> i64
 extern "counter_free" def counter_free :: Counter -> i64
 ```
 
-引数は、`const` の有無にかかわらず共有借用 `ref Counter` です。呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何を書き換えても Tsuzuri からは見えません。`const` のないポインターの結果は、呼び出し側が所有する新しいハンドルです。解放する関数には `--consume 関数:引数` を付けます。その引数はハンドルの値渡し（ムーブ）になり、解放したハンドルを使うと `E1012` です。`const` へのポインターの結果、`struct counter **` のような出力引数は変換しません。NULL のハンドルは Tsuzuri から区別できないので、失敗の確かめ方は C の API に従います。
+引数は、`const` の有無にかかわらず共有借用（既定 `Maybe<ref Counter>`、非 Null 指定で `ref Counter`）です。呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何を書き換えても Tsuzuri からは見えません。`const` のないポインターの結果は、呼び出し側が所有する新しいハンドル（既定 `Maybe<Counter>`、非 Null 指定で `Counter`）です。解放する関数には `--consume 関数:引数` を付けます。その引数はハンドルの値渡し（ムーブ）になり、解放したハンドルを使うと `E1012` です。`const` へのポインターの結果、`struct counter **` のような出力引数は変換しません。
 
 ### コールバック
 
-関数ポインターの引数は、引数がスカラーか不透明な struct へのポインター（`ref Handle` になる）、結果がスカラーか `void` のとき、[静的コールバック](#静的コールバック) の型になります。`int64_t (*)(int64_t)` は `(i64 -> i64)`、`void (*)(void)` は `(unit -> unit)` です。実引数には、型パラメーターを持たないトップレベルの関数の名前を渡します。`void *` の文脈引数を持つもの、可変長引数、ポインターを返すもの、入れ子の関数ポインター、block は変換しません。
+関数ポインターの引数は、引数がスカラーか不透明な struct へのポインター（`Maybe<ref Handle>`、`_Nonnull` なら `ref Handle` になる）、結果がスカラーか `void` のとき、[静的コールバック](#静的コールバック) の型になります（関数ポインター引数自体に `_Nullable` が付いていても、Tsuzuri からは常に有効な関数を渡せるため同じコールバック型に変換します）。`int64_t (*)(int64_t)` は `(i64 -> i64)`、`void (*)(void)` は `(unit -> unit)` です。実引数には、型パラメーターを持たないトップレベルの関数の名前を渡します。`void *` の文脈引数を持つもの、可変長引数、ポインターを返すもの、入れ子の関数ポインター、block は変換しません。
 
 ### バッファーの注釈 `--buffer`
 

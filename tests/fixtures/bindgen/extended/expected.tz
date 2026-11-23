@@ -21,15 +21,15 @@ const EXT_LONG: i64 = 5
 // skipped EXT_SIGNED_TOO_BIG: integer literal '9223372036854775808' does not fit in a signed 64-bit type; C gives it no type without a 'u' suffix
 // skipped EXT_BAD_OCTAL: '09' is not a valid C integer literal
 extern type ExtCounter
-extern "ext_counter_new" def ext_counter_new :: i64 -> ExtCounter
-extern "ext_counter_add" def ext_counter_add :: ref ExtCounter -> i64 -> i64
-extern "ext_counter_peek" def ext_counter_peek :: ref ExtCounter -> i64
-extern "ext_counter_free" def ext_counter_free :: ExtCounter -> i64
+extern "ext_counter_new" def ext_counter_new :: i64 -> Maybe<ExtCounter>
+extern "ext_counter_add" def ext_counter_add :: Maybe<ref ExtCounter> -> i64 -> i64
+extern "ext_counter_peek" def ext_counter_peek :: Maybe<ref ExtCounter> -> i64
+extern "ext_counter_free" def ext_counter_free :: Maybe<ExtCounter> -> i64
 // skipped ext_counter_shared: result has unsupported type 'const ext_counter *'
 // skipped ext_counter_open: parameter 1 has unsupported type 'ext_counter **'
 extern "ext_apply_twice" def ext_apply_twice :: (i64 -> i64) -> i64 -> i64
 extern "ext_fold" def ext_fold :: (i64 -> i32 -> i64) -> i64 -> i64
-extern "ext_visit" def ext_visit :: (ref ExtCounter -> i64) -> ref ExtCounter -> i64
+extern "ext_visit" def ext_visit :: (Maybe<ref ExtCounter> -> i64) -> Maybe<ref ExtCounter> -> i64
 extern "ext_run" def ext_run :: (unit -> i32) -> i32
 extern "ext_any" def ext_any :: (i8u -> i8u -> bool) -> i32 -> i8u
 // skipped ext_with_context: parameter 1 has unsupported type 'void (*)(void *)'

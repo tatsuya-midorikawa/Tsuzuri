@@ -117,6 +117,7 @@ pub fn bindgen(arguments: &Arguments) -> Result<(String, Vec<Diagnostic>), Sourc
             header_text: &bytes,
             buffers: &arguments.buffers,
             consumes: &arguments.consumes,
+            nonnulls: &arguments.nonnulls,
         },
     )
     .map_err(|failure| match failure {

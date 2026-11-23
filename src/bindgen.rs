@@ -26,12 +26,14 @@ pub const TRUSTED_NOTE: &str = "// Review each extern declaration and add '@trus
 pub const MAX_AST_BYTES: usize = 256 * 1024 * 1024;
 const MAX_TYPEDEF_DEPTH: usize = 32;
 const MAX_TYPE_NESTING: usize = 32;
-const OPTIONS: &str = "bindgen accepts only -o, --include-dir, --buffer, --consume, and --json";
+const OPTIONS: &str =
+    "bindgen accepts only -o, --include-dir, --buffer, --consume, --nonnull, and --json";
 const BUFFER_USAGE: &str = "--buffer takes FUNCTION:POINTER:LENGTH with C names or 1-based parameter positions, such as --buffer sum:values:count";
 const CONSUME_USAGE: &str = "--consume takes FUNCTION:PARAMETER with a C name or a 1-based parameter position, such as --consume close:handle";
+const NONNULL_USAGE: &str = "--nonnull takes FUNCTION:TARGET with a C parameter name, a 1-based parameter position, or 'return', such as --nonnull open:path or --nonnull create:return";
 
 /// `tsuzuri bindgen HEADER -o OUTPUT.tz [--include-dir DIR]... [--buffer F:P:L]...
-/// [--consume F:P]... [--json]`.
+/// [--consume F:P]... [--nonnull F:T]... [--json]`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Arguments {
     pub header: PathBuf,
@@ -40,6 +42,7 @@ pub struct Arguments {
     pub include_dirs: Vec<PathBuf>,
     pub buffers: Vec<BufferAnnotation>,
     pub consumes: Vec<ConsumeAnnotation>,
+    pub nonnulls: Vec<NonnullAnnotation>,
     pub json: bool,
 }
 
@@ -74,6 +77,49 @@ pub struct BufferAnnotation {
 pub struct ConsumeAnnotation {
     pub function: String,
     pub parameter: ParameterName,
+}
+
+/// The parameter or return value targeted by `--nonnull FUNCTION:TARGET` (NS03).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NonnullTarget {
+    Parameter(ParameterName),
+    Return,
+}
+
+impl std::fmt::Display for NonnullTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parameter(parameter) => write!(formatter, "{parameter}"),
+            Self::Return => formatter.write_str("return"),
+        }
+    }
+}
+
+/// `--nonnull FUNCTION:TARGET`: marks a C handle or record pointer parameter or
+/// return value as non-null so bindgen emits `H` / `ref H` / `ref R` instead of `Maybe<...>`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NonnullAnnotation {
+    pub function: String,
+    pub target: NonnullTarget,
+}
+
+fn nonnull_annotation(value: Option<&OsString>) -> Result<NonnullAnnotation, String> {
+    let parts: Vec<&str> = value
+        .and_then(|value| value.to_str())
+        .map(|value| value.split(':').collect())
+        .unwrap_or_default();
+    if parts.len() != 2 || !ascii_identifier(parts[0]) {
+        return Err(NONNULL_USAGE.into());
+    }
+    let target = if parts[1] == "return" {
+        NonnullTarget::Return
+    } else {
+        NonnullTarget::Parameter(parameter_name(parts[1]).ok_or(NONNULL_USAGE)?)
+    };
+    Ok(NonnullAnnotation {
+        function: parts[0].to_owned(),
+        target,
+    })
 }
 
 fn parameter_name(text: &str) -> Option<ParameterName> {
@@ -115,6 +161,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
     let mut include_dirs = Vec::new();
     let mut buffers: Vec<BufferAnnotation> = Vec::new();
     let mut consumes: Vec<ConsumeAnnotation> = Vec::new();
+    let mut nonnulls: Vec<NonnullAnnotation> = Vec::new();
     let mut json = false;
     let mut paths_only = false;
     let mut rest = arguments.iter();
@@ -177,6 +224,20 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
                     });
                     continue;
                 }
+                Some("--nonnull") => {
+                    let item = nonnull_annotation(rest.next())?;
+                    if nonnulls
+                        .iter()
+                        .any(|prev| prev.function == item.function && prev.target == item.target)
+                    {
+                        return Err(format!(
+                            "--nonnull {}:{} is specified more than once",
+                            item.function, item.target
+                        ));
+                    }
+                    nonnulls.push(item);
+                    continue;
+                }
                 Some(value) if value.starts_with('-') => return Err(OPTIONS.into()),
                 _ => {}
             }
@@ -206,6 +267,7 @@ pub fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, String> {
         include_dirs,
         buffers,
         consumes,
+        nonnulls,
         json,
     })
 }
@@ -274,6 +336,7 @@ pub struct Extras<'a> {
     pub header_text: &'a [u8],
     pub buffers: &'a [BufferAnnotation],
     pub consumes: &'a [ConsumeAnnotation],
+    pub nonnulls: &'a [NonnullAnnotation],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -886,10 +949,17 @@ fn integer_literal(text: &str) -> Result<Option<(u64, Scalar)>, String> {
 // ---------------------------------------------------------------------------
 // C types as Clang spells them
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Nullability {
+    Nonnull,
+    Nullable,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Qualifiers {
     constant: bool,
     volatile: bool,
+    nullability: Option<Nullability>,
 }
 
 impl Qualifiers {
@@ -897,7 +967,18 @@ impl Qualifiers {
         Self {
             constant: self.constant || other.constant,
             volatile: self.volatile || other.volatile,
+            nullability: self.nullability.or(other.nullability),
         }
+    }
+
+    fn with_nullability(&mut self, next: Nullability) -> bool {
+        if let Some(previous) = self.nullability
+            && previous != next
+        {
+            return false;
+        }
+        self.nullability = Some(next);
+        true
     }
 }
 
@@ -906,8 +987,8 @@ enum CType {
     /// Specifiers without qualifiers: a builtin such as `unsigned long`, a tag such
     /// as `struct point`, or a typedef name.
     Named(String),
-    /// A pointer and the qualifiers of what it points to.
-    Pointer(Box<CType>, Qualifiers),
+    /// A pointer, the qualifiers of what it points to, and the pointer's own nullability (NS03).
+    Pointer(Box<CType>, Qualifiers, Option<Nullability>),
     /// A prototyped, non-variadic function type: its result and parameters.
     Function(Box<CType>, Vec<CType>),
     /// Anything else, including spellings this parser does not understand.
@@ -1004,8 +1085,13 @@ impl<'a> TypeParser<'_, 'a> {
     fn whole(&mut self) -> Option<(CType, Qualifiers)> {
         let (mut ty, mut qualifiers) = self.specifiers()?;
         while self.eat('*') {
-            ty = CType::Pointer(Box::new(ty), qualifiers);
-            qualifiers = self.qualifiers()?;
+            let pointer = self.qualifiers()?;
+            ty = CType::Pointer(Box::new(ty), qualifiers, pointer.nullability);
+            qualifiers = Qualifiers {
+                constant: pointer.constant,
+                volatile: pointer.volatile,
+                nullability: None,
+            };
         }
         if self.eat('(') {
             // Only `(*)` with optional qualifiers: blocks `(^)` and nested
@@ -1023,8 +1109,12 @@ impl<'a> TypeParser<'_, 'a> {
             } else {
                 CType::Unsupported
             };
-            ty = CType::Pointer(Box::new(function), Qualifiers::default());
-            qualifiers = pointer;
+            ty = CType::Pointer(Box::new(function), Qualifiers::default(), pointer.nullability);
+            qualifiers = Qualifiers {
+                constant: pointer.constant,
+                volatile: pointer.volatile,
+                nullability: None,
+            };
         }
         Some((ty, qualifiers))
     }
@@ -1037,8 +1127,17 @@ impl<'a> TypeParser<'_, 'a> {
             match word {
                 "const" => qualifiers.constant = true,
                 "volatile" => qualifiers.volatile = true,
-                "restrict" | "__restrict" | "_Nonnull" | "_Nullable" | "_Null_unspecified"
-                | "_Nullable_result" => {}
+                "_Nonnull" => {
+                    if !qualifiers.with_nullability(Nullability::Nonnull) {
+                        return None;
+                    }
+                }
+                "_Nullable" | "_Nullable_result" => {
+                    if !qualifiers.with_nullability(Nullability::Nullable) {
+                        return None;
+                    }
+                }
+                "restrict" | "__restrict" | "_Null_unspecified" => {}
                 "struct" | "union" | "enum" => {
                     // An anonymous tag is spelled `struct (unnamed struct at ...)`.
                     let Some(Token::Word(tag)) = self.peek() else {
@@ -1060,8 +1159,17 @@ impl<'a> TypeParser<'_, 'a> {
             match word {
                 "const" => qualifiers.constant = true,
                 "volatile" => qualifiers.volatile = true,
-                "restrict" | "__restrict" | "_Nonnull" | "_Nullable" | "_Null_unspecified"
-                | "_Nullable_result" => {}
+                "_Nonnull" => {
+                    if !qualifiers.with_nullability(Nullability::Nonnull) {
+                        return None;
+                    }
+                }
+                "_Nullable" | "_Nullable_result" => {
+                    if !qualifiers.with_nullability(Nullability::Nullable) {
+                        return None;
+                    }
+                }
+                "restrict" | "__restrict" | "_Null_unspecified" => {}
                 _ => return None,
             }
             self.position += 1;
@@ -1124,13 +1232,23 @@ fn parameter_list(
     if variadic {
         pieces.pop();
     }
-    Parameters {
-        list: pieces
-            .iter()
-            .map(|range| {
-                parse_tokens(piece(range), nesting + 1).map_or(CType::Unsupported, |(ty, _)| ty)
+    let parameters = pieces
+        .iter()
+        .map(|range| {
+            parse_tokens(piece(range), nesting + 1).map_or(CType::Unsupported, |(ty, outer)| {
+                match ty {
+                    CType::Pointer(pointee, pointee_quals, pointer_null) => CType::Pointer(
+                        pointee,
+                        pointee_quals,
+                        outer.nullability.or(pointer_null),
+                    ),
+                    other => other,
+                }
             })
-            .collect(),
+        })
+        .collect();
+    Parameters {
+        list: parameters,
         prototype: true,
         variadic,
     }
@@ -1577,12 +1695,14 @@ impl<'a> Tables<'a> {
                     None => (CType::Unsupported, qualifiers),
                 },
             },
-            CType::Pointer(pointee, pointee_qualifiers) => {
+            CType::Pointer(pointee, pointee_qualifiers, pointer_nullability) => {
                 let (pointee, pointee_qualifiers) =
                     self.resolve(*pointee, pointee_qualifiers, depth);
+                let mut outer = qualifiers;
+                let merged_nullability = outer.nullability.take().or(pointer_nullability);
                 (
-                    CType::Pointer(Box::new(pointee), pointee_qualifiers),
-                    qualifiers,
+                    CType::Pointer(Box::new(pointee), pointee_qualifiers, merged_nullability),
+                    outer,
                 )
             }
             CType::Function(result, parameters) => {
@@ -1764,8 +1884,10 @@ struct Emitter<'t, 'a> {
     tables: &'t Tables<'a>,
     /// The prefix the object format adds to C symbols (`_` on Mach-O).
     symbol_prefix: &'static str,
+    header_text: &'t [u8],
     buffers: &'t [BufferAnnotation],
     consumes: &'t [ConsumeAnnotation],
+    nonnulls: &'t [NonnullAnnotation],
     values: BTreeSet<String>,
     types: BTreeSet<String>,
     /// `TAG` → the generated record of `struct TAG`.
@@ -1779,6 +1901,77 @@ struct Emitter<'t, 'a> {
     skipped: Vec<Skipped>,
 }
 
+#[derive(Clone, Debug)]
+struct FunctionAnnotations {
+    parameters: Vec<Annotated>,
+    nonnull_parameters: Vec<bool>,
+    nonnull_return: bool,
+}
+
+/// Extracts 0-based parameter indices covered by a Clang `NonNullAttr` node (NS03).
+fn nonnull_attr_indices(attr: &Value, header_text: &[u8], param_count: usize) -> Vec<usize> {
+    if let Some(args) = attr.get("args").and_then(Value::as_array) {
+        return args
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|idx| idx as usize)
+            .filter(|&idx| idx < param_count)
+            .collect();
+    }
+    if let Some(range) = attr.get("range") {
+        let loc = |key: &str| {
+            let part = range.get(key)?;
+            Some(part.get("spellingLoc").unwrap_or(part))
+        };
+        if let (Some(begin), Some(end)) = (loc("begin"), loc("end"))
+            && let (Some(start), Some(finish), Some(tok_len)) = (
+                begin.get("offset").and_then(Value::as_u64),
+                end.get("offset").and_then(Value::as_u64),
+                end.get("tokLen").and_then(Value::as_u64),
+            )
+        {
+            let start = start as usize;
+            let end_byte = (finish + tok_len) as usize;
+            if start <= end_byte
+                && end_byte <= header_text.len()
+                && let Ok(slice) = std::str::from_utf8(&header_text[start..end_byte])
+                && let Some(open) = slice.find('(')
+                && let Some(close) = slice.rfind(')')
+                && open < close
+            {
+                return slice[open + 1..close]
+                    .split(',')
+                    .filter_map(|piece| piece.trim().parse::<usize>().ok())
+                    .filter(|&pos| pos >= 1 && pos <= param_count)
+                    .map(|pos| pos - 1)
+                    .collect();
+            }
+        }
+    }
+    (0..param_count).collect()
+}
+
+fn resolve_nullability(
+    explicit: Option<Nullability>,
+    cli_nonnull: bool,
+    attr_nonnull: bool,
+) -> Nullability {
+    match explicit {
+        Some(Nullability::Nullable) => Nullability::Nullable,
+        _ if cli_nonnull => Nullability::Nonnull,
+        Some(Nullability::Nonnull) => Nullability::Nonnull,
+        _ if attr_nonnull => Nullability::Nonnull,
+        None => Nullability::Nullable,
+    }
+}
+
+fn wrap_maybe(inner: String, nullability: Nullability) -> String {
+    match nullability {
+        Nullability::Nonnull => inner,
+        Nullability::Nullable => format!("Maybe<{inner}>"),
+    }
+}
+
 impl<'t, 'a> Emitter<'t, 'a> {
     fn new(tables: &'t Tables<'a>, target: &str, extras: &Extras<'t>) -> Self {
         Self {
@@ -1788,8 +1981,10 @@ impl<'t, 'a> Emitter<'t, 'a> {
             } else {
                 ""
             },
+            header_text: extras.header_text,
             buffers: extras.buffers,
             consumes: extras.consumes,
+            nonnulls: extras.nonnulls,
             values: BTreeSet::new(),
             types: BTreeSet::new(),
             records: BTreeMap::new(),
@@ -2099,6 +2294,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
             .filter(|child| kind(child) == "ParmVarDecl")
             .collect();
         let plan = self.annotation_plan(symbol, &parameters)?;
+        self.validate_nonnull_targets(node, symbol, &parameters, &plan)?;
         match self.function_line(node, symbol, &parameters, &plan) {
             Ok(line) => self.lines.push(line),
             Err(reason) => self.skip(symbol, reason, at),
@@ -2106,13 +2302,86 @@ impl<'t, 'a> Emitter<'t, 'a> {
         Ok(())
     }
 
-    /// What the `--buffer` and `--consume` annotations ask of each parameter.
+    /// Checks that every `--nonnull` target on `symbol` names a convertible handle or record
+    /// pointer and does not conflict with an explicit `_Nullable` / `_Nullable_result` (NS03).
+    fn validate_nonnull_targets(
+        &self,
+        node: &'a Value,
+        symbol: &str,
+        parameters: &[&Value],
+        plan: &FunctionAnnotations,
+    ) -> Result<(), Failure> {
+        for (index, &flagged) in plan.nonnull_parameters.iter().enumerate() {
+            if !flagged {
+                continue;
+            }
+            let number = index + 1;
+            let (ty, _) = self.tables.c_type(node_type(parameters[index]));
+            match &ty {
+                CType::Pointer(_, _, Some(Nullability::Nullable)) => {
+                    return Err(Failure::Annotation(format!(
+                        "--nonnull conflicts with _Nullable on parameter {number} of '{symbol}'"
+                    )));
+                }
+                _ if !self.is_nullable_convertible(&ty, Role::Parameter) => {
+                    return Err(Failure::Annotation(format!(
+                        "--nonnull names parameter {number} of '{symbol}', which is not a convertible handle or record pointer"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if plan.nonnull_return {
+            let result_ty = function_shape(node_type(node))
+                .and_then(|shape| shape.result.ok())
+                .map(|spelled| self.tables.c_type(&spelled).0)
+                .unwrap_or(CType::Unsupported);
+            match &result_ty {
+                CType::Pointer(_, _, Some(Nullability::Nullable)) => {
+                    return Err(Failure::Annotation(format!(
+                        "--nonnull conflicts with _Nullable on the return value of '{symbol}'"
+                    )));
+                }
+                _ if !self.is_nullable_convertible(&result_ty, Role::Result) => {
+                    return Err(Failure::Annotation(format!(
+                        "--nonnull names the return value of '{symbol}', which is not a convertible handle pointer"
+                    )));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn is_nullable_convertible(&self, ty: &CType, role: Role) -> bool {
+        let CType::Pointer(pointee, qualifiers, _) = ty else {
+            return false;
+        };
+        if qualifiers.volatile {
+            return false;
+        }
+        let CType::Named(pointee) = pointee.as_ref() else {
+            return false;
+        };
+        let Some(tag) = pointee.strip_prefix("struct ") else {
+            return false;
+        };
+        if self.handles.contains_key(tag) {
+            return matches!(role, Role::Parameter)
+                || (role == Role::Result && !qualifiers.constant);
+        }
+        role == Role::Parameter && qualifiers.constant && self.records.contains_key(tag)
+    }
+
+    /// What the `--buffer`, `--consume`, and `--nonnull` annotations ask of each parameter and return.
     fn annotation_plan(
         &self,
         symbol: &str,
         parameters: &[&Value],
-    ) -> Result<Vec<Annotated>, Failure> {
+    ) -> Result<FunctionAnnotations, Failure> {
         let mut plan = vec![Annotated::Plain; parameters.len()];
+        let mut nonnull_parameters = vec![false; parameters.len()];
+        let mut nonnull_return = false;
         let index_of = |option: &str, parameter: &ParameterName| match parameter {
             ParameterName::Position(position) if *position <= parameters.len() => Ok(position - 1),
             ParameterName::Position(position) => Err(Failure::Annotation(format!(
@@ -2161,7 +2430,36 @@ impl<'t, 'a> Emitter<'t, 'a> {
             plan[pointer] = Annotated::Pointer(length);
             plan[length] = Annotated::Length;
         }
-        Ok(plan)
+        for nonnull in self
+            .nonnulls
+            .iter()
+            .filter(|nonnull| nonnull.function == symbol)
+        {
+            match &nonnull.target {
+                NonnullTarget::Return => {
+                    if nonnull_return {
+                        return Err(Failure::Annotation(format!(
+                            "--nonnull names the return value of '{symbol}' more than once"
+                        )));
+                    }
+                    nonnull_return = true;
+                }
+                NonnullTarget::Parameter(parameter) => {
+                    let index = index_of("--nonnull", parameter)?;
+                    if nonnull_parameters[index]
+                        || matches!(plan[index], Annotated::Pointer(_) | Annotated::Length)
+                    {
+                        return Err(twice("--nonnull"));
+                    }
+                    nonnull_parameters[index] = true;
+                }
+            }
+        }
+        Ok(FunctionAnnotations {
+            parameters: plan,
+            nonnull_parameters,
+            nonnull_return,
+        })
     }
 
     /// Every annotation must name a function of the header.
@@ -2174,6 +2472,11 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 self.consumes
                     .iter()
                     .map(|consume| ("--consume", consume.function.as_str())),
+            )
+            .chain(
+                self.nonnulls
+                    .iter()
+                    .map(|nonnull| ("--nonnull", nonnull.function.as_str())),
             );
         for (option, function) in names {
             if !self.functions.contains(function) {
@@ -2192,7 +2495,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
         node: &'a Value,
         symbol: &str,
         parameters: &[&Value],
-        plan: &[Annotated],
+        plan: &FunctionAnnotations,
     ) -> Result<String, String> {
         if text(node, "storageClass") == Some("static") {
             return Err("function has internal linkage (static)".into());
@@ -2238,11 +2541,17 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 sanitize(&mangled)
             ));
         }
-        if let Some(attribute) = shape
-            .attributes
-            .iter()
-            .find(|attribute| !matches!(attribute.as_str(), "noreturn" | "__noreturn__"))
-        {
+        if let Some(attribute) = shape.attributes.iter().find(|attribute| {
+            !matches!(
+                attribute.as_str(),
+                "noreturn"
+                    | "__noreturn__"
+                    | "nonnull"
+                    | "__nonnull__"
+                    | "returns_nonnull"
+                    | "__returns_nonnull__"
+            )
+        }) {
             return Err(format!(
                 "function type has the attribute '{attribute}', which may change its calling convention"
             ));
@@ -2253,6 +2562,13 @@ impl<'t, 'a> Emitter<'t, 'a> {
                 "function returns twice (returns_twice), which a Tsuzuri call cannot follow".into(),
             );
         }
+        let mut attr_nonnull_params = vec![false; parameters.len()];
+        for attr in children(node).filter(|child| kind(child) == "NonNullAttr") {
+            for idx in nonnull_attr_indices(attr, self.header_text, parameters.len()) {
+                attr_nonnull_params[idx] = true;
+            }
+        }
+        let attr_nonnull_return = has_attribute(node, &["ReturnsNonNullAttr"]);
         let mut converted = Vec::new();
         for (index, parameter) in parameters.iter().enumerate() {
             let number = index + 1;
@@ -2268,21 +2584,42 @@ impl<'t, 'a> Emitter<'t, 'a> {
                     scrub(spelled)
                 )
             };
-            match plan[index] {
+            let param_attr_nonnull =
+                attr_nonnull_params[index] || has_attribute(parameter, &["NonNullAttr"]);
+            match plan.parameters[index] {
                 Annotated::Plain => converted.push(
-                    self.value_type(&self.tables.c_type(spelled).0, Role::Parameter)
-                        .ok_or_else(unsupported)?,
+                    self.value_type(
+                        &self.tables.c_type(spelled).0,
+                        Role::Parameter,
+                        plan.nonnull_parameters[index],
+                        param_attr_nonnull,
+                    )
+                    .ok_or_else(unsupported)?,
                 ),
-                Annotated::Consumed => converted.push(self.consumed(spelled).ok_or_else(
-                    || format!("--consume names parameter {number}, which is not a pointer to an opaque struct of the header"),
-                )?),
+                Annotated::Consumed => converted.push(
+                    self.consumed(
+                        spelled,
+                        plan.nonnull_parameters[index],
+                        param_attr_nonnull,
+                    )
+                    .ok_or_else(|| {
+                        format!(
+                            "--consume names parameter {number}, which is not a pointer to an opaque struct of the header"
+                        )
+                    })?,
+                ),
                 Annotated::Pointer(length) => converted.push(self.buffer(parameters, index, length)?),
                 // Passed together with its pointer.
                 Annotated::Length => {}
             }
         }
         let result = match &shape.result {
-            Ok(spelled) => self.value_type(&self.tables.c_type(spelled).0, Role::Result),
+            Ok(spelled) => self.value_type(
+                &self.tables.c_type(spelled).0,
+                Role::Result,
+                plan.nonnull_return,
+                attr_nonnull_return,
+            ),
             Err(_) => None,
         }
         .ok_or_else(|| {
@@ -2300,7 +2637,13 @@ impl<'t, 'a> Emitter<'t, 'a> {
 
     /// The Tsuzuri type of a resolved C type in a position, or `None` when the ABI
     /// does not match exactly.
-    fn value_type(&self, ty: &CType, role: Role) -> Option<String> {
+    fn value_type(
+        &self,
+        ty: &CType,
+        role: Role,
+        cli_nonnull: bool,
+        attr_nonnull: bool,
+    ) -> Option<String> {
         if let Some(scalar) = self.tables.scalar(ty, role) {
             return Some(scalar.to_owned());
         }
@@ -2308,33 +2651,41 @@ impl<'t, 'a> Emitter<'t, 'a> {
             CType::Named(name) if name == "void" => {
                 matches!(role, Role::Result | Role::CallbackResult).then(|| "unit".to_owned())
             }
-            CType::Pointer(pointee, qualifiers) if !qualifiers.volatile => match pointee.as_ref() {
-                CType::Named(pointee) => {
-                    let tag = pointee.strip_prefix("struct ")?;
-                    if let Some(handle) = self.handles.get(tag) {
-                        // Parameters borrow the handle: the call neither consumes nor
-                        // copies it, and what C does behind the pointer is invisible to
-                        // Tsuzuri. A result is a new handle that the caller owns, except
-                        // a pointer to const, which can only be borrowed.
-                        return match role {
-                            Role::Parameter | Role::CallbackParameter => {
-                                Some(format!("ref {handle}"))
-                            }
-                            Role::Result if !qualifiers.constant => Some(handle.clone()),
-                            _ => None,
-                        };
+            CType::Pointer(pointee, qualifiers, pointer_nullability) if !qualifiers.volatile => {
+                let nullability =
+                    resolve_nullability(*pointer_nullability, cli_nonnull, attr_nonnull);
+                match pointee.as_ref() {
+                    CType::Named(pointee) => {
+                        let tag = pointee.strip_prefix("struct ")?;
+                        if let Some(handle) = self.handles.get(tag) {
+                            return match role {
+                                Role::Parameter | Role::CallbackParameter => {
+                                    Some(wrap_maybe(format!("ref {handle}"), nullability))
+                                }
+                                Role::Result if !qualifiers.constant => {
+                                    Some(wrap_maybe(handle.clone(), nullability))
+                                }
+                                _ => None,
+                            };
+                        }
+                        // `const struct TAG *` borrows a generated record. Without `const` the
+                        // host could write into the temporary copy the ABI passes.
+                        (role == Role::Parameter && qualifiers.constant)
+                            .then(|| {
+                                self.records
+                                    .get(tag)
+                                    .map(|record| wrap_maybe(format!("ref {record}"), nullability))
+                            })
+                            .flatten()
                     }
-                    // `const struct TAG *` borrows a generated record. Without `const` the
-                    // host could write into the temporary copy the ABI passes.
-                    (role == Role::Parameter && qualifiers.constant)
-                        .then(|| self.records.get(tag).map(|record| format!("ref {record}")))
-                        .flatten()
+                    // NS03 D4: Tsuzuri always passes a non-null callback wrapper, which satisfies
+                    // both _Nonnull and _Nullable function pointer parameters.
+                    CType::Function(result, parameters) if role == Role::Parameter => {
+                        self.callback(result, parameters)
+                    }
+                    _ => None,
                 }
-                CType::Function(result, parameters) if role == Role::Parameter => {
-                    self.callback(result, parameters)
-                }
-                _ => None,
-            },
+            }
             _ => None,
         }
     }
@@ -2344,26 +2695,38 @@ impl<'t, 'a> Emitter<'t, 'a> {
     fn callback(&self, result: &CType, parameters: &[CType]) -> Option<String> {
         let mut signature = parameters
             .iter()
-            .map(|parameter| self.value_type(parameter, Role::CallbackParameter))
+            .map(|parameter| self.value_type(parameter, Role::CallbackParameter, false, false))
             .collect::<Option<Vec<_>>>()?;
         if signature.is_empty() {
             signature.push("unit".into());
         }
-        signature.push(self.value_type(result, Role::CallbackResult)?);
+        signature.push(self.value_type(result, Role::CallbackResult, false, false)?);
         Some(format!("({})", signature.join(" -> ")))
     }
 
     /// A parameter that `--consume` names: the handle moves into the call.
-    fn consumed(&self, spelled: &str) -> Option<String> {
-        let (CType::Pointer(pointee, qualifiers), _) = self.tables.c_type(spelled) else {
+    fn consumed(
+        &self,
+        spelled: &str,
+        cli_nonnull: bool,
+        attr_nonnull: bool,
+    ) -> Option<String> {
+        let (CType::Pointer(pointee, qualifiers, pointer_nullability), _) =
+            self.tables.c_type(spelled)
+        else {
             return None;
         };
         let CType::Named(pointee) = *pointee else {
             return None;
         };
         let tag = pointee.strip_prefix("struct ")?;
+        let nullability = resolve_nullability(pointer_nullability, cli_nonnull, attr_nonnull);
         (!qualifiers.volatile)
-            .then(|| self.handles.get(tag).cloned())
+            .then(|| {
+                self.handles
+                    .get(tag)
+                    .map(|handle| wrap_maybe(handle.clone(), nullability))
+            })
             .flatten()
     }
 
@@ -2386,7 +2749,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
         }
         let spelled = node_type(parameters[pointer]);
         let (ty, _) = self.tables.c_type(spelled);
-        let CType::Pointer(pointee, qualifiers) = ty else {
+        let CType::Pointer(pointee, qualifiers, _) = ty else {
             return Err(format!(
                 "--buffer names parameter {number}, which has type '{}', not a pointer",
                 scrub(spelled)
@@ -2449,6 +2812,12 @@ impl<'t, 'a> Emitter<'t, 'a> {
             sanitize(header.clang_version),
             sanitize(header.target),
         );
+        let mut nonnulls: Vec<String> = self
+            .nonnulls
+            .iter()
+            .map(|nonnull| format!("--nonnull {}:{}", nonnull.function, nonnull.target))
+            .collect();
+        nonnulls.sort();
         // The annotations change the output, so it records them to be regenerated.
         let options: Vec<String> = self
             .buffers
@@ -2464,6 +2833,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
                     .iter()
                     .map(|consume| format!("--consume {}:{}", consume.function, consume.parameter)),
             )
+            .chain(nonnulls)
             .collect();
         if !options.is_empty() {
             text.push_str(&format!("// options: {}\n", sanitize(&options.join(" "))));
@@ -2510,16 +2880,29 @@ mod tests {
         let constant = Qualifiers {
             constant: true,
             volatile: false,
+            nullability: None,
         };
         assert_eq!(parsed("unsigned long"), named("unsigned long"));
         assert_eq!(parse_type("const int"), Some((named("int"), constant)));
         assert_eq!(
             parsed("const struct point *const"),
-            CType::Pointer(Box::new(named("struct point")), constant)
+            CType::Pointer(Box::new(named("struct point")), constant, None)
         );
         assert_eq!(
             parsed("int * _Nonnull"),
-            CType::Pointer(Box::new(named("int")), Qualifiers::default())
+            CType::Pointer(
+                Box::new(named("int")),
+                Qualifiers::default(),
+                Some(Nullability::Nonnull)
+            )
+        );
+        assert_eq!(
+            parsed("int * _Nullable"),
+            CType::Pointer(
+                Box::new(named("int")),
+                Qualifiers::default(),
+                Some(Nullability::Nullable)
+            )
         );
         assert_eq!(
             parsed("int (*)(int, const char *)"),
@@ -2528,10 +2911,11 @@ mod tests {
                     Box::new(named("int")),
                     vec![
                         named("int"),
-                        CType::Pointer(Box::new(named("char")), constant)
+                        CType::Pointer(Box::new(named("char")), constant, None)
                     ]
                 )),
-                Qualifiers::default()
+                Qualifiers::default(),
+                None,
             )
         );
         for unsupported in [
@@ -2545,7 +2929,7 @@ mod tests {
         }
         assert_eq!(
             parsed("int (*)(int, ...)"),
-            CType::Pointer(Box::new(CType::Unsupported), Qualifiers::default())
+            CType::Pointer(Box::new(CType::Unsupported), Qualifiers::default(), None)
         );
     }
 

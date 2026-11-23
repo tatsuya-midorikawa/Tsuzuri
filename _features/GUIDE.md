@@ -1858,6 +1858,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI（`mcp`） | `--root DIR`・`--kg-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KG_DIR` は効かず、置き場は `--kg-dir` か `<root>/target/tz/kg`） |
 | CLI（`fix`） | `--applicability`・`--dry-run`・`--edition`（移行先の edition） | G24 | `--applicability maybe` は `--dry-run` のときだけ受理する。`--yes` は作らない（提案の自動適用をしない） |
 | CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |
+| CLI（`bindgen`） | `--nonnull FUNCTION:TARGET` | NS03 | `TARGET` は引数名・1 始まり番号・`return`。ハンドル／`const struct *` ポインターを `Maybe` でなく非 Null 型にする |
 | CLI（`--contracts prove`・`prove`） | `--prove-timeout SECONDS`（1〜3600）・`--function NAME` | A21 | 契約の静的検証（`prove` のときだけ使える） |
 | CLI（`--warn` の値） | `untrusted-extern` | E15 | `W1010` を有効にする。**`--warn` の値の一覧とエラー文の `supported:` は、実装済みの値だけを固定の順序 `implicit-copy, canonical, untrusted-extern` で並べる**（`main.rs` の 1 つの定数から解析・`--help`・エラー文を作る。先に入ったチケットが作り、後のチケットは順序の位置に足す） |
 | CLI（`test`） | `--doc`（`--list`・`--filter`・`--index`・`--json` と併用できる。`test` 以外・`--coverage`・`--seed`・`--affected`・`--contracts`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` との併用は `E2000`） | G34 | `///` の例の検査。`E2011` を出す。kind は `doc_example_invalid`（`E2011`）・`doc_test_failed`（`E2006`）・`doc_example_limit`（`E1017`） |

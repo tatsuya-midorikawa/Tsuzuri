@@ -98,7 +98,7 @@ Usage:
   tsuzuri fix [--applicability certain|likely|maybe] [--dry-run] [--json] source.tz|source.tt|source.tc|directory
   tsuzuri fix --edition YEAR [--from YEAR] [--dry-run] [--json] input
   tsuzuri bindgen header.h -o Module.tz [--include-dir DIR]... [--buffer F:P:L]...
-                    [--consume F:P]... [--json]
+                    [--consume F:P]... [--nonnull F:T]... [--json]
   tsuzuri toolchain info
 
 Each source file is one module named after its filename:
@@ -194,7 +194,8 @@ records, opaque extern types, and type aliases for the C header's own declaratio
 whose ABI matches exactly (64-bit Linux and macOS, with TSUZURI_CLANG); it reports each
 other declaration as W2002 and a '// skipped' line. --buffer FUNC:PTR:LEN makes a
 pointer and the length after it one 'ref [T]' parameter; --consume FUNC:PARAM moves an
-opaque handle into the call instead of borrowing it.
+opaque handle into the call instead of borrowing it; --nonnull FUNC:TARGET marks a
+parameter or 'return' non-null instead of Maybe.
 `tsuzuri repl` reads declarations, top-level lets, and expressions from stdin one at a
 time and prints each new let's type and each expression's type and value. Every input
 is checked and run as a new program after the accepted ones (default -O0; --timeout 10
