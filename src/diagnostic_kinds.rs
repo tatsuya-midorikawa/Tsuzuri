@@ -555,6 +555,7 @@ diagnostic_kinds! {
         (UnknownCaseOrActivePattern, "unknown_case_or_active_pattern", "E1020"),
         // E1021
         (NonExhaustiveMatch, "non_exhaustive_match", "E1021"),
+        (RefutableBindingPattern, "refutable_binding_pattern", "E1021"),
         // E1022
         (OpaqueTypeRepresentation, "opaque_type_representation", "E1022"),
         (PrivateBuilderOperation, "private_builder_operation", "E1022"),
@@ -921,6 +922,8 @@ diagnostic_kinds! {
         (ContractTestSkipped, "contract_test_skipped", "W1009"),
         // W1010
         (UntrustedExtern, "untrusted_extern", "W1010"),
+        // W1012
+        (RefutableBindingPatternWarning, "refutable_binding_pattern_warning", "W1012"),
         // W2001
         (IntegerOverflowWrapped, "integer_overflow_wrapped", "W2001"),
         (ToolNotice, "tool_notice", "W2001"),

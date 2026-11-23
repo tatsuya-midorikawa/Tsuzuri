@@ -589,6 +589,9 @@ impl TypeReferences<'_> {
         match &expression.kind {
             Block { bindings, result } => {
                 for binding in bindings {
+                    if let Some((pattern, _)) = binding.pattern.as_deref() {
+                        self.pattern(pattern);
+                    }
                     if let Some(ty) = &binding.annotation {
                         self.ty(ty);
                     }
@@ -776,6 +779,9 @@ impl TypeReferences<'_> {
             match &statement.kind {
                 LetAnd(bindings) => {
                     for binding in bindings {
+                        if let Some((pattern, _)) = binding.pattern.as_deref() {
+                            self.pattern(pattern);
+                        }
                         if let Some(ty) = &binding.annotation {
                             self.ty(ty);
                         }
@@ -793,6 +799,9 @@ impl TypeReferences<'_> {
                     }
                 }
                 Let(binding, _) => {
+                    if let Some((pattern, _)) = binding.pattern.as_deref() {
+                        self.pattern(pattern);
+                    }
                     if let Some(ty) = &binding.annotation {
                         self.ty(ty);
                     }

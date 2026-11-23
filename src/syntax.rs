@@ -947,6 +947,9 @@ impl Expr {
             }
             Block { bindings, result } => {
                 for binding in bindings {
+                    if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                        pattern.visit_expressions_mut(visitor);
+                    }
                     binding.value.visit_mut(visitor);
                 }
                 result.visit_mut(visitor);
@@ -1093,6 +1096,9 @@ impl Expr {
             }
             Block { bindings, result } => {
                 for binding in bindings {
+                    if let Some((pattern, _)) = binding.pattern.as_deref() {
+                        pattern.visit_expressions(visitor);
+                    }
                     binding.value.visit(visitor);
                 }
                 result.visit(visitor);
@@ -1417,10 +1423,47 @@ impl Pattern {
             Wildcard | Binding(_) | TypeTest(..) => {}
         }
     }
+
+    pub fn bound_names(&self, out: &mut Vec<Ident>) {
+        use PatternKind::*;
+        match &self.kind {
+            Wildcard | Argument(_) | Literal(_) => {}
+            Binding(name) => {
+                if !name.text.as_bytes()[0].is_ascii_uppercase() && !name.text.contains(['.', ':'])
+                {
+                    out.push(name.clone());
+                }
+            }
+            Apply(_, patterns) | Tuple(patterns) | Array(patterns) | List(patterns) => {
+                for pattern in patterns {
+                    pattern.bound_names(out);
+                }
+            }
+            Record(_, fields) => {
+                for (_, pattern) in fields {
+                    pattern.bound_names(out);
+                }
+            }
+            Cons(left, right) | And(left, right) => {
+                left.bound_names(out);
+                right.bound_names(out);
+            }
+            Or(left, _) => left.bound_names(out),
+            As(pattern, name) => {
+                pattern.bound_names(out);
+                if name.text != "_" {
+                    out.push(name.clone());
+                }
+            }
+            Annotated(pattern, _) => pattern.bound_names(out),
+            TypeTest(_, Some(binder), _) if binder.text != "_" => out.push(binder.clone()),
+            TypeTest(..) => {}
+        }
+    }
 }
 
-/// Where a `match` comes from. Explicit matches and function guards must be
-/// exhaustive; destructuring keeps its runtime trap when a value does not fit.
+/// Where a `match` comes from. Explicit matches, function guards, and user destructuring bindings
+/// check coverage; compiler-generated internal matches do not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatchOrigin {
     /// `match value with ...`.
@@ -1429,14 +1472,31 @@ pub enum MatchOrigin {
     FunctionGuard,
     /// A destructuring lambda parameter.
     LambdaDestructuring,
-    /// A destructuring `for` inside a computation expression.
+    /// A destructuring `let!`, `and!`, or `for` inside a computation expression.
     ComputationDestructuring,
+    /// A destructuring `for ... in` loop.
+    ForDestructuring,
+    /// An immutable `let <pattern> = ...` destructuring binding.
+    LetDestructuring,
+    /// A compiler-synthesized match (`for` channel/seq step or `select` arm dispatch).
+    Internal,
 }
 
 impl MatchOrigin {
-    /// Whether the checker rejects non-exhaustive arms at compile time.
+    /// Whether the checker inspects coverage at compile time.
     pub fn checks_coverage(self) -> bool {
-        matches!(self, Self::Explicit | Self::FunctionGuard)
+        self != Self::Internal
+    }
+
+    /// The user-facing description of a single-pattern destructuring site, or `None` for multi-arm matches.
+    pub fn binding_place_name(self) -> Option<&'static str> {
+        match self {
+            Self::LambdaDestructuring => Some("a lambda parameter"),
+            Self::ComputationDestructuring => Some("a computation binding"),
+            Self::ForDestructuring => Some("a 'for' binding"),
+            Self::LetDestructuring => Some("a 'let' binding"),
+            Self::Explicit | Self::FunctionGuard | Self::Internal => None,
+        }
     }
 }
 
@@ -1519,12 +1579,23 @@ pub enum Recursion {
 #[derive(Clone, Debug)]
 pub struct Binding {
     pub name: Ident,
+    pub pattern: Option<Box<(Pattern, MatchOrigin)>>,
     pub mutable: bool,
     /// A `use` binding: a `let` whose value type must implement `Drop` (B07).
     pub using: bool,
     pub recursion: Recursion,
     pub annotation: Option<TypeExpr>,
     pub value: Expr,
+}
+
+impl Binding {
+    pub fn bound_names(&self, out: &mut Vec<Ident>) {
+        if let Some((pattern, _)) = self.pattern.as_deref() {
+            pattern.bound_names(out);
+        } else if self.name.provenance == Provenance::User && self.name.text != "_" {
+            out.push(self.name.clone());
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1566,9 +1637,17 @@ impl ComputationBlock {
         use ComputationStatementKind::*;
         for statement in &mut self.statements {
             match &mut statement.kind {
-                Let(binding, _) => binding.value.visit_mut(visitor),
+                Let(binding, _) => {
+                    if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                        pattern.visit_expressions_mut(visitor);
+                    }
+                    binding.value.visit_mut(visitor);
+                }
                 LetAnd(bindings) => {
                     for binding in bindings {
+                        if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                            pattern.visit_expressions_mut(visitor);
+                        }
                         binding.value.visit_mut(visitor);
                     }
                 }
@@ -1607,9 +1686,17 @@ impl ComputationBlock {
         use ComputationStatementKind::*;
         for statement in &self.statements {
             match &statement.kind {
-                Let(binding, _) => binding.value.visit(visitor),
+                Let(binding, _) => {
+                    if let Some((pattern, _)) = binding.pattern.as_deref() {
+                        pattern.visit_expressions(visitor);
+                    }
+                    binding.value.visit(visitor);
+                }
                 LetAnd(bindings) => {
                     for binding in bindings {
+                        if let Some((pattern, _)) = binding.pattern.as_deref() {
+                            pattern.visit_expressions(visitor);
+                        }
                         binding.value.visit(visitor);
                     }
                 }
@@ -1649,10 +1736,20 @@ impl ComputationStatement {
     pub fn depth(&self) -> usize {
         use ComputationStatementKind::*;
         match &self.kind {
-            Let(binding, _) => binding.value.depth,
+            Let(binding, _) => binding
+                .pattern
+                .as_ref()
+                .map_or(0, |pair| pair.0.depth)
+                .max(binding.value.depth),
             LetAnd(bindings) => bindings
                 .iter()
-                .map(|binding| binding.value.depth)
+                .map(|binding| {
+                    binding
+                        .pattern
+                        .as_ref()
+                        .map_or(0, |pair| pair.0.depth)
+                        .max(binding.value.depth)
+                })
                 .max()
                 .unwrap_or(0),
             Match(value, arms) => arms

@@ -320,6 +320,11 @@ fn trap_context_preserves_collections_closures_and_parallel_abis() {
         export def step_failure :: i64 -> unit\nfn step_failure step = for _value in 0 .. step ..= 10 do ()\n\
         export def vec_failure :: i64 -> i64\nfn vec_failure index = { let values = Vec.push_owned 1 Vec.empty(); deref (Vec.at index (ref values)) }\n\
         stress()";
+    fs::write(
+        root.join("Tsuzuri.toml"),
+        "[package]\nname = \"traps\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    )
+    .unwrap();
     fs::write(&input, source).unwrap();
     let project = tsuzuri::driver::Project::load(&input).unwrap();
     let module = project.analyze().unwrap();

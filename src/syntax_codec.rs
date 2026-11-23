@@ -338,6 +338,9 @@ unit_enum!(MatchOrigin {
     FunctionGuard,
     LambdaDestructuring,
     ComputationDestructuring,
+    ForDestructuring,
+    LetDestructuring,
+    Internal,
 });
 unit_enum!(Notation { Symbol, Keyword });
 unit_enum!(FormatAlign {
@@ -2142,6 +2145,7 @@ impl Wire for Binding {
     fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
         let Binding {
             name,
+            pattern,
             mutable,
             using,
             recursion,
@@ -2149,6 +2153,7 @@ impl Wire for Binding {
             value,
         } = self;
         name.put(out)?;
+        pattern.put(out)?;
         mutable.put(out)?;
         using.put(out)?;
         recursion.put(out)?;
@@ -2159,6 +2164,7 @@ impl Wire for Binding {
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(Binding {
             name: Ident::get(input)?,
+            pattern: Option::get(input)?,
             mutable: bool::get(input)?,
             using: bool::get(input)?,
             recursion: Recursion::get(input)?,
@@ -2737,6 +2743,21 @@ mod tests {
                 arms: Vec::new(),
                 origin: MatchOrigin::ComputationDestructuring,
             }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::ForDestructuring,
+            }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::LetDestructuring,
+            }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::Internal,
+            }),
         ]);
         let mut out = Writer::new(Mode::Full, 0, MAX_DEPTH);
         program.put(&mut out).unwrap();
@@ -2763,7 +2784,7 @@ mod tests {
             ("RangeOp", 3),
             ("UnaryOp", 4),
             ("BinaryOp", 21),
-            ("MatchOrigin", 4),
+            ("MatchOrigin", 7),
             ("Notation", 2),
             ("FormatAlign", 3),
             ("FormatKind", 6),

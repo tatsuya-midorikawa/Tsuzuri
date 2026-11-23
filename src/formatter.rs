@@ -1204,7 +1204,13 @@ impl Canonical {
         if binding.recursion == Recursion::And {
             self.hints.group_names.insert(binding.name.span.start);
         }
-        self.ident(&mut binding.name);
+        if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+            binding.name.span = Span::default();
+            binding.name.text.clear();
+            self.pattern(pattern);
+        } else {
+            self.ident(&mut binding.name);
+        }
         if let Some(ty) = &mut binding.annotation {
             // A statement's implicit `unit` annotation spans the statement, which is no type text.
             let statement = matches!(&ty.kind, TypeExprKind::Named(name) if name == "unit")

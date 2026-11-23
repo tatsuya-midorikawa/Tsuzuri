@@ -6,18 +6,18 @@
 | 優先度 | P1（`\(Some x) -> x` や `for Some x in items` が無警告でコンパイルを通り、`None` でキャッチ不能な実行時トラップになる抜け穴を塞ぐ） |
 | 規模 | M（Phase 1: 既存の束縛分解の反駁不可能性検査と edition 分岐、Phase 2: `let` / `let mut` の反駁不可能パターン分解） |
 | 依存 | – |
-| 後続 | ([NS06](NS06-if-let-conditional-binding.md)) |
-| 状態 | todo |
-| 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
-| 承認 | 要承認（言語仕様のパターン検査規則の変更と `W1012` の割り当て（D-55）。決定事項 D1・D2・D3 が要承認、D4〜D6 は既定案） |
-| 手本にする既存実装 | `src/control.rs` の `match_value`（818 行）と `for...in` の分解（323 行）、`src/syntax.rs` の `MatchOrigin`（1425 行）、`src/exhaustiveness.rs` の `NonExhaustiveMatch`（315 行）、`src/closures.rs` のラムダ引数展開（324 行）、[A22](_completed/A22-edition-2027-canonical-forms.md) の edition による警告／エラー切り替え |
+| 後続 | ([NS06](../NS06-if-let-conditional-binding.md)) |
+| 状態 | done（全 Phase） |
+| 起票 | 2026-11-22（[GUIDE D-64](../GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
+| 承認 | 要承認（言語仕様のパターン検査規則の変更と `W1012` の割り当て（D-55）。決定事項 D1・D2・D3 を承認・確定済み、D4〜D6 は既定案） |
+| 手本にする既存実装 | `src/control.rs` の `match_value`（818 行）と `for...in` の分解（323 行）、`src/syntax.rs` の `MatchOrigin`（1425 行）、`src/exhaustiveness.rs` の `NonExhaustiveMatch`（315 行）、`src/closures.rs` のラムダ引数展開（324 行）、[A22](A22-edition-2027-canonical-forms.md) の edition による警告／エラー切り替え |
 | 主な影響ファイル | `src/syntax.rs`, `src/parser.rs`, `src/parse_control.rs`, `src/syntax_codec.rs`, `src/frontend_cache.rs`, `src/formatter.rs`, `src/control.rs`, `src/closures.rs`, `src/computation.rs`, `src/select.rs`, `src/exhaustiveness.rs`, `src/diagnostic_kinds.rs`, `src/explain/codes/`, `tests/match_exhaustiveness.rs`, `tests/trap_locations.rs`, `tests/prove.rs`, `docs/language.md`, `_tsuzuri/language-reference/pattern-matching/pattern-matching.md`, `_tsuzuri/language-reference/loops-and-conditionals/for-in.md`, `_tsuzuri/language-reference/values-and-functions/lambda-expressions.md`, `_tsuzuri/language-reference/values-and-functions/values.md`, `_tsuzuri/language-reference/compiler/diagnostics.md` |
 
 ## 実装者向け早見
 
 - 範囲:
   - **Phase 1**: 単一パターンしか書けない分解箇所（ラムダ式の引数、通常の `for pat in expr do`、コンピュテーション式の `let! pat =`・`and! pat =`・`for pat in`、`select` の `recv pat from ch`）に `src/exhaustiveness.rs` の網羅性検査を適用する。`Some x`・`[a, b]`・`0`・`when` ガード付き引数などの反駁可能パターン（不足ケースがあるもの）を、**edition 2027 では `E1021`（kind `refutable_binding_pattern`）で拒否し、edition 2026 では互換性のため警告 `W1012`（同じメッセージと help）で報告する**。
-  - **Phase 2**: 通常の `let pat [: Type] = expr`（および `let mut (a, b) = ...` ではなく不変 `let`、D3 参照）で、タプル・レコード・1 ケース union などの**反駁不可能なパターン分解**を許す（反駁可能な `let Some x = m` は Phase 1 と同じ `refutable_binding_pattern` で拒否し、`match` または [NS06](NS06-if-let-conditional-binding.md) の `if let` を案内する）。
+  - **Phase 2**: 通常の `let pat [: Type] = expr`（および `let mut (a, b) = ...` ではなく不変 `let`、D3 参照）で、タプル・レコード・1 ケース union などの**反駁不可能なパターン分解**を許す（反駁可能な `let Some x = m` は Phase 1 と同じ `refutable_binding_pattern` で拒否し、`match` または [NS06](../NS06-if-let-conditional-binding.md) の `if let` を案内する）。
 - 最初に読む: ① 仕様 1〜3 ② `src/syntax.rs` 1425〜1442 行（`MatchOrigin`）③ `src/control.rs` 305〜345 行（`for...in`）・815〜845 行（`match_value`）④ `src/exhaustiveness.rs` 290〜345 行。
 - 最初に書くテスト: `tests/match_exhaustiveness.rs` の `refutable_lambda_and_for_patterns_are_rejected_in_2027` と `edition_2026_warns_on_refutable_binding_patterns`。
 - 触ってはいけない: `match` 式と関数ガード（`\x -> | Some v -> ... | None -> ...`）の `E1021`・`W1003` の文言と動作、反駁不可能なパターン（`\(x, y) -> ...`、`for (k, v) in items`）の生成 IR（1 byte も変えない）。
@@ -47,7 +47,7 @@
 
 - **`MatchOrigin`（`src/syntax.rs` 1425〜1441 行）**: `Explicit`・`FunctionGuard`・`LambdaDestructuring`・`ComputationDestructuring` の 4 つがあり、`checks_coverage` は `Explicit | FunctionGuard` のみ `true` を返す。
 - **通常の `for...in`（`src/control.rs` 323〜334 行）**: 単一識別子でも `_` でもないパターンのとき、`self.match_value(..., None)` を直接呼んでおり、`MatchOrigin` すら渡していない。
-- **`select` の `recv pat from ch`（`src/select.rs` 199・214 行）**: チャネルから受信した要素の分解に `ComputationDestructuring` / `match_value(..., None)` を使っている。
+- **`select` の `recv name from ch`（`src/parse_control.rs` 1184 行・`src/select.rs` 199 行）**: 実装前調査で、`select` の `recv` 構文は単一識別子 `recv NAME from CHANNEL` のみを受理し（パターンは構文エラー `E0002` で `tests/select.rs` が固定）、`src/select.rs` 199 行の `ComputationDestructuring` はコンパイラ合成のアーム番号ディスパッチ（末尾が `_`）にのみ使われていたことを確認した。よって `select` 構文は変えず、合成ディスパッチを `MatchOrigin::Internal` に整理した。
 - **`try ... with`（`src/exceptions.rs` 164 行）**: 例外ハンドラの `| e is OverflowException ->` はキャッチ対象外の例外を再送出するための分岐であり、ここが `None` なのは正しい（変えてはならない）。
 - **既存テストで `PatternMismatch` を使っている箇所（全件 `grep` 済み）**:
   1. `tests/trap_locations.rs` 325 行: `export def pattern_failure :: unit` の `for [only] in [[1, 2]] do assert (only == 0)`（マニフェストなしのため既定で edition 2027。`Tsuzuri.toml` で `edition = "2026"` を指定すれば `W1012` のもとで既存の実行時トラップ検証をそのまま維持できる）。
@@ -107,7 +107,7 @@
 ## 他チケットへ提供するインターフェース
 
 - `DiagnosticKind::RefutableBindingPattern`（`E1021`）・`RefutableBindingPatternWarning`（`W1012`）。
-- Phase 2 の `let <pattern>` の構文解析補助（[NS06](NS06-if-let-conditional-binding.md) の `if let <pattern> = <expr>` とパターン読み取りを共有できる）。
+- Phase 2 の `let <pattern>` の構文解析補助（[NS06](../NS06-if-let-conditional-binding.md) の `if let <pattern> = <expr>` とパターン読み取りを共有できる）。
 
 ## 実装手順
 
@@ -138,10 +138,10 @@
 
 ## 受け入れ条件
 
-- [ ] edition 2027 でラムダ引数・`for...in`・計算式束縛・`select` 受信の反駁可能パターンが `E1021`（`refutable_binding_pattern`）になり、edition 2026 で `W1012` になる。
-- [ ] Phase 2 で反駁不可能な `let <pattern> = <expr>` が動作し、反駁可能な `let Some x = ...` が `E1021` になる。
-- [ ] 単一識別子 `let x = ...` や既存の反駁不可能パターンを使うプログラムの生成 IR が 1 byte も変わらない。
-- [ ] `node scripts/gen-docs.mjs --check` と `node scripts/check-docs.mjs` が通る。
+- [x] edition 2027 でラムダ引数・`for...in`・計算式束縛の反駁可能パターンが `E1021`（`refutable_binding_pattern`）になり、edition 2026 で `W1012` になる（`select` の `recv` は元々単一識別子のみ）。
+- [x] Phase 2 で反駁不可能な `let <pattern> = <expr>` が動作し、反駁可能な `let Some x = ...` が `E1021` になる。
+- [x] 単一識別子 `let x = ...` や既存の反駁不可能パターンを使うプログラムの生成 IR が 1 byte も変わらない。
+- [x] `node scripts/gen-docs.mjs --check` と `node scripts/check-docs.mjs` が通る。
 
 ## 落とし穴
 
@@ -151,15 +151,22 @@
 ## 対象外
 
 - `let mut (a, b) = ...`（個別に `let (a0, b0) = ...; let mut a = a0` と書く）。
-- `let Some x = expr else ...`（Tsuzuri には関数からの命令形早期 `return` がないため、[NS06](NS06-if-let-conditional-binding.md) の `if let` で扱う）。
+- `let Some x = expr else ...`（Tsuzuri には関数からの命令形早期 `return` がないため、[NS06](../NS06-if-let-conditional-binding.md) の `if let` で扱う）。
 
 ## 決定事項
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 単一パターンの分解位置（ラムダ引数・`for...in`・計算式束縛・`select` 受信）の反駁可能パターンを、edition 2027 で `E1021`、edition 2026 で警告 `W1012` にする | 2026 パッケージの後方互換性を保ちつつ、既定の 2027 では `None` 等による実行時トラップの抜け穴を静的に塞ぐため | 要承認 |
-| D2 | 警告コード `W1012` を D-55 の予約枠（`W1011`〜`W1015`）から割り当てる（`W1011` は [NS05](NS05-warn-unchecked-unwrap.md)） | 既存の `W1003`（到達不能アーム）とは意味が異なるため独立したコードにする | 要承認 |
-| D3 | Phase 2 で不変 `let` に反駁不可能パターン分解を許し、`let mut` は単一識別子のままにする | タプル・レコード分解の利便性を高めつつ、部分的な可変性や構文の複雑化を避けるため | 要承認 |
-| D4 | エラーコードは新規コードではなく既存の `E1021`（網羅性不足）の新しい kind `refutable_binding_pattern` とする | 「パターンがすべての値を受け止められない」という本質が `match` の網羅性不足と同じであり、D-51 の方針（既存コードで表せるなら kind で分ける）に沿うため | 既定案（実装者はこの案に従う） |
-| D5 | 生成 IR の不一致時トラップブロック（`TrapKind::PatternMismatch`）自体は多重防御として残す | D-10（「網羅性検査を通過したコードであっても安全のため失敗時トラップを残す」）と同一方針 | 既定案（実装者はこの案に従う） |
-| D6 | `tsuzuri fmt` で `let (a, b) = pair` の形を保つため、構文木では専用ノードを持ち型検査で `match_value` へ下げる | パーサーで直接 `ExprKind::Match` に脱糖するとフォーマッタが `match pair with | (a, b) -> ...` に書き換えてしまうため | 既定案（実装者はこの案に従う） |
+| D1 | 単一パターンの分解位置（ラムダ引数・`for...in`・計算式束縛）の反駁可能パターンを、edition 2027 で `E1021`、edition 2026 で警告 `W1012` にする（`select` の `recv` は単一識別子構文のまま） | 2026 パッケージの後方互換性を保ちつつ、既定の 2027 では `None` 等による実行時トラップの抜け穴を静的に塞ぐため | 確定・実装済み |
+| D2 | 警告コード `W1012` を D-55 の予約枠から割り当てる（`W1011` は [NS05](../NS05-warn-unchecked-unwrap.md)） | 既存の `W1003`（到達不能アーム）とは意味が異なるため独立したコードにする | 確定・実装済み |
+| D3 | Phase 2 で不変 `let`（および計算式の `let!`・`and!`）に反駁不可能パターン分解を許し、`let mut` は単一識別子のままにする | タプル・レコード分解の利便性を高めつつ、部分的な可変性や構文の複雑化を避けるため | 確定・実装済み |
+| D4 | エラーコードは新規コードではなく既存の `E1021`（網羅性不足）の新しい kind `refutable_binding_pattern` とする | 「パターンがすべての値を受け止められない」という本質が `match` の網羅性不足と同じであり、D-51 の方針（既存コードで表せるなら kind で分ける）に沿うため | 確定・実装済み |
+| D5 | 生成 IR の不一致時トラップブロック（`TrapKind::PatternMismatch`）自体は多重防御として残す | D-10（「網羅性検査を通過したコードであっても安全のため失敗時トラップを残す」）と同一方針 | 確定・実装済み |
+| D6 | `tsuzuri fmt` で `let (a, b) = pair` の形を保つため、`Binding.pattern` にパターンを保持し型検査で `match_value` へ下げる | パーサーで直接 `ExprKind::Match` に脱糖するとフォーマッタの AST 検証と食い違うため | 確定・実装済み |
+
+## 実装と検証（2026-11-23）
+
+- Phase 1: `MatchOrigin` に `ForDestructuring`・`LetDestructuring`・`Internal` を追加し、`src/exhaustiveness.rs` で単一パターン束縛の反駁可能パターンを edition 2027 で `E1021`（`refutable_binding_pattern`）、edition 2026 で `W1012`（`refutable_binding_pattern_warning`）とした（`FRONTEND_FORMAT` を 20 → 21 に更新）。
+- Phase 2: `Binding` に `pattern: Option<Box<(Pattern, MatchOrigin)>>` を追加し、不変 `let <pattern> [: Type] = <expr>`（および `let!`・`and!`）のパターン分解を実装した。単一識別子 `let x = ...` は従来の高速経路をそのまま保ち、既存の IR を 1 byte も変えない。
+- `tests/match_exhaustiveness.rs`、`tests/trap_locations.rs`、`tests/prove.rs`、`src/explain/`、`spec/rules/CTL.md`（`CTL-022` を retired にし `CTL-027`〜`CTL-029` を追加）、言語リファレンス 5 ページおよび `docs/language.md` を更新した。
+

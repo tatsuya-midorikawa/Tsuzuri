@@ -223,6 +223,10 @@ pub const KIND_PAGES: &[(&str, &str)] = &[
         include_str!("explain/reference_without_owner.md"),
     ),
     (
+        "refutable_binding_pattern",
+        include_str!("explain/refutable_binding_pattern.md"),
+    ),
+    (
         "reserved_std_namespace",
         include_str!("explain/reserved_std_namespace.md"),
     ),
@@ -383,6 +387,7 @@ pub const CODE_PAGES: &[(&str, &str)] = &[
     ("W1008", include_str!("explain/codes/W1008.md")),
     ("W1009", include_str!("explain/codes/W1009.md")),
     ("W1010", include_str!("explain/codes/W1010.md")),
+    ("W1012", include_str!("explain/codes/W1012.md")),
     ("W2001", include_str!("explain/codes/W2001.md")),
     ("W2002", include_str!("explain/codes/W2002.md")),
 ];

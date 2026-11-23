@@ -1,0 +1,10 @@
+let items = [Maybe.Some 1, Maybe.None]
+let mut sum = 0
+for Maybe.Some x in items do
+    sum = sum + x
+sum
+
+// rule: CTL-028
+// edition: 2026
+// expect: check-warning W1012 line=3 kind=refutable_binding_pattern_warning
+// expect: trap kind=pattern_mismatch

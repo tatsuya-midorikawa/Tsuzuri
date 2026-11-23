@@ -282,7 +282,7 @@ flowchart TD
 
 ## エラーコード
 
-エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0004`）は字句解析と構文解析、`E1`（`E1001`〜`E1041`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2011`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行・知識グラフ・MCP サーバー・doc の例の記法などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1010`）およびツールの警告 `W2001`・`W2002` です。
+エラーコードのプレフィックスと千の位が分類を表します。`E0`（`E0001`〜`E0004`）は字句解析と構文解析、`E1`（`E1001`〜`E1041`）は意味解析・型検査・所有権と借用などの言語仕様上のエラー、`E2`（`E2000`〜`E2011`）は CLI 引数・I/O・リンカー・実行時・依存の取得・edition の移行・知識グラフ・MCP サーバー・doc の例の記法などのツールと実行に関するエラーです。警告コードは `W1`（`W1001`〜`W1012`）およびツールの警告 `W2001`・`W2002` です。
 
 | コード | 何を報告するか |
 | --- | --- |
@@ -301,7 +301,7 @@ flowchart TD
 | `E1018` | ファイル種別の規則違反（`.tc` 以外の `@alias` を含む）、未知のビルダー、必要なビルダー操作の未定義、ビルダー候補の曖昧・不在、GPU カーネルにできない構文（厳密な WGSL の `f32`・`f16`・64 bit の要素、緩い WGSL（`Gpu.init_relaxed`・`Gpu.map_relaxed`・`--emit wgsl-relaxed`）の `f64`・64 bit 整数・`bool` の要素・`f32`・`f16` から整数と `f32` と `f64` の間のキャスト、整数の除算と剰余を含む）、Vulkan 用の厳密な SPIR-V（`Gpu.map`・`--emit spirv`）の `f32` の `/`・`f64`・`f16`・`bool` の要素・整数の除算と剰余と `**`、緩い SPIR-V（`--emit spirv-relaxed`）の 64 bit 整数の要素と `f32` から整数へのキャスト、標準ライブラリからの不正な `export`、`.tt` と標準ライブラリの `bench` 宣言、`tsuzuri bench` 以外の出力でトップレベルのコード・`export def`・実行するテスト・`Drop` の実装から到達する `Bench.now` |
 | `E1019` | `rec` の過不足、単独の `and` |
 | `E1020` | パターンの形、OR パターンの束縛（片側だけが `:? (A \| B) as x` で絞る場合と、絞る前の型が違う場合を含む）、共用体のペイロード。未知のケース・アクティブパターンは、近い名前の候補を持ちます（下の「未知の名前の候補」） |
-| `E1021` | `match` と関数ガードの網羅性。足りないケースを示し、`help` を持ちます。匿名共用体の足りない要素は `missing: :? bool` のように型テストの形で示します。`match ... with` の足りないケースが腕として書ける形（`_`、`true`・`false`、`()`、共用体のケース、匿名共用体の型テスト `:? T`、それらのタプル）で 8 個以下なら、末尾にそれらの腕を足す `maybe` の修正案も持ちます |
+| `E1021` | `match`・関数ガード・単一パターン束縛（不変 `let`、および edition 2027 のラムダ引数・`for...in`・計算式束縛）の網羅性。足りないケースを示し、`help` を持ちます。匿名共用体の足りない要素は `missing: :? bool` のように型テストの形で示します。`match ... with` の足りないケースが腕として書ける形（`_`、`true`・`false`、`()`、共用体のケース、匿名共用体の型テスト `:? T`、それらのタプル）で 8 個以下なら、末尾にそれらの腕を足す `maybe` の修正案も持ちます |
 | `E1022` | 他モジュールの `private`、公開 API からの private 型、不透明な標準ライブラリ型（`Map`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex`、`DataChannel.Sender`、`DataChannel.Receiver` など）の直接構築・フィールド参照、std 専用の組み込み関数（`Os.__read`、`Net.__open`、`Arena.__next_id`、`Gpu.__open`、`DataChannel.__close_sender` など）の呼び出し |
 | `E1023` | ループ外の `break` / `continue`、`finally` を越える脱出 |
 | `E1024` | 型パラメーター、共用体と型エイリアスの名前、循環するエイリアス。共用体の重複したケースは、最初の定義（`first_defined_here`）を持ちます |
@@ -367,7 +367,7 @@ flowchart TD
 | `E1018` | `alias_outside_builder_file`, `bench_clock_outside_bench`, `builder_missing_operation`, `builder_without_operations`, `cannot_infer_builder`, `class_outside_class_file`, `computation_without_builder`, `declaration_in_class_file`, `gpu_buffer_element_type`, `gpu_callback_not_known`, `gpu_kernel_effect`, `gpu_kernel_missing`, `gpu_kernel_recursion`, `gpu_kernel_signature`, `gpu_operation_not_direct`, `gpu_unsupported_construct`, `gpu_unsupported_operator`, `gpu_unsupported_type`, `implicit_task_needs_builder`, `no_builder_for_value`, `std_declares_test`, `std_exports_function`, `unknown_computation_builder` |
 | `E1019` | `and_without_recursive_group`, `mismatched_recursive_group`, `missing_rec_marker` |
 | `E1020` | `active_argument_not_value`, `active_pattern_case_count`, `active_pattern_case_name`, `array_pattern_on_fixed_array`, `case_pattern_missing_payload`, `case_pattern_payload_shape`, `case_pattern_unexpected_payload`, `duplicate_active_pattern_case`, `expression_in_pattern`, `multi_case_active_pattern_result_type`, `null_pattern`, `or_pattern_binding_mismatch`, `partial_active_pattern_case_count`, `qualified_pattern_binding`, `record_pattern_unknown_type`, `reserved_active_result_variable`, `unknown_case_or_active_pattern` |
-| `E1021` | `non_exhaustive_match` |
+| `E1021` | `non_exhaustive_match`, `refutable_binding_pattern` |
 | `E1022` | `opaque_type_representation`, `private_builder_operation`, `private_export`, `private_name_access`, `private_on_unsupported_declaration`, `private_std_primitive`, `private_type_in_public_api` |
 | `E1023` | `jump_outside_loop` |
 | `E1024` | `alias_argument_count`, `cyclic_type_alias`, `duplicate_type_parameter`, `duplicate_union_case`, `invalid_type_parameter_name`, `type_name_case`, `undeclared_length_parameter`, `undeclared_type_variable`, `union_case_name_case`, `unused_type_parameter` |
@@ -409,6 +409,7 @@ flowchart TD
 | `W1008` | `effect_attribute_on_const_def`, `effect_attribute_unchecked_generic` |
 | `W1009` | `contract_always_true`, `contract_result_unused`, `contract_test_skipped` |
 | `W1010` | `untrusted_extern` |
+| `W1012` | `refutable_binding_pattern_warning` |
 | `W2001` | `integer_overflow_wrapped`, `tool_notice` |
 | `W2002` | `bindgen_skipped_declaration` |
 <!-- /generated:diagnostic-kinds -->
@@ -437,6 +438,7 @@ flowchart TD
 | `W1009` | 契約の行が何も確かめない。常に真の条件（`contract_always_true`）、使わない結果の名前（`contract_result_unused`）、`--contracts test` で性質テストを作れない関数（`contract_test_skipped`） | 条件を書き直すか行を外す。結果を使わない行は `@ensures \_ -> ...` と書く |
 | `W1007` | edition 2027 が拒否する表記（`E0004` と同じ 6 種）を edition 2026 のソースが使っている | `--warn canonical` のときだけ（ルートのパッケージのソース）。正準形への書き換えを修正案（`certain`、`&` の一時値と引数 `_` の旧ラムダは `likely`、参照の借用 `&r` はなし）として持ち、`tsuzuri fix --edition 2027` が当てる |
 | `W1010` | `@trusted` のない `extern` の関数を使っている（`untrusted_extern`） | `--warn untrusted-extern` のとき（ルートのパッケージの宣言だけ）と `tsuzuri audit`（全パッケージ）。関数の契約を確かめて、宣言の前に `@trusted` を書く |
+| `W1012` | edition 2026 のソースで、ラムダ式の引数・`for...in`・計算式の束縛（`let!`・`and!`・`for`）に反駁可能なパターンや `when` ガードを書いている（`refutable_binding_pattern_warning`） | 名前で受けて本体で `match` するか、ラムダでは無条件の節を含む関数ガードを使う（edition 2027 では `E1021` のエラー） |
 | `W1008` | 効果の属性が検査されない。インスタンスが 1 つもないジェネリック関数の属性（`effect_attribute_unchecked_generic`）と、`const def` の属性（実行時の本体だけを検査する。`effect_attribute_on_const_def`） | ジェネリック関数を使う型で呼ぶ。`const def` の属性は外すか、そのままにする（警告だけで、終了コードは 0） |
 | `W2001` | キャッシュを使えなかった、プロファイルが合わなかった、`run --profile-generate` がプロファイルを書かなかった、などのツール警告。`run --overflow-report --json` の整数の折り返しの報告（`integer_overflow_wrapped`）もこのコード | ソースの警告ではありません。`--json` のときこのコードになります。プロファイルが合わないときは、`profile data does not match N function(s) in this build; they are optimized without profile data. Rebuild with --profile-generate and rerun the training workload` の 1 行です（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)） |
 | `W2002` | `tsuzuri bindgen` が C ヘッダーの宣言や整数のマクロを変換せずに省いた。理由はメッセージと、出力の `// skipped` 行にあります | 手で宣言するか、対応する型だけの C 関数で包みます。ポインターと長さの組は `--buffer` で変換できることがあります。位置はヘッダーの宣言やマクロの名前です |

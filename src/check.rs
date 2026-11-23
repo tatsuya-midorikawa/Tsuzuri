@@ -6209,6 +6209,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
             kind: ExprKind::Block {
                 bindings: vec![Binding {
                     name: named("$case"),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -12773,21 +12774,105 @@ impl<'a> Checker<'a> {
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
-                let checked = self.block_bindings(bindings)?;
-                let result = self.expression(result, expected)?;
+                let checked_block = self.check_block_tail(bindings, result, expected);
                 self.scopes.pop();
-                let ty = result.ty.clone();
-                (
-                    TypedExprKind::Block {
-                        bindings: checked,
-                        result: Box::new(result),
-                    },
-                    ty,
-                )
+                checked_block?
             }
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    fn check_block_tail(
+        &mut self,
+        bindings: &[Binding],
+        result: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let Some(split) = bindings
+            .iter()
+            .position(|binding| binding.pattern.is_some())
+        else {
+            let checked = self.block_bindings(bindings)?;
+            let result = self.expression(result, expected)?;
+            let ty = result.ty.clone();
+            return Ok((
+                TypedExprKind::Block {
+                    bindings: checked,
+                    result: Box::new(result),
+                },
+                ty,
+            ));
+        };
+        let checked = self.block_bindings(&bindings[..split])?;
+        let binding = &bindings[split];
+        let (pattern, origin) = binding.pattern.as_ref().unwrap().as_ref();
+        let annotation = self.binding_annotation(binding)?;
+        let from = self.recovered.len();
+        let value = match self.expression(&binding.value, annotation.as_ref()) {
+            Ok(value) => value,
+            Err(mut error) => {
+                self.annotation_because(binding, annotation.as_ref(), from, Some(&mut error));
+                return Err(error);
+            }
+        };
+        if self.recovered.len() > from {
+            self.annotation_because(binding, annotation.as_ref(), from, None);
+        }
+        if *origin == MatchOrigin::LetDestructuring && self.names.warning_options.shadowing {
+            let mut bound = Vec::new();
+            pattern.bound_names(&mut bound);
+            for ident in bound {
+                if !ident.text.starts_with('_')
+                    && self
+                        .scopes
+                        .last()
+                        .and_then(|scope| scope.get(&ident.text))
+                        .is_some_and(|previous| previous.provenance == Provenance::User)
+                {
+                    self.shadowing_warnings.push(Diagnostic::of(
+                        DiagnosticKind::ShadowedLocal,
+                        format!(
+                            "local '{}' shadows an earlier binding in the same scope",
+                            ident.text
+                        ),
+                        ident.span,
+                    ));
+                }
+            }
+        }
+        let rest = if split + 1 == bindings.len() {
+            result.clone()
+        } else {
+            Expr {
+                kind: ExprKind::Block {
+                    bindings: bindings[split + 1..].to_vec(),
+                    result: Box::new(result.clone()),
+                },
+                span: bindings[split + 1].name.span.through(result.span),
+                depth: result.depth + 1,
+            }
+        };
+        let matched = self.match_value(
+            value,
+            &[MatchArm {
+                pattern: pattern.clone(),
+                guard: None,
+                body: rest,
+                span: pattern.span,
+            }],
+            expected,
+            pattern.span,
+            Some(*origin),
+        )?;
+        let ty = matched.ty.clone();
+        Ok((
+            TypedExprKind::Block {
+                bindings: checked,
+                result: Box::new(matched),
+            },
+            ty,
+        ))
     }
 
     /// Checks the bindings of a block in order, a `let rec` group (B09) as one. It is a function

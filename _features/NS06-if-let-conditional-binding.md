@@ -104,7 +104,7 @@ match <scrutinee> with
 
 ## 前提とする他チケットのインターフェース
 
-- 弱い依存 [NS04](NS04-irrefutable-binding-patterns.md): 反駁不可能な `if let` に対して「`let <pat> = ...` を使える」と案内する help 文（NS04 Phase 2 が未実装なら通常の `W1003` 文言にする）。
+- 弱い依存 [NS04](_completed/NS04-irrefutable-binding-patterns.md): 反駁不可能な `if let` に対して「`let <pat> = ...` を使える」と案内する help 文。
 
 ## 他チケットへ提供するインターフェース
 
