@@ -201,7 +201,9 @@ flowchart LR
 
 `extern type Counter` は、ホストが所有するポインタを Tsuzuri 側では値として扱う型です。リテラルでは作れず、`extern` の戻り値か、export の引数としてだけ受け取ります。Copy ではなく、代入はムーブです。破棄してもデストラクタは走りません。閉じる `extern` へ値で渡すのが、解放の契約です。
 
-C では `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
+ホストが所有権を渡さない識別子（Win32 の `HWND`・`HINSTANCE`・ストックオブジェクトなど）は `extern type copy Hwnd` と宣言します。`copy` は `extern type` の直後で同じ行に型名が続くときだけの文脈キーワードです。`copy` ハンドルは `Copy`・`Capture`・`Send`・`Sync` を満たし、値渡しで複製され、関数値や `tzroutine { }` に捕捉でき、`Routine.scope` や `Arc<H>` でも共有できます。解放関数があるハンドル（`CreateFontW` の `HFONT`、ファイルの `HANDLE` など）やスレッドに結び付くハンドル（`HDC` など）に `copy` を付けると二重解放やスレッド違反になるため、所有しない識別子にだけ使います。
+
+C ではどちらも `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
 
 ### 静的コールバック
 
@@ -545,7 +547,7 @@ TZ13 で、ホストが駆動する `Async` の実行器を削除しました。
 
 tzroutine と `Parallel.*` のコールバック（`Routine.scope` の子を含む）は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、それらの中から呼ばないでください。WebAssembly の `Parallel.*` は、`--wasm-feature threads` を付けない限り逐次です。
 
-`extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数の tzroutine から同時に使うことはありません。
+修飾のない `extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、`copy` でないハンドル（またはそれを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じ所有ハンドルを複数の tzroutine から同時に使うことはありません。`extern type copy` のハンドルは複製と共有が可能ですが、その識別子を受け取るホスト API がどのスレッドから呼べるかは各 `extern` の契約（`@trusted`）に従います。
 
 export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 

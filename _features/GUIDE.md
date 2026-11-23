@@ -1817,7 +1817,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 診断コード | `E1040` | TZ03・TZ12・TZ13・E17 | 削除・改名した機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`、E17 で `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版へ改名した旧 `IO` の 8 関数）の使用。help に移行先、改名は `fixes` も（D-61） |
 | 診断コード | `E1041` | A24・A25・A26 | 匿名共用体の誤り（要素の規則: 型変数・区別できない要素・重複、注入の曖昧さ、利用者のインスタンス、型テスト `:?` の誤り）。借用の要素は `E1013`、要素数の上限は `E1017`、要素でない値は `E1003`、構文は `E0002` の kind で表す（D-62）。`Decode` を持てない匿名共用体（要素が読む JSON の種類の重なり）だけは、承認済みの A26 の D5 のとおり `E1025`（`anonymous_union_decode_overlap`） |
 | 予約（未割り当て） | `E1035`・`E1042`〜`E1049`・`E2012`〜`E2015`・`W1011`・`W1013`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
-| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default` | TZ02・TZ04 | 予約語ではない（識別子として使える） |
+| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default`・`extern type` の直後の `copy`（同じ行に識別子が続くとき） | TZ02・TZ04・W18 | 予約語ではない（識別子として使える） |
 | 環境変数 | `TSUZURI_MAXPROCS`（1〜256。既定はオンラインの CPU 数）・`TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576。既定 1024） | TZ01 | 生成したプログラムが起動時に読む（コンパイラは読まない）。範囲外・数でない値は無視して既定値 |
 | std | `Routine`・`DataChannel`（旧 `Channel` の改名）・`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`・`Timer`・`Ticker`（新規）と、新しい中身の `Channel` | TZ02〜TZ07 | D-61。`Routine` は組み込みのモジュール、ほかは opt-in。`RESERVED_MODULES` は現在値から 13 増え（`Channel` は予約済み）、TZ13 で `Async` の 1 つが減る |
 | サブコマンド | `guide` | G21 | AI 向けの案内の出力 |

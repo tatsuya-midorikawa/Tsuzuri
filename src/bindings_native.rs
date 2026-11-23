@@ -159,7 +159,7 @@ fn shape(ty: &Type, module: &CheckedModule) -> Shape {
     }
     match ty {
         Type::Unit => Shape::Unit,
-        Type::Handle(name) => Shape::Handle(handle_c_name(name)),
+        Type::Handle(name, _) => Shape::Handle(handle_c_name(name)),
         Type::Record(..) => Shape::Record(record_name(ty, module)),
         Type::Reference(inner, false) => match Buffer::of(inner) {
             Some(buffer) => Shape::Slice(buffer),

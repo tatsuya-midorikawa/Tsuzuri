@@ -81,6 +81,26 @@ try {
   mkdirSync(tested);
   writeFileSync(join(tested, "Main.tz"), `${readFileSync(join(fixture, "Main.tz"), "utf8")}\ntest "counters" =\n    assert (counters 10 == 59)\n\ntest "callbacks" =\n    assert (callbacks 4 == 39)\n`);
   assert.match(execute(compiler, ["test", tested, "--link", host, "-l", "pthread"]).stdout, /2 passed; 0 failed/);
+  const routineHandles = join(root, "routine-handles");
+  mkdirSync(routineHandles);
+  writeFileSync(join(routineHandles, "Main.tz"), [
+    "extern type copy IdHandle",
+    'extern "w18_id_new" def id_new :: i64 -> IdHandle',
+    'extern "w18_id_value" def id_value :: IdHandle -> i64',
+    'extern "w18_id_borrow" def id_borrow :: ref IdHandle -> i64',
+    "let handle = id_new 10",
+    "match DataChannel.bounded 1 with",
+    "| (sender, receiver) ->",
+    "    tzroutine {",
+    "        let _ = DataChannel.send (ref sender) (id_value handle)",
+    "        ()",
+    "    }",
+    "    let scoped = Routine.scope (ref handle) 2 (\\w i -> id_borrow w + i)",
+    "    let sent = match DataChannel.recv (ref receiver) with | Some v -> v | None -> 0",
+    "    sent + scoped[0] + scoped[1] + id_value handle",
+    "",
+  ].join("\n"));
+  assert.equal(execute(compiler, ["run", routineHandles, "--link", host, "-l", "pthread"]).stdout.trim(), "43");
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");
@@ -133,6 +153,9 @@ try {
     "tsuzuri.e12_text_units:function",
     "tsuzuri.e12_visit:function",
     "tsuzuri.sqrt:function",
+    "tsuzuri.w18_id_borrow:function",
+    "tsuzuri.w18_id_new:function",
+    "tsuzuri.w18_id_value:function",
   ];
   // Checks one linked module against the hand-computed table. `wide` is wasm64: pointers, handles and
   // table indices are BigInt there.
@@ -167,6 +190,9 @@ try {
           for (const item of items) total += item;
           return callback(index)(total);
         },
+        w18_id_new: (seed) => wide ? seed * 2n + 1n : Number(seed) * 2 + 1,
+        w18_id_value: (handle) => (BigInt(handle) - 1n) / 2n,
+        w18_id_borrow: (handle) => (BigInt(handle) - 1n) / 2n + 1n,
       },
       env: { e12_host_now: () => 40n },
     };
@@ -178,6 +204,7 @@ try {
     assert.equal(instance.exports.tz_temporaries(4n), 204n);
     assert.equal(instance.exports.tz_temporary_then_raise(3n), 27n);
     assert.equal(instance.exports.tz_temporary_then_raise(3037000500n), -1n);
+    assert.equal(instance.exports.tz_copy_handles(10n), 66n);
     assert.equal(instance.exports.tz_misc(2.25), 40n);
     assert.equal(instance.exports.tz_misc(2), 0n);
     assert.equal(instance.exports.tz_pass_through(wide ? 7n : 7), wide ? 7n : 7);

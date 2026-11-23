@@ -127,7 +127,7 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
         Type::Binary(bits) => json!(format!("f{bits}")),
         Type::Bool => json!("bool"),
         Type::Unit => json!("unit"),
-        Type::Handle(name) => json!(format!("handle:{}", handle_c_name(name))),
+        Type::Handle(name, _) => json!(format!("handle:{}", handle_c_name(name))),
         Type::Record(..) => json!(format!("record:{}", record_name(ty, module))),
         Type::FixedArray(element, _) => {
             json!(["array", descriptor(element, module), fixed_length(ty)])
@@ -185,7 +185,7 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
 fn handles(module: &CheckedModule) -> BTreeSet<String> {
     fn visit(ty: &Type, handles: &mut BTreeSet<String>) {
         match ty {
-            Type::Handle(name) => {
+            Type::Handle(name, _) => {
                 handles.insert(handle_c_name(name));
             }
             Type::Reference(inner, _) => visit(inner, handles),
@@ -414,7 +414,7 @@ fn typescript_type_with(ty: &Type, module: &CheckedModule, input: bool, borrow: 
         Type::Integer(..) | Type::Binary(_) => "number".into(),
         Type::Bool => "boolean".into(),
         Type::Unit => "void".into(),
-        Type::Handle(name) => handle_c_name(name),
+        Type::Handle(name, _) => handle_c_name(name),
         Type::Record(..) => record_name(ty, module),
         Type::FixedArray(element, _) => {
             format!("readonly {}[]", typescript_type(element, module, input))

@@ -39,7 +39,7 @@ pub(crate) fn handle_c_name(name: &str) -> String {
 pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
     fn visit(ty: &Type, names: &mut BTreeSet<String>) {
         match ty {
-            Type::Handle(name) => {
+            Type::Handle(name, _) => {
                 names.insert(name.to_string());
             }
             Type::Reference(inner, _) => visit(inner, names),
@@ -579,7 +579,7 @@ pub(super) fn wrapper(
             };
             values.push(format!("{} {value}", emitter.ty(ty)));
         } else if let Type::Reference(handle, false) = ty
-            && matches!(handle.as_ref(), Type::Handle(_))
+            && matches!(handle.as_ref(), Type::Handle(..))
         {
             // The host passes the handle itself; a borrow needs it in a slot.
             parameters.push(format!("ptr %arg{index}"));

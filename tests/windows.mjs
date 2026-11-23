@@ -286,6 +286,29 @@ try {
     assert.deepEqual(lines, expectedWide, `i128 reference mismatch at ${optimization}`);
   }
   console.log("Windows MSVC: 128-bit integer helpers match BigInt across -O0 and -O3");
+
+  const copyHwnd = join(directory, "copy-hwnd");
+  mkdirSync(copyHwnd);
+  writeFileSync(join(copyHwnd, "Main.tz"), [
+    "extern type copy Hwnd",
+    "@trusted",
+    'extern "GetDesktopWindow" def desktop :: unit -> Hwnd',
+    "@trusted",
+    'extern "IsWindow" def is_window :: Hwnd -> i32',
+    "",
+    "def main :: unit -> i32 = \\() ->",
+    "    let h = desktop ()",
+    "    let probe = \\() -> is_window h",
+    "    let copied = h",
+    "    probe () + is_window h + is_window copied - 2",
+    "",
+  ].join("\n"));
+  for (const optimization of ["-O0", "-O3"]) {
+    const hwndExe = join(directory, `copy-hwnd${optimization}.exe`);
+    cli(["build", copyHwnd, "--no-cache", optimization, "-l", "user32", "-o", hwndExe]);
+    assert.equal(execute(hwndExe, [], false).status, 1, `copy-hwnd ${optimization}`);
+  }
+  console.log("Windows MSVC: extern type copy Hwnd passed");
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });

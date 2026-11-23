@@ -5,7 +5,7 @@
 | ID | W19 |
 | 優先度 | P1 |
 | 規模 | M |
-| 依存 | [W18](W18-copy-extern-type.md)（`HandleKind` と修飾の読み方） |
+| 依存 | [W18](_completed/W18-copy-extern-type.md)（`HandleKind` と修飾の読み方） |
 | 後続 | [W25](W25-extern-interface-com.md)（`extern interface` の既定が `local`）、[W27](W27-win32-package-from-winmd.md)（スレッドに結び付くハンドルを `local` に生成） |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |

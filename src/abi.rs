@@ -209,7 +209,7 @@ pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 /// Whether `ty` is an `extern type` handle.
 pub fn is_handle(ty: &Type) -> bool {
-    matches!(ty, Type::Handle(_))
+    matches!(ty, Type::Handle(..))
 }
 
 /// A parameter the C ABI passes as one machine scalar: a number, a bool, an

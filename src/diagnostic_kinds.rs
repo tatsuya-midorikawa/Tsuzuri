@@ -93,6 +93,7 @@ diagnostic_kinds! {
         (ExpectedWhereBindings, "expected_where_bindings", "E0002"),
         (ExportOnImplementation, "export_on_implementation", "E0002"),
         (ExpressionNestingTooDeep, "expression_nesting_too_deep", "E0002"),
+        (ExternTypeModifierConflict, "extern_type_modifier_conflict", "E0002"),
         (ExternTypeWithBody, "extern_type_with_body", "E0002"),
         (ExternTypeWithLinkName, "extern_type_with_link_name", "E0002"),
         (ForLoopNeedsIdentifier, "for_loop_needs_identifier", "E0002"),

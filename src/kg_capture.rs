@@ -591,7 +591,7 @@ fn declare_module(
             "handle",
             module,
             handle.name.text.clone(),
-            format!("extern type {}", handle.name.text),
+            handle.header(),
             handle.name.span,
             handle.name.span,
             root,

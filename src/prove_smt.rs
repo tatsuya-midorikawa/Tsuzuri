@@ -225,7 +225,7 @@ impl<'a> Translator<'a> {
             Type::Once(_) => return Err("a tzroutine body".into()),
             Type::Dyn(_) => return Err("a dyn value".into()),
             Type::Shared(..) => return Err("a shared pointer".into()),
-            Type::Handle(_) => return Err("an extern handle".into()),
+            Type::Handle(..) => return Err("an extern handle".into()),
             Type::Length(_)
             | Type::Application(..)
             | Type::Partial(_)

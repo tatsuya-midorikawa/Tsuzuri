@@ -219,6 +219,8 @@ struct Item {
     header: String,
     shown: String,
     exported: bool,
+    /// `extern type copy Name` (W18): adding `copy` is compatible, removing it breaks callers.
+    copy_handle: bool,
     /// A `const def`, which a `const` initializer of another module may call.
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
@@ -262,6 +264,7 @@ impl Item {
             shown: header.clone(),
             header,
             exported: false,
+            copy_handle: false,
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
@@ -1596,11 +1599,12 @@ fn add_items(
         if declaration.visibility == Visibility::Private {
             continue;
         }
-        let header = format!("extern type {}", declaration.name.text);
-        add(
+        let header = declaration.header();
+        let mut item =
             Item::new("extern type", qualified(&declaration.name.text), header)
-                .documented(declaration.doc.as_ref()),
-        );
+                .documented(declaration.doc.as_ref());
+        item.copy_handle = declaration.kind == HandleKind::Copy;
+        add(item);
     }
     for declaration in records {
         if declaration.visibility == Visibility::Private {
@@ -2297,6 +2301,7 @@ fn has_type_variable(ty: &TypeExpr, lengths: &Lengths<'_>) -> bool {
 fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     if old.header != new.header
         || old.exported != new.exported
+        || old.copy_handle != new.copy_handle
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
@@ -2307,9 +2312,12 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         // and changes nothing else; revoking either breaks the code that relied on it. An effect
         // attribute added to a function that calls the functions it is given requires its callers
         // to pass callbacks that keep it, so it breaks them.
+        let copy_added = old.kind == "extern type" && !old.copy_handle && new.copy_handle;
+        let copy_removed = old.kind == "extern type" && old.copy_handle && !new.copy_handle;
         let added_obligation = new.callbacks && new.asserts.0 & !old.asserts.0 != 0;
-        let widened = old.header == new.header
+        let widened = (old.header == new.header || copy_added)
             && old.exported <= new.exported
+            && old.copy_handle <= new.copy_handle
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
@@ -2327,6 +2335,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
                 "default parameter conventions change; effective signatures may differ"
             } else if added_obligation {
                 "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
+            } else if copy_removed {
+                "values of the type are moved again"
             } else {
                 ""
             },

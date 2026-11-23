@@ -3679,7 +3679,7 @@ fn key_name(ty: &Type, types: &TypeContext<'_>) -> String {
     match ty {
         Type::Record(id, arguments) if arguments.is_empty() => types.records[*id].name.clone(),
         Type::Union(id, arguments) if arguments.is_empty() => types.unions[*id].name.clone(),
-        Type::Handle(name) => name.to_string(),
+        Type::Handle(name, _) => name.to_string(),
         _ => ty.display(types),
     }
 }

@@ -312,7 +312,7 @@ let later = \() -> ticket.id
 
 どちらも `cannot capture ... in a reusable function; fully apply exclusive borrows, or move the value into a tzroutine body, which runs once` です。排他借用は、その場で完全に適用します。`Drop` 型の値は、1 回だけ走る `tzroutine { ... }` の本体へムーブするか、[Owned](../built-in-types-and-modules/owned.md) の `Owned.function` で包みます。`Drop` を持つ std の型（`Channel` など）と `Owned.Function` も捕捉できません。`Atomic` と `Mutex` も、複製すると別のカウンターやロックになるので捕捉できません。
 
-`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はほかの tzroutine やスレッドへも渡せるので、atomic でない計数がスレッドをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
+`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はほかの tzroutine やスレッドへも渡せるので、atomic でない計数がスレッドをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、`copy` でない extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。`extern type copy` のハンドルはそのまま捕捉でき、`Arc` にも入れられます。
 
 `Drop` 型の値を関数として扱う方法は [Drop](../ownership-and-memory/drop.md) と [Owned](../built-in-types-and-modules/owned.md) を参照してください。
 

@@ -172,8 +172,8 @@ pub enum Type {
     /// The body of a `tzroutine { }` (TZ02), a function that runs once with its result type: the
     /// rules of its captures are those of `task { }`, which TZ12 removed. No program writes it.
     Once(Box<Type>),
-    /// An `extern type`: an opaque host handle named by its qualified name.
-    Handle(Box<str>),
+    /// An `extern type`: an opaque host handle named by its qualified name, with its kind (W18).
+    Handle(Box<str>, HandleKind),
     Function(Box<FunctionParameters>, Box<Type>),
     Reference(Box<Type>, bool),
     /// `dyn C`: an owned value of some type with instances of the classes, stored as
@@ -545,7 +545,7 @@ impl Type {
                     .join(" * ")
             ),
             Self::Once(_) => "tzroutine body".into(),
-            Self::Handle(name) => names.handle_display(name),
+            Self::Handle(name, _) => names.handle_display(name),
             Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
@@ -654,7 +654,7 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Once(_)
-            | Self::Handle(_)
+            | Self::Handle(_, HandleKind::Owned)
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
             | Self::Reference(_, true)
@@ -1054,7 +1054,9 @@ impl Type {
                 |ty| {
                     !matches!(
                         ty,
-                        Type::Reference(_, true) | Type::Once(_) | Type::Handle(_)
+                        Type::Reference(_, true)
+                            | Type::Once(_)
+                            | Type::Handle(_, HandleKind::Owned)
                     ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
@@ -1066,7 +1068,7 @@ impl Type {
             );
         }
         match self {
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
@@ -1155,7 +1157,7 @@ impl Type {
             | Self::ArrayView(_)
             | Self::Length(_)
             | Self::Once(_)
-            | Self::Handle(_)
+            | Self::Handle(..)
             | Self::Function(..) => true,
         }
     }
@@ -1183,7 +1185,7 @@ impl Type {
     /// shared pointers (an `Arc` counts atomically and is Sync when its value is; an `Rc` counts
     /// through `Rc.share`'s shared borrow and is never Sync). Function values are Sync: they
     /// capture only values that tzroutines may hold, and `Routine.scope` checks that the environment of
-    /// a function it shares is proven owned. Not Sync are an extern handle (host libraries are
+    /// a function it shares is proven owned. Not Sync are a non-`copy` extern handle (host libraries are
     /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a tzroutine body, an exclusive
     /// reference, an `Owned.Function`, a lazy sequence and the GPU handles.
     pub(crate) fn can_sync(&self, types: &TypeContext<'_>) -> bool {
@@ -1197,7 +1199,8 @@ impl Type {
             // function, which is checked again for every type that it is used at. Every kind of
             // type is named here, so that a new one has to be judged.
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Handle(_, HandleKind::Copy) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
             Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
@@ -1254,7 +1257,7 @@ impl Type {
                         | Self::Partial(_)
                         | Self::Application(..)
                         | Self::Shared(..)
-                        | Self::Handle(_)
+                        | Self::Handle(..)
                         | Self::Function(..)
                         | Self::Once(_)
                         | Self::Dyn(_)
@@ -1280,11 +1283,11 @@ impl Type {
         })
     }
 
-    /// Whether a value of this type reaches what makes a host call unsafe to share: an extern
-    /// handle, a dyn value that is not Copy, or an `Owned.Function` (C10).
+    /// Whether a value of this type reaches what makes a host call unsafe to share: a non-`copy`
+    /// extern handle, a dyn value that is not Copy, or an `Owned.Function` (C10, W18).
     pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
         types.reaches(self, |ty| {
-            matches!(ty, Type::Handle(_))
+            matches!(ty, Type::Handle(_, HandleKind::Owned))
                 || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                 || ty.is_owned_function(types)
         })
@@ -5884,6 +5887,7 @@ struct Names {
     record_aliases: BTreeMap<String, Vec<String>>,
     /// `extern type` handles share the type namespace with records and unions.
     handles: BTreeMap<String, NameInfo>,
+    handle_kinds: Vec<HandleKind>,
     handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
@@ -8499,6 +8503,7 @@ fn check_modules_collect(
                 diagnostics.push(duplicate(&handle.name));
                 continue;
             }
+            names.handle_kinds.push(handle.kind);
             names
                 .handle_aliases
                 .entry(handle.name.text.clone())
@@ -10755,7 +10760,9 @@ fn resolve_type_with_kinds(
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
-                    NamedType::Handle(info) => Type::Handle(info.name.as_str().into()),
+                    NamedType::Handle(info) => {
+                        Type::Handle(info.name.as_str().into(), names.handle_kinds[info.id])
+                    }
                     NamedType::Alias(_) => {
                         let expanded = expand_type_aliases(expression, module, names)?;
                         let ty = resolve(&expanded)?;

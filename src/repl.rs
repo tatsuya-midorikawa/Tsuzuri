@@ -1539,6 +1539,7 @@ mod tests {
         for (text, message) in [
             ("extern def drop_log :: i64 -> unit", EXTERNS),
             ("extern type Handle", EXTERNS),
+            ("extern type copy Handle", EXTERNS),
             ("test \"adds numbers\" = assert (1 + 2 == 3)", TESTS),
             ("def main :: unit -> i32 = \\() -> 1", MAIN),
             ("namespace Sample::Shapes\nlet x = 1", NAMESPACES),

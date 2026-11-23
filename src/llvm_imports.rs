@@ -110,7 +110,7 @@ impl FunctionEmitter<'_, '_> {
                 values.push(format!("ptr {slot}"));
                 continue;
             }
-            if matches!(argument.ty, Type::Reference(..)) && matches!(inner, Type::Handle(_)) {
+            if matches!(argument.ty, Type::Reference(..)) && matches!(inner, Type::Handle(..)) {
                 // The host takes the handle itself, not the address of the borrowed slot.
                 let handle = self.value(format!("load ptr, ptr {value}"));
                 types.push("ptr".into());

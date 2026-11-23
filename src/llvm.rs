@@ -8,7 +8,7 @@ use crate::check::{
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::interval::Flags;
 use crate::overflow;
-use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
+use crate::syntax::{BinaryOp, HandleKind, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
 
 #[path = "llvm_traps.rs"]
@@ -3360,8 +3360,8 @@ fn c_type(ty: &Type) -> String {
         Type::Binary(64) => "double".into(),
         Type::Bool => "int32_t".into(),
         Type::Unit => "void".into(),
-        Type::Handle(name) => host_abi::handle_c_name(name),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => c_type(inner),
+        Type::Handle(name, _) => host_abi::handle_c_name(name),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => c_type(inner),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -3417,7 +3417,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => "ptr".into(),
         Type::FixedArray(element, _) => {
             format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
         }
@@ -3838,7 +3838,7 @@ pub(crate) fn codegen_identity(ty: &Type) -> Type {
             | Type::String
             | Type::Utf8String
             | Type::Length(_)
-            | Type::Handle(_)
+            | Type::Handle(..)
             | Type::Dyn(_) => {}
         }
     }
@@ -3925,7 +3925,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
             },
             canonical_type(value, module)
         ),
-        Type::Handle(name) => format!("extern.{name}"),
+        Type::Handle(name, _) => format!("extern.{name}"),
         Type::Dyn(dyn_type) => dyn_name(dyn_type),
         Type::Simd(_)
         | Type::Integer(..)
@@ -4416,8 +4416,8 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(32) => "float".into(),
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
-        Type::Handle(_) => "ptr".into(),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => "ptr".into(),
+        Type::Handle(..) => "ptr".into(),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => "ptr".into(),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -6544,7 +6544,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
-            Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
+            Type::Handle(_, HandleKind::Copy) => value.to_owned(),
+            Type::Handle(_, HandleKind::Owned) => unreachable!("extern handles cannot be cloned"),
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
                 assert!(dyn_type.copy, "dyn values without Copy cannot be cloned");
@@ -7985,7 +7986,7 @@ fn named_wrapper(function: &CheckedFunction, module: &CheckedModule, symbol: &st
         } else if let Type::Integer(bits @ (8 | 16), _) = ty {
             let _ = writeln!(output, "  %n{index} = trunc i32 %arg{index} to i{bits}");
             arguments.push(format!("i{bits} %n{index}"));
-        } else if matches!(ty, Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)))
+        } else if matches!(ty, Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)))
         {
             // The host passes the handle itself, and a borrow of it is the address of a slot.
             let _ = writeln!(
@@ -10704,7 +10705,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             Type::Utf8Char,
             Type::String,
             Type::Utf8String,
-            Type::Handle("Main.File".into()),
+            Type::Handle("Main.File".into(), HandleKind::Owned),
             Type::Tuple(Vec::new()),
             Type::Tuple(vec![Type::I64]),
             Type::Tuple(vec![Type::I64, Type::I64]),

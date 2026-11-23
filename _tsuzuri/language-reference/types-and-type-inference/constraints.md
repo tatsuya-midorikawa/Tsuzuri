@@ -65,9 +65,9 @@ def total_of :: 'value -> 'result
 | 制約 | 意味 | 満たさないものの例 |
 | --- | --- | --- |
 | `Copy` | 所有値を複製できる | `string`、`Vec`、排他参照、`Drop` を実装した型 |
-| `Capture` | 再利用できる関数環境へ保存できる | `ref mut T`、ハンドル、`Drop` を実装した型、`Owned.Function`、`Atomic`、`Mutex` |
+| `Capture` | 再利用できる関数環境へ保存できる | `ref mut T`、`copy` でないハンドル、`Drop` を実装した型、`Owned.Function`、`Atomic`、`Mutex` |
 | `Send` | ほかの tzroutine やスレッドへ所有値として渡せる | 共有借用や排他借用を含む値、`Rc` |
-| `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える | `Rc`、ハンドル、排他参照、Copy でない `dyn`、`Owned.Function` |
+| `Sync` | 複数の tzroutine やスレッドが共有借用で同時に使える | `Rc`、`copy` でないハンドル、排他参照、Copy でない `dyn`、`Owned.Function` |
 | `AtomicValue` | `Atomic` に入れられる | 浮動小数点、`string`、レコード（整数 8〜64 ビットと `bool` だけが満たします） |
 | `Integer` | 整数である | 浮動小数点、`string` |
 | `SignedInteger` | 符号付き整数である | `i64u` などの符号なし |
@@ -97,7 +97,7 @@ match make 2 with
 
 型変数に型引数を適用した型（高カインドの型変数 `'f` を使った `'f<i64>`、型構築子の一部の適用）も、まだ分かっていない型なので、型変数と同じ扱いです。`DataChannel.Sender<'f<i64>>` を返す関数や、`Parallel.init`・`Mutex.create` に `'f<i64>` を渡す関数、`Routine.scope` で `ref 'f<i64>` を共有する関数は、`'f` に `Holder` を与えて使われたとき、`Holder<i64>` が `Send`（`Routine.scope` の共有は `Sync`）かどうかを検査されます。`record Holder<'a> { counted: Rc<'a> }` なら `E1013`、`record Holder<'a> { value: 'a }` なら通ります。この検査が要らない関数（`'f<i64>` を作って返すだけの関数など）は、`Send` や `Sync` を求められません。
 
-`Sync` は、複数の tzroutine やスレッドが同じ値の共有借用を同時に使ってよいことを要求します。`Routine.scope` と `Parallel.*` が共有する値と、`Arc` の中の値がそうです。整数、`string`、配列、レコード、関数値は `Sync` で、`Atomic<T>`、`Mutex<T>`、`DataChannel.Sender<T>`・`DataChannel.Receiver<T>` も `Sync` です（共有借用から更新できるのは、`Atomic` と `Mutex` と、ランタイムのロックで守られる `Channel` の端です）。TZ06 の `WaitGroup`・`Once`・`Cond`・`Semaphore` のハンドルも `Sync` で、`RwMutex<T>`・`OnceValue<T>`・`SyncMap<K, V>` は中身が `Sync` のとき `Sync` です（読み手が同時に `ref T` を持つため。`Mutex<T>` は `T` が `Send` なら `Sync`）。`Rc`、extern ハンドル、排他参照、`Seq`、GPU のハンドル、Copy でない `dyn` 値、`Owned.Function` は `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`dyn (C, Sync)` のように `Sync` を印として並べることはできません（`E1028`）。
+`Sync` は、複数の tzroutine やスレッドが同じ値の共有借用を同時に使ってよいことを要求します。`Routine.scope` と `Parallel.*` が共有する値と、`Arc` の中の値がそうです。整数、`string`、配列、レコード、関数値、`extern type copy` のハンドルは `Sync` で、`Atomic<T>`、`Mutex<T>`、`DataChannel.Sender<T>`・`DataChannel.Receiver<T>` も `Sync` です（共有借用から更新できるのは、`Atomic` と `Mutex` と、ランタイムのロックで守られる `Channel` の端です）。TZ06 の `WaitGroup`・`Once`・`Cond`・`Semaphore` のハンドルも `Sync` で、`RwMutex<T>`・`OnceValue<T>`・`SyncMap<K, V>` は中身が `Sync` のとき `Sync` です（読み手が同時に `ref T` を持つため。`Mutex<T>` は `T` が `Send` なら `Sync`）。`Rc`、`copy` でない extern ハンドル、排他参照、`Seq`、GPU のハンドル、Copy でない `dyn` 値、`Owned.Function` は `Sync` ではなく、`E1013`（`tzroutines and threads can share only Sync values; ... is not Sync`）です。`Arc<T>` は `T` が `Sync` のとき `Sync` で、`T` が `Send` かつ `Sync` のとき `Send` です。`dyn (C, Sync)` のように `Sync` を印として並べることはできません（`E1028`）。
 
 `AtomicValue` は、`Atomic<T>` の `T` が `i8`・`i16`・`i32`・`i64`・`i8u`・`i16u`・`i32u`・`i64u`・`bool` のどれかであることを要求します。ほかの型は `E1005`（`atomic values must be ...; use Mutex for ...`）です（[Atomic](../built-in-types-and-modules/atomic.md)）。
 

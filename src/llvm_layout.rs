@@ -252,7 +252,7 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
             }
         }
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => {
+        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => {
             if lower {
                 (4, 4)
             } else {

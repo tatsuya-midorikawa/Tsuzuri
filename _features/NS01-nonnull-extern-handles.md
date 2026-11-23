@@ -41,7 +41,7 @@
 
 - **S1** `extern type` を持たないプログラムの IR・ヘッダー・診断が 1 byte でも変わる。
 - **S2** WASM の `H`（番号 `0` を有効なハンドルとして使う既存のテスト `tests/host_imports.rs`・`tests/bindings_js.mjs`）が失敗する。
-- **S3** [W18](W18-copy-extern-type.md)（`extern type copy`）が先に入っている場合で、整数識別子をポインタ型に載せる Win32 API（例: `HMENU` にメニュー ID を入れる用法）と非 Null 検査が衝突する場合は、即興で緩めず対象 API を記録して報告する。
+- **S3** [W18](_completed/W18-copy-extern-type.md)（`extern type copy`）が先に入っている場合で、整数識別子をポインタ型に載せる Win32 API（例: `HMENU` にメニュー ID を入れる用法）と非 Null 検査が衝突する場合は、即興で緩めず対象 API を記録して報告する。
 - **S4** GUIDE-LITE §9 の共通の条件。
 
 ## 現状（HEAD `edc61676` で確認）
@@ -101,7 +101,7 @@
 ## 前提とする他チケットのインターフェース
 
 - [W15](W15-abi-nullable-handles.md): `abi::Nullable`（`Handle`・`BorrowedHandle`・`BorrowedRecord`）、`nullable_to_c`・`nullable_from_c`、`tests/abi_nullable.rs`。
-- [W18](W18-copy-extern-type.md)（先に入っている場合）: `Type::Handle(Box<str>, HandleKind)` のパターンに合わせる（`Owned`・`Copy` ともに同じ非 Null 規則）。
+- [W18](_completed/W18-copy-extern-type.md)（先に入っている場合）: `Type::Handle(Box<str>, HandleKind)` のパターンに合わせる（`Owned`・`Copy` ともに同じ非 Null 規則）。
 
 ## 他チケットへ提供するインターフェース
 

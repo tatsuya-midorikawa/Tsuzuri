@@ -54,7 +54,7 @@ D-63 で利用者は E12 D13 を狭く改め、`extern` として宣言する型
 ### 着手条件
 
 - Phase 1: [W19](W19-thread-bound-handles.md) が done（`local` の性質と効果 `pinned`）。[W21](W21-c-layout-records.md) の Phase 1 と [W24](W24-extern-view.md) の Phase 1 が done（`extern` の後の文脈キーワードの読み取りと、strategy.md・`_features/README.md` の「採用しない改善」の改訂が済んでいる）。確認: `grep -nE "^\| W(19\|21\|24) " _features/README.md`。
-- Phase 2: [W13](W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut T`）・[W15](W15-abi-nullable-handles.md)（`Maybe<H>`・`Maybe<ref ZString>`）・[W18](W18-copy-extern-type.md)（`extern type copy`）・[W20](W20-zstring.md)（`ZString`）が done。Phase 3: [W14](W14-extern-multiple-declarations.md)（同じ symbol の複数の宣言）と [W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡し。Windows x64・Arm64）が done。どれも依存の欄（README の表）に無い Phase ごとの前提で、W14 は W19・W21・W24 のどの依存にも無い（W36 は W21 の後続）。
+- Phase 2: [W13](W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut T`）・[W15](W15-abi-nullable-handles.md)（`Maybe<H>`・`Maybe<ref ZString>`）・[W18](_completed/W18-copy-extern-type.md)（`extern type copy`）・[W20](W20-zstring.md)（`ZString`）が done。Phase 3: [W14](W14-extern-multiple-declarations.md)（同じ symbol の複数の宣言）と [W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡し。Windows x64・Arm64）が done。どれも依存の欄（README の表）に無い Phase ごとの前提で、W14 は W19・W21・W24 のどの依存にも無い（W36 は W21 の後続）。
 - 決定事項の D3・D4・D7 が承認済み。Phase 2 は D9、Phase 3 は D10 も。
 - ベースライン: `tests/fixtures/*` と `examples/*` の `--emit llvm`（native・`--target wasm32`）、`--emit header`、`check --json` を保存する（受け入れ条件の比較に使う）。
 
@@ -223,12 +223,12 @@ Iid        = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  16 進 32 桁（大文字�
 
 ## 前提とする他チケットのインターフェース
 
-- [W18](W18-copy-extern-type.md): `syntax::HandleKind`（`Owned`・`Copy`）と `Type::Handle(Box<str>, HandleKind)`、修飾の語を読む `Parser::extern_declaration` の枠。W25 は `HandleKind::Interface` を足す。名前が違えば止めて報告する（GUIDE-LITE §11）。
+- [W18](_completed/W18-copy-extern-type.md): `syntax::HandleKind`（`Owned`・`Copy`）と `Type::Handle(Box<str>, HandleKind)`、修飾の語を読む `Parser::extern_declaration` の枠。W25 は `HandleKind::Interface` を足す。名前が違えば止めて報告する（GUIDE-LITE §11）。
 - [W19](W19-thread-bound-handles.md): `HandleKind::Local` の性質（Send・Sync・捕捉が偽）、`Type::holds_thread_bound`、`effects::Effect::Pinned`、`pinned_rules::builtin_position`、`E1013` の kind `pinned_code_spawned`・`pinned_function_value`。固定された文脈は `main`・`export def`・`test`・`bench` の本体と `with_locked_thread`・コールバック・`FnPtr.of` の本体（W19 の D5）。
 - [W24](W24-extern-view.md): `extern` の後の文脈キーワードの分岐（`view`）、「0・整列の検査 → 型付きの load」の規則とトラップ、監査の表示の `HostImport` の種類の分岐、strategy.md・`_features/README.md` の「採用しない改善」の改訂。W25 の PR はその文に `extern interface` の出荷を足す。
 - [W21](W21-c-layout-records.md): `@c_layout record`（Phase 3 のメソッドの値渡しの引数と record の結果）。
 - [W36](W36-c-layout-by-value.md)（Phase 3）: `llvm_byvalue::{ByValue, classify}` と `FunctionEmitter::{by_value_slot, by_value_to_abi}`、kind `abi_record_by_value_target`。メソッドの値渡しの引数は `host_call` の共有でこの下げ方に乗る。
-- [W13](W13-extern-ref-mut-and-mutable-buffers.md) の `ref mut T` と `@count`、[W15](W15-abi-nullable-handles.md) の `Maybe<H>`・`Maybe<ref ZString>`、[W18](W18-copy-extern-type.md) の `extern type copy`、[W20](W20-zstring.md) の `ZString`（Phase 2）。[W14](W14-extern-multiple-declarations.md) の同じ symbol の複数の宣言（Phase 3）。
+- [W13](W13-extern-ref-mut-and-mutable-buffers.md) の `ref mut T` と `@count`、[W15](W15-abi-nullable-handles.md) の `Maybe<H>`・`Maybe<ref ZString>`、[W18](_completed/W18-copy-extern-type.md) の `extern type copy`、[W20](W20-zstring.md) の `ZString`（Phase 2）。[W14](W14-extern-multiple-declarations.md) の同じ symbol の複数の宣言（Phase 3）。
 - [W06](W06-windows-gui-test-harness.md): `tests/windows_gui_shim.c` と `tests/windows.mjs` の `buildGui`（仕様 4）。W06 の shim には別のスレッドから任意の窓へ `WM_CLOSE` を送る関数が無い（`tz_gui_post` は `WM_APP` だけ）ので、Phase 2 の任意の検査に使う関数（案 `tz_gui_close_later(delay_ms)`: 別のスレッドで待ってから前面のダイアログの窓へ `WM_CLOSE` を送る）は W25 が W06 の仕様 4 の形で shim に足す。
 - kind `abi_native_only`（W13 などと共有）。
 

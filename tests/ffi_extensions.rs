@@ -166,6 +166,130 @@ fn with_handles(body: &str) -> String {
 }
 
 #[test]
+fn parses_copy_extern_types() {
+    use tsuzuri::syntax::{HandleKind, Visibility};
+    assert_eq!(
+        std::mem::size_of::<tsuzuri::check::Type>(),
+        4 * std::mem::size_of::<usize>(),
+        "Type must stay four words (W18 S1)"
+    );
+    let program = parser::parse(
+        "extern type copy A\nprivate extern type copy B\n/// documented\nextern type copy C\nextern type copy\nextern type copy local\n42",
+    )
+    .unwrap();
+    let summary: Vec<_> = program
+        .extern_types
+        .iter()
+        .map(|handle| (handle.name.text.as_str(), handle.kind, handle.visibility))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("A", HandleKind::Copy, Visibility::Public),
+            ("B", HandleKind::Copy, Visibility::Private),
+            ("C", HandleKind::Copy, Visibility::Public),
+            ("copy", HandleKind::Owned, Visibility::Public),
+            ("local", HandleKind::Copy, Visibility::Public),
+        ]
+    );
+    assert!(program.extern_types[2].doc.is_some());
+    assert!(program.extern_types[0].kind_span.is_some());
+    assert!(program.extern_types[3].kind_span.is_none());
+
+    let conflict = parser::parse("extern type copy copy X\n42").unwrap_err();
+    assert_eq!(
+        (
+            conflict.code,
+            conflict.kind,
+            conflict.message.as_str()
+        ),
+        (
+            "E0002",
+            Some("extern_type_modifier_conflict"),
+            "an extern type takes at most one of 'copy' and 'local'; remove one",
+        )
+    );
+
+    let formatted = tsuzuri::formatter::format_source(
+        "Main.tz",
+        "extern   type  copy   A\nprivate   extern  type   copy  B\nextern   type   copy\n42",
+        tsuzuri::syntax::SourceKind::Code,
+    )
+    .unwrap();
+    assert_eq!(
+        formatted.formatted,
+        "extern type copy A\nprivate extern type copy B\nextern type copy\n42\n"
+    );
+}
+
+#[test]
+fn copy_extern_types_are_copy_capturable_send_sync() {
+    let prelude = "extern type copy Hwnd
+extern \"w18_hwnd\" def make_hwnd :: i64 -> Hwnd
+extern \"w18_use\" def use_hwnd :: Hwnd -> i64
+extern \"w18_peek\" def peek_hwnd :: ref Hwnd -> i64
+";
+    for body in [
+        "let h = make_hwnd 1\nlet copied = h\nuse_hwnd h + use_hwnd copied + peek_hwnd (ref h)",
+        "let h = make_hwnd 1\nlet tag = \"win\"\nlet f = \\x -> use_hwnd h + tag.length + x\nlet g = f\nf 1 + g 2",
+        "record WindowState { hwnd: Hwnd, id: i64 }\nlet s = WindowState { hwnd: make_hwnd 1, id: 7 }\nlet s2 = s\nuse_hwnd s.hwnd + use_hwnd s2.hwnd",
+        "union Tree = Leaf of Hwnd | Node of Tree * Tree\nlet t = Node (Leaf (make_hwnd 1), Leaf (make_hwnd 2))\nlet f = \\() -> match t with | Leaf h -> use_hwnd h | Node _ -> 3\nlet g = f\nf () + g ()",
+        "let h = make_hwnd 1\nmatch DataChannel.bounded 1 with\n| (sender, receiver) ->\n    tzroutine {\n        let _ = DataChannel.send (ref sender) (use_hwnd h)\n        ()\n    }\n    match DataChannel.recv (ref receiver) with | Some v -> v + use_hwnd h | None -> 0",
+        "let h = make_hwnd 1\nlet counts = Routine.scope (ref h) 2 (\\w _i -> peek_hwnd w)\ncounts[0] + counts[1]",
+        "let shared = Arc.new (make_hwnd 1)\nlet copy_arc = Arc.share (ref shared)\nmatch DataChannel.bounded 1 with\n| (sender, receiver) ->\n    tzroutine {\n        let _ = DataChannel.send (ref sender) (peek_hwnd (Arc.get (ref copy_arc)))\n        ()\n    }\n    match DataChannel.recv (ref receiver) with | Some v -> v + peek_hwnd (Arc.get (ref shared)) | None -> 0",
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let source = format!("{prelude}\n{body}\n");
+            let module = analyze_with_edition(&source, edition)
+                .unwrap_or_else(|e| panic!("{edition:?} rejected:\n{source}\n{e:?}"));
+            let _ = ir(&module, false);
+        }
+    }
+
+    // Plain-data, const, instance, and ABI position restrictions remain unchanged.
+    for (bad, expected) in [
+        ("const BAD: Hwnd = make_hwnd 1\n1", "E1026"),
+        (
+            "record Boxed { h: Hwnd }\nexport def out :: Boxed -> i64\nfn out b = 1\n1",
+            "E1008",
+        ),
+        (
+            "extern \"w18_mut\" def mut_hwnd :: ref mut Hwnd -> i64\n1",
+            "E1008",
+        ),
+        ("make_hwnd 1 == make_hwnd 2", "E1005"),
+        ("to_string (make_hwnd 1)", "E1005"),
+        (
+            "pure def bad :: own Hwnd -> i64\nfn bad _h = 1\n1",
+            "E1029",
+        ),
+    ] {
+        assert_eq!(code(&format!("{prelude}\n{bad}")), expected, "{bad}");
+    }
+}
+
+#[test]
+fn copy_handles_lower_like_handles() {
+    let body = "extern \"w18_new\" def make_h :: i64 -> H
+extern \"w18_peek\" def peek_h :: ref H -> i64
+extern \"w18_take\" def take_h :: H -> i64
+export def run :: own i64 -> i64
+fn run x =
+    let h = make_h x
+    let seen = peek_h (ref h)
+    seen + take_h h
+export def forward :: own H -> H
+fn forward h = h
+";
+    let owned = analyze(&format!("extern type H\n{body}")).unwrap();
+    let copy = analyze(&format!("extern type copy H\n{body}")).unwrap();
+    for wasm in [false, true] {
+        assert_eq!(ir(&owned, wasm), ir(&copy, wasm), "wasm={wasm}");
+    }
+    assert_eq!(llvm::header(&owned), llvm::header(&copy));
+}
+
+#[test]
 fn parses_extern_types() {
     let program =
         parser::parse("extern type A\nprivate extern type B\n/// documented\nextern type C\n42")

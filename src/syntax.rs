@@ -666,12 +666,45 @@ pub struct LinkName {
     pub span: Span,
 }
 
-/// `extern type Name`: an opaque host handle.
+/// What an `extern type` declaration says about its values (E12 D3, W18).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HandleKind {
+    /// `extern type H`: moved, not capturable, Send, not Sync (E12 D3).
+    Owned,
+    /// `extern type copy H`: an identifier that the host does not hand over (W18).
+    Copy,
+}
+
+impl HandleKind {
+    pub fn keyword(self) -> Option<&'static str> {
+        match self {
+            Self::Owned => None,
+            Self::Copy => Some("copy"),
+        }
+    }
+}
+
+/// `extern type [copy] Name`: an opaque host handle.
 #[derive(Clone, Debug)]
 pub struct ExternTypeDecl {
     pub doc: Option<Documentation>,
     pub visibility: Visibility,
+    pub kind: HandleKind,
+    pub kind_span: Option<Span>,
     pub name: Ident,
+}
+
+impl ExternTypeDecl {
+    pub fn header(&self) -> String {
+        self.header_with(&self.name.text)
+    }
+
+    pub fn header_with(&self, name: &str) -> String {
+        match self.kind.keyword() {
+            Some(modifier) => format!("extern type {modifier} {name}"),
+            None => format!("extern type {name}"),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

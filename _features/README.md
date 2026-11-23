@@ -348,7 +348,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](W15-abi-nullable-handles.md) | P1 | M | – | todo |
 | W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
 | W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |
-| W18 | [`extern type copy`（所有しない識別子のハンドル）](W18-copy-extern-type.md) | P1 | M | – | todo |
+| W18 | [`extern type copy`（所有しない識別子のハンドル）](_completed/W18-copy-extern-type.md) | P1 | M | – | done |
 | W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](W19-thread-bound-handles.md) | P1 | M | W18 | todo |
 | W20 | [NUL 終端の UTF-16 文字列 `ZString`](W20-zstring.md) | P1 | M | W13 | todo |
 | W21 | [C レイアウトの record（`@c_layout`）](W21-c-layout-records.md) | P1 | XL | W13, W15, W18（Phase 2: W20, W22） | todo |

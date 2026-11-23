@@ -1,4 +1,5 @@
 extern type Counter
+extern type copy IdHandle
 extern "sqrt" def c_sqrt :: f64 -> f64
 extern "env" "e12_host_now" def host_now :: unit -> i64
 extern "e12_counter_new" def counter_new :: i64 -> Counter
@@ -13,6 +14,9 @@ extern "e12_apply_threaded" def apply_threaded :: (i64 -> i64) -> i64 -> i64
 extern "e12_text_units" def text_units :: (i64 -> i64) -> ref string -> i64 -> i64
 extern "e12_pair_mix" def pair_mix :: (i64 -> i64) -> ref Pair -> i64
 extern "e12_sum_with" def sum_with :: (i64 -> i64) -> ref [i64] -> i64
+extern "w18_id_new" def id_new :: i64 -> IdHandle
+extern "w18_id_value" def id_value :: IdHandle -> i64
+extern "w18_id_borrow" def id_borrow :: ref IdHandle -> i64
 
 record Pair { x: i64, y: i64 }
 
@@ -88,4 +92,14 @@ fn temporary_then_raise value =
     match outcome with
     | Result.Ok total -> total
     | Result.Error _ -> -1
+
+export def copy_handles :: own i64 -> i64
+fn copy_handles seed =
+    let handle = id_new seed
+    let copied = handle
+    let tag = $"id-{seed}"
+    let probe = \extra -> id_value handle + tag.length + extra
+    let cloned = probe
+    id_value handle + id_value copied + id_borrow (ref handle) + probe 2 + cloned 3
+
 

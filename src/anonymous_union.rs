@@ -152,7 +152,7 @@ fn rank(ty: &Type) -> Option<u8> {
         Type::Vec(_) => 17,
         Type::Tuple(_) => 18,
         Type::Once(_) => 19,
-        Type::Handle(_) => 20,
+        Type::Handle(..) => 20,
         Type::Function(..) => 21,
         Type::Reference(..) => 22,
         Type::Dyn(_) => 23,
@@ -204,7 +204,7 @@ pub(super) fn order(left: &Type, right: &Type, names: &dyn DeclarationNames) -> 
         (Type::Tuple(elements), Type::Tuple(others)) => {
             sequence(elements.iter(), others.iter(), names)
         }
-        (Type::Handle(name), Type::Handle(other)) => Order::of(name.cmp(other)),
+        (Type::Handle(name, _), Type::Handle(other, _)) => Order::of(name.cmp(other)),
         (Type::Function(parameters, result), Type::Function(others, other_result)) => {
             let curried = functions(
                 FunctionKey::of(parameters, result),

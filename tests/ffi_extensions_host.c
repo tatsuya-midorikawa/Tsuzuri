@@ -75,6 +75,18 @@ int64_t e12_sum_with(int64_t (*callback)(int64_t), const int64_t *items, int64_t
     return callback(sum);
 }
 
+void *w18_id_new(int64_t seed) {
+    return (void *)(intptr_t)(seed * 2 + 1);
+}
+
+int64_t w18_id_value(void *handle) {
+    return ((int64_t)(intptr_t)handle - 1) / 2;
+}
+
+int64_t w18_id_borrow(void *handle) {
+    return ((int64_t)(intptr_t)handle - 1) / 2 + 1;
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);
@@ -167,6 +179,8 @@ int main(int argc, char **argv) {
     assert(tz_temporary_then_raise(3) == 27);
     clean();
     assert(tz_temporary_then_raise(3037000500LL) == -1);
+    clean();
+    assert(tz_copy_handles(10) == 66);
     clean();
     pthread_t threads[8];
     for (intptr_t index = 0; index < 8; index++) assert(pthread_create(&threads[index], NULL, hammer, (void *)(index * 1000)) == 0);

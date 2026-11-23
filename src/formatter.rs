@@ -168,6 +168,7 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
     }
     for handle in &mut program.extern_types {
         Canonical::doc(&mut handle.doc);
+        handle.kind_span = None;
         canonical.ident(&mut handle.name);
     }
     for constant in &mut program.constants {

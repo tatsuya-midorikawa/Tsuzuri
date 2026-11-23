@@ -4577,7 +4577,30 @@ impl Parser<'_> {
                     first,
                 ));
             }
-            let name = self.ident()?;
+            let modifier_kind = |word: &str| match word {
+                "copy" => Some(HandleKind::Copy),
+                _ => None,
+            };
+            let first = self.ident()?;
+            let (kind, kind_span, name) = if let Some(kind) = modifier_kind(&first.text)
+                && !self.newline_before_current()
+                && matches!(self.current().kind, TokenKind::Ident(_))
+            {
+                let second = self.ident()?;
+                if modifier_kind(&second.text).is_some()
+                    && !self.newline_before_current()
+                    && matches!(self.current().kind, TokenKind::Ident(_))
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternTypeModifierConflict,
+                        "an extern type takes at most one of 'copy' and 'local'; remove one",
+                        second.span,
+                    ));
+                }
+                (kind, Some(first.span), second)
+            } else {
+                (HandleKind::Owned, None, first)
+            };
             if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
                 return Err(Diagnostic::of(
                     DiagnosticKind::ExternTypeWithBody,
@@ -4588,6 +4611,8 @@ impl Parser<'_> {
             return Ok(ExternDeclaration::Type(ExternTypeDecl {
                 doc,
                 visibility,
+                kind,
+                kind_span,
                 name,
             }));
         }
