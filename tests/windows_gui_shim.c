@@ -195,3 +195,52 @@ void w06_gui_mark(const uint16_t *path, int64_t length) {
         CloseHandle(file);
     }
 }
+
+/* W07 / W12: runs a SetTimer TIMERPROC callback `expected` times on a message-only window. */
+static int64_t (*g_timer_proc_cb)(uint64_t id) = NULL;
+static int64_t g_timer_proc_count = 0;
+static int64_t g_timer_proc_expected = 0;
+static HWND g_timer_proc_hwnd = NULL;
+
+static VOID CALLBACK tz_shim_timer_proc(HWND hwnd, UINT msg, UINT_PTR id, DWORD time) {
+    (void)msg;
+    (void)time;
+    if (g_timer_proc_cb != NULL) {
+        int64_t delta = g_timer_proc_cb((uint64_t)id);
+        g_timer_proc_count += delta;
+        if (g_timer_proc_expected > 0 && g_timer_proc_count >= g_timer_proc_expected) {
+            KillTimer(hwnd, id);
+            if (IsWindow(hwnd)) DestroyWindow(hwnd);
+            PostQuitMessage(0);
+        }
+    }
+}
+
+int64_t w07_gui_timer_proc(int64_t (*on_tick)(uint64_t id), int64_t expected) {
+    if (!ensure_test_class()) return -2;
+    HWND hwnd = CreateWindowExW(0, L"tz-test", L"timerproc", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+    if (!hwnd) return -3;
+    g_timer_proc_cb = on_tick;
+    g_timer_proc_count = 0;
+    g_timer_proc_expected = expected;
+    g_timer_proc_hwnd = hwnd;
+
+    UINT_PTR guard = SetTimer(NULL, 0, 5000, NULL);
+    SetTimer(hwnd, 9, 10, tz_shim_timer_proc);
+
+    int timed_out = 0;
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.hwnd == NULL && msg.message == WM_TIMER && msg.wParam == guard) {
+            timed_out = 1;
+            break;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (guard) KillTimer(NULL, guard);
+    g_timer_proc_cb = NULL;
+    if (IsWindow(hwnd)) DestroyWindow(hwnd);
+    return timed_out ? -1 : g_timer_proc_count;
+}
+

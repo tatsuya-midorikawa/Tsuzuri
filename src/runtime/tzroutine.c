@@ -237,6 +237,9 @@ static void tzr_fatal(const char *message);
 #ifndef TZR_API
 #define TZR_API __attribute__((weak, visibility("hidden")))
 #endif
+#ifndef TZR_TRAP
+#define TZR_TRAP() __builtin_trap()
+#endif
 #define TZR_NOINLINE __attribute__((noinline))
 #define TZR_MAXPROCS 256
 #define TZR_RUNQ 256
@@ -1152,7 +1155,7 @@ static void tzr_checkdead(void) {
         }
     }
     tzr_lock_release(&tzr_pseudo_lock);
-    if (!woke) __builtin_trap();
+    if (!woke) TZR_TRAP();
     /* The woken pseudo-Gs run now; a host that handles the status may wait again, and a later
      * deadlock must be found again. */
     tzr_sched.deadlocked = 0;
@@ -1781,7 +1784,7 @@ static void tzr_gstart(void) {
     TZR_ASAN_START(NULL, m->g0_bottom, m->g0_size); /* this use of the stack ends here */
 #endif
     TZR_TO_G0(m, g);
-    __builtin_trap();
+    TZR_TRAP();
 }
 #endif
 
@@ -1960,7 +1963,7 @@ static int tzr_boundary_settle(tzr_scope *scope);
 TZR_API void tsuzuri_tz_boundary_leave(void *opaque) {
     tzr_scope *scope = opaque;
     do {
-        if (tzr_scope_wait(scope)) __builtin_trap();
+        if (tzr_scope_wait(scope)) TZR_TRAP();
     } while (tzr_boundary_settle(scope));
     tzr_current()->spawn_scope = scope->outer;
     free(scope);
@@ -2968,7 +2971,7 @@ TZR_API int32_t tsuzuri_tz_parallel(void (*cb)(void *, uint64_t), void *ctx, uin
     for (uint64_t k = 0; k < helpers; k++) tzr_spawn(scope, tzr_parallel_helper, &job, 0);
     tzr_parallel_work(&job);
     for (uint64_t r; (r = atomic_load_explicit(&job.remaining, memory_order_acquire)) != 0;)
-        if (tzr_addr_wait(&job.remaining, r, 1, "Parallel")) __builtin_trap();
+        if (tzr_addr_wait(&job.remaining, r, 1, "Parallel")) TZR_TRAP();
     return 0;
 }
 

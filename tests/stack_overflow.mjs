@@ -6,12 +6,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-if (process.platform === "win32") {
-  console.log("stack_overflow: skipped (Windows reports through G10)");
-  process.exit(0);
-}
-
-const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
+const isWindows = process.platform === "win32";
+const exeExt = isWindows ? ".exe" : "";
+const compiler = resolve(process.argv[2] ?? `target/release/tsuzuri${exeExt}`);
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-stack-overflow-"));
 const report = "trap: stack overflow";
@@ -58,29 +55,31 @@ int64_t e14_signal(int64_t value) {
 }
 `);
 const hostObject = join(root, "host.o");
-execute(clang, ["-c", host, "-o", hostObject]);
+if (!isWindows) {
+  execute(clang, ["-c", host, "-o", hostObject]);
+}
 
-const aborted = (result) => result.signal === "SIGABRT";
+const aborted = (result) => isWindows ? (result.status >>> 0) === 0xc00000fd : result.signal === "SIGABRT";
 const invalidAccess = (result) => ["SIGSEGV", "SIGBUS"].includes(result.signal);
 const symbols = (file) => execute("nm", ["-u", file]).stdout;
 let cases = 0;
 
 try {
   for (const optimization of ["-O0", "-O3"]) {
-    // A deep recursion on the main thread and in tzroutines: the report, then abort.
+    // A deep recursion on the main thread and in tzroutines: the report, then abort/fail-fast.
     for (const name of ["deep", "routine"]) {
-      const program = join(root, `${name}${optimization}`);
+      const program = join(root, `${name}${optimization}${exeExt}`);
       execute(compiler, ["build", projects[name], optimization, "-o", program]);
       const result = execute(program, [], false);
       assert.ok(aborted(result), `${name} ${optimization}: ${result.signal} ${result.status}`);
-      assert.match(result.stderr, new RegExp(`^${report}\\n`), `${name} ${optimization}`);
+      assert.match(result.stderr, new RegExp(`^${report}\\r?\\n`), `${name} ${optimization}`);
       // Every tzroutine that overflows may write it before the first fault ends the process.
       if (name === "deep") assert.equal(result.stderr.split(report).length, 2, "the report is written once");
       cases++;
     }
 
     // The same program stays correct when it does not overflow, and `run` names the cause.
-    const shallow = join(root, `shallow${optimization}`);
+    const shallow = join(root, `shallow${optimization}${exeExt}`);
     execute(compiler, ["build", projects.shallow, optimization, "-o", shallow]);
     assert.equal(execute(shallow, []).status, 0);
     cases++;
@@ -98,45 +97,47 @@ try {
     cases++;
 
     // A debug executable keeps its report (its own object, without debug information).
-    const debug = join(root, `debug${optimization}`);
+    const debug = join(root, `debug${optimization}${exeExt}`);
     execute(compiler, ["build", projects.deep, optimization, "-g", "-o", debug]);
     const crashed = execute(debug, [], false);
     assert.ok(aborted(crashed));
-    assert.match(crashed.stderr, new RegExp(`^${report}\\n`));
+    assert.match(crashed.stderr, new RegExp(`^${report}\\r?\\n`));
     cases++;
 
-    // Only programs that can recurse carry the handler; objects never do (a host keeps its own signals).
-    const hello = join(root, `hello${optimization}`);
-    execute(compiler, ["build", projects.hello, optimization, "-o", hello]);
-    assert.doesNotMatch(symbols(hello), /sigaltstack|sigaction/);
-    assert.match(symbols(join(root, `deep${optimization}`)), /sigaltstack/);
-    assert.match(symbols(join(root, `deep${optimization}`)), /sigaction/);
-    const object = join(root, `library${optimization}.o`);
-    execute(compiler, ["build", projects.library, "--emit", "object", optimization, "-o", object]);
-    assert.doesNotMatch(symbols(object), /sigaltstack|sigaction/);
-    cases++;
-
-    // A fault that is not a stack overflow is not reported as one, and `run` keeps the signal-based inference.
-    const foreign = join(root, `foreign${optimization}`);
-    execute(compiler, ["build", projects.foreign, optimization, "--link", hostObject, "-o", foreign]);
-    assert.match(symbols(foreign), /sigaction/);
-    const fault = execute(foreign, [], false);
-    assert.ok(invalidAccess(fault));
-    assert.doesNotMatch(fault.stderr, /stack overflow/);
-    cases++;
-    const inferred = execute(compiler, ["run", projects.foreign, optimization, "--link", hostObject], false);
-    assert.equal(inferred.status, 1);
-    assert.match(inferred.stderr, /E2005.*the stack was probably exhausted by deep recursion/s);
-    cases++;
-
-    const signals = join(root, `signals${optimization}`);
-    execute(compiler, ["build", projects.signals, optimization, "--link", hostObject, "-o", signals]);
-    assert.match(symbols(signals), /sigaction/);
-    for (const [mode, expected] of [["segv", "SIGSEGV"], ["bus", "SIGBUS"]]) {
-      const result = execute(signals, [], false, { TSUZURI_TEST_SIGNAL: mode });
-      assert.equal(result.signal, expected, `${optimization} ${mode}: ${result.signal} ${result.status}`);
-      assert.doesNotMatch(result.stderr, /stack overflow/);
+    if (!isWindows) {
+      // Only programs that can recurse carry the handler; objects never do (a host keeps its own signals).
+      const hello = join(root, `hello${optimization}`);
+      execute(compiler, ["build", projects.hello, optimization, "-o", hello]);
+      assert.doesNotMatch(symbols(hello), /sigaltstack|sigaction/);
+      assert.match(symbols(join(root, `deep${optimization}`)), /sigaltstack/);
+      assert.match(symbols(join(root, `deep${optimization}`)), /sigaction/);
+      const object = join(root, `library${optimization}.o`);
+      execute(compiler, ["build", projects.library, "--emit", "object", optimization, "-o", object]);
+      assert.doesNotMatch(symbols(object), /sigaltstack|sigaction/);
       cases++;
+
+      // A fault that is not a stack overflow is not reported as one, and `run` keeps the signal-based inference.
+      const foreign = join(root, `foreign${optimization}`);
+      execute(compiler, ["build", projects.foreign, optimization, "--link", hostObject, "-o", foreign]);
+      assert.match(symbols(foreign), /sigaction/);
+      const fault = execute(foreign, [], false);
+      assert.ok(invalidAccess(fault));
+      assert.doesNotMatch(fault.stderr, /stack overflow/);
+      cases++;
+      const inferred = execute(compiler, ["run", projects.foreign, optimization, "--link", hostObject], false);
+      assert.equal(inferred.status, 1);
+      assert.match(inferred.stderr, /E2005.*the stack was probably exhausted by deep recursion/s);
+      cases++;
+
+      const signals = join(root, `signals${optimization}`);
+      execute(compiler, ["build", projects.signals, optimization, "--link", hostObject, "-o", signals]);
+      assert.match(symbols(signals), /sigaction/);
+      for (const [mode, expected] of [["segv", "SIGSEGV"], ["bus", "SIGBUS"]]) {
+        const result = execute(signals, [], false, { TSUZURI_TEST_SIGNAL: mode });
+        assert.equal(result.signal, expected, `${optimization} ${mode}: ${result.signal} ${result.status}`);
+        assert.doesNotMatch(result.stderr, /stack overflow/);
+        cases++;
+      }
     }
   }
   console.log(`stack_overflow: ${cases} cases`);

@@ -25,8 +25,14 @@ static int write_coverage(void) {
 
 extern uint32_t tsuzuri_test_count(void);
 extern int32_t tsuzuri_test_run(uint32_t index);
+#if defined(_WIN32)
+extern void tsuzuri_trap_install(void);
+#endif
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    tsuzuri_trap_install();
+#endif
     if (argc != 2 || argv[1][0] < '0' || argv[1][0] > '9') return 2;
     char *end = NULL;
     errno = 0;

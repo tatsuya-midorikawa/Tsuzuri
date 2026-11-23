@@ -65,10 +65,12 @@ fn windows_x64_i128_helpers_follow_the_win64_abi() {
     let _arm64 = PlatformScope::enter(Platform::new(Some(Triple::Aarch64WindowsMsvc)));
     let arm_ir =
         llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
-    assert!(
-        arm_ir.ends_with(include_str!("../src/runtime/wasm.ll")),
-        "Arm64 Windows keeps wasm.ll unchanged"
-    );
+    for name in &wasm_names {
+        assert!(
+            arm_ir.contains(&format!("define weak hidden i128 @__{name}(")),
+            "Arm64 Windows keeps wasm.ll definitions: {name}"
+        );
+    }
     assert!(!arm_ir.contains("define weak hidden <2 x i64> @__"));
 }
 

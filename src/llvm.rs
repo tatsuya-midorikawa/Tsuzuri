@@ -167,11 +167,13 @@ pub fn emit_with_export_style(
     }
     let ir = emit_with_options(module, options)?;
     Ok(if style == ExportStyle::Dllexport {
-        windows_abi(ir, module)
+        windows_abi(ir, module, false)
     } else {
         ir
     })
 }
+
+pub use traps::with_unwind_tables;
 
 /// W42: the 128-bit routines that `windows_abi` appends. x86-64 Windows calls them with each i128
 /// operand in a temporary passed by pointer and takes the result in XMM0, the C ABI of `__int128`
@@ -190,7 +192,8 @@ pub fn windows_i128_helpers(aarch64: bool) -> String {
     output
 }
 
-pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
+pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) -> String {
+    let aarch64 = crate::target::current_platform().aarch64();
     let has_trap_write = ir.contains("define internal void @tz.trap.write(");
     let ir = if has_trap_write {
         assert_eq!(
@@ -202,7 +205,10 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     } else {
         ir
     };
-    let mut output = String::with_capacity(ir.len());
+    let mut ir_with_i128 = ir;
+    ir_with_i128.push_str(&windows_i128_helpers(aarch64));
+
+    let mut output = String::with_capacity(ir_with_i128.len() + 2048);
     let mut exports: BTreeSet<_> = module
         .functions
         .iter()
@@ -212,12 +218,34 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if io_entry(module) || main_entry(module) {
         exports.insert("tsuzuri_main".into());
     }
-    let has_write = ir.contains("call i64 @write(");
-    let has_console = ir.contains("define internal i32 @tz.console.write(");
+    let has_write = ir_with_i128.contains("call i64 @write(");
+    let has_console = ir_with_i128.contains("define internal i32 @tz.console.write(");
     let mut console = false;
-    for line in ir.lines() {
+    let mut main_entry_block = false;
+    let mut in_trap_report = false;
+    let mut needs_trap_fail = false;
+    for line in ir_with_i128.lines() {
         if line == "declare i64 @write(i32, ptr, i64)" {
             continue;
+        }
+        if line.starts_with("define internal void @tz.trap.report(i32 %site)") {
+            in_trap_report = true;
+        } else if in_trap_report && line == "}" {
+            in_trap_report = false;
+        } else if in_trap_report && line == "  ret void" {
+            output.push_str("  call void @tz.trap.fail(i32 %site)\n  unreachable\n");
+            needs_trap_fail = true;
+            continue;
+        }
+        if !executable {
+            if let Some(suffix) = line
+                .strip_prefix("  call void @llvm.trap()")
+                .or_else(|| line.strip_prefix("  tail call void @llvm.trap()"))
+            {
+                let _ = writeln!(output, "  call void @tz.trap.fail(i32 0){suffix}");
+                needs_trap_fail = true;
+                continue;
+            }
         }
         if line.starts_with("define ")
             && line
@@ -231,25 +259,38 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
         }
         if line.starts_with("define internal i32 @tz.console.write(") {
             console = true;
-        }
-        if console && line == "entry:" {
+        } else if console && line == "entry:" {
             output.push_str("  %binary_mode = call i32 @_setmode(i32 1, i32 32768)\n");
             console = false;
         }
-    }
-    if has_trap_write {
-        if !output.contains("define internal void @tz.debugger.write(") {
-            output.push_str(traps::DEBUGGER_WRITE);
+        if executable && line.starts_with("define i32 @main(") {
+            main_entry_block = true;
+        } else if main_entry_block && line == "entry:" {
+            output.push_str("  call void @tsuzuri_trap_install()\n");
+            main_entry_block = false;
         }
+    }
+    if has_trap_write || executable {
+        traps::ensure_windows_report_writer(&mut output);
+    }
+    if needs_trap_fail {
+        output.push_str(traps::TRAP_FAIL_WINDOWS);
+    }
+    if executable {
+        output.push_str(&traps::trap_veh_windows(aarch64));
         for declaration in [
-            "declare ptr @GetStdHandle(i32)",
-            "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
-            "declare void @OutputDebugStringW(ptr)",
-            "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+            "declare void @RaiseFailFastException(ptr, ptr, i32)",
+            "declare ptr @AddVectoredExceptionHandler(i32, ptr)",
+            "declare i32 @SetThreadStackGuarantee(ptr)",
         ] {
             if !output.contains(declaration) {
                 let _ = writeln!(output, "{declaration}");
             }
+        }
+    } else if needs_trap_fail {
+        let declaration = "declare void @RaiseFailFastException(ptr, ptr, i32)";
+        if !output.contains(declaration) {
+            let _ = writeln!(output, "{declaration}");
         }
     }
     if has_console || has_write {
@@ -258,10 +299,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if has_write {
         output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
-    output.push_str(&windows_i128_helpers(
-        crate::target::current_platform().aarch64(),
-    ));
-    output
+    traps::with_unwind_tables(&output)
 }
 
 /// Lowers the standard IO to the WASI host: its `declare`s lose the `tsuzuri_io` import attributes,
@@ -10951,8 +10989,18 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                     };
                     assert!(!base.contains("@GetStdHandle"));
                     assert!(!base.contains("@tz.debugger.write("));
-                    let win = windows_abi(base.clone(), &module);
-                    assert_eq!(win, windows_abi(base, &module));
+                    let win = windows_abi(base.clone(), &module, true);
+                    assert_eq!(win, windows_abi(base.clone(), &module, true));
+                    let win_obj = windows_abi(base.clone(), &module, false);
+                    assert_eq!(win_obj, windows_abi(base, &module, false));
+                    assert!(win.contains("call void @tsuzuri_trap_install()"));
+                    assert!(win.contains("define internal i32 @tz.trap.veh(ptr %info)"));
+                    assert!(win.contains("call void @llvm.trap()"));
+                    assert!(!win_obj.contains("call void @llvm.trap()"));
+                    assert!(win_obj.contains("call void @tz.trap.fail(i32 0)"));
+                    for line in win.lines().filter(|line| line.starts_with("define ")) {
+                        assert!(line.contains(" uwtable"), "missing uwtable: {line}");
+                    }
                     assert!(win.contains("call ptr @GetStdHandle(i32 -12)"));
                     assert!(!win.contains("call i64 @write("));
                     assert!(!win.contains("define internal i64 @write("));
@@ -10966,6 +11014,9 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                         "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
                         "declare void @OutputDebugStringW(ptr)",
                         "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+                        "declare void @RaiseFailFastException(ptr, ptr, i32)",
+                        "declare ptr @AddVectoredExceptionHandler(i32, ptr)",
+                        "declare i32 @SetThreadStackGuarantee(ptr)",
                     ] {
                         assert_eq!(win.matches(declaration).count(), 1, "{declaration}");
                     }

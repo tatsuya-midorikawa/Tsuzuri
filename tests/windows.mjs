@@ -120,9 +120,9 @@ function runGuiStage(compiler, clang, directory) {
     assert.equal(launchWithoutHandles(exitExe, [], { launcher }), code);
   }
 
-  const allowedTrapCodes = [0xc000001d, 0xc000041d, 0xc0000005];
-  const dispatchedTrapCodes = [0xc000001d, 0xc0000005];
-  const kernelTrapCodes = [0xc000001d, 0xc000041d];
+  const allowedTrapCodes = [0xc000001d];
+  const dispatchedTrapCodes = [0xc000001d];
+  const kernelTrapCodes = [0xc000001d];
 
   for (const optimization of ["-O0", "-O3"]) {
     // 4. io_without_handles
@@ -169,6 +169,32 @@ function runGuiStage(compiler, clang, directory) {
     const createCode = launchWithoutHandles(trapCreateExe, [createMarker], { launcher });
     assert.ok(kernelTrapCodes.includes(createCode), `trap_create ${optimization}: 0x${createCode.toString(16)}`);
     assert.ok(!existsSync(createMarker), `trap_create marker should not exist (${optimization})`);
+
+    // W07: SetTimer TIMERPROC callback trap in a Tsuzuri executable is caught by VEH and terminates with 0xC000001D.
+    const trapTimerProcExe = buildGui("trap_timer_proc", [optimization], { compiler, clang, directory });
+    const timerProcMarker = join(directory, `marker-timerproc${optimization}.txt`);
+    assert.equal(launchWithoutHandles(trapTimerProcExe, [timerProcMarker], { launcher }), 0xc000001d, `trap_timer_proc ${optimization}`);
+    assert.ok(!existsSync(timerProcMarker), `trap_timer_proc marker should not exist (${optimization})`);
+
+    // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
+    const tickDir = join(directory, `tick-obj${optimization}`);
+    mkdirSync(tickDir, { recursive: true });
+    writeFileSync(join(tickDir, "Main.tz"), "export def on_tick :: i64 -> i64\nfn on_tick divisor = 10 / divisor\n");
+    for (const trapInfo of [false, true]) {
+      const tag = `${optimization}${trapInfo ? "-info" : ""}`;
+      const tickObj = join(directory, `tick${tag}.obj`);
+      execute(compiler, ["build", tickDir, "--no-cache", optimization, ...(trapInfo ? ["--trap-info"] : []), "--emit", "object", "-o", tickObj]);
+      const hostExe = join(directory, `trap-host${tag}.exe`);
+      execute(clang, [...cFlags, optimization, join(repository, "tests/windows_trap_host.c"), tickObj, "-luser32", "-o", hostExe]);
+      if (trapInfo) {
+        const ods = join(directory, `ods-host${tag}.txt`);
+        assert.equal(launchWithoutHandles(hostExe, ["timer"], { launcher, debugStrings: ods }), 0xc000001d);
+        assert.match(readFileSync(ods, "utf8"), /trap: integer division by zero/);
+      } else {
+        assert.equal(launchWithoutHandles(hostExe, ["timer"], { launcher }), 0xc000001d);
+      }
+      assert.equal(launchWithoutHandles(hostExe, ["create"], { launcher }), 0xc000001d);
+    }
   }
 
   // 10. pe_headers
@@ -214,10 +240,51 @@ function runGuiStage(compiler, clang, directory) {
 
   const unwindTzDir = join(directory, "unwind-tz");
   mkdirSync(unwindTzDir, { recursive: true });
-  writeFileSync(join(unwindTzDir, "Main.tz"), "export def rec fact :: i64 -> i64\nfn rec fact n = if n <= 1 then 1 * fact 1 - 0 else fact (n - 1) + n\n");
+  writeFileSync(join(unwindTzDir, "Main.tz"), "export def rec fib :: i64 -> i64\nfn rec fib n = if n <= 1 then n else fib (n - 1) + fib (n - 2)\n");
   const unwindTzObj = join(directory, "unwind_tz.obj");
   execute(compiler, ["build", unwindTzDir, "--no-cache", "-O3", "--emit", "object", "-o", unwindTzObj]);
   const tzUnwind = unwindFunctions(unwindTzObj);
+  assert.ok(tzUnwind.has("tz.fn.Main.fib") && tzUnwind.has("tz.trap.fail"), `expected Tsuzuri unwind entries in ${[...tzUnwind].join(", ")}`);
+
+  // W07: stack overflow without standard handles sends `trap: stack overflow` to OutputDebugStringW and exits 0xC00000FD.
+  const deepDir = join(directory, "deep-overflow");
+  mkdirSync(deepDir, { recursive: true });
+  writeFileSync(join(deepDir, "Main.tz"), "def rec depth :: i64 -> i64\nfn rec depth n = if n == 0 then 0 else depth (n - 1) * 3 + n\ndef main :: unit -> i32 = \\() -> (depth 100000000) as i32\n");
+  const deepExe = join(directory, "deep-overflow.exe");
+  execute(compiler, ["build", deepDir, "--no-cache", "-O0", "-o", deepExe]);
+  const deepOds = join(directory, "deep-ods.txt");
+  assert.equal(launchWithoutHandles(deepExe, [], { launcher, debugStrings: deepOds }), 0xc00000fd);
+  assert.deepEqual(readFileSync(deepOds, "utf8").trimEnd().split("\n"), ["trap: stack overflow"]);
+
+  // W07: VEH ignores non-ud2 illegal instructions (such as ud1 on x86_64) caught by C SEH `__try`/`__except`.
+  if (!isBundledClang(clang) && process.arch === "x64") {
+    const ud1Dir = join(directory, "ud1-seh");
+    mkdirSync(ud1Dir, { recursive: true });
+    const ud1C = join(directory, "ud1_seh.c");
+    writeFileSync(ud1C, [
+      "#include <windows.h>",
+      "#include <stdint.h>",
+      "__attribute__((noinline)) static void raise_ud1(void) {",
+      "  __asm__ volatile(\"ud1 %%eax, %%eax\" : : : \"eax\");",
+      "}",
+      "int64_t w07_catch_ud1(void) {",
+      "  __try {",
+      "    raise_ud1();",
+      "    return -1;",
+      "  } __except (GetExceptionCode() == EXCEPTION_ILLEGAL_INSTRUCTION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {",
+      "    return 42;",
+      "  }",
+      "}",
+      "",
+    ].join("\n"));
+    const ud1Obj = join(directory, "ud1_seh.obj");
+    execute(clang, [...cFlags, "-c", "-O1", ud1C, "-o", ud1Obj]);
+    writeFileSync(join(ud1Dir, "Main.tz"), "@trusted\nextern \"w07_catch_ud1\" def catch_ud1 :: unit -> i64\ndef main :: unit -> i32 = \\() -> (catch_ud1 ()) as i32\n");
+    const ud1Exe = join(directory, "ud1-seh.exe");
+    execute(compiler, ["build", ud1Dir, "--no-cache", "--link", ud1Obj, "-o", ud1Exe]);
+    assert.equal(launchWithoutHandles(ud1Exe, [], { launcher }), 42);
+  }
+
   console.log(`Windows GUI: Tsuzuri object unwind entries (${toolchainLabel}): ${tzUnwind.size}`);
   console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
 }

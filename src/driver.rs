@@ -4116,7 +4116,7 @@ fn build_complete(
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
-        text = llvm::windows_abi(text, module);
+        text = llvm::windows_abi(text, module, options.emit == Emit::Executable);
         if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
@@ -5964,8 +5964,8 @@ pub(crate) fn probable_stack_exhaustion(status: &std::process::ExitStatus) -> bo
 }
 
 #[cfg(not(unix))]
-pub(crate) fn probable_stack_exhaustion(_status: &std::process::ExitStatus) -> bool {
-    false
+pub(crate) fn probable_stack_exhaustion(status: &std::process::ExitStatus) -> bool {
+    status.code() == Some(0xC000_00FDu32 as i32)
 }
 
 /// The exit code that an `IO<i32>` entry returned, when the program ended with one: a non-zero

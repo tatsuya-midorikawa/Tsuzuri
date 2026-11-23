@@ -486,7 +486,7 @@ pub fn build_debug_runner(
         )
     })?;
     if platform.windows() {
-        text = llvm::windows_abi(text, module);
+        text = llvm::windows_abi(text, module, true);
     }
     if pdb.is_some() {
         text = llvm::with_codeview(text);
@@ -970,7 +970,7 @@ fn compile_native_runner(
 ) -> Result<PathBuf, Diagnostic> {
     let platform = runner.platform;
     if platform.windows() {
-        text = llvm::windows_abi(text, module);
+        text = llvm::windows_abi(text, module, true);
     }
     // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c,
     // which a native DataChannel waits on too (TZ12).

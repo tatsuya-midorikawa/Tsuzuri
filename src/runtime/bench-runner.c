@@ -14,6 +14,9 @@
 
 extern uint32_t tsuzuri_bench_count(void);
 extern int64_t tsuzuri_bench_sample(uint32_t index, int64_t iterations);
+#if defined(_WIN32)
+extern void tsuzuri_trap_install(void);
+#endif
 
 /* Nanoseconds of a monotonic clock from an arbitrary origin (Bench.now). */
 int64_t tsuzuri_bench_now(void) {
@@ -48,6 +51,9 @@ extern void tsuzuri_bench_counts(uint64_t *out);
 /* Two iterations minus one cancels the shared input's setup and drop. Warm up separately.
    Exit codes: 2 usage, 3 negative duration, 4 output error, 5 negative allocation delta. */
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    tsuzuri_trap_install();
+#endif
     unsigned long long index;
     if (argc != 2 || !parse(argv[1], 0, UINT32_MAX, &index) || index >= tsuzuri_bench_count()) return 2;
     uint64_t before[3], middle[3], after[3];
@@ -71,6 +77,9 @@ int main(int argc, char **argv) {
    takes TARGET_NS (at most 2^30 iterations), discards one warm-up sample, and prints
    "iterations N" and SAMPLES lines "sample NS". A negative sample exits with code 3. */
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    tsuzuri_trap_install();
+#endif
     unsigned long long index, samples, target;
     if (argc != 4 || !parse(argv[1], 0, UINT32_MAX, &index) || index >= tsuzuri_bench_count() ||
         !parse(argv[2], 1, 1000, &samples) || !parse(argv[3], 1, INT64_MAX, &target)) return 2;
