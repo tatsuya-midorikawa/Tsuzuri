@@ -1813,10 +1813,11 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 警告 | `W1008` | A20 | 効果の属性が検査されない（インスタンスのないジェネリック関数、`const def` の実行時の本体だけ）。kind は `effect_attribute_unchecked_generic`・`effect_attribute_on_const_def` |
 | 警告 | `W1009` | A21 | 契約が常に真・使わない束縛など |
 | 警告 | `W1010` | E15 | 信頼を表明していない `extern` の使用（`audit` が既定で警告に格上げ） |
+| 警告 | `W1012` | NS04 | edition 2026 のラムダ引数・`for...in`・計算式束縛の反駁可能パターン（edition 2027 は `E1021`） |
 | 診断コード | `E1040` | TZ03・TZ12・TZ13・E17 | 削除・改名した機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`、E17 で `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版へ改名した旧 `IO` の 8 関数）の使用。help に移行先、改名は `fixes` も（D-61） |
 | 診断コード | `E1041` | A24・A25・A26 | 匿名共用体の誤り（要素の規則: 型変数・区別できない要素・重複、注入の曖昧さ、利用者のインスタンス、型テスト `:?` の誤り）。借用の要素は `E1013`、要素数の上限は `E1017`、要素でない値は `E1003`、構文は `E0002` の kind で表す（D-62）。`Decode` を持てない匿名共用体（要素が読む JSON の種類の重なり）だけは、承認済みの A26 の D5 のとおり `E1025`（`anonymous_union_decode_overlap`） |
-| 予約（未割り当て） | `E1035`・`E1042`〜`E1049`・`E2012`〜`E2015`・`W1011`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
-| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default` | TZ02・TZ04 | 予約語ではない（識別子として使える） |
+| 予約（未割り当て） | `E1035`・`E1042`〜`E1049`・`E2012`〜`E2015`・`W1011`・`W1013`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
+| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default`・`extern type` の直後の `copy`（同じ行に識別子が続くとき） | TZ02・TZ04・W18 | 予約語ではない（識別子として使える） |
 | 環境変数 | `TSUZURI_MAXPROCS`（1〜256。既定はオンラインの CPU 数）・`TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576。既定 1024） | TZ01 | 生成したプログラムが起動時に読む（コンパイラは読まない）。範囲外・数でない値は無視して既定値 |
 | std | `Routine`・`DataChannel`（旧 `Channel` の改名）・`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`・`Timer`・`Ticker`（新規）と、新しい中身の `Channel` | TZ02〜TZ07 | D-61。`Routine` は組み込みのモジュール、ほかは opt-in。`RESERVED_MODULES` は現在値から 13 増え（`Channel` は予約済み）、TZ13 で `Async` の 1 つが減る |
 | サブコマンド | `guide` | G21 | AI 向けの案内の出力 |
@@ -1857,6 +1858,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI（`mcp`） | `--root DIR`・`--kg-dir DIR` | G29 | stdio の MCP サーバー（プロトコルは 2025-06-18 だけ。**環境変数を読まない**ので `TSUZURI_KG_DIR` は効かず、置き場は `--kg-dir` か `<root>/target/tz/kg`） |
 | CLI（`fix`） | `--applicability`・`--dry-run`・`--edition`（移行先の edition） | G24 | `--applicability maybe` は `--dry-run` のときだけ受理する。`--yes` は作らない（提案の自動適用をしない） |
 | CLI（`build`・`run`・`test`） | `--overflow-report`（`build`・`run`・`test`）・`--allow-overflow`（`test` だけ） | A23 | 折り返しの報告。`test` は既定で報告し、折り返したテストを失敗にする（`--allow-overflow` で警告のまま通す）。`--no-overflow-report` は作らない |
+| CLI（`bindgen`） | `--nonnull FUNCTION:TARGET` | NS03 | `TARGET` は引数名・1 始まり番号・`return`。ハンドル／`const struct *` ポインターを `Maybe` でなく非 Null 型にする |
 | CLI（`--contracts prove`・`prove`） | `--prove-timeout SECONDS`（1〜3600）・`--function NAME` | A21 | 契約の静的検証（`prove` のときだけ使える） |
 | CLI（`--warn` の値） | `untrusted-extern` | E15 | `W1010` を有効にする。**`--warn` の値の一覧とエラー文の `supported:` は、実装済みの値だけを固定の順序 `implicit-copy, canonical, untrusted-extern` で並べる**（`main.rs` の 1 つの定数から解析・`--help`・エラー文を作る。先に入ったチケットが作り、後のチケットは順序の位置に足す） |
 | CLI（`test`） | `--doc`（`--list`・`--filter`・`--index`・`--json` と併用できる。`test` 以外・`--coverage`・`--seed`・`--affected`・`--contracts`・`-g`・`-o`・`--target`・`--link`/`-l`/`-L` との併用は `E2000`） | G34 | `///` の例の検査。`E2011` を出す。kind は `doc_example_invalid`（`E2011`）・`doc_test_failed`（`E2006`）・`doc_example_limit`（`E1017`） |
@@ -1999,7 +2001,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **経緯**: 2026-11-22、「Tsuzuri を Null 安全なプログラミング言語としたい。現在の言語仕様上 Null 安全なものなっているか調査してください。もし、Null 安全でない場合、どのような改善や仕様変更をする必要があるか報告してください。」への調査報告と、続く依頼「改善用のチケットを `_features` フォルダーに作成し、コミット後、CI なしで PR・マージ・後片付けまで完了させてください。」から、NS01〜NS08 を起票した（HEAD `edc61676`）。計画と依存は [README の追加チケット（2026-11-22。Null 安全性の徹底）](README.md#追加チケット2026-11-22null-安全性の徹底) にある。
 - **調査で確かめた現状**:
   1. 純粋な Tsuzuri の閉世界には `null` リテラルも暗黙の Nullable 参照もなく、`ref T`・`ref mut T`・`Rc`・`Arc`・`dyn`・コレクション・レコードはすべて有効な値を表す。`let` の初期化必須、レコードの全フィールド必須、配列の全要素初期化必須、安全な `Default`、`match` の網羅性検査（`E1021`）、JSON の `null` の `Maybe` 限定復号により、言語内部の値モデルはすでに Null 安全である。
-  2. 一方で、外部ホスト境界と一部の束縛検査に次の穴がある: ① `extern type`（`H`・`ref H`）に非 Null 検査がなく、C が返した `NULL` が `H` に入り、[W15](W15-abi-nullable-handles.md) でも `Some(NULL)` が生じうる。`export def` と生成バインディングも `Maybe` 未対応かつ非 Null 検査がない（NS01・NS02）。② `tsuzuri bindgen` が `_Nullable`・`_Nonnull` を捨てて常に非 `Maybe` を出す（NS03）。③ ラムダ引数・`for...in`・計算式束縛・`select` 受信の単一パターンに網羅性検査がなく、`\(Some x) -> x` が無警告で通って実行時トラップになる（NS04）。④ 通常関数で `Maybe.get` / `Result.get` を静的に警告する手段がなく、単一ケース取り出しの `if let` もないため強制アンラップを誘発しやすい（NS05・NS06）。⑤ [W24](W24-extern-view.md) の `extern view` が生の `i64` を受けるため `0` アドレスの確認が実行時トラップ頼みになっており（NS07）、[A33](A33-remaining-store-soundness-holes.md) で別チケット要とされた `Owned.call` 部分適用の解放後読み出し `owned2` が未分離だった（NS08）。
+  2. 一方で、外部ホスト境界と一部の束縛検査に次の穴がある: ① `extern type`（`H`・`ref H`）に非 Null 検査がなく、C が返した `NULL` が `H` に入り、[W15](_completed/W15-abi-nullable-handles.md) でも `Some(NULL)` が生じうる。`export def` と生成バインディングも `Maybe` 未対応かつ非 Null 検査がない（NS01・NS02）。② `tsuzuri bindgen` が `_Nullable`・`_Nonnull` を捨てて常に非 `Maybe` を出す（NS03）。③ ラムダ引数・`for...in`・計算式束縛・`select` 受信の単一パターンに網羅性検査がなく、`\(Some x) -> x` が無警告で通って実行時トラップになる（NS04）。④ 通常関数で `Maybe.get` / `Result.get` を静的に警告する手段がなく、単一ケース取り出しの `if let` もないため強制アンラップを誘発しやすい（NS05・NS06）。⑤ [W24](W24-extern-view.md) の `extern view` が生の `i64` を受けるため `0` アドレスの確認が実行時トラップ頼みになっており（NS07）、[A33](A33-remaining-store-soundness-holes.md) で別チケット要とされた `Owned.call` 部分適用の解放後読み出し `owned2` が未分離だった（NS08）。
 - **守る範囲**: 新しい予約語、生ポインター型、`unsafe`、`?.` / `??` 演算子、フロー依存の暗黙の型変更は入れない。使う予約枠（各チケットの要承認）は `W1011`（NS05 の `--warn unwrap`）、`W1012`（NS04 の 2026 互換警告）、`bindgen --nonnull`（NS03）、opt-in モジュール `ExternAddr`（NS07）で、D-55 の未割り当て枠（`W1011`〜`W1015`）と規則に従う。NS08 は既存の規則に沿う健全性不具合の修正で承認は要らない。
 - **1 チケット 1 PR**。NS08（P0、承認不要）は単独で直ちに着手でき、NS04・NS05・NS06 は W 系と独立に進められる。NS01〜NS03 は W15 の後、NS07 は W24 の後に進める。
 

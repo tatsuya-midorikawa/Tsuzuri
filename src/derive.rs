@@ -368,6 +368,7 @@ impl Build<'_> {
     pub(super) fn bind(&self, name: impl Into<String>, value: Expr) -> Binding {
         Binding {
             name: self.ident(name),
+            pattern: None,
             mutable: false,
             using: false,
             recursion: Recursion::None,
@@ -633,6 +634,7 @@ impl Build<'_> {
                 let name = format!("$text{index}");
                 bindings.push(Binding {
                     name: self.ident(&name),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -663,6 +665,7 @@ impl Build<'_> {
                 let name = format!("$hash{index}");
                 bindings.push(Binding {
                     name: self.ident(&name),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -1030,6 +1033,7 @@ impl Build<'_> {
                         .map(|name| {
                             Ok(Binding {
                                 name: self.ident(format!("{name}_tag")),
+                                pattern: None,
                                 mutable: false,
                                 using: false,
                                 recursion: Recursion::None,

@@ -165,6 +165,7 @@ pub(super) fn guaranteed_result(ty: &Type) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::syntax::HandleKind;
 
     #[test]
     fn staying_locals_accept_reads_and_reject_moves() {
@@ -278,7 +279,7 @@ mod tests {
             Type::Array(Box::new(Type::Bool)),
             Type::List(Box::new(Type::Bool)),
             Type::Tuple(vec![Type::Bool, Type::Bool]),
-            Type::Handle("Host.Handle".into()),
+            Type::Handle("Host.Handle".into(), HandleKind::Owned),
             Type::Shared(Box::new(Type::Bool), SharedKind::Arc),
             Type::function(vec![Type::Bool], Type::Bool),
         ] {

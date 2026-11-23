@@ -799,6 +799,28 @@ fn effective_path_dependencies_resolve_without_becoming_root_api() {
 }
 
 #[test]
+fn copy_extern_type_addition_is_compatible_and_removal_is_breaking() {
+    let owned = "extern type Hwnd\n";
+    let copy = "extern type copy Hwnd\n";
+    for effective in [false, true] {
+        assert_eq!(
+            compare_mode(owned, copy, &[], effective),
+            ["non-breaking changed extern type Main.Hwnd"]
+        );
+        assert_eq!(
+            compare_mode(copy, owned, &[], effective),
+            ["breaking changed extern type Main.Hwnd"]
+        );
+    }
+    let old = root("copy-handle-old", &[("Main.tz", copy)]);
+    let new = root("copy-handle-new", &[("Main.tz", owned)]);
+    let diff = report(&old, &new);
+    assert_eq!(diff.changes[0].note, "values of the type are moved again");
+    std::fs::remove_dir_all(old).unwrap();
+    std::fs::remove_dir_all(new).unwrap();
+}
+
+#[test]
 fn effective_command_is_opt_in_validates_flags_and_reports_analysis_errors() {
     let old_source = "type Word = i64\ndef f :: Word -> Word = \\n -> n\n";
     let new_source = "type Word = i64\ndef f :: i64 -> i64 = \\n -> n\n";

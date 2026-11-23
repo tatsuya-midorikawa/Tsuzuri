@@ -5,7 +5,8 @@
 use serde_json::{Value, json};
 use tsuzuri::bindgen::{
     Arguments, BufferAnnotation, ConsumeAnnotation, Extras, Failure, Generated, HeaderInfo, MARKER,
-    ParameterName, Skipped, TRUSTED_NOTE, generate, generate_with, lp64_target, parse_arguments,
+    NonnullAnnotation, NonnullTarget, ParameterName, Skipped, TRUSTED_NOTE, generate,
+    generate_with, lp64_target, parse_arguments,
 };
 
 const PATH: &str = "/h/main.h";
@@ -494,11 +495,11 @@ fn generates_scalar_records_and_ref_parameters() {
                 json!({ "kind": "RecordDecl", "name": "empty", "tagUsed": "struct", "completeDefinition": true }),
             ]),
             [
-                "extern \"before\" def before :: ref Point -> f64",
+                "extern \"before\" def before :: Maybe<ref Point> -> f64",
                 "record Point { x: f64, y: f64, tag: i32, kind: i32, count: i64u }",
                 "const ONE: i32 = 1",
-                "extern \"norm\" def norm :: ref Point -> f64",
-                "extern \"constant\" def constant :: ref Point -> f64",
+                "extern \"norm\" def norm :: Maybe<ref Point> -> f64",
+                "extern \"constant\" def constant :: Maybe<ref Point> -> f64",
                 "// skipped mutable: parameter 1 has unsupported type 'struct point *'",
                 "// skipped by_value: parameter 1 has unsupported type 'struct point'",
                 "// skipped make: result has unsupported type 'struct point'",
@@ -805,6 +806,7 @@ fn parses_bindgen_arguments() {
             include_dirs: vec!["a".into(), "b".into()],
             buffers: Vec::new(),
             consumes: Vec::new(),
+            nonnulls: Vec::new(),
             json: true,
         })
     );
@@ -914,11 +916,11 @@ fn parses_bindgen_arguments() {
         ),
         (
             &["a.h", "-o", "A.tz", "--target", "wasm32"][..],
-            "bindgen accepts only -o, --include-dir, --buffer, --consume, and --json",
+            "bindgen accepts only -o, --include-dir, --buffer, --consume, --nonnull, and --json",
         ),
         (
             &["a.h", "-o", "A.tz", "-O3"][..],
-            "bindgen accepts only -o, --include-dir, --buffer, --consume, and --json",
+            "bindgen accepts only -o, --include-dir, --buffer, --consume, --nonnull, and --json",
         ),
         (
             &["a.h", "-o", "A.tz", "-o", "B.tz"][..],
@@ -1295,12 +1297,12 @@ fn maps_opaque_structs_to_handles() {
         body(&generated),
         [
             "extern type Handle",
-            "extern \"handle_new\" def handle_new :: i64 -> Handle",
-            "extern \"handle_use\" def handle_use :: ref Handle -> ref Handle -> ref Handle -> ref Handle -> i32",
+            "extern \"handle_new\" def handle_new :: i64 -> Maybe<Handle>",
+            "extern \"handle_use\" def handle_use :: Maybe<ref Handle> -> Maybe<ref Handle> -> Maybe<ref Handle> -> Maybe<ref Handle> -> i32",
             "// skipped handle_shared: result has unsupported type 'const struct handle *'",
             "// skipped handle_open: parameter 1 has unsupported type 'struct handle **'",
             "// skipped handle_volatile: parameter 1 has unsupported type 'volatile struct handle *'",
-            "extern \"handle_close\" def handle_close :: Handle -> i64",
+            "extern \"handle_close\" def handle_close :: Maybe<Handle> -> i64",
             "// skipped later_use: parameter 1 has unsupported type 'struct later *'",
             "record Later { x: i32 }",
             "// skipped elsewhere_use: parameter 1 has unsupported type 'struct elsewhere *'",
@@ -1399,7 +1401,7 @@ fn maps_function_pointer_parameters_to_callbacks() {
             "extern \"apply_typedef\" def apply_typedef :: (i32 -> i32 -> i32) -> i32",
             "extern \"run\" def run :: (unit -> unit) -> unit",
             "extern \"test\" def test_ :: (i8u -> i16 -> bool) -> i8u -> i8u",
-            "extern \"visit\" def visit :: (ref Handle -> i64) -> ref Handle -> i64",
+            "extern \"visit\" def visit :: (Maybe<ref Handle> -> i64) -> Maybe<ref Handle> -> i64",
             "extern \"nullable\" def nullable :: (i32 -> i32) -> i32",
             "// skipped context: parameter 1 has unsupported type 'void (*)(void *)'",
             "// skipped variadic: parameter 1 has unsupported type 'int (*)(int, ...)'",
@@ -1612,18 +1614,18 @@ fn generated_modules_check_and_consume_moves_the_handle() {
             json!({ "kind": "RecordDecl", "name": "counter", "tagUsed": "struct" }),
             named_function(
                 "counter_new",
-                "struct counter *(long)",
+                "struct counter * _Nonnull (long)",
                 &[("start", "long")],
             ),
             named_function(
                 "counter_add",
-                "long (struct counter *, long)",
-                &[("counter", "struct counter *"), ("amount", "long")],
+                "long (struct counter * _Nonnull, long)",
+                &[("counter", "struct counter * _Nonnull"), ("amount", "long")],
             ),
             named_function(
                 "counter_free",
-                "long (struct counter *)",
-                &[("counter", "struct counter *")],
+                "long (struct counter * _Nonnull)",
+                &[("counter", "struct counter * _Nonnull")],
             ),
             typedef("map_fn", "long (*)(long)"),
             named_function(
@@ -1640,8 +1642,8 @@ fn generated_modules_check_and_consume_moves_the_handle() {
             record("pair", &[("left", "int"), ("right", "double")]),
             function(
                 "pair_sum",
-                "double (const struct pair *)",
-                &["const struct pair *"],
+                "double (const struct pair * _Nonnull)",
+                &["const struct pair * _Nonnull"],
             ),
         ],
         &[buffer("sum", "values", "count")],
@@ -1854,15 +1856,15 @@ fn does_not_read_unnamed_struct_typedefs_as_tags() {
                 "record S { big: f64, other: f64 }",
                 "// skipped S: anonymous struct; give the struct a tag",
                 "// skipped use_typedef: parameter 1 has unsupported type 'const S *'",
-                "extern \"use_tag\" def use_tag :: ref S -> f64",
+                "extern \"use_tag\" def use_tag :: Maybe<ref S> -> f64",
                 "// skipped use_alias: parameter 1 has unsupported type 'const S_alias *'",
-                "extern \"use_named\" def use_named :: ref S -> f64",
+                "extern \"use_named\" def use_named :: Maybe<ref S> -> f64",
                 "record Pt { x: f64 }",
-                "extern \"norm\" def norm :: ref Pt -> f64",
+                "extern \"norm\" def norm :: Maybe<ref Pt> -> f64",
                 "extern type H",
                 "// skipped H: anonymous struct; give the struct a tag",
                 "// skipped use_handle_typedef: parameter 1 has unsupported type 'H *'",
-                "extern \"use_handle\" def use_handle :: ref H -> unit",
+                "extern \"use_handle\" def use_handle :: Maybe<ref H> -> unit",
                 "// skipped U: C union",
                 "// skipped P: anonymous struct; give the struct a tag",
                 "// skipped use_pointer: parameter 1 has unsupported type 'P'",
@@ -2054,4 +2056,277 @@ fn generates_a_macro_only_where_its_final_definition_agrees() {
     // The warning points at the last `#define` of LEVEL that the `-dD` output shows.
     let level = &generated.skipped[0];
     assert_eq!(level.offset, text.find("LEVEL 2").unwrap());
+}
+
+fn nonnull(function: &str, target: &str) -> NonnullAnnotation {
+    NonnullAnnotation {
+        function: function.into(),
+        target: if target == "return" {
+            NonnullTarget::Return
+        } else {
+            NonnullTarget::Parameter(match target.parse() {
+                Ok(position) => ParameterName::Position(position),
+                Err(_) => ParameterName::Name(target.into()),
+            })
+        },
+    }
+}
+
+#[test]
+fn unannotated_pointers_default_to_maybe() {
+    assert_eq!(
+        lines(vec![
+            json!({ "kind": "RecordDecl", "name": "ctx", "tagUsed": "struct" }),
+            record("cfg", &[("flags", "int")]),
+            function(
+                "open_ctx",
+                "struct ctx *(const struct cfg *)",
+                &["const struct cfg *"],
+            ),
+            function(
+                "open_explicit_nullable",
+                "struct ctx * _Nullable_result (const struct cfg * _Nullable)",
+                &["const struct cfg * _Nullable"],
+            ),
+            function(
+                "open_unspecified",
+                "struct ctx * _Null_unspecified (const struct cfg * _Null_unspecified)",
+                &["const struct cfg * _Null_unspecified"],
+            ),
+            function(
+                "nullable_cb",
+                "int (int (* _Nullable)(struct ctx *))",
+                &["int (* _Nullable)(struct ctx *)"],
+            ),
+        ]),
+        [
+            "extern type Ctx",
+            "record Cfg { flags: i32 }",
+            "extern \"open_ctx\" def open_ctx :: Maybe<ref Cfg> -> Maybe<Ctx>",
+            "extern \"open_explicit_nullable\" def open_explicit_nullable :: Maybe<ref Cfg> -> Maybe<Ctx>",
+            "extern \"open_unspecified\" def open_unspecified :: Maybe<ref Cfg> -> Maybe<Ctx>",
+            "extern \"nullable_cb\" def nullable_cb :: (Maybe<ref Ctx> -> i32) -> i32",
+        ]
+    );
+}
+
+#[test]
+fn nonnull_qualifiers_and_attributes_emit_non_maybe() {
+    let header_src = "nonnull(1)";
+    let mut attr_one = named_function(
+        "clone_ctx",
+        "struct ctx *(struct ctx *, struct ctx *)",
+        &[("first", "struct ctx *"), ("second", "struct ctx *")],
+    );
+    attr_one["inner"].as_array_mut().unwrap().extend([
+        json!({
+            "kind": "NonNullAttr",
+            "range": {
+                "begin": { "offset": 0, "tokLen": 7 },
+                "end": { "offset": 9, "tokLen": 1 }
+            }
+        }),
+        json!({ "kind": "ReturnsNonNullAttr" }),
+    ]);
+
+    let mut attr_all = named_function(
+        "touch_all",
+        "void (struct ctx *, struct ctx * _Nullable, int (*)(int))",
+        &[
+            ("a", "struct ctx *"),
+            ("b", "struct ctx * _Nullable"),
+            ("cb", "int (*)(int)"),
+        ],
+    );
+    attr_all["inner"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "kind": "NonNullAttr" }));
+
+    let mut nodes = vec![
+        json!({ "kind": "RecordDecl", "name": "ctx", "tagUsed": "struct" }),
+        record("cfg", &[("flags", "int")]),
+        named_function(
+            "qualified",
+            "struct ctx * _Nonnull (const struct cfg * _Nonnull, int (*)(struct ctx * _Nonnull))",
+            &[
+                ("cfg", "const struct cfg * _Nonnull"),
+                ("cb", "int (*)(struct ctx * _Nonnull)"),
+            ],
+        ),
+        attr_one,
+        attr_all,
+        named_function(
+            "cli_marked",
+            "struct ctx *(struct ctx *, const struct cfg *)",
+            &[("ctx", "struct ctx *"), ("cfg", "const struct cfg *")],
+        ),
+    ];
+    nodes[0]["loc"]["file"] = json!(PATH);
+    let generated = generate_with(
+        &unit(nodes),
+        &header(),
+        &Extras {
+            header_text: header_src.as_bytes(),
+            nonnulls: &[
+                nonnull("cli_marked", "ctx"),
+                nonnull("cli_marked", "2"),
+                nonnull("cli_marked", "return"),
+            ],
+            ..Extras::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        generated
+            .text
+            .contains("// options: --nonnull cli_marked:2 --nonnull cli_marked:ctx --nonnull cli_marked:return\n"),
+        "{}",
+        generated.text
+    );
+    assert_eq!(
+        body(&generated),
+        [
+            "extern type Ctx",
+            "record Cfg { flags: i32 }",
+            "extern \"qualified\" def qualified :: ref Cfg -> (ref Ctx -> i32) -> Ctx",
+            "extern \"clone_ctx\" def clone_ctx :: ref Ctx -> Maybe<ref Ctx> -> Ctx",
+            "extern \"touch_all\" def touch_all :: ref Ctx -> Maybe<ref Ctx> -> (i32 -> i32) -> unit",
+            "extern \"cli_marked\" def cli_marked :: ref Ctx -> ref Cfg -> Ctx",
+        ]
+    );
+}
+
+#[test]
+fn consume_combines_with_nullability() {
+    let mut nodes = vec![
+        json!({ "kind": "RecordDecl", "name": "ctx", "tagUsed": "struct" }),
+        named_function(
+            "close_plain",
+            "void (struct ctx *)",
+            &[("ctx", "struct ctx *")],
+        ),
+        named_function(
+            "close_qual",
+            "void (struct ctx * _Nonnull)",
+            &[("ctx", "struct ctx * _Nonnull")],
+        ),
+        named_function(
+            "close_cli",
+            "void (struct ctx *)",
+            &[("ctx", "struct ctx *")],
+        ),
+    ];
+    nodes[0]["loc"]["file"] = json!(PATH);
+    let generated = generate_with(
+        &unit(nodes),
+        &header(),
+        &Extras {
+            consumes: &[
+                consume("close_plain", "ctx"),
+                consume("close_qual", "ctx"),
+                consume("close_cli", "ctx"),
+            ],
+            nonnulls: &[nonnull("close_cli", "ctx")],
+            ..Extras::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        body(&generated),
+        [
+            "extern type Ctx",
+            "extern \"close_plain\" def close_plain :: Maybe<Ctx> -> unit",
+            "extern \"close_qual\" def close_qual :: Ctx -> unit",
+            "extern \"close_cli\" def close_cli :: Ctx -> unit",
+        ]
+    );
+}
+
+#[test]
+fn invalid_nonnull_annotations_are_rejected() {
+    let parsed = parse_arguments(&[
+        "a.h".into(),
+        "-o".into(),
+        "A.tz".into(),
+        "--nonnull".into(),
+        "open:return".into(),
+        "--nonnull".into(),
+        "open:1".into(),
+    ])
+    .unwrap();
+    assert_eq!(
+        parsed.nonnulls,
+        [nonnull("open", "return"), nonnull("open", "1")]
+    );
+    assert!(
+        parse_arguments(&[
+            "a.h".into(),
+            "-o".into(),
+            "A.tz".into(),
+            "--nonnull".into(),
+            "open:1".into(),
+            "--nonnull".into(),
+            "open:1".into(),
+        ])
+        .unwrap_err()
+        .contains("specified more than once")
+    );
+
+    let run_nonnull = |buffers: &[BufferAnnotation], nonnulls: &[NonnullAnnotation]| {
+        let mut nodes = vec![
+            json!({ "kind": "RecordDecl", "name": "ctx", "tagUsed": "struct" }),
+            named_function(
+                "work",
+                "struct ctx * _Nullable (struct ctx * _Nullable, int, const long *, unsigned long)",
+                &[
+                    ("ctx", "struct ctx * _Nullable"),
+                    ("flags", "int"),
+                    ("items", "const long *"),
+                    ("count", "unsigned long"),
+                ],
+            ),
+            named_function("plain", "int (struct ctx *)", &[("ctx", "struct ctx *")]),
+        ];
+        nodes[0]["loc"]["file"] = json!(PATH);
+        generate_with(
+            &unit(nodes),
+            &header(),
+            &Extras {
+                buffers,
+                nonnulls,
+                ..Extras::default()
+            },
+        )
+    };
+    for (buffers, nonnulls, needle) in [
+        (&[][..], &[nonnull("missing", "1")][..], "does not declare"),
+        (&[], &[nonnull("plain", "9")], "has 1 parameter"),
+        (
+            &[],
+            &[nonnull("plain", "ctx"), nonnull("plain", "1")],
+            "another annotation",
+        ),
+        (
+            &[buffer("work", "items", "count")],
+            &[nonnull("work", "items")],
+            "another annotation",
+        ),
+        (&[], &[nonnull("work", "flags")], "not a convertible"),
+        (&[], &[nonnull("plain", "return")], "not a convertible"),
+        (&[], &[nonnull("work", "ctx")], "conflicts with _Nullable"),
+        (
+            &[],
+            &[nonnull("work", "return")],
+            "conflicts with _Nullable",
+        ),
+    ] {
+        let Err(Failure::Annotation(message)) = run_nonnull(buffers, nonnulls) else {
+            panic!("expected annotation error for {nonnulls:?}");
+        };
+        assert!(
+            message.contains(needle),
+            "{message} did not contain {needle}"
+        );
+    }
 }

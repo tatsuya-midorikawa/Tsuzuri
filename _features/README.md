@@ -331,10 +331,10 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](W01-callback-extern-temporary-string.md) | P1 | S | – | todo |
+| W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](_completed/W01-callback-extern-temporary-string.md) | P1 | S | – | done（`FunctionEmitter::call` の先頭でコールバック `extern` を直接 `host_call` へ送り、`BorrowOperand` を一時領域へ借用して呼び出し後に解放） |
 | W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](W02-break-in-do-function.md) | P2 | S | – | todo |
 | W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
-| W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](W04-windows-trap-report-lost.md) | P1 | S | – | todo |
+| W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](_completed/W04-windows-trap-report-lost.md) | P1 | S | – | done（Windows の `--trap-info` と tzroutine ランタイムの報告を `GetStdHandle`・`WriteFile` で直接書き、標準エラーが無い・書けないときは `OutputDebugStringW` へ送る） |
 | W05 | [Windows の `--emit shared`（DLL）を実装する](W05-windows-shared-library.md) | P2 | L | – | todo |
 | W06 | [Windows の GUI をヘッドレスに検査するテスト基盤](W06-windows-gui-test-harness.md) | P1 | M | – | todo |
 | W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | todo |
@@ -344,11 +344,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W11 | [Windows の OS API（`File`・`Dir`・`Env`・`Random`・`Process`・`Time` の OS 時計）](W11-windows-os-api.md) | P1 | L | – | todo |
 | W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](W12-static-callback-lifetime.md) | P1 | M | W06, W07 | todo |
 | W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | todo |
-| W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](W14-extern-multiple-declarations.md) | P1 | S | – | todo |
-| W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](W15-abi-nullable-handles.md) | P1 | M | – | todo |
+| W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](_completed/W14-extern-multiple-declarations.md) | P1 | S | – | done |
+| W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](_completed/W15-abi-nullable-handles.md) | P1 | M | – | done |
 | W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
 | W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |
-| W18 | [`extern type copy`（所有しない識別子のハンドル）](W18-copy-extern-type.md) | P1 | M | – | todo |
+| W18 | [`extern type copy`（所有しない識別子のハンドル）](_completed/W18-copy-extern-type.md) | P1 | M | – | done |
 | W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](W19-thread-bound-handles.md) | P1 | M | W18 | todo |
 | W20 | [NUL 終端の UTF-16 文字列 `ZString`](W20-zstring.md) | P1 | M | W13 | todo |
 | W21 | [C レイアウトの record（`@c_layout`）](W21-c-layout-records.md) | P1 | XL | W13, W15, W18（Phase 2: W20, W22） | todo |
@@ -372,7 +372,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | todo |
 | W40 | [同梱の launcher の `-x ir` の経路が `-Wl,--gc-sections` を IR のコンパイルに渡し、Windows のすべてのビルドで警告が出る](W40-launcher-ir-forwards-linker-flags.md) | P3 | S | – | todo |
 | W41 | [Windows のタイマーのスレッドの待ちがミリ秒に切り上がり、短い `Time.sleep` が大きく延びる](W41-windows-timer-thread-resolution.md) | P2 | M | W34 | todo |
-| W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](W42-windows-i128-division.md) | P1 | M | – | todo |
+| W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](_completed/W42-windows-i128-division.md) | P1 | M | – | done（Windows x86-64 では `wasm.ll` の 9 個の本体を内部関数に読み替え、Win64 ABI の包み `src/runtime/i128-windows-x64.ll` を添える。Windows Arm64 と WebAssembly の IR は不変） |
 | W43 | [結果の型の注釈がないラムダ・ブロックに `!` のない `do` があると、最後の式ではなく `unit` を返す型になる](W43-plain-do-in-lambda-returns-unit.md) | P2 | S | W38 | todo |
 | W44 | [数のリテラルの制約が破れたときの `E1003` が、単一化した位置ではなくリテラルを指す](W44-literal-constraint-error-location.md) | P3 | S | – | todo |
 
@@ -380,14 +380,14 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| NS01 | [不透明ハンドル `extern type` の非 Null 不変条件と `Maybe<H>` の NULL niche](NS01-nonnull-extern-handles.md) | P1 | M | W15 | todo |
+| NS01 | [不透明ハンドル `extern type` の非 Null 不変条件と `Maybe<H>` の NULL niche](_completed/NS01-nonnull-extern-handles.md) | P1 | M | W15 | done |
 | NS02 | [`export def` とホストバインディング（C#・Python・C++）での `Maybe<H>`・`Maybe<ref R>`](NS02-export-and-bindings-nullable.md) | P2 | M | W15, NS01 | todo |
-| NS03 | [`tsuzuri bindgen` の Nullability 対応（`_Nullable`・`_Nonnull` と既定 `Maybe` 化）](NS03-bindgen-nullability.md) | P1 | M | W15, NS01 | todo |
-| NS04 | [ラムダ式引数・`for...in` の反駁可能パターンの静的検査と、`let` の反駁不可能パターン分解](NS04-irrefutable-binding-patterns.md) | P1 | M | – | todo |
+| NS03 | [`tsuzuri bindgen` の Nullability 対応（`_Nullable`・`_Nonnull` と既定 `Maybe` 化）](_completed/NS03-bindgen-nullability.md) | P1 | M | W15, NS01 | done |
+| NS04 | [ラムダ式引数・`for...in` の反駁可能パターンの静的検査と、`let` の反駁不可能パターン分解](_completed/NS04-irrefutable-binding-patterns.md) | P1 | M | – | done（全 Phase。単一パターン束縛の反駁可能パターンを 2027 で `E1021`・2026 で `W1012` にし、不変 `let <pattern> [: Type] = <expr>` の反駁不可能分解を追加） |
 | NS05 | [強制アンラップ警告 `--warn unwrap`（`Maybe.get`・`Result.get`・`Result.get_error` の静的検出）](NS05-warn-unchecked-unwrap.md) | P2 | S | – | todo |
 | NS06 | [条件付きパターン束縛 `if let`（`elif let` 連鎖を含む安全な短絡取り出し）](NS06-if-let-conditional-binding.md) | P2 | M | (NS04) | todo |
 | NS07 | [非ゼロ外部アドレス型 `ExternAddr` と `extern view` の静的非 Null 化](NS07-extern-addr-nonnull-view.md) | P2 | S | W24 | todo |
-| NS08 | [`Owned.call` の部分適用が `Capture` 検査をすり抜けて解放後読み出しになる不具合の修正](NS08-owned-call-partial-capture-check.md) | P0 | S | – | todo |
+| NS08 | [`Owned.call` の部分適用が `Capture` 検査をすり抜けて解放後読み出しになる不具合の修正](_completed/NS08-owned-call-partial-capture-check.md) | P0 | S | – | done（`Owned.call` の結果が関数型のとき、直接呼び出し・パイプライン・関数値・ジェネリック単相化のすべてで第 2 引数に `Capture` を要求し、`owned2` の二重解放・解放後読み出しを `E1005` で拒否） |
 
 ## 推奨フェーズ
 
@@ -1005,11 +1005,11 @@ Tsuzuri を言語全体として完全な Null 安全にするための仕様調
 
 | 種別 | チケット | 概要 | 承認 |
 | --- | --- | --- | --- |
-| 修正 | [NS08](NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査と `ref w` の借用保持をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ | 不要 |
-| 機能 | [NS01](NS01-nonnull-extern-handles.md) | ネイティブと生成バインディングで不透明ハンドル `extern type`（`H`・`ref H`）を厳格に非 Null にし、非 `Maybe` 境界の `NULL` を `TrapKind::NullHandle` で止めて `Some(NULL)` を根絶する。ネイティブの `Maybe<H>` に `Niche::NullPointer`（1 ポインタ）を与える | D1・D2 |
-| 機能 | [NS02](NS02-export-and-bindings-nullable.md) | [W15](W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す | D1 |
-| 改善 | [NS03](NS03-bindgen-nullability.md) | `tsuzuri bindgen` が捨てていた `_Nullable`・`_Nonnull`・`nonnull` / `returns_nonnull` 属性を反映し、非 Null の根拠がない C ポインタを既定で `Maybe` に写す（`--nonnull` 注釈を追加） | D1・D2 |
-| 改善 | [NS04](NS04-irrefutable-binding-patterns.md) | ラムダ引数・`for...in`・計算式束縛・`select` 受信の単一パターンに網羅性検査を適用し、反駁可能パターン（`\(Some x) -> x` など）を 2027 で `E1021`、2026 で `W1012` にする。Phase 2 で不変 `let` に反駁不可能パターン分解を許す | D1〜D3 |
+| 修正 | [NS08](_completed/NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ（done） | 不要 |
+| 機能 | [NS01](_completed/NS01-nonnull-extern-handles.md) | ネイティブと生成バインディングで不透明ハンドル `extern type`（`H`・`ref H`）を厳格に非 Null にし、非 `Maybe` 境界の `NULL` を `TrapKind::NullHandle` で止めて `Some(NULL)` を根絶する。ネイティブの `Maybe<H>` に `Niche::NullPointer`（1 ポインタ）を与える | D1・D2 |
+| 機能 | [NS02](NS02-export-and-bindings-nullable.md) | [W15](_completed/W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す | D1 |
+| 改善 | [NS03](_completed/NS03-bindgen-nullability.md) | `tsuzuri bindgen` が捨てていた `_Nullable`・`_Nonnull`・`nonnull` / `returns_nonnull` 属性を反映し、非 Null の根拠がない C ポインタを既定で `Maybe` に写す（`--nonnull` 注釈を追加） | D1・D2 |
+| 改善 | [NS04](_completed/NS04-irrefutable-binding-patterns.md) | ラムダ引数・`for...in`・計算式束縛の単一パターンに網羅性検査を適用し、反駁可能パターン（`\(Some x) -> x` など）を 2027 で `E1021`、2026 で `W1012` にする。Phase 2 で不変 `let` に反駁不可能パターン分解を許す（done） | D1〜D3 |
 | 機能 | [NS05](NS05-warn-unchecked-unwrap.md) | `--warn unwrap` でルートパッケージの `Maybe.get`・`Result.get`・`Result.get_error` に警告 `W1011`（`unchecked_unwrap`）を出し、`--deny-warnings` と併用して検査なしアンラップを禁止できるようにする | D1・D2 |
 | 機能 | [NS06](NS06-if-let-conditional-binding.md) | 新しい予約語を増やさず `if let <pattern> = <expr> [when <guard>] then ... [elif ... \| else ...]` を 2 アーム `match` の糖衣として導入し、単一ケースの安全な取り出しを簡潔にする | D1 |
 | 改善 | [NS07](NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する | D1・D2 |

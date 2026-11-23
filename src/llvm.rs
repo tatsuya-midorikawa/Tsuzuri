@@ -8,7 +8,7 @@ use crate::check::{
 use crate::diagnostic::{Diagnostic, DiagnosticKind, Span};
 use crate::interval::Flags;
 use crate::overflow;
-use crate::syntax::{BinaryOp, StringLiteral, UnaryOp};
+use crate::syntax::{BinaryOp, HandleKind, StringLiteral, UnaryOp};
 use crate::trap::{TrapKind, TrapSource};
 
 #[path = "llvm_traps.rs"]
@@ -173,7 +173,35 @@ pub fn emit_with_export_style(
     })
 }
 
+/// W42: the 128-bit routines that `windows_abi` appends. x86-64 Windows calls them with each i128
+/// operand in a temporary passed by pointer and takes the result in XMM0, the C ABI of `__int128`
+/// there, so the bodies of wasm.ll become internal `tz.runtime.<name>` functions behind wrappers of
+/// that shape. Arm64 passes an i128 in two registers, as the definitions of wasm.ll take it.
+pub fn windows_i128_helpers(aarch64: bool) -> String {
+    let helpers = include_str!("runtime/wasm.ll");
+    if aarch64 {
+        return helpers.to_owned();
+    }
+    const WEAK: &str = "define weak hidden i128 @__";
+    debug_assert_eq!(helpers.matches(WEAK).count(), 9);
+    let mut output = helpers.replace(WEAK, "define internal i128 @tz.runtime.");
+    output.push('\n');
+    output.push_str(include_str!("runtime/i128-windows-x64.ll"));
+    output
+}
+
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
+    let has_trap_write = ir.contains("define internal void @tz.trap.write(");
+    let ir = if has_trap_write {
+        assert_eq!(
+            ir.matches(traps::TRAP_WRITE).count(),
+            1,
+            "unexpected @tz.trap.write definition in Windows IR"
+        );
+        ir.replacen(traps::TRAP_WRITE, traps::TRAP_WRITE_WINDOWS, 1)
+    } else {
+        ir
+    };
     let mut output = String::with_capacity(ir.len());
     let mut exports: BTreeSet<_> = module
         .functions
@@ -184,7 +212,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if io_entry(module) || main_entry(module) {
         exports.insert("tsuzuri_main".into());
     }
-    let has_write = ir.contains("declare i64 @write(i32, ptr, i64)");
+    let has_write = ir.contains("call i64 @write(");
     let has_console = ir.contains("define internal i32 @tz.console.write(");
     let mut console = false;
     for line in ir.lines() {
@@ -209,13 +237,30 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
             console = false;
         }
     }
+    if has_trap_write {
+        if !output.contains("define internal void @tz.debugger.write(") {
+            output.push_str(traps::DEBUGGER_WRITE);
+        }
+        for declaration in [
+            "declare ptr @GetStdHandle(i32)",
+            "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+            "declare void @OutputDebugStringW(ptr)",
+            "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
+    }
     if has_console || has_write {
         output.push_str("declare i32 @_setmode(i32, i32)\n");
     }
     if has_write {
-        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
+        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
-    output.push_str(include_str!("runtime/wasm.ll"));
+    output.push_str(&windows_i128_helpers(
+        crate::target::current_platform().aarch64(),
+    ));
     output
 }
 
@@ -1835,6 +1880,9 @@ fn emit_program_in(
         });
     let pruned = roots.is_some() && tests.is_none();
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
+    if wasm {
+        validate_wasm_externs(module, &reachable)?;
+    }
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -2004,7 +2052,9 @@ fn emit_program_in(
             &mut specializations,
         ));
         if function.exported {
-            let wrapper = if host_abi::extended(function) {
+            let wrapper = if host_abi::extended(function)
+                || (!wasm && host_abi::has_handle_parameter(function))
+            {
                 host_abi::wrapper(
                     module,
                     function,
@@ -3315,8 +3365,10 @@ fn c_type(ty: &Type) -> String {
         Type::Binary(64) => "double".into(),
         Type::Bool => "int32_t".into(),
         Type::Unit => "void".into(),
-        Type::Handle(name) => host_abi::handle_c_name(name),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => c_type(inner),
+        Type::Handle(name, _) => host_abi::handle_c_name(name),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => {
+            c_type(inner)
+        }
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -3372,7 +3424,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => "ptr".into(),
         Type::FixedArray(element, _) => {
             format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
         }
@@ -3793,7 +3845,7 @@ pub(crate) fn codegen_identity(ty: &Type) -> Type {
             | Type::String
             | Type::Utf8String
             | Type::Length(_)
-            | Type::Handle(_)
+            | Type::Handle(..)
             | Type::Dyn(_) => {}
         }
     }
@@ -3880,7 +3932,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
             },
             canonical_type(value, module)
         ),
-        Type::Handle(name) => format!("extern.{name}"),
+        Type::Handle(name, _) => format!("extern.{name}"),
         Type::Dyn(dyn_type) => dyn_name(dyn_type),
         Type::Simd(_)
         | Type::Integer(..)
@@ -3923,6 +3975,60 @@ pub(crate) fn reachable_functions(
     benches: bool,
 ) -> BTreeSet<usize> {
     program_reach(module, roots, benches).1
+}
+
+/// W14: WebAssembly imports one signature per name, so reached explicit symbols must agree on their
+/// Tsuzuri signature. Unreached declarations do not become imports and are ignored.
+pub(crate) fn validate_wasm_externs(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+) -> Result<(), Diagnostic> {
+    let types = module.types();
+    let mut seen: BTreeMap<&str, (Type, Span)> = BTreeMap::new();
+    for &id in reachable {
+        let function = &module.functions[id];
+        let TypedExprKind::HostCall(import, _) = &function.body.kind else {
+            continue;
+        };
+        if crate::abi::uses_nullable_abi(
+            &function.signature.parameters,
+            &function.signature.result,
+            &types,
+        ) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'Maybe' at the C ABI passes None as a null pointer, which only native targets support; build for a native target",
+                function.span,
+            ));
+        }
+        if !import.explicit {
+            continue;
+        }
+        let declared = function.signature.as_type();
+        match seen.entry(import.native_symbol.as_str()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert((declared, function.span));
+            }
+            std::collections::btree_map::Entry::Occupied(known) => {
+                if known.get().0 != declared {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ConflictingExternDeclaration,
+                        format!(
+                            "extern symbol '{}' is reached through declarations of different types; WebAssembly imports one signature per name, so use one declaration for this target",
+                            import.native_symbol
+                        ),
+                        function.span,
+                    )
+                    .related(
+                        crate::diagnostic::RelatedRole::FirstDefinedHere,
+                        "first defined here",
+                        known.get().1,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Runtime resources whose readers need a dedicated runner or an explicit allocator.
@@ -4371,8 +4477,8 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(32) => "float".into(),
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
-        Type::Handle(_) => "ptr".into(),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)) => "ptr".into(),
+        Type::Handle(..) => "ptr".into(),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => "ptr".into(),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -6499,7 +6605,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Vec(element) => self.clone_vector(element, value),
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
-            Type::Handle(_) => unreachable!("extern handles cannot be cloned"),
+            Type::Handle(_, HandleKind::Copy) => value.to_owned(),
+            Type::Handle(_, HandleKind::Owned) => unreachable!("extern handles cannot be cloned"),
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
                 assert!(dyn_type.copy, "dyn values without Copy cannot be cloned");
@@ -7146,6 +7253,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
+        // E12 D9 / W01: a callback extern has no function body, so every call of it is the host call
+        // itself, whatever its arguments are (a borrowed temporary included).
+        if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind
+            && let TypedExprKind::HostCall(import, _) = &self.module.functions[id].body.kind
+            && import.callbacks
+        {
+            return self.host_call(
+                import,
+                arguments,
+                &self.module.functions[id].signature.result,
+            );
+        }
         if arguments
             .iter()
             .any(|argument| matches!(argument.kind, TypedExprKind::BorrowOperand(_)))
@@ -7196,11 +7315,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
             let function = &self.module.functions[id];
-            if let TypedExprKind::HostCall(import, _) = &function.body.kind
-                && import.callbacks
-            {
-                return self.host_call(import, arguments, &function.signature.result);
-            }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
                 let value = self.expression(&arguments[0]);
                 self.cover_call(id);
@@ -7933,7 +8047,7 @@ fn named_wrapper(function: &CheckedFunction, module: &CheckedModule, symbol: &st
         } else if let Type::Integer(bits @ (8 | 16), _) = ty {
             let _ = writeln!(output, "  %n{index} = trunc i32 %arg{index} to i{bits}");
             arguments.push(format!("i{bits} %n{index}"));
-        } else if matches!(ty, Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(_)))
+        } else if matches!(ty, Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)))
         {
             // The host passes the handle itself, and a borrow of it is the address of a slot.
             let _ = writeln!(
@@ -10652,7 +10766,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             Type::Utf8Char,
             Type::String,
             Type::Utf8String,
-            Type::Handle("Main.File".into()),
+            Type::Handle("Main.File".into(), HandleKind::Owned),
             Type::Tuple(Vec::new()),
             Type::Tuple(vec![Type::I64]),
             Type::Tuple(vec![Type::I64, Type::I64]),
@@ -10794,5 +10908,90 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             boxed(function(vec![Type::String], &[], true, Type::I64))
         );
         assert_ne!(codegen_identity(&pure), plain);
+    }
+
+    #[test]
+    fn windows_trap_report_falls_back_to_the_debugger() {
+        let source = "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n";
+        let module = analyze(source).unwrap();
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let options = EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        for numbering in [TrapNumbering::Dense, TrapNumbering::Stable] {
+            for debug_info in [false, true] {
+                for optimized in [false, true] {
+                    if !debug_info && optimized {
+                        continue;
+                    }
+                    let base = if debug_info {
+                        emit_with_debug_info_numbered(
+                            &module,
+                            options,
+                            &sources,
+                            optimized,
+                            true,
+                            &|_| numbering,
+                        )
+                        .unwrap()
+                        .ir
+                    } else {
+                        emit_with_trap_info_numbered(&module, options, &sources, &|_| numbering)
+                            .unwrap()
+                            .ir
+                    };
+                    assert!(!base.contains("@GetStdHandle"));
+                    assert!(!base.contains("@tz.debugger.write("));
+                    let win = windows_abi(base.clone(), &module);
+                    assert_eq!(win, windows_abi(base, &module));
+                    assert!(win.contains("call ptr @GetStdHandle(i32 -12)"));
+                    assert!(!win.contains("call i64 @write("));
+                    assert!(!win.contains("define internal i64 @write("));
+                    assert_eq!(
+                        win.matches("define internal void @tz.debugger.write(")
+                            .count(),
+                        1
+                    );
+                    for declaration in [
+                        "declare ptr @GetStdHandle(i32)",
+                        "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+                        "declare void @OutputDebugStringW(ptr)",
+                        "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+                    ] {
+                        assert_eq!(win.matches(declaration).count(), 1, "{declaration}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_write_shim_reports_a_failed_setmode() {
+        let module = analyze(
+            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }",
+        )
+        .unwrap();
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let win = emit_with_export_style(&module, options, ExportStyle::Dllexport).unwrap();
+        assert!(win.contains("define internal i64 @write("));
+        assert!(win.contains("%bad_mode = icmp eq i32 %mode, -1"));
+        assert!(win.contains("ret i64 -1"));
     }
 }

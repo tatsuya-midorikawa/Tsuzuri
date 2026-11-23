@@ -6,8 +6,8 @@
 | 優先度 | P1（Win32 の多くの API は NULL を取るか返す。`CreateWindowExW` の `hWndParent`・`hMenu`・`hInstance`・`lpParam`、`LoadCursorW` の `hInstance`、失敗で NULL を返す `CreateWindowExW`・`LoadImageW`・`TlsGetValue` などで、今はどれも型の契約の内で書けない） |
 | 規模 | M（判定の関数と extern の側の述語 3 つ、生成の 3 経路（extern の引数・extern の結果・コールバックの引数）、ヘッダーの 2 つの走査、wasm の拒否、テストと文書） |
 | 依存 | – |
-| 後続 | [W21](W21-c-layout-records.md)（`@c_layout` の field の `Maybe<H>`）、[W24](W24-extern-view.md)、[W27](W27-win32-package-from-winmd.md)（win32metadata の `[Optional]` の写し先）、[NS01](NS01-nonnull-extern-handles.md)（`H` の非 Null 不変条件と `Maybe<H>` の niche）、[NS02](NS02-export-and-bindings-nullable.md)、[NS03](NS03-bindgen-nullability.md) |
-| 状態 | todo |
+| 後続 | [W21](../W21-c-layout-records.md)（`@c_layout` の field の `Maybe<H>`）、[W24](../W24-extern-view.md)、[W27](../W27-win32-package-from-winmd.md)（win32metadata の `[Optional]` の写し先）、[NS01](../NS01-nonnull-extern-handles.md)（`H` の非 Null 不変条件と `Maybe<H>` の niche）、[NS02](../NS02-export-and-bindings-nullable.md)、[NS03](../NS03-bindgen-nullability.md) |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E12 の対象外の解除）。決定事項 D1 が要承認、D2〜D8 は既定案 |
 | 手本にする既存実装 | `src/abi.rs` の `abi_scalar`・`parameter`・`result`・`callback`（E12 が足したハンドルの判定）、`src/llvm_imports.rs` の `host_call`（`ref H` の引数の `load ptr`）、`src/llvm_abi.rs` の `wrapper`（コールバックの `ref H` の `spill`）・`c_parameters`・`handle_typedefs`・`record_types`、`src/llvm_layout.rs` の `construct_value`・`nullary_value`・`tag_value`・`payload_value`、`src/llvm_sync.rs` の compare-exchange（2 つの共用体の値を `construct_value` で作って `select` する形）、`src/llvm.rs` の `domain_unsupported`（target で拒否する診断を extern の位置に出す形） |
@@ -49,9 +49,9 @@ def main :: unit -> i32 = \() ->
 
 ## 目的
 
-Win32 と多くの C の API は「無い」を NULL で表す。E12 は `Option<H>` と NULL を「`abi_scalar` が型の文脈を持たない」という理由で見送った（[E12](_completed/E12-ffi-extensions.md) の「追加した拡張と確認」の「実装しなかったもの」）。そのため今は、NULL を渡す引数と NULL を返す結果を `i64` と宣言して 0 と比べるしかなく、ハンドルの型の区別も、結果が NULL でないことの保証も失う。
+Win32 と多くの C の API は「無い」を NULL で表す。E12 は `Option<H>` と NULL を「`abi_scalar` が型の文脈を持たない」という理由で見送った（[E12](E12-ffi-extensions.md) の「追加した拡張と確認」の「実装しなかったもの」）。そのため今は、NULL を渡す引数と NULL を返す結果を `i64` と宣言して 0 と比べるしかなく、ハンドルの型の区別も、結果が NULL でないことの保証も失う。
 
-このチケットは、std の `Maybe` を ABI の境界でだけ NULL に写す。`None` ⇔ NULL、`Some x` ⇔ `x`。内部の配置は変えず、境界で変換する。E12 の見送りの理由には、判定の関数 1 つ（`abi::nullable`）を検査と生成の両方で使い、`abi_type`・`c_type` には C から見た型（`abi::c_view`）を渡すことで答える（設計の「型の文脈」）。[GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) の X の範囲（生ポインター型を入れない）の内にあり、値を参照外しすることはない。
+このチケットは、std の `Maybe` を ABI の境界でだけ NULL に写す。`None` ⇔ NULL、`Some x` ⇔ `x`。内部の配置は変えず、境界で変換する。E12 の見送りの理由には、判定の関数 1 つ（`abi::nullable`）を検査と生成の両方で使い、`abi_type`・`c_type` には C から見た型（`abi::c_view`）を渡すことで答える（設計の「型の文脈」）。[GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) の X の範囲（生ポインター型を入れない）の内にあり、値を参照外しすることはない。
 
 ## 着手条件と停止条件
 
@@ -105,7 +105,7 @@ extern "probe_rect" def probe :: Maybe<ref Rect> -> i32                 → 同�
 ### 決定の記録
 
 - E12 の対象外に「`Option<H>` と NULL の対応」があり、理由は「`abi_scalar` が型の文脈を持たないため、ABI 判定の関数すべてに文脈を通す変更になる」。
-- [B07](_completed/B07-user-drop.md) の「チケットから外れた判断」6 は、wasm32 の番号付きハンドルが 0 を有効な値に使いうるので、null・0 を印に使わないと書く。
+- [B07](B07-user-drop.md) の「チケットから外れた判断」6 は、wasm32 の番号付きハンドルが 0 を有効な値に使いうるので、null・0 を印に使わないと書く。
 - `docs/language.md` の「不透明ハンドル」は、ハンドルを置ける ABI の位置を「引数（`H`・`ref H`）と結果（`H`）」に限り、`Maybe` の中は「ABI 境界以外」とする。`tsuzuri bindgen` の段落は「NULL は区別できず」と書く。
 
 確かめ方: `grep -n "pub fn abi_scalar\|pub fn callback\|pub fn parameter\|pub fn result" src/abi.rs`、`grep -n "fn abi_type\|fn c_type" src/llvm.rs`、`grep -n "fn niche_layout" -A25 src/llvm_layout.rs`、`grep -n "Option<H>" _features/_completed/E12-ffi-extensions.md`。
@@ -281,12 +281,12 @@ pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Cow<'a, Type>;
 
 ## 受け入れ条件
 
-- [ ] 仕様 1 の 6 つの形が native で動き、`live == 0`（`-O0`・`-O3`、MSVC・MinGW・Linux・macOS）。
-- [ ] 仕様 1 で置けない形が `E1008` の `abi_nullable_payload` で、`Maybe` を含まない宣言の診断は文も kind も変わらない。
-- [ ] wasm32・wasm64 は到達した extern だけ `E1008` の `abi_native_only`。`check` は通る。
-- [ ] `Maybe` の内部の配置と、この機能を使わないプログラムの IR・object・ヘッダー・診断が byte 単位で変わらない（比べた件数を記録した）。
-- [ ] `abi_type`・`c_type` に `Maybe` の腕も module の引数も足していない。
-- [ ] 文書を直し、`check-docs` が通る。T2 が成功し、PR に `ci:full` を付けた。
+- [x] 仕様 1 の 6 つの形が native で動き、`live == 0`（`-O0`・`-O3`、MSVC・MinGW・Linux・macOS）。
+- [x] 仕様 1 で置けない形が `E1008` の `abi_nullable_payload` で、`Maybe` を含まない宣言の診断は文も kind も変わらない。
+- [x] wasm32・wasm64 は到達した extern だけ `E1008` の `abi_native_only`。`check` は通る。
+- [x] `Maybe` の内部の配置と、この機能を使わないプログラムの IR・object・ヘッダー・診断が byte 単位で変わらない（比べた件数を記録した）。
+- [x] `abi_type`・`c_type` に `Maybe` の腕も module の引数も足していない。
+- [x] 文書を直し、`check-docs` が通る。T2 が成功し、PR に `ci:full` を付けた。
 
 ## 落とし穴
 

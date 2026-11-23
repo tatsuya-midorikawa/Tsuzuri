@@ -751,7 +751,7 @@ fn lambda_guards_respect_nesting_limits() {
 
 #[test]
 fn match_origin_destructuring() {
-    // Destructuring keeps its runtime trap instead of the exhaustiveness check.
+    // Edition 2026 warns with W1012 and keeps the runtime trap; edition 2027 rejects with E1021 (NS04).
     for source in [
         "for [_x] in [[1], [2, 3]] do ()",
         "(\\[x] -> x) [1, 2]",
@@ -761,7 +761,19 @@ fn match_origin_destructuring() {
     ] {
         let ir = accepts(source);
         assert!(ir.contains("@llvm.trap"), "{source}");
-        assert!(analyze(source).unwrap().warnings.is_empty(), "{source}");
+        let warnings = analyze(source).unwrap().warnings;
+        assert!(
+            warnings.iter().all(|w| w.code == "W1012"),
+            "{source}: {warnings:?}"
+        );
+        assert!(!warnings.is_empty(), "{source}");
+        assert_eq!(
+            analyze_with_edition(source, Edition::E2027)
+                .unwrap_err()
+                .code,
+            "E1021",
+            "{source}"
+        );
     }
     let module = analyze_modules(&[
         (
@@ -771,7 +783,8 @@ fn match_origin_destructuring() {
         ("Main.tz", "Arrays { for [x] in [[42]] do { yield x } }"),
     ])
     .unwrap();
-    assert!(module.warnings.is_empty());
+    assert_eq!(module.warnings.len(), 1);
+    assert_eq!(module.warnings[0].code, "W1012");
     // A written match is checked even when it only destructures.
     rejects("match [1] with | [x] -> x", "E1021");
 }

@@ -90,8 +90,8 @@ define i32 @tz_integer_parse128(ptr %units, i64 %length, i32 %signed, ptr %out) 
 `;
   const runtime = join(temporary, "integer.ll");
   writeFileSync(runtime, source.replaceAll("define internal ", "define ") + wrappers);
-  // LLVM turns an i128 division into a call of __udivti3 or a relative. On Windows x64 that call passes the operands by pointer and
-  // returns in XMM0, which the helpers of src/runtime/wasm.ll do not follow, so no entry point may divide an i128 on any target.
+  // The integer formatter and parser work on 32-bit digits with 64-bit operations, so formatting or parsing an integer
+  // never pulls in a 128-bit division helper (`__udivti3` and its relatives) on any target.
   for (const triple of ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-macos14"]) {
     for (const level of ["-O0", "-O3"]) {
       const result = spawnSync(clang, [`--target=${triple}`, level, "-S", "-Wno-override-module", "-x", "ir", runtime, "-o", "-"],
@@ -105,9 +105,18 @@ define i32 @tz_integer_parse128(ptr %units, i64 %length, i32 %signed, ptr %out) 
   }
   const harness = join(root, "tests/integer_format_runtime.c");
   const numeric = join(root, "src/runtime/numeric.ll");
-  // The numeric runtime's radix loop divides an i128 by a variable base, which at -O0 is the library call whose Windows x64
-  // convention the helpers of src/runtime/wasm.ll do not follow, so Windows compares with the reference only.
-  const crossCheck = process.platform !== "win32";
+  const crossCheck = true;
+  const nativeExtras = [];
+  if (process.platform === "win32") {
+    // Same helper layout as `tsuzuri::llvm::windows_i128_helpers` (W42), so `numeric.ll` links on MSVC Clang too.
+    const wasmHelpers = readFileSync(join(root, "src/runtime/wasm.ll"), "utf8");
+    const winHelpers = process.arch === "arm64"
+      ? wasmHelpers
+      : `${wasmHelpers.replaceAll("define weak hidden i128 @__", "define internal i128 @tz.runtime.")}\n${readFileSync(join(root, "src/runtime/i128-windows-x64.ll"), "utf8")}`;
+    const helperPath = join(temporary, "windows-i128.ll");
+    writeFileSync(helperPath, `declare void @llvm.trap()\n${winHelpers}`);
+    nativeExtras.push("-D_CRT_SECURE_NO_WARNINGS", helperPath);
+  }
   const halves = (raw) => {
     const value = BigInt(`0x${raw}`);
     return [value & mask64, value >> 64n];
@@ -137,7 +146,7 @@ define i32 @tz_integer_parse128(ptr %units, i64 %length, i32 %signed, ptr %out) 
   for (const level of ["0", "3", "s", "z"]) {
     // The native program is linked with numeric.ll, whose results it compares with the runtime's.
     const native = join(temporary, `integer-O${level}${process.platform === "win32" ? ".exe" : ""}`);
-    execute(clang, [`-O${level}`, ...(crossCheck ? ["-DCROSS_CHECK"] : []), "-Wno-override-module", harness, runtime, ...(crossCheck ? [numeric] : []), "-o", native]);
+    execute(clang, [`-O${level}`, ...(crossCheck ? ["-DCROSS_CHECK"] : []), "-Wno-override-module", harness, runtime, ...(crossCheck ? [numeric, ...nativeExtras] : []), "-o", native]);
     const lines = execute(native, [], `${requests.join("\n")}\n${sweeps.map((kind) => `s ${kind}\n`).join("")}`)
       .replaceAll("\r\n", "\n").trimEnd().split("\n");
     assert.equal(lines.length, requests.length + sweeps.length);

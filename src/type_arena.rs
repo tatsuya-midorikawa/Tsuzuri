@@ -195,7 +195,10 @@ impl Hash for Fingerprint<'_> {
                 sequence(parameters, state);
                 Fingerprint(result).hash(state);
             }
-            Type::Handle(name) => name.hash(state),
+            Type::Handle(name, kind) => {
+                name.hash(state);
+                kind.hash(state);
+            }
             Type::Application(head, arguments) => {
                 Fingerprint(head).hash(state);
                 sequence(arguments, state);

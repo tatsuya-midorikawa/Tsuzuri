@@ -24,6 +24,7 @@ export const TRAP_KINDS = {
     overflow: 'unhandled OverflowException: arithmetic operation resulted in an overflow',
     contract_requires: 'contract requires failed',
     contract_ensures: 'contract ensures failed',
+    null_handle: 'null extern handle',
 };
 
 /** The compiler runs that `stdout`, `trap` and `tests-pass` may use. */

@@ -15,7 +15,7 @@
 
 ## 実装者向け早見
 
-- 範囲: `extern view def read_nmhdr :: i64 -> NmHdr` でホストが渡したアドレス（`i64`）から record を読み、`extern view def write_minmax :: i64 -> ref MinMaxInfo -> unit` で書く。アドレスが 0 か整列違反なら、呼び出し地点でトラップする。範囲と型の正しさは検査しない（`@trusted` と `ffi` の監査の責任）。Phase 1 は 32/64-bit の数の field だけの record（今の境界の配置が C と一致する）、Phase 2 は `@c_layout` の record（[W21](W21-c-layout-records.md)）。WASM の `E1008` の kind は [W15](W15-abi-nullable-handles.md) と共有する。共通の決定は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)。
+- 範囲: `extern view def read_nmhdr :: i64 -> NmHdr` でホストが渡したアドレス（`i64`）から record を読み、`extern view def write_minmax :: i64 -> ref MinMaxInfo -> unit` で書く。アドレスが 0 か整列違反なら、呼び出し地点でトラップする。範囲と型の正しさは検査しない（`@trusted` と `ffi` の監査の責任）。Phase 1 は 32/64-bit の数の field だけの record（今の境界の配置が C と一致する）、Phase 2 は `@c_layout` の record（[W21](W21-c-layout-records.md)）。WASM の `E1008` の kind は [W15](_completed/W15-abi-nullable-handles.md) と共有する。共通の決定は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)。
 - 最初に読む: ① 仕様 1〜5 ② `src/llvm_abi.rs` の `wrapper` の record の引数の腕と `host_pointer` ③ `src/llvm.rs` の `import.callbacks` の 2 か所（呼び出し地点の `host_call` と、本体を出さない分岐）④ `src/check.rs` の `validate_callbacks`。
 - 最初に書くテスト: `tests/extern_view.rs` の `read_and_write_lower_at_the_call_site`（IR に `inttoptr`・null と整列のガード・field ごとの `load`／`store` があり、`declare` と `call` がない）。
 - 触ってはいけない: view を使わないプログラムの IR・ヘッダー・`tsuzuri audit` の出力・診断。`TrapKind` の列（増やさない）。普通の extern の意味と生成。
@@ -161,7 +161,7 @@ extern_view := ["private"] "extern" "view" "def" name "::" "i64" "->" R         
 
 ## 前提とする他チケットのインターフェース
 
-- W15（[W15](W15-abi-nullable-handles.md)・[W13](W13-extern-ref-mut-and-mutable-buffers.md) と共有）: WASM の `E1008` の kind `abi_native_only` と、その共有の口（WASM の生成で native だけの形に出会った extern の関数の番号を `Globals` の集合に記録し、`emit_program` が関数の生成の後で最も小さい番号の extern の名前の位置に `E1008` を返す）。W24 の `extern_view` は、`self.globals.wasm` のとき view の関数の番号を同じ集合に記録する。W13・W15 のどちらも先に入っていなければ、このチケットが同じ名前の kind と口を作る（W13・W15 の設計にある「先に入ったチケットが作る」）。Phase 1 が W15 から使うのはこれだけ。
+- W15（[W15](_completed/W15-abi-nullable-handles.md)・[W13](W13-extern-ref-mut-and-mutable-buffers.md) と共有）: WASM の `E1008` の kind `abi_native_only` と、その共有の口（WASM の生成で native だけの形に出会った extern の関数の番号を `Globals` の集合に記録し、`emit_program` が関数の生成の後で最も小さい番号の extern の名前の位置に `E1008` を返す）。W24 の `extern_view` は、`self.globals.wasm` のとき view の関数の番号を同じ集合に記録する。W13・W15 のどちらも先に入っていなければ、このチケットが同じ名前の kind と口を作る（W13・W15 の設計にある「先に入ったチケットが作る」）。Phase 1 が W15 から使うのはこれだけ。
 - W21（Phase 2。[W21](W21-c-layout-records.md)）: `abi::c_layout_record`、`@c_layout` に対応した `record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`Maybe<H>` の field は W15 の `nullable_from_c`・`nullable_to_c` で写す）。
 
 ## 他チケットへ提供するインターフェース

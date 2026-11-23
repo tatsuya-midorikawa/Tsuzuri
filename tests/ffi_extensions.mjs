@@ -81,6 +81,102 @@ try {
   mkdirSync(tested);
   writeFileSync(join(tested, "Main.tz"), `${readFileSync(join(fixture, "Main.tz"), "utf8")}\ntest "counters" =\n    assert (counters 10 == 59)\n\ntest "callbacks" =\n    assert (callbacks 4 == 39)\n`);
   assert.match(execute(compiler, ["test", tested, "--link", host, "-l", "pthread"]).stdout, /2 passed; 0 failed/);
+  const routineHandles = join(root, "routine-handles");
+  mkdirSync(routineHandles);
+  writeFileSync(join(routineHandles, "Main.tz"), [
+    "extern type copy IdHandle",
+    'extern "w18_id_new" def id_new :: i64 -> IdHandle',
+    'extern "w18_id_value" def id_value :: IdHandle -> i64',
+    'extern "w18_id_borrow" def id_borrow :: ref IdHandle -> i64',
+    "let handle = id_new 10",
+    "match DataChannel.bounded 1 with",
+    "| (sender, receiver) ->",
+    "    tzroutine {",
+    "        let _ = DataChannel.send (ref sender) (id_value handle)",
+    "        ()",
+    "    }",
+    "    let scoped = Routine.scope (ref handle) 2 (\\w i -> id_borrow w + i)",
+    "    let sent = match DataChannel.recv (ref receiver) with | Some v -> v | None -> 0",
+    "    sent + scoped[0] + scoped[1] + id_value handle",
+    "",
+  ].join("\n"));
+  assert.equal(execute(compiler, ["run", routineHandles, "--link", host, "-l", "pthread"]).stdout.trim(), "43");
+  const multiExtern = join(root, "multi-extern");
+  mkdirSync(multiExtern);
+  writeFileSync(join(multiExtern, "Main.tz"), [
+    "record Rect { left: i32, top: i32, right: i32, bottom: i32 }",
+    'extern "w14_ffi_word" def word_int :: i64 -> i64 -> i64',
+    'extern "w14_ffi_word" def word_rect :: i64 -> ref Rect -> i64',
+    "let r = Rect { left: 7i32, top: 8i32, right: 9i32, bottom: 10i32 }",
+    "word_int 0 42 + word_rect 1 (ref r)",
+    "",
+  ].join("\n"));
+  for (const extra of [["-O0"], ["-O3"], ["--backend", "fast"]]) {
+    const out = join(root, `multi-${extra.join("")}`);
+    const built = execute(compiler, ["build", multiExtern, ...extra, "--link", host, "-l", "pthread", "-o", out], false);
+    if (extra[0] === "--backend" && /built without the fast backend|not available on/.test(built.stderr)) continue;
+    assert.equal(built.status, 0, built.stderr);
+    assert.equal(execute(out, []).stdout.trim(), "50");
+  }
+  const nullableFixture = resolve("tests/fixtures/abi_nullable");
+  execute(compiler, ["check", nullableFixture]);
+  rejected(["build", nullableFixture, "--target", "wasm32", "-o", join(root, "nullable.wasm")], "E1008");
+  rejected(["build", nullableFixture, "--target", "wasm64", "-o", join(root, "nullable64.wasm")], "E1008");
+  rejected(["build", nullableFixture, "--target", "wasm32", "--emit", "bindings-js", "-o", join(root, "nullable.mjs")], "E1008");
+  for (const optimization of ["-O0", "-O3"]) {
+    const out = join(root, `nullable${optimization}`);
+    execute(compiler, ["build", nullableFixture, optimization, "--link", host, "-l", "pthread", "-o", out]);
+    assert.equal(execute(out, []).stdout.trim(), "45");
+  }
+  // NS01: non-Maybe extern handles trap with "null extern handle" on NULL across extern return, export param, and callback param.
+  const nullTrap = join(root, "null-trap");
+  mkdirSync(nullTrap);
+  writeFileSync(join(nullTrap, "Main.tz"), [
+    "extern type H",
+    'extern "ns01_null_handle" def bad_return :: unit -> H',
+    "export def bad_export :: own H -> i32",
+    "fn bad_export _h = 1i32",
+    "export def trigger_return :: i32 -> i32",
+    "fn trigger_return _ = { let _ = bad_return (); 0i32 }",
+    "",
+  ].join("\n"));
+  const nullHeader = join(root, "null_trap.h");
+  execute(compiler, ["build", nullTrap, "--emit", "header", "--trap-mode", "return", "-o", nullHeader]);
+  const nullObj = join(root, "null_trap.o");
+  execute(compiler, ["build", nullTrap, "--emit", "object", "--trap-mode", "return", "-O3", "-o", nullObj]);
+  const nullDriver = join(root, "null_driver.c");
+  writeFileSync(nullDriver, [
+    "#undef NDEBUG",
+    "#include <assert.h>",
+    '#include "null_trap.h"',
+    "void *ns01_null_handle(void) { return 0; }",
+    "int main(void) {",
+    "  tsuzuri_trap_info trap = {0, 0}; int32_t out = 0;",
+    "  assert(tsuzuri_try_bad_export(&trap, &out, 0) == 1 && trap.kind == 18);",
+    "  trap = (tsuzuri_trap_info){0, 0};",
+    "  assert(tsuzuri_try_trigger_return(&trap, &out, 0) == 1 && trap.kind == 18);",
+    "  return 0;",
+    "}",
+    "",
+  ].join("\n"));
+  const nullRunner = join(root, "null_runner");
+  execute(clang, ["-O2", "-pthread", "-I", root, nullDriver, nullObj, "-lm", "-o", nullRunner]);
+  execute(nullRunner, []);
+  const nullCbTrap = join(root, "null-cb-trap");
+  mkdirSync(nullCbTrap);
+  writeFileSync(join(nullCbTrap, "Main.tz"), [
+    "extern type H",
+    'extern "ns01_call_null" def bad_callback :: (H -> i32) -> i32',
+    "private def take_cb :: own H -> i32",
+    "fn take_cb _h = 1i32",
+    "bad_callback take_cb",
+    "",
+  ].join("\n"));
+  const nullCbRunner = join(root, "null_cb_runner");
+  execute(compiler, ["build", nullCbTrap, "-O3", "--trap-info", "--link", host, "-l", "pthread", "-o", nullCbRunner]);
+  const cbTrapRun = execute(nullCbRunner, [], false);
+  assert.notEqual(cbTrapRun.status, 0);
+  assert.match(cbTrapRun.stderr, /trap: null extern handle/);
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");
@@ -127,9 +223,15 @@ try {
     "tsuzuri.e12_counter_free:function",
     "tsuzuri.e12_counter_new:function",
     "tsuzuri.e12_fold:function",
+    "tsuzuri.e12_pair_mix:function",
     "tsuzuri.e12_run:function",
+    "tsuzuri.e12_sum_with:function",
+    "tsuzuri.e12_text_units:function",
     "tsuzuri.e12_visit:function",
     "tsuzuri.sqrt:function",
+    "tsuzuri.w18_id_borrow:function",
+    "tsuzuri.w18_id_new:function",
+    "tsuzuri.w18_id_value:function",
   ];
   // Checks one linked module against the hand-computed table. `wide` is wasm64: pointers, handles and
   // table indices are BigInt there.
@@ -153,6 +255,20 @@ try {
         e12_fold: (index, count) => { let total = 0n; for (let item = 1n; item <= count; item++) total = callback(index)(total, item); return total; },
         e12_run: (index) => callback(index)(),
         e12_visit: (index, handle) => callback(index)(handle),
+        e12_text_units: (index, _ptr, length, extra) => callback(index)(length) + extra,
+        e12_pair_mix: (index, ptr) => {
+          const view = new DataView(instance.exports.memory.buffer, Number(ptr), 16);
+          return callback(index)(view.getBigInt64(0, true) * 10n + view.getBigInt64(8, true));
+        },
+        e12_sum_with: (index, ptr, length) => {
+          const items = new BigInt64Array(instance.exports.memory.buffer, Number(ptr), Number(length));
+          let total = 0n;
+          for (const item of items) total += item;
+          return callback(index)(total);
+        },
+        w18_id_new: (seed) => wide ? seed * 2n + 1n : Number(seed) * 2 + 1,
+        w18_id_value: (handle) => (BigInt(handle) - 1n) / 2n,
+        w18_id_borrow: (handle) => (BigInt(handle) - 1n) / 2n + 1n,
       },
       env: { e12_host_now: () => 40n },
     };
@@ -161,6 +277,10 @@ try {
     assert.equal(instance.exports.tz_callbacks(4n), 39n);
     assert.equal(instance.exports.tz_callback_shapes(10n), 82n);
     assert.equal(instance.exports.tz_threaded(3n), 9n);
+    assert.equal(instance.exports.tz_temporaries(4n), 204n);
+    assert.equal(instance.exports.tz_temporary_then_raise(3n), 27n);
+    assert.equal(instance.exports.tz_temporary_then_raise(3037000500n), -1n);
+    assert.equal(instance.exports.tz_copy_handles(10n), 66n);
     assert.equal(instance.exports.tz_misc(2.25), 40n);
     assert.equal(instance.exports.tz_misc(2), 0n);
     assert.equal(instance.exports.tz_pass_through(wide ? 7n : 7), wide ? 7n : 7);

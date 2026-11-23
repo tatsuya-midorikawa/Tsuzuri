@@ -163,6 +163,7 @@ impl Checker<'_> {
                         kind: ExprKind::Block {
                             bindings: vec![Binding {
                                 name: name.clone(),
+                                pattern: None,
                                 mutable: false,
                                 using: false,
                                 recursion: Recursion::None,
@@ -196,7 +197,7 @@ impl Checker<'_> {
                     depth: 1,
                 }),
                 arms: chosen,
-                origin: MatchOrigin::ComputationDestructuring,
+                origin: MatchOrigin::Internal,
             },
             span,
             depth,

@@ -431,7 +431,7 @@ fn render_declarations(program: &Program) -> String {
         if declaration.visibility == Visibility::Private {
             continue;
         }
-        let code = format!("extern type {}", declaration.name.text);
+        let code = declaration.header();
         declarations.push((
             declaration.name.span.start,
             section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),

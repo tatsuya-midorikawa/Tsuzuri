@@ -33,7 +33,7 @@ fn value_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         | Type::List(_)
         | Type::Vec(_)
         | Type::Once(_)
-        | Type::Handle(_)
+        | Type::Handle(..)
         | Type::Function(..)
         | Type::Reference(..)
         | Type::Dyn(_)

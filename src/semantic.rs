@@ -254,7 +254,7 @@ impl Links {
         let (definition, name) = match ty {
             Type::Record(id, _) => (self.records[*id], types.records[*id].name.as_str()),
             Type::Union(id, _) => (self.unions[*id], types.unions[*id].name.as_str()),
-            Type::Handle(name) => (self.handles.get(name.as_ref()).copied(), name.as_ref()),
+            Type::Handle(name, _) => (self.handles.get(name.as_ref()).copied(), name.as_ref()),
             _ => return,
         };
         let last = text.rsplit(['.', ':']).next().unwrap_or(text);
@@ -466,7 +466,7 @@ fn define_declarations(
                 &handle.name,
                 SymbolKind::Record,
                 name,
-                format!("extern type {}", typed(&handle.name.text)),
+                handle.header_with(&typed(&handle.name.text)),
                 handle.visibility,
             ));
             links
@@ -710,7 +710,7 @@ pub(super) fn collect(
                 &handle.name,
                 23,
                 handle.name.span,
-                format!("extern type {}", typed(&handle.name.text)),
+                handle.header_with(&typed(&handle.name.text)),
             );
         }
         for alias in &program.type_aliases {

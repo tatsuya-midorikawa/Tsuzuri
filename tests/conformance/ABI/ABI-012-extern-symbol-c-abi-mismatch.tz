@@ -1,0 +1,6 @@
+extern "SendMessageW" def send_int :: i64 -> i64
+extern "SendMessageW" def send_bad :: i32 -> i64
+0
+
+// rule: ABI-012
+// expect: check-error E1008

@@ -733,6 +733,7 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
         // A statement that ended with `;` keeps it: without it, a statement that another one
         // follows must be `unit` (the parser's layout rule), so `1 + 1;` would no longer check.
         if binding.name.provenance == Provenance::Generated
+            && binding.pattern.is_none()
             && binding.annotation.is_none()
             && let Some(next) = tokens.get(tokens.partition_point(|token| token.span.start < end))
             && next.kind == TokenKind::Semicolon
@@ -740,8 +741,8 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
             end = next.span.end;
         }
         let start = skip_separators(text, boundary, end);
-        // `let _ = ...` discards its value like a statement, so it replaces nothing.
-        let named = binding.name.provenance == Provenance::User && binding.name.text != "_";
+        let mut bound = Vec::new();
+        binding.bound_names(&mut bound);
         // An `and` member is part of the item of its `let rec`: the functions of a group are
         // defined, and replaced, together (B09). Every member keeps its own name and offset, so
         // that each one shows its type.
@@ -750,29 +751,26 @@ fn statements(text: &str, tokens: &[Token], entry: &Expr) -> (Vec<Item>, Body) {
         {
             let group_start = group.pieces[0].1;
             group.text = text[group_start..end].to_owned();
-            if named {
-                group.keys.push(Key::Binding(binding.name.text.clone()));
-                group.bindings.push((
-                    binding.name.text.clone(),
-                    binding.name.span.start - group_start,
-                ));
+            for ident in bound {
+                group.keys.push(Key::Binding(ident.text.clone()));
+                group
+                    .bindings
+                    .push((ident.text, ident.span.start - group_start));
             }
             boundary = end;
             continue;
         }
         items.push(Item {
-            keys: if named {
-                vec![Key::Binding(binding.name.text.clone())]
-            } else {
-                Vec::new()
-            },
+            keys: bound
+                .iter()
+                .map(|ident| Key::Binding(ident.text.clone()))
+                .collect(),
             text: text[start..end].to_owned(),
             pieces: vec![(0, start)],
-            bindings: if named {
-                vec![(binding.name.text.clone(), binding.name.span.start - start)]
-            } else {
-                Vec::new()
-            },
+            bindings: bound
+                .into_iter()
+                .map(|ident| (ident.text, ident.span.start - start))
+                .collect(),
         });
         boundary = end;
     }
@@ -1541,6 +1539,7 @@ mod tests {
         for (text, message) in [
             ("extern def drop_log :: i64 -> unit", EXTERNS),
             ("extern type Handle", EXTERNS),
+            ("extern type copy Handle", EXTERNS),
             ("test \"adds numbers\" = assert (1 + 2 == 3)", TESTS),
             ("def main :: unit -> i32 = \\() -> 1", MAIN),
             ("namespace Sample::Shapes\nlet x = 1", NAMESPACES),

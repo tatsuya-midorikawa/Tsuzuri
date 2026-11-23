@@ -75,7 +75,7 @@ fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         Type::Union(id, _) => !types.unions[*id].user_drop,
         Type::Reference(..)
         | Type::Shared(..)
-        | Type::Handle(_)
+        | Type::Handle(..)
         | Type::Once(_)
         | Type::Dyn(_)
         | Type::Function(..)
@@ -116,7 +116,7 @@ pub(crate) fn what(ty: &Type, types: &TypeContext<'_>) -> &'static str {
     match ty {
         Type::Reference(..) => "a reference",
         Type::Shared(..) => "an 'Rc' or 'Arc'",
-        Type::Handle(_) => "an extern handle",
+        Type::Handle(..) => "an extern handle",
         Type::Function(..) | Type::Dyn(_) | Type::Once(_) => "a function or 'dyn'",
         _ if ty.has_user_drop(types) => "a value with a user Drop",
         _ => "a type that is not plain data",

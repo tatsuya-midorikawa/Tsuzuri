@@ -5,7 +5,7 @@
 | ID | W27 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [W01](W01-callback-extern-temporary-string.md), W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25（起票時の「W13〜W25」。Phase 1 は W13・W14・W15・W16・W17・W18・W20・W21 の Phase 1・W22。Phase 2 は W19・W23・W24・W25） |
+| 依存 | [W01](_completed/W01-callback-extern-temporary-string.md), W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25（起票時の「W13〜W25」。Phase 1 は W13・W14・W15・W16・W17・W18・W20・W21 の Phase 1・W22。Phase 2 は W19・W23・W24・W25） |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
@@ -219,10 +219,10 @@ tsuzuri bindgen --winmd FILE --api LIST -o DIR [--json]
 
 ## 前提とする他チケットのインターフェース
 
-- [W13](W13-extern-ref-mut-and-mutable-buffers.md): `ref mut T`・`ref mut [T]`・`Buffer::{I16U, I32, I32U}`・`@count`。[W15](W15-abi-nullable-handles.md): `Maybe<H>`・`Maybe<ref R>`・`Maybe<ref ZString>`。[W16](W16-last-error-attribute.md): `@last_error` と結果の組の型 `R * i32u`。[W17](W17-link-attribute-dllimport.md): `@link("name")`（git・registry の依存からも使える）。[W18](W18-copy-extern-type.md): `extern type copy`・`HandleKind::Copy`。[W19](W19-thread-bound-handles.md): `extern type local`。[W20](W20-zstring.md): `ZString`・`ref ZString`。[W21](W21-c-layout-records.md): `@c_layout`・`pack`・固定長の配列の field（Phase 2 で `FnPtr` の field）。[W22](W22-fnptr-values.md): `FnPtr<F>`。[W24](W24-extern-view.md): `extern view` の宣言の形。[W25](W25-extern-interface-com.md): `extern interface`、`Result<J, i32>`、`Com.create` の `const` の CLSID、`Com.Iid<I>`、連鎖の中の同じ名前の `E1001`。
-- [W14](W14-extern-multiple-declarations.md): 利用者が同じ symbol を別の型で宣言しても衝突しない（生成物と手書きの宣言が並ぶ）。
+- [W13](W13-extern-ref-mut-and-mutable-buffers.md): `ref mut T`・`ref mut [T]`・`Buffer::{I16U, I32, I32U}`・`@count`。[W15](_completed/W15-abi-nullable-handles.md): `Maybe<H>`・`Maybe<ref R>`・`Maybe<ref ZString>`。[W16](W16-last-error-attribute.md): `@last_error` と結果の組の型 `R * i32u`。[W17](W17-link-attribute-dllimport.md): `@link("name")`（git・registry の依存からも使える）。[W18](_completed/W18-copy-extern-type.md): `extern type copy`・`HandleKind::Copy`。[W19](W19-thread-bound-handles.md): `extern type local`。[W20](W20-zstring.md): `ZString`・`ref ZString`。[W21](W21-c-layout-records.md): `@c_layout`・`pack`・固定長の配列の field（Phase 2 で `FnPtr` の field）。[W22](W22-fnptr-values.md): `FnPtr<F>`。[W24](W24-extern-view.md): `extern view` の宣言の形。[W25](W25-extern-interface-com.md): `extern interface`、`Result<J, i32>`、`Com.create` の `const` の CLSID、`Com.Iid<I>`、連鎖の中の同じ名前の `E1001`。
+- [W14](_completed/W14-extern-multiple-declarations.md): 利用者が同じ symbol を別の型で宣言しても衝突しない（生成物と手書きの宣言が並ぶ）。
 - [W23](W23-anchor-state.md)（Phase 2）: `Anchor.create`・`Anchor.token`・`Anchor.read`・`Anchor.update`。公式パッケージの例（ウィンドウプロシージャから `GWLP_USERDATA` の鍵で窓の状態に届く書き方）に使う。生成器の写像には使わない。
-- [W01](W01-callback-extern-temporary-string.md): コールバックを取る `extern` に一時値を渡す呼び出しが正しく下がる。
+- [W01](_completed/W01-callback-extern-temporary-string.md): コールバックを取る `extern` に一時値を渡す呼び出しが正しく下がる。
 - [W06](W06-windows-gui-test-harness.md): 窓を出して自分で閉じる検査（早見の完了の見分け方、公式パッケージの CI）。
 
 ## 他チケットへ提供するインターフェース

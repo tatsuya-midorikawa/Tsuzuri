@@ -320,6 +320,11 @@ fn trap_context_preserves_collections_closures_and_parallel_abis() {
         export def step_failure :: i64 -> unit\nfn step_failure step = for _value in 0 .. step ..= 10 do ()\n\
         export def vec_failure :: i64 -> i64\nfn vec_failure index = { let values = Vec.push_owned 1 Vec.empty(); deref (Vec.at index (ref values)) }\n\
         stress()";
+    fs::write(
+        root.join("Tsuzuri.toml"),
+        "[package]\nname = \"traps\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    )
+    .unwrap();
     fs::write(&input, source).unwrap();
     let project = tsuzuri::driver::Project::load(&input).unwrap();
     let module = project.analyze().unwrap();
@@ -495,9 +500,12 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     .unwrap()
     .ir;
     // MSVC has no compiler-rt for the 128-bit division that `d128` needs (`__udivti3`, `__umodti3`), so a
-    // Windows build appends the helpers of wasm.ll, as `windows_abi` does.
+    // Windows build appends the same helpers that `windows_abi` does.
     let native = if cfg!(windows) {
-        format!("{native}\n{}", include_str!("../src/runtime/wasm.ll"))
+        format!(
+            "{native}\n{}",
+            tsuzuri::llvm::windows_i128_helpers(cfg!(target_arch = "aarch64"))
+        )
     } else {
         native
     };

@@ -252,7 +252,7 @@ pub(crate) fn layout_bound(ty: &Type, module: &CheckedModule, lower: bool) -> (u
             }
         }
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(_) | Type::Shared(..) => {
+        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => {
             if lower {
                 (4, 4)
             } else {
@@ -374,6 +374,8 @@ fn niche_layout(
         Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
             Niche::NullPointer
         }
+        // NS01: native extern handles are non-null, so Maybe<H> is a single ptr with null = None.
+        Type::Handle(..) if !webassembly() => Niche::NullPointer,
         Type::Function(..) | Type::Once(_) => Niche::NullDescriptor,
         _ => return None,
     };

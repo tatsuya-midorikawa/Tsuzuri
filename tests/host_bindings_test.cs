@@ -87,6 +87,8 @@ Check(made_window.values[0] == 5 && made_window.values[1] == 10 && made_window.v
 Check(Native.counters(10) == 30, "counters");
 var opaque = new Native.tz_handle_4Main_7Counter(0x1234);
 Check(Native.pass_through(opaque) == opaque, "pass_through");
+Throws<ArgumentNullException>(() => Native.pass_through(default), "null C# handle");
+Throws<ArgumentNullException>(() => Native.peek(default), "null C# borrowed handle");
 unsafe
 {
     // A borrowed handle reaches the host as the pointer itself: here, an int64 counter cell.

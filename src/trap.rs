@@ -24,10 +24,12 @@ pub enum TrapKind {
     ContractRequires,
     /// A21: an `@ensures` line was false on exit.
     ContractEnsures,
+    /// NS01: a native `extern` returned NULL for `H`, or the host passed NULL for `H` / `ref H`.
+    NullHandle,
 }
 
 impl TrapKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Assert,
         Self::IntegerDivisionByZero,
         Self::IntegerDivisionOverflow,
@@ -46,6 +48,7 @@ impl TrapKind {
         Self::Overflow,
         Self::ContractRequires,
         Self::ContractEnsures,
+        Self::NullHandle,
     ];
 
     pub fn description(self) -> &'static str {
@@ -70,6 +73,7 @@ impl TrapKind {
             }
             Self::ContractRequires => "contract requires failed",
             Self::ContractEnsures => "contract ensures failed",
+            Self::NullHandle => "null extern handle",
         }
     }
 

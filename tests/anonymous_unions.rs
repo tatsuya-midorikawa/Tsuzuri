@@ -6156,13 +6156,18 @@ fn narrowing_in_loops_records_arrays_and_lists() {
          assert (pair [4, \"x\"] + pair [1] == -2)\n    \
          assert (head [|2.5, 9|] + head [|\"xyz\"|] + head [||] == 3 + 30 - 1)\n"
     );
-    passes(&program, Edition::E2027);
-    // A `for` pattern traps for an element of another member.
-    traps(
-        &format!(
-            "{NUM}def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\ntest \"other member\" = assert (looped [1, \"s\"] == 0)\n"
-        ),
+    passes(&program, Edition::E2026);
+    // A `for` pattern traps for an element of another member in edition 2026, and is rejected
+    // statically as refutable in edition 2027 (NS04).
+    let refutable_for = format!(
+        "{NUM}def looped :: own [(f64 | i64 | string)] -> i64 = \\items ->\n    let mut total = 0i64\n    for (:? (i64 | f64) as n) in items do\n        total = total + num n\n    total\n\ntest \"other member\" = assert (looped [1, \"s\"] == 0)\n"
+    );
+    traps(&refutable_for, Edition::E2026);
+    rejects_in(
+        &refutable_for,
         Edition::E2027,
+        "E1021",
+        "refutable_binding_pattern",
     );
     // Eleven narrowings of two members in one pattern make 2^11 = 2048 alternatives, over the
     // limit of 1024.

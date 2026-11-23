@@ -1,0 +1,7 @@
+let items = [Maybe.Some 1, Maybe.None]
+for Maybe.Some _x in items do
+    ()
+0
+
+// rule: CTL-027
+// expect: check-error E1021 line=2 kind=refutable_binding_pattern

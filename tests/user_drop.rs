@@ -534,3 +534,55 @@ fn owned_function_lambdas_only_borrow_their_captures() {
         "{prefix}    let shape = Maybe.Some 3\n    let base = 10\n    let scale = \\x -> x * base\n    let inner = Owned.function (\\x -> scale x + held.id + String.length (ref held.name))\n    let outer = Owned.function (\\x -> match ref shape with | Maybe.Some size -> Owned.call (ref inner) x + size | Maybe.None -> 0)\n    Owned.call (ref outer) 1\n"
     ));
 }
+
+#[test]
+fn owned_call_returning_function_requires_capture_on_bound_argument() {
+    let curried = format!(
+        "{RESOURCE}{MAKE}def wr :: own Resource -> (unit -> i64) -> i64\nfn wr held f = held.id + f ()\n\
+         def step :: ref Owned.Function<'a, 'b> -> own 'a -> 'b\nfn step w value = Owned.call w value\n"
+    );
+    for call in [
+        "let g = Owned.call (ref w) (make 7)\n    g (\\() -> 1) + g (\\() -> 2)",
+        "let g = make 7 |> Owned.call (ref w)\n    g (\\() -> 1)",
+        "Owned.call (ref w) (make 7) (\\() -> 1)",
+        "let c = Owned.call (ref w)\n    let g = c (make 7)\n    g (\\() -> 1)",
+        "let c: ref Owned.Function<Resource, (unit -> i64) -> i64> -> Resource -> (unit -> i64) -> i64 = Owned.call\n    let g = c (ref w) (make 7)\n    g (\\() -> 1)",
+        "let g = step (ref w) (make 7)\n    g (\\() -> 1)",
+    ] {
+        rejects(
+            &format!(
+                "{curried}export def bad :: i64\nfn bad =\n    let w = Owned.function wr\n    {call}\n"
+            ),
+            "E1005",
+            "cannot capture Main.Resource in a reusable function",
+        );
+    }
+    rejects(
+        "def hold_mutex :: own Mutex<i64> -> (unit -> i64) -> i64\nfn hold_mutex cell f = Mutex.with_lock (ref cell) (\\v -> deref v) + f ()\n\
+         export def bad :: i64\nfn bad =\n    let w = Owned.function hold_mutex\n    let g = Owned.call (ref w) (Mutex.create 1)\n    g (\\() -> 2)\n",
+        "E1005",
+        "cannot capture Mutex<i64> in a function value",
+    );
+    // Second argument borrows still flow into a returned function, and 1-argument `Owned.call (ref w)`
+    // still retains the borrow of `w`.
+    rejects(
+        "def borrow_first :: ref string -> unit -> i64\nfn borrow_first text _u = String.length text\n\
+         def bad :: unit -> (unit -> i64)\nfn bad _u =\n    let w = Owned.function borrow_first\n    let text = String.repeat 4 (ref \"abcdefgh\")\n    Owned.call (ref w) (ref text)\nbad () ()\n",
+        "E1013",
+        "borrowed value does not live long enough",
+    );
+    rejects(
+        "def hold_mut :: ref mut i64 -> unit -> i64\nfn hold_mut slot _u = deref slot\n\
+         export def bad :: i64\nfn bad =\n    let mut n = 1\n    let w = Owned.function hold_mut\n    let g = Owned.call (ref w) (ref mut n)\n    g ()\n",
+        "E1005",
+        "cannot capture ref mut i64 in a reusable function",
+    );
+    // Capturable arguments (`Arc`, `string`, scalars) remain valid even when `w` is dropped before
+    // the returned function runs.
+    accepts(
+        "def wr_arc :: own Arc<Atomic<i64>> -> (unit -> i64) -> i64\n\
+         fn wr_arc shared f = Atomic.fetch_add (Arc.get (ref shared)) (f ())\n\
+         export def ok :: i64\n\
+         fn ok =\n    let shared = Arc.new (Atomic.create 10)\n    let w = Owned.function wr_arc\n    let g = Owned.call (ref w) (Arc.share (ref shared))\n    Owned.drop w\n    g (\\() -> 20) + g (\\() -> 12) + Atomic.load (Arc.get (ref shared))\n",
+    );
+}

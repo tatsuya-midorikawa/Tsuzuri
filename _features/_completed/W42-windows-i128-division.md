@@ -7,9 +7,9 @@
 | 規模 | M（新しい `src/runtime/i128-windows-x64.ll`（9 つの包み）、`src/llvm.rs` の 1 つの関数と `windows_abi` の末尾、Rust のテスト 2 件、`tests/windows.mjs` の 2 段、`tests/integer_format.mjs`・`tests/trap_locations.rs`・`src/abi.rs` のテストの追従、文書 2 ページと注釈） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W41 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 不要（意味を正しくする修正。言語の意味、ヘッダー、Windows Arm64・Windows 以外・WebAssembly の IR は変えない。ただし Windows x86-64 の native の IR は、新しい機能を使わないプログラムでも、末尾に足す 128 bit の補助の部分だけがすべて変わる。どの Windows の module にも補助が入るためで、W チケットの共通の約束「新しい機能を使わないプログラムの IR は 1 byte も変えない」（[README の「共通の綴り」](README.md#共通の綴り起票時に決めた契約)）の例外になる。範囲は仕様 4 と S3 が限る。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
+| 承認 | 不要（意味を正しくする修正。言語の意味、ヘッダー、Windows Arm64・Windows 以外・WebAssembly の IR は変えない。ただし Windows x86-64 の native の IR は、新しい機能を使わないプログラムでも、末尾に足す 128 bit の補助の部分だけがすべて変わる。どの Windows の module にも補助が入るためで、W チケットの共通の約束「新しい機能を使わないプログラムの IR は 1 byte も変えない」（[README の「共通の綴り」](../README.md#共通の綴り起票時に決めた契約)）の例外になる。範囲は仕様 4 と S3 が限る。台帳は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
 | 手本にする既存実装 | `src/runtime/wasm.ll` の補助（本体をそのまま使う）、`src/llvm.rs` の `windows_abi`（Windows の target だけの IR の書き換え）、`crate::target::current_platform()` で target を読む既存の分岐（`src/llvm.rs` の `emit_program` の `with_stack_probes` の呼び出し）、`tests/e2e.mjs` の `runtimeChecks`（BigInt の参照と 128 bit の組） |
 | 主な影響ファイル | `src/runtime/i128-windows-x64.ll`（新規）、`src/llvm.rs`（`windows_abi`、新しい `windows_i128_helpers`）、`src/abi.rs`（テストの一覧）、`tests/windows.rs`、`tests/windows.mjs`、`tests/integer_format.mjs`、`tests/trap_locations.rs`、`tests/prebuilt_runtime.rs`（注釈）、`src/runtime/integer.ll`（注釈）、`_tsuzuri/language-reference/compiler/platforms.md`、`docs/architecture.md` |
 
@@ -57,7 +57,7 @@ Windows x64 では、`i128`・`i128u` の `/` と `%` が黙って誤った値�
 - `numeric.ll` は、x86-64 の Windows で `-O0` にコンパイルすると `tz_soft_format_spec`（`radix_text` の可変の基数の除算）から `__udivti3` を参照する。`-O2` では参照しない。整数の書式は `integer.ll` が受け持つので、コンパイラの出力からこの経路には届かない。一方 `tests/integer_format.mjs` はこの関数を直接呼ぶため、Windows では照合を飛ばしている（`crossCheck = process.platform !== "win32"`）。
 - `integer.ll` は `i128` を割らない（冒頭の注釈 12〜15 行目）。`tests/prebuilt_runtime.rs` の `integer_runtime_never_divides_an_i128` と、`tests/integer_format.mjs` のアセンブリの検査がこれを守る。どちらも理由にこの不具合を挙げている。
 - `tests/trap_locations.rs` は、Windows のホストで native の IR に `wasm.ll` を自分で足す（497〜503 行目、「`windows_abi` と同じ」）。`tests/e2e.mjs` の `runtimeChecks` は補助を wasm32 でだけ検査する。Windows で `i128` の除算を実行するテストはない（`tests/windows.mjs` に `i128` はない）。
-- 文書: `platforms.md` の「既知の制限」の 3 つ目の項（167 行目）、`docs/architecture.md` の `integer.ll` の行（104 行目）と `wasm.ll` の行（112 行目）。完了済みの [G10](_completed/G10-windows.md)（「実行で見つかったもの」8）と [PM08](../_perfs/_completed/PM08-binary-size.md) にも記述がある。
+- 文書: `platforms.md` の「既知の制限」の 3 つ目の項（167 行目）、`docs/architecture.md` の `integer.ll` の行（104 行目）と `wasm.ll` の行（112 行目）。完了済みの [G10](G10-windows.md)（「実行で見つかったもの」8）と [PM08](../../_perfs/_completed/PM08-binary-size.md) にも記述がある。
 
 ### 再現
 
@@ -146,7 +146,7 @@ pub fn windows_i128_helpers(aarch64: bool) -> String
 
 ## 他チケットへ提供するインターフェース
 
-- [W39](W39-windows-multiple-objects-weak-defaults.md): このチケットの後、Windows x86-64 の IR の弱い定義は 9 つの包み（`define weak hidden <2 x i64> @__divti3(ptr %a, ptr %b) nounwind {` など）になり、本体は `internal` になる。W39 の名前を列挙しない書き換え（D2）がそのまま包みに当たり、本体には `comdat` が要らない。マージはどちらの順でもよい。W39 の「対象外」の最初の項と、テスト計画 2 の「`i128` の除算の結果は確かめない」は、後に入る方が直す（W39 の E2E に除算の結果を足せる）。
+- [W39](../W39-windows-multiple-objects-weak-defaults.md): このチケットの後、Windows x86-64 の IR の弱い定義は 9 つの包み（`define weak hidden <2 x i64> @__divti3(ptr %a, ptr %b) nounwind {` など）になり、本体は `internal` になる。W39 の名前を列挙しない書き換え（D2）がそのまま包みに当たり、本体には `comdat` が要らない。マージはどちらの順でもよい。W39 の「対象外」の最初の項と、テスト計画 2 の「`i128` の除算の結果は確かめない」は、後に入る方が直す（W39 の E2E に除算の結果を足せる）。
 - `tsuzuri::llvm::windows_i128_helpers(aarch64)`: Windows の補助を自分で足すテストのための入口。
 
 ## 実装手順
@@ -178,7 +178,7 @@ pub fn windows_i128_helpers(aarch64: bool) -> String
 ## テスト計画
 
 1. **IR**（`tests/windows.rs` の `windows_x64_i128_helpers_follow_the_win64_abi`、すべてのホスト）: `PlatformScope::enter(Platform::new(Triple::parse("x86_64-pc-windows-msvc")))`（と `-gnu`）の中で `emit_with_export_style(…, Dllexport)` を呼ぶ。IR に 9 つの `define weak hidden <2 x i64> @__…(ptr` があり、`define weak hidden i128 @__` がなく、`define internal i128 @tz.runtime.` が 9 つあり、2 回の出力が同じであることを確かめる。`aarch64-pc-windows-msvc` の scope では、末尾が `wasm.ll` と byte 単位で同じであることを確かめる。加えて、`wasm.ll` と `i128-windows-x64.ll` の弱い定義の名前の集合が同じであることを確かめる（`wasm.ll` に補助を足したら包みも要る）。
-2. **参照**（`tests/windows.mjs`、x64 と Arm64 のホスト）: `answer` の library を `-O0`・`-O3` の `--emit object` にし、`__int128` の `/`・`%`・`*`・`<<`・`>>` と、`__udivmodti4` の直接の呼び出し（剰余のポインターありとなし）を行う C のハーネスとリンクする。ハーネスは組を標準入力から読む。`tests/e2e.mjs` の `runtimeChecks` と同じ 7 つの端の組と 100 の擬似乱数の組に負の値を足し、node の BigInt と比べる。符号付きの `MIN / -1` と 0 除算は除く。C の参照の計算に符号付きのシフトを使わない（同梱の clang は `-O0` で UBSan を入れる。[W37](W37-bundled-clang-ubsan-objects.md)）。
+2. **参照**（`tests/windows.mjs`、x64 と Arm64 のホスト）: `answer` の library を `-O0`・`-O3` の `--emit object` にし、`__int128` の `/`・`%`・`*`・`<<`・`>>` と、`__udivmodti4` の直接の呼び出し（剰余のポインターありとなし）を行う C のハーネスとリンクする。ハーネスは組を標準入力から読む。`tests/e2e.mjs` の `runtimeChecks` と同じ 7 つの端の組と 100 の擬似乱数の組に負の値を足し、node の BigInt と比べる。符号付きの `MIN / -1` と 0 除算は除く。C の参照の計算に符号付きのシフトを使わない（同梱の clang は `-O0` で UBSan を入れる。[W37](../W37-bundled-clang-ubsan-objects.md)）。
 3. **E2E**（`tests/windows.mjs`）: 「現状」の `b` を `-O0`・`-O3` で `run` して標準入力を渡す（`execute` に入力の引数を足す）。`c` とその C のホストも同じく確かめる。期待値は `33 1 33 1`、`-14 -2 …` のように正確に書く（誤った値は `0` とは限らない）。
 4. **既存**: `tests/e2e.mjs`（wasm32 の補助）、`tests/windows.mjs` の全段、`tests/trap_locations.rs`、`tests/integer_format.mjs`、`tests/prebuilt_runtime.rs`。
 
@@ -190,10 +190,10 @@ pub fn windows_i128_helpers(aarch64: bool) -> String
 
 ## 受け入れ条件
 
-- [ ] 「現状」の 4 つの再現が、MSVC（link.exe・lld-link）と同梱の MinGW の `-O0`・`-O3` で正しい値を出す。
-- [ ] Windows Arm64・Windows 以外・wasm32 の IR とすべてのヘッダーが変更の前後で同じ。Windows x86-64 の IR の差は末尾の補助の部分だけ。
-- [ ] テスト計画 1〜3 の新しい検査が通る。Windows で `integer_format.mjs` の照合が動く（S5 に当たらなければ）。T2 が通る。
-- [ ] `platforms.md` の既知の制限を消し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml`（x64・Arm64）が通る。
+- [x] 「現状」の 4 つの再現が、MSVC（link.exe・lld-link）と同梱の MinGW の `-O0`・`-O3` で正しい値を出す。
+- [x] Windows Arm64・Windows 以外・wasm32 の IR とすべてのヘッダーが変更の前後で同じ。Windows x86-64 の IR の差は末尾の補助の部分だけ。
+- [x] テスト計画 1〜3 の新しい検査が通る。Windows で `integer_format.mjs` の照合が動く（S5 に当たらなければ）。T2 が通る。
+- [x] `platforms.md` の既知の制限を消し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml`（x64・Arm64）が通る。
 
 ## 落とし穴
 
@@ -208,16 +208,22 @@ pub fn windows_i128_helpers(aarch64: bool) -> String
 
 - 引き戻し法の除算の速さ（compiler-rt と比べるなら、計測してから別のチケットにする）。
 - `integer.ll` の除算を避ける実装（D6 のとおり残す）。
-- COFF の弱い定義の既定の名前の衝突（[W39](W39-windows-multiple-objects-weak-defaults.md)）。起票時に、公開の強い記号を持たない試作の object の弱い定義（`.weak.__udivti3.default`）が、同梱の MinGW のリンクで zig の `compiler_rt.lib` の同じ名前と衝突した。W39 の範囲として記録だけする。
+- COFF の弱い定義の既定の名前の衝突（[W39](../W39-windows-multiple-objects-weak-defaults.md)）。起票時に、公開の強い記号を持たない試作の object の弱い定義（`.weak.__udivti3.default`）が、同梱の MinGW のリンクで zig の `compiler_rt.lib` の同じ名前と衝突した。W39 の範囲として記録だけする。
 - 32-bit の Windows（target として受けない）。`--backend fast` も `udiv i128` を `__udivti3` の呼び出しにする（`src/backend/module.rs`）が、Windows では `E2000` で届かない。`--emit bitcode` も Windows では `E2000`（`BuildOptions::validate_bitcode`）。
 
 ## 決定事項
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | Windows x86-64 では、補助を Win64 の C の ABI の形の包みで定義する | 試作で、両方のリンカー・同梱の MinGW・`-O0`/`-O3` で正しかった。コンパイラだけで閉じる（MSVC に compiler-rt はなく、`--emit object` の利用者は link.exe だけでリンクできる）。C の `__int128` と同じ形なので、ホストの呼び出しも正しくなる。包みは `ptr` と `<2 x i64>` だけを使うので、IR の `i128` の引数の扱いが LLVM の版で変わっても影響を受けない。退けた案: compiler-rt を連結する（`clang_rt.builtins-x86_64.lib` は LLVM の配布物にあるが MSVC にはない。object の利用者に連結を求めることになる。MinGW では弱い定義が zig の compiler_rt より先に参照を満たすので、補助を外す経路も要る）。除算を emitter で内部の関数の呼び出しに下げる（LLVM の定数の除数の展開と畳み込みを失い、数値ランタイムとホストの libcall は誤ったまま）。文書に書くだけ（今と同じ） | 既定案（実装者はこの案に従う） |
-| D2 | LLVM が x86-64 で呼ぶ 4 つだけでなく、9 つすべてを包む | 弱い定義はリンク全体から見える。ホストの C や compiler-rt 風のコードは `__udivmodti4`・`__multi3`・シフトを名前で呼べ、今の形ではそれも誤った（試作で確認。C から呼んだのは `__udivmodti4`・`__multi3`・`__ashlti3`・`__ashrti3` で、同じ形の `__lshrti3` は未確認）。費用は包み 5 つ | 既定案（実装者はこの案に従う） |
-| D3 | 本体は `wasm.ll` の 9 行を固定の接頭辞で読み替えて使い、写しを作らない | 算術の正は 1 つだけにする。wasm32 の `runtimeChecks` が同じ本体を検査し続ける。テスト計画 1 が名前の集合の一致と読み替えの数を固定する。退けた案: 本体を写した自己完結のファイル（2 か所を直し忘れうる） | 既定案（実装者はこの案に従う） |
-| D4 | Windows Arm64 は `wasm.ll` のまま変えない | C の ABI と LLVM の呼び出しがどちらも `i128` を 2 つのレジスタで渡し、今の定義と一致する（アセンブリの読解）。IR が 1 byte も変わらない。実行の確認は `windows.yml` の Arm64 の job が担う | 既定案（実装者はこの案に従う） |
-| D5 | arch は `windows_abi` の中で `current_platform()` から読み、`windows_abi` と `emit_with_export_style` の署名は変えない | driver と test runner の呼び出しはどれも `PlatformScope` の中にあり、`src/llvm.rs` のほかの target の分岐と同じ形になる。名前を付けた `--target` も正しく選ぶ。scope のないテストはビルド機の arch になるので、形を検査するテストは scope を作る | 既定案（実装者はこの案に従う） |
-| D6 | `integer.ll` の「`i128` を割らない」規則とその 2 つの検査は残し、理由の注釈を「除算の補助を呼ばない設計」に書き直す | 正しさの理由はなくなるが、規則を外すと表示と `Parse` の生成コードが変わり、このチケットの範囲（補助の規約）を超える。今の実装は 10^9 の桁の筆算で、`i128` を表示するだけのプログラムは除算の補助を呼ばない。速さの比較は計測していない | 既定案（実装者はこの案に従う） |
+| D1 | Windows x86-64 では、補助を Win64 の C の ABI の形の包みで定義する | 試作で、両方のリンカー・同梱の MinGW・`-O0`/`-O3` で正しかった。コンパイラだけで閉じる（MSVC に compiler-rt はなく、`--emit object` の利用者は link.exe だけでリンクできる）。C の `__int128` と同じ形なので、ホストの呼び出しも正しくなる。包みは `ptr` と `<2 x i64>` だけを使うので、IR の `i128` の引数の扱いが LLVM の版で変わっても影響を受けない。退けた案: compiler-rt を連結する（`clang_rt.builtins-x86_64.lib` は LLVM の配布物にあるが MSVC にはない。object の利用者に連結を求めることになる。MinGW では弱い定義が zig の compiler_rt より先に参照を満たすので、補助を外す経路も要る）。除算を emitter で内部の関数の呼び出しに下げる（LLVM の定数の除数の展開と畳み込みを失い、数値ランタイムとホストの libcall は誤ったまま）。文書に書くだけ（今と同じ） | 確定・実装済み |
+| D2 | LLVM が x86-64 で呼ぶ 4 つだけでなく、9 つすべてを包む | 弱い定義はリンク全体から見える。ホストの C や compiler-rt 風のコードは `__udivmodti4`・`__multi3`・シフトを名前で呼べ、今の形ではそれも誤った（試作で確認。C から呼んだのは `__udivmodti4`・`__multi3`・`__ashlti3`・`__ashrti3` で、同じ形の `__lshrti3` は未確認）。費用は包み 5 つ | 確定・実装済み |
+| D3 | 本体は `wasm.ll` の 9 行を固定の接頭辞で読み替えて使い、写しを作らない | 算術の正は 1 つだけにする。wasm32 の `runtimeChecks` が同じ本体を検査し続ける。テスト計画 1 が名前の集合の一致と読み替えの数を固定する。退けた案: 本体を写した自己完結のファイル（2 か所を直し忘れうる） | 確定・実装済み |
+| D4 | Windows Arm64 は `wasm.ll` のまま変えない | C の ABI と LLVM の呼び出しがどちらも `i128` を 2 つのレジスタで渡し、今の定義と一致する（アセンブリの読解）。IR が 1 byte も変わらない。実行の確認は `windows.yml` の Arm64 の job が担う | 確定・実装済み |
+| D5 | arch は `windows_abi` の中で `current_platform()` から読み、`windows_abi` と `emit_with_export_style` の署名は変えない | driver と test runner の呼び出しはどれも `PlatformScope` の中にあり、`src/llvm.rs` のほかの target の分岐と同じ形になる。名前を付けた `--target` も正しく選ぶ。scope のないテストはビルド機の arch になるので、形を検査するテストは scope を作る | 確定・実装済み |
+| D6 | `integer.ll` の「`i128` を割らない」規則とその 2 つの検査は残し、理由の注釈を「除算の補助を呼ばない設計」に書き直す | 正しさの理由はなくなるが、規則を外すと表示と `Parse` の生成コードが変わり、このチケットの範囲（補助の規約）を超える。今の実装は 10^9 の桁の筆算で、`i128` を表示するだけのプログラムは除算の補助を呼ばない。速さの比較は計測していない | 確定・実装済み |
+
+## 実装と検証（2026-11-23）
+
+- `src/runtime/i128-windows-x64.ll` を追加し、`src/llvm.rs` の `windows_i128_helpers` と `windows_abi` で Windows x86-64 の 9 つの 128-bit 補助関数を Win64 C ABI / LLVM libcall 規約（`ptr` 引数・`<2 x i64>` 戻り値）のラッパーで定義するようにした（Windows Arm64 と WebAssembly は `wasm.ll` のまま不変）。
+- `tests/windows.rs`（`windows_x64_i128_helpers_follow_the_win64_abi` と cross-link の `PlatformScope`）、`tests/windows.mjs`（実行時 `i128`／`i128u` の `/`・`%` と C ホスト連携 110 組 × 11 演算の BigInt 照合）、`tests/integer_format.mjs`（Windows でも `numeric.ll` との `crossCheck` を有効化）、`tests/trap_locations.rs`、`src/abi.rs`、`.gitignore`、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/platforms.md` を更新した。
+

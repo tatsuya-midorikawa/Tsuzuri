@@ -87,8 +87,8 @@ impl Checker<'_> {
             Type::Infer(_) => self
                 .inference
                 .numeric_default(t)
-                .unwrap_or_else(|| Type::Handle("_".into())),
-            Type::Error => Type::Handle("_".into()),
+                .unwrap_or_else(|| Type::Handle("_".into(), crate::syntax::HandleKind::Owned)),
+            Type::Error => Type::Handle("_".into(), crate::syntax::HandleKind::Owned),
             _ => t.clone(),
         })
         .display(&self.types)

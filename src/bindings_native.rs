@@ -159,7 +159,7 @@ fn shape(ty: &Type, module: &CheckedModule) -> Shape {
     }
     match ty {
         Type::Unit => Shape::Unit,
-        Type::Handle(name) => Shape::Handle(handle_c_name(name)),
+        Type::Handle(name, _) => Shape::Handle(handle_c_name(name)),
         Type::Record(..) => Shape::Record(record_name(ty, module)),
         Type::Reference(inner, false) => match Buffer::of(inner) {
             Some(buffer) => Shape::Slice(buffer),
@@ -651,6 +651,9 @@ fn csharp_export(
             Shape::Handle(handle) => {
                 public.push(format!("{handle} {argument}"));
                 native.push(format!("nint {argument}"));
+                guards.push(format!(
+                    "if ({argument}.Value == 0)\n        {{\n            throw new ArgumentNullException(nameof({argument}), \"argument {index} of '{name}' cannot be a null handle\");\n        }}"
+                ));
                 arguments.push(format!("{argument}.Value"));
             }
             Shape::Slice(buffer) => {
@@ -761,7 +764,9 @@ fn csharp_export(
             format!("return ({})value;", scalar.csharp())
         }
         Shape::Scalar(_) => "return value;".to_owned(),
-        Shape::Handle(handle) => format!("return new {handle}(value);"),
+        Shape::Handle(handle) => format!(
+            "if (value == 0)\n        {{\n            throw new InvalidOperationException(\"result of '{name}' is a null handle\");\n        }}\n        return new {handle}(value);"
+        ),
         Shape::Slice(_) => unreachable!("export results are checked"),
     };
     for line in &body {
@@ -823,6 +828,9 @@ fn python_name(name: &str) -> String {
 
 /// The converters and ctypes declarations that every Python module shares.
 const PYTHON_SUPPORT: &str = r#"
+_POINTER_MAX = (1 << (_ctypes.sizeof(_ctypes.c_void_p) * 8)) - 1
+
+
 class _Buffer(_ctypes.Structure):
     _fields_ = [("ptr", _ctypes.c_void_p), ("len", _ctypes.c_int64)]
 
@@ -1073,7 +1081,7 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     for handle in &handles {
         let _ = writeln!(
             output,
-            "\n\n@_dataclasses.dataclass(frozen=True)\nclass {handle}:\n    \"\"\"An extern type handle: a pointer that the host owns.\"\"\"\n\n    value: int"
+            "\n\n@_dataclasses.dataclass(frozen=True)\nclass {handle}:\n    \"\"\"An extern type handle: a pointer that the host owns.\"\"\"\n\n    value: int\n\n    def __post_init__(self):\n        if type(self.value) is not int or not 1 <= self.value <= _POINTER_MAX:\n            raise ValueError(\"{handle} requires a non-null integer pointer\")"
         );
     }
     for (record, ty) in &records {
@@ -1228,7 +1236,7 @@ fn python_export(
             Shape::Handle(handle) => {
                 argtypes.push("_ctypes.c_void_p".to_owned());
                 prepare.push(format!(
-                    "if not isinstance({argument}, {handle}):\n            raise TypeError(f\"argument {index} of '{name}' must be a {handle}\")"
+                    "if not isinstance({argument}, {handle}):\n            raise TypeError(f\"argument {index} of '{name}' must be a {handle}\")\n        if type({argument}.value) is not int or not 1 <= {argument}.value <= _POINTER_MAX:\n            raise ValueError(f\"argument {index} of '{name}' cannot be a null handle\")"
                 ));
                 arguments.push(format!("{argument}.value"));
             }
@@ -1298,7 +1306,9 @@ fn python_export(
         Shape::Record(record) => format!("return _from_{record}(out)"),
         Shape::Scalar(Scalar::Bool) => format!("return {raw} != 0"),
         Shape::Scalar(_) => format!("return {raw}"),
-        Shape::Handle(handle) => format!("return {handle}({raw} or 0)"),
+        Shape::Handle(handle) => format!(
+            "if {raw} is None or {raw} == 0:\n            raise RuntimeError(\"result of '{name}' is a null handle\")\n        return {handle}({raw})"
+        ),
         Shape::Slice(_) => unreachable!("export results are checked"),
     };
     let invoke = if trap_return {
@@ -1612,6 +1622,9 @@ fn cpp_export(
                 });
             }
             Shape::Handle(handle) => {
+                guards.push(format!(
+                    "if ({argument} == nullptr) throw std::invalid_argument(\"argument {index} of '{name}' cannot be a null handle\");"
+                ));
                 parameters.push(format!("{handle} {argument}"));
                 arguments.push(argument);
             }
@@ -1706,9 +1719,18 @@ fn cpp_export(
     } else if slot.is_some() || c_result == "void" {
         let _ = writeln!(output, "    {call};");
         String::new()
+    } else if matches!(result, Shape::Handle(_)) {
+        let _ = writeln!(output, "    {c_result} value = {call};");
+        "value".to_owned()
     } else {
         call
     };
+    if matches!(result, Shape::Handle(_)) {
+        let _ = writeln!(
+            output,
+            "    if ({value} == nullptr) throw std::runtime_error(\"result of '{name}' is a null handle\");"
+        );
+    }
     let returned_value = match &result {
         Shape::Unit => None,
         Shape::Owned(buffer) => Some(match buffer {

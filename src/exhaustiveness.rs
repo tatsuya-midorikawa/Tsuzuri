@@ -143,6 +143,7 @@ pub(super) enum LiteralKey {
 /// The arms of one explicit match or function guard.
 pub(super) struct MatchCoverage {
     pub(super) span: Span,
+    pub(super) origin: MatchOrigin,
     /// The type of the matched value as the match saw it, resolved when the coverage is checked.
     /// A witness of an anonymous union names its member by this type (D7, A24): every anonymous
     /// union of n members shares one declaration, so the case alone does not tell the member.
@@ -294,7 +295,7 @@ impl Checker<'_> {
                         break;
                     }
                 }
-                if !useful {
+                if !useful && coverage.origin.binding_place_name().is_none() {
                     warnings.push(Diagnostic::of(
                         DiagnosticKind::UnreachableMatchArm,
                         "unreachable match arm; previous patterns already cover this arm",
@@ -311,6 +312,40 @@ impl Checker<'_> {
             if let Some(witness) = search.run(rows.clone(), push(wild, None), true)? {
                 let scrutinee = Some(self.inference.resolve(&coverage.scrutinee));
                 let missing = self.witness(&witness, scrutinee.as_ref(), coverage.span);
+                if let Some(place) = coverage.origin.binding_place_name() {
+                    let span = coverage.arms.first().map_or(coverage.span, |arm| arm.span);
+                    let message = format!("pattern in {place} is refutable; missing: {missing}");
+                    let help = match coverage.origin {
+                        MatchOrigin::LambdaDestructuring => {
+                            "use function guards ('\\x -> | <pattern> -> ... | _ -> ...') or 'match' inside the body".to_owned()
+                        }
+                        MatchOrigin::ForDestructuring => {
+                            "bind the element with a name and 'match' on it in the loop body"
+                                .to_owned()
+                        }
+                        MatchOrigin::LetDestructuring => {
+                            format!("use 'match' to handle '{missing}'")
+                        }
+                        _ => "bind the value with a name and 'match' on it".to_owned(),
+                    };
+                    if coverage.origin == MatchOrigin::LetDestructuring || self.read_conventions {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::RefutableBindingPattern,
+                            message,
+                            span,
+                        )
+                        .with_help(help));
+                    }
+                    warnings.push(
+                        Diagnostic::of(
+                            DiagnosticKind::RefutableBindingPatternWarning,
+                            message,
+                            span,
+                        )
+                        .with_help(help),
+                    );
+                    continue;
+                }
                 let mut error = Diagnostic::of(
                     DiagnosticKind::NonExhaustiveMatch,
                     format!("match is not exhaustive; missing: {missing}"),

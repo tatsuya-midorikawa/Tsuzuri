@@ -48,8 +48,8 @@ fn integer_text_needs_no_numeric_runtime_object() {
 
 #[test]
 fn integer_runtime_never_divides_an_i128() {
-    // LLVM turns an i128 division into a call of __udivti3 or a relative. On Windows x64 that call passes the operands
-    // by pointer and returns in XMM0, which the helpers of runtime/wasm.ll do not follow: the digits come out wrong.
+    // The integer formatter and parser work on 32-bit digits with 64-bit operations so that showing or parsing an
+    // integer never calls a 128-bit division helper (`__udivti3` and its relatives).
     let source = include_str!("../src/runtime/integer.ll");
     for instruction in ["udiv i128", "urem i128", "sdiv i128", "srem i128"] {
         assert!(

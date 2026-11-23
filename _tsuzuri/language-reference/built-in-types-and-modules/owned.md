@@ -145,6 +145,8 @@ size ()
 error[E1014]: access conflicts with a live borrow; use the reference or end its last use before moving, replacing, or borrowing exclusively
 ```
 
+また、多引数の関数を `Owned.function` で包んで `Owned.call` の結果自体が関数型（`'b` が関数型）になる場合、`Owned.call` は第 2 引数 `'a` を束縛した再利用可能な通常の関数値を作ります。そのため第 2 引数 `'a` には通常の部分適用と同じ `Capture` 制約が掛かり、`Drop` を持つ型・`Mutex`・`Rc`・排他参照（`ref mut`）などを束縛しようとすると `E1005` で拒否されます（`Arc` やスカラー・`string` などの `Capture` を満たす型は束縛できます）。
+
 ## Owned.drop による早期解放
 
 `Owned.drop` は、スコープの終端を待たずに所有値をその場で即座に解放するための組み込み関数です。

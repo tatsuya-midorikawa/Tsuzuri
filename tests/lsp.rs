@@ -1527,7 +1527,7 @@ fn const_def_hovers_show_the_qualifier() {
 #[test]
 fn declaration_hovers_name_modules_with_double_colons() {
     use serde_json::json;
-    let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\ndef keep :: Handle -> Handle = \\h -> h\n";
+    let shapes = "namespace Demo::Shapes\n\nrecord Circle { r: i64 }\nunion Kind = Round | Flat\ntype Radius = i64\nconst Unit: i64 = 1\nextern type Handle\nextern type copy CopyHandle\nextern def tick :: i64 -> i64\ndef radius :: Circle -> i64 = \\c -> c.r\ndef keep :: Handle -> Handle = \\h -> h\ndef keep_copy :: CopyHandle -> CopyHandle = \\h -> h\n";
     let measures =
         "namespace Demo::Shapes\n\nclass Measure<'a> {\n    def size :: ref 'a -> i64\n}\n";
     let probe = "namespace Demo::Shapes\n\ndef probe :: i64 = Circle.tick 1\n";
@@ -1568,8 +1568,14 @@ fn declaration_hovers_name_modules_with_double_colons() {
         (
             "Circle.tz",
             shapes,
-            "Handle",
+            "Handle\n",
             "extern type Demo::Shapes::Circle.Handle",
+        ),
+        (
+            "Circle.tz",
+            shapes,
+            "CopyHandle\n",
+            "extern type copy Demo::Shapes::Circle.CopyHandle",
         ),
         (
             "Circle.tz",

@@ -93,6 +93,7 @@ diagnostic_kinds! {
         (ExpectedWhereBindings, "expected_where_bindings", "E0002"),
         (ExportOnImplementation, "export_on_implementation", "E0002"),
         (ExpressionNestingTooDeep, "expression_nesting_too_deep", "E0002"),
+        (ExternTypeModifierConflict, "extern_type_modifier_conflict", "E0002"),
         (ExternTypeWithBody, "extern_type_with_body", "E0002"),
         (ExternTypeWithLinkName, "extern_type_with_link_name", "E0002"),
         (ForLoopNeedsIdentifier, "for_loop_needs_identifier", "E0002"),
@@ -273,6 +274,8 @@ diagnostic_kinds! {
         (RecordHasNoField, "record_has_no_field", "E1007"),
         (UnknownField, "unknown_field", "E1007"),
         // E1008
+        (AbiNativeOnly, "abi_native_only", "E1008"),
+        (AbiNullablePayload, "abi_nullable_payload", "E1008"),
         (ConflictingExternDeclaration, "conflicting_extern_declaration", "E1008"),
         (ExportActiveRecognizer, "export_active_recognizer", "E1008"),
         (ExportOnExternDeclaration, "export_on_extern_declaration", "E1008"),
@@ -555,6 +558,7 @@ diagnostic_kinds! {
         (UnknownCaseOrActivePattern, "unknown_case_or_active_pattern", "E1020"),
         // E1021
         (NonExhaustiveMatch, "non_exhaustive_match", "E1021"),
+        (RefutableBindingPattern, "refutable_binding_pattern", "E1021"),
         // E1022
         (OpaqueTypeRepresentation, "opaque_type_representation", "E1022"),
         (PrivateBuilderOperation, "private_builder_operation", "E1022"),
@@ -921,6 +925,8 @@ diagnostic_kinds! {
         (ContractTestSkipped, "contract_test_skipped", "W1009"),
         // W1010
         (UntrustedExtern, "untrusted_extern", "W1010"),
+        // W1012
+        (RefutableBindingPatternWarning, "refutable_binding_pattern_warning", "W1012"),
         // W2001
         (IntegerOverflowWrapped, "integer_overflow_wrapped", "W2001"),
         (ToolNotice, "tool_notice", "W2001"),

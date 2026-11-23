@@ -6,10 +6,10 @@
 | 優先度 | P1（`check` が通るプログラムが `build`・`run`・`test` のすべてで `E2002` になる。Win32 の `CreateWindowExW` などは、コールバックと文字列を同じ呼び出しで渡すことが多い） |
 | 規模 | S |
 | 依存 | – |
-| 後続 | [W27](W27-win32-package-from-winmd.md)（生成した宣言は文字列のリテラルをそのまま渡す書き方を前提にする） |
-| 状態 | todo |
+| 後続 | [W27](../W27-win32-package-from-winmd.md)（生成した宣言は文字列のリテラルをそのまま渡す書き方を前提にする） |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
-| 承認 | 不要（[E12](_completed/E12-ffi-extensions.md) D9「呼び出し側で `host_call` を直接出す」に実装を合わせる修正。言語の意味・診断・ABI は変えない。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
+| 承認 | 不要（[E12](E12-ffi-extensions.md) D9「呼び出し側で `host_call` を直接出す」に実装を合わせる修正。言語の意味・診断・ABI は変えない。台帳は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
 | 手本にする既存実装 | `src/llvm.rs` の `FunctionEmitter::comparison_call`・`operand_borrow`・`release_operands`（一時値を領域に置いて借用し、呼び出しの後に解放する）、同じファイルの `Binary(BinaryOp::Pipe, ..)` の `BorrowOperand` の枝（`temp \|> f`） |
 | 主な影響ファイル | `src/llvm.rs`（`FunctionEmitter::call`）、`src/llvm_imports.rs`（`FunctionEmitter::host_call`）、`tests/ffi_extensions.rs`、`tests/ffi_extensions.mjs`、`tests/ffi_extensions_host.c`、`tests/fixtures/ffi_extensions/Main.tz`、`.github/workflows/ci.yml`（D5）、`_tsuzuri/language-reference/compiler/native-interop.md`、`docs/language.md` |
 
@@ -79,7 +79,7 @@ TSUZURI_CLANG=$T/bin/tsuzuri-clang.exe ../../debug/tsuzuri.exe build repro -o re
 
 ### 一時値の種類ごとの結果
 
-コールバック `inc :: i64 -> i64` を取る extern に、次の実引数を渡した（`target/scratch/w-w01w02/` で確認し、確認後に消した）。ホストは C で書き、`TSUZURI_CLANG=$T/bin/tsuzuri-clang.exe` で `build --link host.o` した。ホストの C は `$T/bin/tsuzuri-clang.exe -O2 -fno-sanitize=undefined -c host.c` でコンパイルした（同梱の `tsuzuri-clang`（`zig cc`）は、`-O` なし・`-O0`・`-Og`・引数のない `-O` の C に UBSan の参照を入れ、その object は既定の `-O3` の `build --link` で `lld-link: error: undefined symbol: __ubsan_handle_type_mismatch_v1` などになる。`-O2` では参照は入らないので、`-O2` を付けていれば `-fno-sanitize=undefined` は効果がない（[W37](W37-bundled-clang-ubsan-objects.md) の「現状」A1・A2）。W01 とは別の問題で、W37 が直す）。
+コールバック `inc :: i64 -> i64` を取る extern に、次の実引数を渡した（`target/scratch/w-w01w02/` で確認し、確認後に消した）。ホストは C で書き、`TSUZURI_CLANG=$T/bin/tsuzuri-clang.exe` で `build --link host.o` した。ホストの C は `$T/bin/tsuzuri-clang.exe -O2 -fno-sanitize=undefined -c host.c` でコンパイルした（同梱の `tsuzuri-clang`（`zig cc`）は、`-O` なし・`-O0`・`-Og`・引数のない `-O` の C に UBSan の参照を入れ、その object は既定の `-O3` の `build --link` で `lld-link: error: undefined symbol: __ubsan_handle_type_mismatch_v1` などになる。`-O2` では参照は入らないので、`-O2` を付けていれば `-fno-sanitize=undefined` は効果がない（[W37](../W37-bundled-clang-ubsan-objects.md) の「現状」A1・A2）。W01 とは別の問題で、W37 が直す）。
 
 | 実引数 | extern の引数の型 | `check` | 生成コード |
 | --- | --- | --- | --- |
@@ -256,12 +256,12 @@ const NAME: string = "abcd"
 
 ## 受け入れ条件
 
-- [ ] 「実装者向け早見」のプログラムと「現状」の表の一時値がすべて、native（MinGW・MSVC）と wasm32 で `build` でき、生成コードが `@tz.fn.<extern>` を参照しない。
-- [ ] `tests/ffi_extensions.rs` の新しいテストと既存の全件が通る。
-- [ ] `node tests/ffi_extensions.mjs target/debug/tsuzuri` が native の `-O0`・`-O3`（IR と object）と WASM で通り、`live == 0`。`ci.yml` の `suites` の job がこの suite を回し、PR の CI で通る。
-- [ ] 今コンパイルできるプログラム（`tests/fixtures`・`examples` のすべての `Main.tz`）の IR・object・header・診断が 1 byte も変わらない（手順 1 との比較。新しい機能はないので例外はない）。
-- [ ] コールバックを取らない extern の生成が変わらない。
-- [ ] T2 が通る。PR に `ci:full` を付ける（Windows の MinGW・MSVC で確かめる W チケットの規則）。
+- [x] 「実装者向け早見」のプログラムと「現状」の表の一時値がすべて、native（MinGW・MSVC）と wasm32 で `build` でき、生成コードが `@tz.fn.<extern>` を参照しない。
+- [x] `tests/ffi_extensions.rs` の新しいテストと既存の全件が通る。
+- [x] `node tests/ffi_extensions.mjs target/debug/tsuzuri` が native の `-O0`・`-O3`（IR と object）と WASM で通り、`live == 0`。`ci.yml` の `suites` の job がこの suite を回し、PR の CI で通る。
+- [x] 今コンパイルできるプログラム（`tests/fixtures`・`examples` のすべての `Main.tz`）の IR・object・header・診断が 1 byte も変わらない。
+- [x] コールバックを取らない extern の生成が変わらない。
+- [x] T2 が通る。PR に `ci:full` を付ける（Windows の MinGW・MSVC で確かめる W チケットの規則）。
 
 ## 落とし穴
 
@@ -275,15 +275,21 @@ const NAME: string = "abcd"
 
 - コールバックを取らない extern の生成を、包み（`@tz.fn.<extern>`）を通さない直接の `host_call` に変えること（IR が変わる。性能の差は計測していない。必要なら別のチケット）。
 - `comparison_call` が `call` のほかの特殊化（恒等関数、`Add.add` の命令化など）を通らないこと（一時値を `ref` で受ける関数には当たらない。気づいたことの記録だけ）。
-- 同梱の `tsuzuri-clang` が `-O` なし・`-O0` の C に UBSan の参照を入れるため、その C のホストが既定の `-O3` のリンクやほかのリンカーでリンクできないこと（[W37](W37-bundled-clang-ubsan-objects.md) が直す）。
+- 同梱の `tsuzuri-clang` が `-O` なし・`-O0` の C に UBSan の参照を入れるため、その C のホストが既定の `-O3` のリンクやほかのリンカーでリンクできないこと（[W37](../W37-bundled-clang-ubsan-objects.md) が直す）。
 - コールバックの寿命の契約（W12）。
 
 ## 決定事項
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 一時値は拒否せず、一時の領域に置いて借用し、直接の `host_call` を出す | E12 D9（呼び出し側で `host_call` を直接出す）と、ほかの関数の一時値の規則に合わせる。拒否・本体の生成・検査での書き換えは「設計」の「採らない案」のとおり採らない | 既定案（実装者はこの案に従う） |
-| D2 | コールバック extern の判定は `FunctionEmitter::call` の先頭の 1 か所にする | 一時値・特殊化のどの枝より先に見れば、引数の形で経路が分かれない（AGENTS.md の「同じ意味の書き方が別の経路を選ばない」） | 既定案（実装者はこの案に従う） |
-| D3 | コールバックを取らない extern の生成は変えない | 今動いている経路で、IR を変えない規則を守る | 既定案（実装者はこの案に従う） |
-| D4 | ハンドルの一時値は借用の後に何もせず捨てる | E12 D3（drop glue なし。閉じるのは利用者が値で渡したときだけ）のまま | 既定案（実装者はこの案に従う） |
-| D5 | `tests/ffi_extensions.mjs` を `ci.yml` の `suites` の job で回す | 「`check` は通るのに `build` で落ちる」種類の誤りは E2E でしか見えない。今はどのワークフローもこの suite を回さない。ほかの suite と同じく `target/debug/tsuzuri` で回し、速度の合否は入れない | 既定案（実装者はこの案に従う）。HEAD でこの suite が通ること（着手条件）が前提で、通らなければ S4 で止める。job の時間が目に見えて延びるなら、`targets.yml` の Linux の job へ移して PR に書く |
+| D1 | 一時値は拒否せず、一時の領域に置いて借用し、直接の `host_call` を出す | E12 D9（呼び出し側で `host_call` を直接出す）と、ほかの関数の一時値の規則に合わせる。拒否・本体の生成・検査での書き換えは「設計」の「採らない案」のとおり採らない | 確定・実装済み |
+| D2 | コールバック extern の判定は `FunctionEmitter::call` の先頭の 1 か所にする | 一時値・特殊化のどの枝より先に見れば、引数の形で経路が分かれない（AGENTS.md の「同じ意味の書き方が別の経路を選ばない」） | 確定・実装済み |
+| D3 | コールバックを取らない extern の生成は変えない | 今動いている経路で、IR を変えない規則を守る | 確定・実装済み |
+| D4 | ハンドルの一時値は借用の後に何もせず捨てる | E12 D3（drop glue なし。閉じるのは利用者が値で渡したときだけ）のまま | 確定・実装済み |
+| D5 | `tests/ffi_extensions.mjs` を `ci.yml` の `suites` の job で回す | 「`check` は通るのに `build` で落ちる」種類の誤りは E2E でしか見えない。今はどのワークフローもこの suite を回さない。ほかの suite と同じく `target/debug/tsuzuri` で回し、速度の合否は入れない | 確定・実装済み |
+
+## 実装と検証（2026-11-23）
+
+- `src/llvm.rs` の `FunctionEmitter::call` の先頭でコールバック extern を判定し、`src/llvm_imports.rs` の `host_call` で `BorrowOperand` を `operand_borrow` で借用し、全出口で `free_copies` の後に `release_operands` で解放するよう修正した。
+- `tests/ffi_extensions.rs`（`callback_externs_borrow_temporary_arguments`）、`tests/fixtures/ffi_extensions/Main.tz`・`tests/ffi_extensions_host.c`・`tests/ffi_extensions.mjs`（`temporaries` と `temporary_then_raise`）、`.github/workflows/ci.yml`（`suites` への `ffi_extensions.mjs` 追加）、`docs/language.md`、`_tsuzuri/language-reference/compiler/native-interop.md` を更新した。
+

@@ -7,8 +7,8 @@
 | 規模 | M（`src/bindgen.rs` の Nullability 解析・AST 属性読み取り・CLI `--nonnull` オプション、テストと文書） |
 | 依存 | W15, NS01 |
 | 後続 | – |
-| 状態 | todo |
-| 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
+| 状態 | done |
+| 起票 | 2026-11-22（[GUIDE D-64](../GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（`bindgen` の既定出力型の変更と CLI オプション `--nonnull` の追加（D-55）。決定事項 D1・D2 が要承認、D3〜D5 は既定案） |
 | 手本にする既存実装 | `src/bindgen.rs` の `--consume FUNCTION:PARAMETER`・`--buffer FUNCTION:POINTER:LENGTH` の注釈解決（2130〜2290 行付近）、Clang 型字句解析 `qualifiers`（1035〜1070 行）、Clang JSON AST の属性走査 |
 | 主な影響ファイル | `src/bindgen.rs`, `src/bindgen_driver.rs`, `src/main.rs`, `tests/bindgen.rs`, `tests/bindgen.mjs`, `docs/language.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/compiler/usage.md`, `README.md` |
@@ -127,9 +127,9 @@ tsuzuri bindgen header.h -o Module.tz [--nonnull FUNCTION:TARGET]...
 
 ## 受け入れ条件
 
-- [ ] 注釈なし・`_Nullable` のハンドル／レコードポインタが `Maybe` になり、`_Nonnull`・`nonnull` 属性・`--nonnull` のみが非 `Maybe` になる。
-- [ ] Clang 21 と Clang 23 でバイト単位で同一の出力になる。
-- [ ] `node scripts/check-cli-docs.mjs` と `node scripts/check-docs.mjs` が通る。
+- [x] 注釈なし・`_Nullable` のハンドル／レコードポインタが `Maybe` になり、`_Nonnull`・`nonnull` 属性・`--nonnull` のみが非 `Maybe` になる。
+- [x] Clang 21 と Clang 23 でバイト単位で同一の出力になる。
+- [x] `node scripts/check-cli-docs.mjs` と `node scripts/check-docs.mjs` が通る。
 
 ## 落とし穴
 

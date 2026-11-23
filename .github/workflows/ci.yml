@@ -183,6 +183,9 @@ jobs:
       - name: Control flow and ownership cleanup
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/control.mjs target/debug/tsuzuri
+      - name: FFI extensions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/ffi_extensions.mjs target/debug/tsuzuri
       - name: Computation expressions
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/computations.mjs target/debug/tsuzuri

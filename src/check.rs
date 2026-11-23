@@ -172,8 +172,8 @@ pub enum Type {
     /// The body of a `tzroutine { }` (TZ02), a function that runs once with its result type: the
     /// rules of its captures are those of `task { }`, which TZ12 removed. No program writes it.
     Once(Box<Type>),
-    /// An `extern type`: an opaque host handle named by its qualified name.
-    Handle(Box<str>),
+    /// An `extern type`: an opaque host handle named by its qualified name, with its kind (W18).
+    Handle(Box<str>, HandleKind),
     Function(Box<FunctionParameters>, Box<Type>),
     Reference(Box<Type>, bool),
     /// `dyn C`: an owned value of some type with instances of the classes, stored as
@@ -545,7 +545,7 @@ impl Type {
                     .join(" * ")
             ),
             Self::Once(_) => "tzroutine body".into(),
-            Self::Handle(name) => names.handle_display(name),
+            Self::Handle(name, _) => names.handle_display(name),
             Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
@@ -654,7 +654,7 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Once(_)
-            | Self::Handle(_)
+            | Self::Handle(_, HandleKind::Owned)
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
             | Self::Reference(_, true)
@@ -1054,7 +1054,9 @@ impl Type {
                 |ty| {
                     !matches!(
                         ty,
-                        Type::Reference(_, true) | Type::Once(_) | Type::Handle(_)
+                        Type::Reference(_, true)
+                            | Type::Once(_)
+                            | Type::Handle(_, HandleKind::Owned)
                     ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
@@ -1066,7 +1068,7 @@ impl Type {
             );
         }
         match self {
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
@@ -1155,7 +1157,7 @@ impl Type {
             | Self::ArrayView(_)
             | Self::Length(_)
             | Self::Once(_)
-            | Self::Handle(_)
+            | Self::Handle(..)
             | Self::Function(..) => true,
         }
     }
@@ -1183,7 +1185,7 @@ impl Type {
     /// shared pointers (an `Arc` counts atomically and is Sync when its value is; an `Rc` counts
     /// through `Rc.share`'s shared borrow and is never Sync). Function values are Sync: they
     /// capture only values that tzroutines may hold, and `Routine.scope` checks that the environment of
-    /// a function it shares is proven owned. Not Sync are an extern handle (host libraries are
+    /// a function it shares is proven owned. Not Sync are a non-`copy` extern handle (host libraries are
     /// rarely thread-safe), a dyn value that is not Copy (it may hide one), a tzroutine body, an exclusive
     /// reference, an `Owned.Function`, a lazy sequence and the GPU handles.
     pub(crate) fn can_sync(&self, types: &TypeContext<'_>) -> bool {
@@ -1197,7 +1199,8 @@ impl Type {
             // function, which is checked again for every type that it is used at. Every kind of
             // type is named here, so that a new one has to be judged.
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_) => false,
+            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Handle(_, HandleKind::Copy) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
             Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
@@ -1254,7 +1257,7 @@ impl Type {
                         | Self::Partial(_)
                         | Self::Application(..)
                         | Self::Shared(..)
-                        | Self::Handle(_)
+                        | Self::Handle(..)
                         | Self::Function(..)
                         | Self::Once(_)
                         | Self::Dyn(_)
@@ -1280,11 +1283,11 @@ impl Type {
         })
     }
 
-    /// Whether a value of this type reaches what makes a host call unsafe to share: an extern
-    /// handle, a dyn value that is not Copy, or an `Owned.Function` (C10).
+    /// Whether a value of this type reaches what makes a host call unsafe to share: a non-`copy`
+    /// extern handle, a dyn value that is not Copy, or an `Owned.Function` (C10, W18).
     pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
         types.reaches(self, |ty| {
-            matches!(ty, Type::Handle(_))
+            matches!(ty, Type::Handle(_, HandleKind::Owned))
                 || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                 || ty.is_owned_function(types)
         })
@@ -4721,6 +4724,9 @@ pub struct CheckedModule {
     /// E15: the generic functions written in source code. Specialization replaces each with its
     /// instances and drops one that nothing calls, so `audit` counts the declarations from here.
     pub generic_declarations: Vec<GenericDeclaration>,
+    /// W14: canonical C signatures for explicit extern symbols declared with mixed `ptr`/`i64`
+    /// positions; empty when every symbol's declarations share one LLVM signature.
+    pub extern_abis: BTreeMap<String, crate::abi::CSignature>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5884,6 +5890,7 @@ struct Names {
     record_aliases: BTreeMap<String, Vec<String>>,
     /// `extern type` handles share the type namespace with records and unions.
     handles: BTreeMap<String, NameInfo>,
+    handle_kinds: Vec<HandleKind>,
     handle_aliases: BTreeMap<String, Vec<String>>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
@@ -6209,6 +6216,7 @@ fn bench_function(bench: &crate::syntax::BenchDecl, index: usize) -> FunctionDec
             kind: ExprKind::Block {
                 bindings: vec![Binding {
                     name: named("$case"),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -8498,6 +8506,7 @@ fn check_modules_collect(
                 diagnostics.push(duplicate(&handle.name));
                 continue;
             }
+            names.handle_kinds.push(handle.kind);
             names
                 .handle_aliases
                 .entry(handle.name.text.clone())
@@ -8872,8 +8881,17 @@ fn check_modules_collect(
     }
     names.flush_renamed(diagnostics).check()?;
     let mut export_names = BTreeSet::new();
-    // The function type and WASM module of each explicit extern symbol; a symbol may be declared again only identically.
-    let mut explicit_symbols: BTreeMap<String, (Type, String)> = BTreeMap::new();
+    // W14: first lowered C signature, canonical signature, mixed flag, WASM module, and first span per explicit symbol.
+    let mut explicit_symbols: BTreeMap<
+        String,
+        (
+            crate::abi::CSignature,
+            crate::abi::CSignature,
+            bool,
+            String,
+            Span,
+        ),
+    > = BTreeMap::new();
     regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
     classes.instances(
@@ -9107,10 +9125,21 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
+                if crate::abi::has_invalid_extern_maybe(
+                    &signature.parameters,
+                    &signature.result,
+                    &types,
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AbiNullablePayload,
+                        "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
+                        function.name.span,
+                    ));
+                }
                 if signature
                     .parameters
                     .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty))
+                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types))
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
@@ -9119,10 +9148,10 @@ fn check_modules_collect(
                     ));
                 }
                 if signature.parameters.iter().any(|ty| {
-                    !crate::abi::parameter(ty, &types)
+                    !crate::abi::extern_parameter(ty, &types)
                         && *ty != Type::Unit
                         && !matches!(ty, Type::Function(..))
-                }) || !crate::abi::result(&signature.result, &types)
+                }) || !crate::abi::extern_result(&signature.result, &types)
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
@@ -9132,19 +9161,49 @@ fn check_modules_collect(
                 }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared = (signature.as_type(), import.wasm_module.clone());
-                    let known = explicit_symbols
-                        .entry(import.native_symbol.clone())
-                        .or_insert_with(|| declared.clone());
-                    if *known != declared {
-                        return Err(Diagnostic::of(
-                            DiagnosticKind::ConflictingExternDeclaration,
-                            format!(
-                                "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
-                                import.native_symbol
-                            ),
-                            function.name.span,
-                        ));
+                    let declared =
+                        crate::abi::c_signature(&signature.parameters, &signature.result, &types);
+                    match explicit_symbols.entry(import.native_symbol.clone()) {
+                        std::collections::btree_map::Entry::Vacant(slot) => {
+                            slot.insert((
+                                declared.clone(),
+                                declared,
+                                false,
+                                import.wasm_module.clone(),
+                                function.name.span,
+                            ));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut slot) => {
+                            let (first, canonical, mixed, wasm_module, first_span) = slot.get_mut();
+                            if *wasm_module != import.wasm_module {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    format!(
+                                        "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
+                                        import.native_symbol
+                                    ),
+                                    function.name.span,
+                                ));
+                            }
+                            if let Some(reason) = declared.mismatch(first) {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    format!(
+                                        "extern symbol '{}' has a different C ABI here: {reason}; declarations of one symbol may differ only in types that pass the same way",
+                                        import.native_symbol
+                                    ),
+                                    function.name.span,
+                                )
+                                .related(
+                                    RelatedRole::FirstDefinedHere,
+                                    "first defined here",
+                                    *first_span,
+                                ));
+                            }
+                            if canonical.merge_canonical(&declared) || declared != *first {
+                                *mixed = true;
+                            }
+                        }
                     }
                 }
             }
@@ -9771,6 +9830,10 @@ fn check_modules_collect(
     ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
+    let extern_abis: BTreeMap<String, crate::abi::CSignature> = explicit_symbols
+        .into_iter()
+        .filter_map(|(symbol, (_, canonical, mixed, _, _))| mixed.then_some((symbol, canonical)))
+        .collect();
     let mut module = CheckedModule {
         records,
         unions,
@@ -9791,6 +9854,7 @@ fn check_modules_collect(
         effects: None,
         noncanonical: root_noncanonical(modules, &reference_borrows),
         generic_declarations: Vec::new(),
+        extern_abis,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -10205,6 +10269,7 @@ fn recovery_module(
         effects: None,
         noncanonical: Vec::new(),
         generic_declarations: Vec::new(),
+        extern_abis: BTreeMap::new(),
     }
 }
 
@@ -10754,7 +10819,9 @@ fn resolve_type_with_kinds(
                 match named {
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
-                    NamedType::Handle(info) => Type::Handle(info.name.as_str().into()),
+                    NamedType::Handle(info) => {
+                        Type::Handle(info.name.as_str().into(), names.handle_kinds[info.id])
+                    }
                     NamedType::Alias(_) => {
                         let expanded = expand_type_aliases(expression, module, names)?;
                         let ty = resolve(&expanded)?;
@@ -12773,21 +12840,105 @@ impl<'a> Checker<'a> {
             ExprKind::Call(..) => return self.call_expression(expression, expected, false),
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
-                let checked = self.block_bindings(bindings)?;
-                let result = self.expression(result, expected)?;
+                let checked_block = self.check_block_tail(bindings, result, expected);
                 self.scopes.pop();
-                let ty = result.ty.clone();
-                (
-                    TypedExprKind::Block {
-                        bindings: checked,
-                        result: Box::new(result),
-                    },
-                    ty,
-                )
+                checked_block?
             }
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
         self.finish_expression(kind, ty, expected, expression.span)
+    }
+
+    fn check_block_tail(
+        &mut self,
+        bindings: &[Binding],
+        result: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        let Some(split) = bindings
+            .iter()
+            .position(|binding| binding.pattern.is_some())
+        else {
+            let checked = self.block_bindings(bindings)?;
+            let result = self.expression(result, expected)?;
+            let ty = result.ty.clone();
+            return Ok((
+                TypedExprKind::Block {
+                    bindings: checked,
+                    result: Box::new(result),
+                },
+                ty,
+            ));
+        };
+        let checked = self.block_bindings(&bindings[..split])?;
+        let binding = &bindings[split];
+        let (pattern, origin) = binding.pattern.as_ref().unwrap().as_ref();
+        let annotation = self.binding_annotation(binding)?;
+        let from = self.recovered.len();
+        let value = match self.expression(&binding.value, annotation.as_ref()) {
+            Ok(value) => value,
+            Err(mut error) => {
+                self.annotation_because(binding, annotation.as_ref(), from, Some(&mut error));
+                return Err(error);
+            }
+        };
+        if self.recovered.len() > from {
+            self.annotation_because(binding, annotation.as_ref(), from, None);
+        }
+        if *origin == MatchOrigin::LetDestructuring && self.names.warning_options.shadowing {
+            let mut bound = Vec::new();
+            pattern.bound_names(&mut bound);
+            for ident in bound {
+                if !ident.text.starts_with('_')
+                    && self
+                        .scopes
+                        .last()
+                        .and_then(|scope| scope.get(&ident.text))
+                        .is_some_and(|previous| previous.provenance == Provenance::User)
+                {
+                    self.shadowing_warnings.push(Diagnostic::of(
+                        DiagnosticKind::ShadowedLocal,
+                        format!(
+                            "local '{}' shadows an earlier binding in the same scope",
+                            ident.text
+                        ),
+                        ident.span,
+                    ));
+                }
+            }
+        }
+        let rest = if split + 1 == bindings.len() {
+            result.clone()
+        } else {
+            Expr {
+                kind: ExprKind::Block {
+                    bindings: bindings[split + 1..].to_vec(),
+                    result: Box::new(result.clone()),
+                },
+                span: bindings[split + 1].name.span.through(result.span),
+                depth: result.depth + 1,
+            }
+        };
+        let matched = self.match_value(
+            value,
+            &[MatchArm {
+                pattern: pattern.clone(),
+                guard: None,
+                body: rest,
+                span: pattern.span,
+            }],
+            expected,
+            pattern.span,
+            Some(*origin),
+        )?;
+        let ty = matched.ty.clone();
+        Ok((
+            TypedExprKind::Block {
+                bindings: checked,
+                result: Box::new(matched),
+            },
+            ty,
+        ))
     }
 
     /// Checks the bindings of a block in order, a `let rec` group (B09) as one. It is a function

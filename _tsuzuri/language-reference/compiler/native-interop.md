@@ -103,7 +103,7 @@ add 20 22
 42
 ```
 
-`--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。
+`--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。Windows では、object を埋め込んだホストでも `--trap-info` のトラップ報告は OS の標準エラーハンドル（`GetStdHandle(STD_ERROR_HANDLE)`）へ直接書くため、CRT のファイル記述子 2 のリダイレクト（`_dup2`）には従いません（標準エラーが無い・書けないときは `OutputDebugStringW` へ送ります）。
 
 C のホストに入れる object も、プロファイルで最適化できます。`--emit object --profile-generate DIR` の object は計装されていますが、プロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます（付けないと、macOS では `___llvm_profile_runtime` が未定義です）。ホストを動かすと `DIR` にプロファイルができ、`--emit object --profile-use DIR` で作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 
@@ -175,7 +175,17 @@ int main(void) {
 }
 ```
 
-シンボル名は 255 バイト以下の C 識別子です。`tz_`、`tsuzuri`、`__` で始まる名前と、`malloc` や `write` などランタイムが使う名前は `E1008` です。同じシンボルを複数の `extern` で宣言することはできますが、型が違うと `E1008` です。
+シンボル名は 255 バイト以下の C 識別子です。`tz_`、`tsuzuri`、`__` で始まる名前と、`malloc` や `write` などランタイムが使う名前は `E1008` です。ネイティブでは、`SendMessageW` のように 1 つの C シンボルを用途ごとの別名で複数回 `extern` 宣言でき、インポートモジュール名と下げた C の各位置の ABI 分類（32 ビット整数・64 ビット整数またはポインタ・`f32`・`f64`・`void`）が一致していれば 1 つの外部宣言に集約されます（分類が違う場合や、WebAssembly で型の異なる複数の宣言に到達する場合は `E1008` です）。
+
+```tsuzuri
+extern type copy Hwnd
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+
+@trusted
+extern "SendMessageW" def send_message :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+@trusted
+extern "SendMessageW" def send_rect :: ref Hwnd -> i32u -> i64u -> ref Rect -> i64
+```
 
 呼び出しは副作用として扱われ、引数は左から右に評価されます。部分適用はできます。コンパイラが純粋な計算だと思って消すことはありません。`const` の初期化から `extern` を呼ぶことはできません。
 
@@ -201,13 +211,29 @@ flowchart LR
 
 `extern type Counter` は、ホストが所有するポインタを Tsuzuri 側では値として扱う型です。リテラルでは作れず、`extern` の戻り値か、export の引数としてだけ受け取ります。Copy ではなく、代入はムーブです。破棄してもデストラクタは走りません。閉じる `extern` へ値で渡すのが、解放の契約です。
 
-C では `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
+ホストが所有権を渡さない識別子（Win32 の `HWND`・`HINSTANCE`・ストックオブジェクトなど）は `extern type copy Hwnd` と宣言します。`copy` は `extern type` の直後で同じ行に型名が続くときだけの文脈キーワードです。`copy` ハンドルは `Copy`・`Capture`・`Send`・`Sync` を満たし、値渡しで複製され、関数値や `tzroutine { }` に捕捉でき、`Routine.scope` や `Arc<H>` でも共有できます。解放関数があるハンドル（`CreateFontW` の `HFONT`、ファイルの `HANDLE` など）やスレッドに結び付くハンドル（`HDC` など）に `copy` を付けると二重解放やスレッド違反になるため、所有しない識別子にだけ使います。
+
+C ではどちらも `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
+
+#### NULL を渡す・受ける（Maybe）
+
+ネイティブターゲットでは、非 `Maybe` の `H` と `ref H` は常に非 Null ポインタです。`H` を返す `extern def` に C が `NULL` を返したときや、`export def`・静的コールバックの `H`・`ref H` 引数にホストが `NULL` を渡したときは、境界で直ちに `null extern handle` でトラップします（C#・Python・C++ の生成バインディングも `0`・`None`・`nullptr` を例外で拒否します）。そのためネイティブの `Maybe<H>` はタグを持たない 1 つのポインタ（8 バイト、`None` が `NULL`）になり、`Some(NULL)` は作れません。`NULL` を取り得る C API には必ず `Maybe<H>` または `Maybe<ref H>` を使います（WebAssembly ではハンドル番号 `0` が有効値になり得るため、非 Null 検査も NULL niche も行いません）。
+
+ネイティブターゲットの `extern def` では、引数の `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`R` はスカラーレコード）と戻り値の `Maybe<H>`、および静的コールバック引数の `Maybe<H>`・`Maybe<ref H>` において、`None` が C の `NULL`、`Some` が非 `NULL` のポインタに対応します。所有ハンドルを消費せずに省略可能引数へ渡すときは `Maybe<ref H>`（`Some (ref handle)`）を使います。それ以外の `Maybe` の形は `E1008`（`abi_nullable_payload`）、WebAssembly で到達した場合は `E1008`（`abi_native_only`）です。
+
+```tsuzuri
+extern type Module
+extern type ModuleName
+
+@trusted
+extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module>
+```
 
 ### 静的コールバック
 
 `extern` の引数に関数型を書けます。渡せるのは、型パラメーターを持たないトップレベルのユーザー関数だけです。ラムダ、部分適用、ローカル、標準ライブラリ、別の `extern` は `E1008` です。
 
-ホストが受け取るのは、その関数の C ABI ラッパーへの関数ポインタです。環境は捕捉しません。`extern` の呼び出しが返ったあとに、そのポインタを非同期で呼んではいけません。コールバックの引数はスカラーかハンドル、戻り値はスカラーか `unit` です。バッファやレコードは渡せません。この `extern` 自体は、部分適用できません。
+ホストが受け取るのは、その関数の C ABI ラッパーへの関数ポインタです。環境は捕捉しません。`extern` の呼び出しが返ったあとに、そのポインタを非同期で呼んではいけません。コールバックの引数はスカラーかハンドル（ネイティブでは `Maybe<H>`・`Maybe<ref H>` も可）、戻り値はスカラーか `unit` です。バッファやレコードは渡せません。この `extern` 自体は、部分適用できません。コールバック以外の共有借用引数には、ほかの `extern` と同じく一時値（文字列リテラル、`$"..."`、呼び出しの結果など）を渡せ、呼び出しの間だけ借用されて戻った後に解放されます。
 
 ### 信頼の印（@trusted）
 
@@ -545,7 +571,7 @@ TZ13 で、ホストが駆動する `Async` の実行器を削除しました。
 
 tzroutine と `Parallel.*` のコールバック（`Routine.scope` の子を含む）は、複数のネイティブスレッドから `extern` を同時に呼ぶことがあります。ホスト関数をスレッド安全にするか、それらの中から呼ばないでください。WebAssembly の `Parallel.*` は、`--wasm-feature threads` を付けない限り逐次です。
 
-`extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、ハンドル（またはハンドルを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じハンドルを複数の tzroutine から同時に使うことはありません。
+修飾のない `extern type` の値は所有値なので、ある時点でそれを使える tzroutine は 1 つです。[Arc](../built-in-types-and-modules/rc.md) で包んでも、`copy` でないハンドル（またはそれを隠しうる Copy でない `dyn` 値や `Owned.Function`）を持つ値の `Arc` は tzroutine へ渡せず（`E1013`）、関数値にも捕捉できない（`E1005`）ので、同じ所有ハンドルを複数の tzroutine から同時に使うことはありません。`extern type copy` のハンドルは複製と共有が可能ですが、その識別子を受け取るホスト API がどのスレッドから呼べるかは各 `extern` の契約（`@trusted`）に従います。
 
 export とコールバックは、利用者から共有して変更する大域的な状態を持ちません。ホストが渡したバッファを、呼び出しのあいだに別スレッドが書き換えるのは、契約違反です。
 
@@ -643,8 +669,8 @@ clang app.o sample.c host.c -lm -o host
 | `long`, `long long` / `unsigned long`, `unsigned long long` | `i64` / `i64u` | `i64` / `i64u` | `i64` / `i64u` |
 | `float` / `double` | `f32` / `f64` | `f32` / `f64` | `f32` / `f64` |
 | 全定数が `i32` に収まる enum | `i32` | `i32` | `i32` |
-| `const struct TAG *`（生成した record） | `ref Record` | × | × |
-| 不透明な struct へのポインター | `ref Handle`（`--consume` で `Handle`） | `Handle`（`const` なしだけ） | × |
+| `const struct TAG *`（生成した record） | `Maybe<ref Record>`（`_Nonnull`・`nonnull` 属性・`--nonnull` で `ref Record`） | × | × |
+| 不透明な struct へのポインター | `Maybe<ref Handle>`（`--consume` で `Maybe<Handle>`、非 Null 指定で `ref Handle`／`Handle`） | `Maybe<Handle>`（`const` なしだけ。非 Null 指定で `Handle`） | × |
 | 関数ポインター（下の条件） | `(P1 -> P2 -> R)` | × | × |
 | `const` な要素へのポインターと直後の長さ（`--buffer`） | `ref [i64]` / `ref [f64]` / `ref [ubyte]` | × | × |
 | `void` | 引数なしは `unit` | `unit` | × |
@@ -672,33 +698,35 @@ clang app.o sample.c host.c -lm -o host
 
 浮動小数点、`(1 << 4)` のような式、文字列、関数形式のマクロは何も出しません。64 bit に収まらない値、`u` なしで符号付き 64 bit に収まらない 10 進数、`09` のような不正なリテラルは `W2002` です。`#include` 先で定義されたマクロと、`#undef` されたマクロは出しません。`#pragma push_macro`／`pop_macro` で値が戻されるマクロのように、ヘッダーの終わりの定義（`clang -E -dM`）と一致しないものは `W2002` です。
 
-### 不透明な struct と `--consume`
+### 不透明な struct と `--consume`・`--nonnull`
 
 `struct ctx;` とだけ宣言され、どこでも定義されない struct は、C のコードもポインターでしか持てません。`tsuzuri bindgen` はこれを `extern type` にし、ポインターをハンドルとして扱います。ハンドルはポインター 1 つで、Tsuzuri は参照外ししません。
+
+C のポインターは断りがない限り `NULL` になり得るため、注釈のないハンドルと `const struct TAG *` は既定で `Maybe<...>` になります。`_Nonnull`、`__attribute__((nonnull))`、`__attribute__((returns_nonnull))`、または CLI の `--nonnull 関数:対象`（`対象` は C の引数名・1 始まりの位置・`return`）がある位置だけが非 `Maybe`（`ref Counter`・`Counter`・`ref Record`）になります（`_Nullable`／`_Nullable_result` が明示された位置に `--nonnull` を付けると `E2000`）。
 
 ```c
 struct counter;
 struct counter *counter_new(long start);
-long counter_add(struct counter *counter, long amount);
+long counter_add(struct counter * _Nonnull counter, long amount);
 long counter_free(struct counter *counter);
 ```
 
 ```sh
-tsuzuri bindgen counter.h -o Counter.tz --consume counter_free:counter
+tsuzuri bindgen counter.h -o Counter.tz --consume counter_free:counter --nonnull counter_free:counter
 ```
 
 ```text
 extern type Counter
-extern "counter_new" def counter_new :: i64 -> Counter
+extern "counter_new" def counter_new :: i64 -> Maybe<Counter>
 extern "counter_add" def counter_add :: ref Counter -> i64 -> i64
 extern "counter_free" def counter_free :: Counter -> i64
 ```
 
-引数は、`const` の有無にかかわらず共有借用 `ref Counter` です。呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何を書き換えても Tsuzuri からは見えません。`const` のないポインターの結果は、呼び出し側が所有する新しいハンドルです。解放する関数には `--consume 関数:引数` を付けます。その引数はハンドルの値渡し（ムーブ）になり、解放したハンドルを使うと `E1012` です。`const` へのポインターの結果、`struct counter **` のような出力引数は変換しません。NULL のハンドルは Tsuzuri から区別できないので、失敗の確かめ方は C の API に従います。
+引数は、`const` の有無にかかわらず共有借用（既定 `Maybe<ref Counter>`、非 Null 指定で `ref Counter`）です。呼び出しはハンドルを消費も複製もせず、ポインターの先で C が何を書き換えても Tsuzuri からは見えません。`const` のないポインターの結果は、呼び出し側が所有する新しいハンドル（既定 `Maybe<Counter>`、非 Null 指定で `Counter`）です。解放する関数には `--consume 関数:引数` を付けます。その引数はハンドルの値渡し（ムーブ）になり、解放したハンドルを使うと `E1012` です。`const` へのポインターの結果、`struct counter **` のような出力引数は変換しません。
 
 ### コールバック
 
-関数ポインターの引数は、引数がスカラーか不透明な struct へのポインター（`ref Handle` になる）、結果がスカラーか `void` のとき、[静的コールバック](#静的コールバック) の型になります。`int64_t (*)(int64_t)` は `(i64 -> i64)`、`void (*)(void)` は `(unit -> unit)` です。実引数には、型パラメーターを持たないトップレベルの関数の名前を渡します。`void *` の文脈引数を持つもの、可変長引数、ポインターを返すもの、入れ子の関数ポインター、block は変換しません。
+関数ポインターの引数は、引数がスカラーか不透明な struct へのポインター（`Maybe<ref Handle>`、`_Nonnull` なら `ref Handle` になる）、結果がスカラーか `void` のとき、[静的コールバック](#静的コールバック) の型になります（関数ポインター引数自体に `_Nullable` が付いていても、Tsuzuri からは常に有効な関数を渡せるため同じコールバック型に変換します）。`int64_t (*)(int64_t)` は `(i64 -> i64)`、`void (*)(void)` は `(unit -> unit)` です。実引数には、型パラメーターを持たないトップレベルの関数の名前を渡します。`void *` の文脈引数を持つもの、可変長引数、ポインターを返すもの、入れ子の関数ポインター、block は変換しません。
 
 ### バッファーの注釈 `--buffer`
 

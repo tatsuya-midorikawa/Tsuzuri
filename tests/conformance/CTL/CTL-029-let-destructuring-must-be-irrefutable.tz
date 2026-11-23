@@ -1,0 +1,6 @@
+let (a, b) = (20, 22)
+let Maybe.Some x = Maybe.Some a
+x + b
+
+// rule: CTL-029
+// expect: check-error E1021 line=2 kind=refutable_binding_pattern

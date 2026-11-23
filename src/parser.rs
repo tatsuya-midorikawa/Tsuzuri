@@ -2984,6 +2984,7 @@ impl Parser<'_> {
                         span: value.span,
                         provenance: Provenance::Generated,
                     },
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -3132,6 +3133,26 @@ impl Parser<'_> {
         self.binding_rest(stop_at_newline, recursion)
     }
 
+    fn can_start_pattern(&self) -> bool {
+        match &self.current().kind {
+            TokenKind::Ident(_)
+            | TokenKind::LeftBrace
+            | TokenKind::LeftParen
+            | TokenKind::LeftBracket
+            | TokenKind::LeftList
+            | TokenKind::Minus
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Char(_)
+            | TokenKind::Utf8Char(_) => true,
+            TokenKind::Colon => self.type_test_at(self.position),
+            _ => false,
+        }
+    }
+
     /// The rest of a binding after `let [rec]` or `and`; a recursive one is a lambda (B09).
     fn binding_rest(
         &mut self,
@@ -3142,7 +3163,45 @@ impl Parser<'_> {
             return self.rec_error_of(DiagnosticKind::MutableLetRec, REC_MUTABLE, None);
         }
         let mutable = self.eat(&TokenKind::Mut);
-        let name = self.ident()?;
+        let simple_ident = recursion == Recursion::None
+            && !mutable
+            && matches!(
+                &self.current().kind,
+                TokenKind::Ident(word) if !word.as_bytes()[0].is_ascii_uppercase()
+            )
+            && matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Colon | TokenKind::Equal)
+            );
+        let (name, pattern) =
+            if recursion != Recursion::None || mutable || simple_ident || !self.can_start_pattern()
+            {
+                (self.ident()?, None)
+            } else {
+                let mut pat = self.pattern(1)?;
+                if self.eat(&TokenKind::As) {
+                    let binder = self.ident()?;
+                    let span = pat.span.through(binder.span);
+                    let depth = pat.depth + 1;
+                    pat = self.make_pattern(PatternKind::As(Box::new(pat), binder), span, depth)?;
+                }
+                if let PatternKind::Binding(name) = &pat.kind
+                    && !name.text.as_bytes()[0].is_ascii_uppercase()
+                    && !name.text.contains(['.', ':'])
+                {
+                    (name.clone(), None)
+                } else {
+                    let placeholder = Ident {
+                        text: format!("$let{}", pat.span.start),
+                        span: pat.span,
+                        provenance: Provenance::Generated,
+                    };
+                    (
+                        placeholder,
+                        Some(Box::new((pat, MatchOrigin::LetDestructuring))),
+                    )
+                }
+            };
         let annotation = if self.eat(&TokenKind::Colon) {
             Some(self.type_expr()?)
         } else {
@@ -3159,6 +3218,7 @@ impl Parser<'_> {
         }
         Ok(Binding {
             name,
+            pattern,
             mutable,
             using: false,
             recursion,
@@ -3608,6 +3668,7 @@ impl Parser<'_> {
         Ok(ComputationStatementKind::Let(
             Binding {
                 name,
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -3725,24 +3786,36 @@ impl Parser<'_> {
         if bind && self.at(&TokenKind::Rec) {
             return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
         }
-        let binding = self.binding_value(true)?;
+        let mut binding = self.binding_value(true)?;
+        if bind && let Some(pair) = &mut binding.pattern {
+            pair.1 = MatchOrigin::ComputationDestructuring;
+        }
         if !bind || !self.at(&TokenKind::And) {
             return Ok(ComputationStatementKind::Let(binding, bind));
         }
+        let mut bound = Vec::new();
+        binding.bound_names(&mut bound);
+        let mut names: BTreeSet<String> = bound.into_iter().map(|ident| ident.text).collect();
         let mut bindings = vec![binding];
-        let mut names = BTreeSet::from([bindings[0].name.text.clone()]);
         while self.eat(&TokenKind::And) {
             self.expect(&TokenKind::Bang, "'!' after and in a binding group")?;
             if self.at(&TokenKind::Rec) {
                 return self.rec_error_of(DiagnosticKind::RecursiveLetBang, LET_BANG_REC, None);
             }
-            let binding = self.binding_value(true)?;
-            if binding.name.text != "_" && !names.insert(binding.name.text.clone()) {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::DuplicateAndBinding,
-                    "duplicate and! binding name",
-                    binding.name.span,
-                ));
+            let mut binding = self.binding_value(true)?;
+            if let Some(pair) = &mut binding.pattern {
+                pair.1 = MatchOrigin::ComputationDestructuring;
+            }
+            let mut next_bound = Vec::new();
+            binding.bound_names(&mut next_bound);
+            for ident in next_bound {
+                if !names.insert(ident.text) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::DuplicateAndBinding,
+                        "duplicate and! binding name",
+                        ident.span,
+                    ));
+                }
             }
             if bindings.len() >= MAX_NESTING {
                 return Err(Diagnostic::of(
@@ -4051,6 +4124,7 @@ impl Parser<'_> {
         };
         let binding = |name: Ident, value: Expr| Binding {
             name,
+            pattern: None,
             mutable: false,
             using: false,
             recursion: Recursion::None,
@@ -4503,7 +4577,30 @@ impl Parser<'_> {
                     first,
                 ));
             }
-            let name = self.ident()?;
+            let modifier_kind = |word: &str| match word {
+                "copy" => Some(HandleKind::Copy),
+                _ => None,
+            };
+            let first = self.ident()?;
+            let (kind, kind_span, name) = if let Some(kind) = modifier_kind(&first.text)
+                && !self.newline_before_current()
+                && matches!(self.current().kind, TokenKind::Ident(_))
+            {
+                let second = self.ident()?;
+                if modifier_kind(&second.text).is_some()
+                    && !self.newline_before_current()
+                    && matches!(self.current().kind, TokenKind::Ident(_))
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternTypeModifierConflict,
+                        "an extern type takes at most one of 'copy' and 'local'; remove one",
+                        second.span,
+                    ));
+                }
+                (kind, Some(first.span), second)
+            } else {
+                (HandleKind::Owned, None, first)
+            };
             if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
                 return Err(Diagnostic::of(
                     DiagnosticKind::ExternTypeWithBody,
@@ -4514,6 +4611,8 @@ impl Parser<'_> {
             return Ok(ExternDeclaration::Type(ExternTypeDecl {
                 doc,
                 visibility,
+                kind,
+                kind_span,
                 name,
             }));
         }
@@ -4814,6 +4913,7 @@ impl Parser<'_> {
         };
         let binding = Binding {
             name: name.clone(),
+            pattern: None,
             mutable: false,
             using: false,
             recursion: Recursion::None,

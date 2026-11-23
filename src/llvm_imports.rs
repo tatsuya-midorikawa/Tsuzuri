@@ -13,13 +13,14 @@ pub(super) fn header(module: &CheckedModule) -> String {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
+        let viewed_result = crate::abi::c_view(&function.signature.result, &module.types());
         let _ = writeln!(
             output,
             "{} {}({parameters});",
-            if out_result(&function.signature.result) {
+            if out_result(&viewed_result) {
                 "void".into()
             } else {
-                c_type(&function.signature.result)
+                c_type(&viewed_result)
             },
             import.native_symbol
         );
@@ -49,6 +50,8 @@ impl FunctionEmitter<'_, '_> {
         let mut widen: Vec<(usize, String)> = Vec::new();
         // The widened copies of Latin-1 strings, with the length words that say which are copies.
         let mut copies: Vec<(String, String)> = Vec::new();
+        let mut deferred_nullable_records: Vec<(usize, Type, String)> = Vec::new();
+        let mut operands = Vec::new();
         for argument in arguments {
             if matches!(argument.ty, Type::Function(..)) {
                 // A callback reaches the host as the address of its C-ABI wrapper.
@@ -63,8 +66,23 @@ impl FunctionEmitter<'_, '_> {
                 ));
                 continue;
             }
-            let value = self.expression(argument);
+            let value = if let TypedExprKind::BorrowOperand(operand) = &argument.kind {
+                self.operand_borrow(argument, operand, &mut operands)
+            } else {
+                self.expression(argument)
+            };
             if argument.ty == Type::Unit {
+                continue;
+            }
+            if let Some(nullable) = crate::abi::nullable(&argument.ty, &self.module.types()) {
+                types.push("ptr".into());
+                if matches!(nullable, crate::abi::Nullable::BorrowedRecord(_)) {
+                    deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
+                    values.push(String::new());
+                } else {
+                    let converted = self.nullable_to_c(&argument.ty, &value);
+                    values.push(format!("ptr {converted}"));
+                }
                 continue;
             }
             let inner = if let Type::Reference(inner, false) = &argument.ty {
@@ -105,7 +123,7 @@ impl FunctionEmitter<'_, '_> {
                 values.push(format!("ptr {slot}"));
                 continue;
             }
-            if matches!(argument.ty, Type::Reference(..)) && matches!(inner, Type::Handle(_)) {
+            if matches!(argument.ty, Type::Reference(..)) && matches!(inner, Type::Handle(..)) {
                 // The host takes the handle itself, not the address of the borrowed slot.
                 let handle = self.value(format!("load ptr, ptr {value}"));
                 types.push("ptr".into());
@@ -137,11 +155,39 @@ impl FunctionEmitter<'_, '_> {
             values[position + 1] = format!("i64 {length}");
             copies.push((copy, word));
         }
-        let output = if *result == Type::Unit || out.is_some() {
+        for (position, ty, value) in deferred_nullable_records {
+            let converted = self.nullable_to_c(&ty, &value);
+            values[position] = format!("ptr {converted}");
+        }
+        let result_nullable = crate::abi::nullable(result, &self.module.types()).is_some();
+        let mut output = if *result == Type::Unit || out.is_some() {
             "void".to_owned()
         } else {
-            abi_type(result)
+            abi_type(&crate::abi::c_view(result, &self.module.types()))
         };
+        let mut convert_ptr_result = false;
+        if !self.globals.wasm
+            && import.explicit
+            && let Some(canonical) = self.module.extern_abis.get(&import.native_symbol)
+        {
+            for (index, slot_type) in types.iter_mut().enumerate() {
+                let target = canonical.parameters[index].llvm();
+                if slot_type != target {
+                    let raw = values[index]
+                        .strip_prefix("ptr ")
+                        .expect("only ptr/i64 slots differ in Word64");
+                    let cast = self.value(format!("ptrtoint ptr {raw} to i64"));
+                    *slot_type = target.to_owned();
+                    values[index] = format!("{target} {cast}");
+                }
+            }
+            let target_result = canonical.result.llvm();
+            if output != target_result {
+                debug_assert_eq!((output.as_str(), target_result), ("ptr", "i64"));
+                output = target_result.to_owned();
+                convert_ptr_result = true;
+            }
+        }
         let attributes = if self.globals.wasm {
             format!(
                 " \"wasm-import-module\"=\"{}\" \"wasm-import-name\"=\"{}\"",
@@ -163,21 +209,38 @@ impl FunctionEmitter<'_, '_> {
         if *result == Type::Unit || out.is_some() {
             self.instruction(call);
             self.free_copies(&copies);
-            return if let Some(slot) = out {
+            let output = if let Some(slot) = out {
                 self.read_host_result(result, &slot)
             } else {
                 "0".into()
             };
+            self.release_operands(operands);
+            return output;
         }
         let value = self.value(call);
+        let value = if convert_ptr_result {
+            self.value(format!("inttoptr i64 {value} to ptr"))
+        } else {
+            value
+        };
         self.free_copies(&copies);
-        match result {
-            Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
-            Type::Integer(8 | 16, _) => {
-                self.value(format!("trunc i32 {value} to {}", self.ty(result)))
+        let output = if result_nullable {
+            self.nullable_from_c(result, &value)
+        } else {
+            if !self.globals.wasm && matches!(result, Type::Handle(..)) {
+                let valid = self.value(format!("icmp ne ptr {value}, null"));
+                self.guard(&valid, TrapKind::NullHandle);
             }
-            _ => value,
-        }
+            match result {
+                Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
+                Type::Integer(8 | 16, _) => {
+                    self.value(format!("trunc i32 {value} to {}", self.ty(result)))
+                }
+                _ => value,
+            }
+        };
+        self.release_operands(operands);
+        output
     }
 
     /// Frees the widened copies that `host_call` made of Latin-1 strings: a string that was UTF-16 is

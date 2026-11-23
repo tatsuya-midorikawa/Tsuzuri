@@ -1,0 +1,15 @@
+extern type copy Hwnd
+
+export def duplicate :: Hwnd -> Hwnd = \h ->
+    let copied = h
+    let probe = \() -> h
+    let _ = copied
+    probe ()
+
+0
+
+// rule: ABI-011
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "typedef struct tz_handle_4Main_4Hwnd_s *tz_handle_4Main_4Hwnd;"
+// expect: file-has out.h "tz_handle_4Main_4Hwnd tz_duplicate(tz_handle_4Main_4Hwnd arg0);"

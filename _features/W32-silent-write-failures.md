@@ -10,7 +10,7 @@
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 不要。W08 の決定（D1: ストリームが無いときも失敗を読み飛ばさない）に従う。表示の失敗を終了コード 1 にするのは、`src/llvm.rs` の `console_main` がもともと持つ失敗の経路（`%failed` → `ret i32 1`）を働かせる修正である。`--overflow-report` は Windows で報告の届け先を足すだけで、値・標準出力・トラップ・終了コードは変えない（`compiler/usage.md` の「整数の折り返しの報告」の契約）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
-| 手本にする既存実装 | `src/runtime/debug.ll` の `@tz.debug.write`（`@write` を繰り返し、進まなければ失敗にする。改行は別の `@write` で書く）、`src/llvm.rs` の `windows_abi`（Windows だけの IR の書き換え）、[W04](W04-windows-trap-report-lost.md) の `TRAP_WRITE_WINDOWS`・`DEBUGGER_WRITE`（標準エラーの OS のハンドルへ書き、書けなければデバッガーへ）、`tests/io.mjs` の閉じた標準出力の検査（読み取り専用の fd を標準出力に渡す） |
+| 手本にする既存実装 | `src/runtime/debug.ll` の `@tz.debug.write`（`@write` を繰り返し、進まなければ失敗にする。改行は別の `@write` で書く）、`src/llvm.rs` の `windows_abi`（Windows だけの IR の書き換え）、[W04](_completed/W04-windows-trap-report-lost.md) の `TRAP_WRITE_WINDOWS`・`DEBUGGER_WRITE`（標準エラーの OS のハンドルへ書き、書けなければデバッガーへ）、`tests/io.mjs` の閉じた標準出力の検査（読み取り専用の fd を標準出力に渡す） |
 | 主な影響ファイル | `src/runtime/console.ll`、`src/llvm.rs`（`windows_abi`・単体テスト）、`src/llvm_overflow.rs`（`Report::runtime` の書き手を定数にする）、`tests/windows.rs`、`tests/io.mjs`、`tests/windows.mjs`（GUI の段）、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/built-in-types-and-modules/io.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/native-interop.md` |
 
 ## 実装者向け早見
@@ -213,7 +213,7 @@ entry:
   - 仕様 1 の「ストリームが無い」の判定。既定案以外の行でだけ使う。
   - `DEBUGGER_WRITE` が `windows_abi` で使えること。
   - `io.md` の「終了コードとトップレベルの表示」に W08 が書く「表示はストリームが無いと消える（D4）」の文。このチケットが置き換える。
-- [W04](W04-windows-trap-report-lost.md):
+- [W04](_completed/W04-windows-trap-report-lost.md):
   - `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write(ptr, i64)`）と `DEBUGGER_WRITE`（`@tz.debugger.write(ptr, i64)`）。
   - `windows_abi` の置き換えの順序。
   - 仕様 4（shim の `_setmode` の −1）。

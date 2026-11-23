@@ -64,6 +64,47 @@ static inline size_t tzr_page_size(void) {
     return (size_t)info.dwPageSize;
 }
 
+/* W04: sends UTF-8 runtime reports directly to STD_ERROR_HANDLE via WriteFile, or to
+ * OutputDebugStringW in <=255-byte UTF-8 chunks when stderr is absent or cannot be written. */
+static void tzr_debugger_write(const char *data, size_t length) {
+    WCHAR wide[256];
+    size_t offset = 0;
+    while (offset < length) {
+        size_t remaining = length - offset;
+        size_t take = remaining;
+        if (take > 255) {
+            take = 255;
+            while (take > 0 && (((unsigned char)data[offset + take] & 0xc0u) == 0x80u)) {
+                take--;
+            }
+            if (take == 0) take = 255;
+        }
+        int count = MultiByteToWideChar(CP_UTF8, 0, data + offset, (int)take, wide, 255);
+        wide[count > 0 ? count : 0] = 0;
+        OutputDebugStringW(wide);
+        offset += take;
+    }
+}
+
+static void tzr_report(const char *text, size_t length) {
+    HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (handle == NULL || handle == INVALID_HANDLE_VALUE) {
+        tzr_debugger_write(text, length);
+        return;
+    }
+    size_t offset = 0;
+    while (offset < length) {
+        size_t remaining = length - offset;
+        DWORD chunk = remaining > (1u << 30) ? (DWORD)(1u << 30) : (DWORD)remaining;
+        DWORD written = 0;
+        if (!WriteFile(handle, text + offset, chunk, &written, NULL) || written == 0) {
+            tzr_debugger_write(text, length);
+            return;
+        }
+        offset += written;
+    }
+}
+
 /* tzr_lock: an SRW lock (8 bytes, all-zero is unlocked). R1 makes the thread that locked it the one
  * that unlocks it, which SRW locks require. */
 typedef struct { SRWLOCK lock; } tzr_lock;

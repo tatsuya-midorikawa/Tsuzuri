@@ -146,6 +146,11 @@ fn a_guard_that_can_fail_is_a_trap() {
                   def sign :: bool -> i64 -> i64 = \\b x ->\n    @ensures \\r -> r == 0 || r == x\n    match b with\n    | true -> x\n    | false -> 0\n\
                   def main :: unit -> i32 = \\() -> (f 0) as i32\n";
     let root = project("guard", source);
+    std::fs::write(
+        root.join("Tsuzuri.toml"),
+        "[package]\nname = \"guard\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    )
+    .unwrap();
     let (code, stdout, stderr) = prove(&["--function", "Main.f"], &root, None);
     assert_eq!(code, 1, "{stdout}{stderr}");
     assert_eq!(stdout, "counterexample Main.f\n", "{stderr}");

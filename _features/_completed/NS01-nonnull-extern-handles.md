@@ -6,11 +6,11 @@
 | 優先度 | P1（非 `Maybe` の `extern type` に `NULL` が混入すると Tsuzuri 側で判定できないまま後続の C 呼び出しで未定義動作を起こし、[W15](W15-abi-nullable-handles.md) でも `Some(NULL)` が生じる） |
 | 規模 | M（境界の非 Null ガード 3 か所、`Niche::NullPointer` の拡張 1 か所、W15 の境界変換の簡素化、生成バインディング 3 言語のガード、テストと文書） |
 | 依存 | W15 |
-| 後続 | [NS02](NS02-export-and-bindings-nullable.md), [NS03](NS03-bindgen-nullability.md) |
-| 状態 | todo |
-| 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
-| 承認 | 要承認（[E12](_completed/E12-ffi-extensions.md) と [W15](W15-abi-nullable-handles.md) D4・D5 の改訂。決定事項 D1・D2 が要承認、D3〜D6 は既定案） |
-| 手本にする既存実装 | `src/llvm_abi.rs` の `host_pointer`（レコード・バッファの入口で null を検査してトラップする形）と `wrapper`、`src/llvm_imports.rs` の `host_call`、`src/llvm_layout.rs` の `Niche::NullPointer`（native のみ有効、WASM は対象外）、`src/bindings_native.rs` の UTF-8 検査ガード（呼び出し前にホスト側の例外を送出する形）、[W25](W25-extern-interface-com.md) 仕様 4（インターフェース値が決して NULL でない不変条件） |
+| 後続 | [NS02](../NS02-export-and-bindings-nullable.md), [NS03](../NS03-bindgen-nullability.md) |
+| 状態 | done |
+| 起票 | 2026-11-22（[GUIDE D-64](../GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
+| 承認 | 要承認（[E12](E12-ffi-extensions.md) と [W15](W15-abi-nullable-handles.md) D4・D5 の改訂。決定事項 D1・D2 が要承認、D3〜D6 は既定案） |
+| 手本にする既存実装 | `src/llvm_abi.rs` の `host_pointer`（レコード・バッファの入口で null を検査してトラップする形）と `wrapper`、`src/llvm_imports.rs` の `host_call`、`src/llvm_layout.rs` の `Niche::NullPointer`（native のみ有効、WASM は対象外）、`src/bindings_native.rs` の UTF-8 検査ガード（呼び出し前にホスト側の例外を送出する形）、[W25](../W25-extern-interface-com.md) 仕様 4（インターフェース値が決して NULL でない不変条件） |
 | 主な影響ファイル | `src/llvm_imports.rs`, `src/llvm_abi.rs`, `src/llvm_layout.rs`, `src/trap.rs`, `src/bindings_native.rs`, `tests/abi_nullable.rs`, `tests/host_bindings_native.mjs`, `tests/ffi_extensions.mjs`, `tests/ffi_extensions_host.c`, `docs/language.md`, `docs/architecture.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/built-in-types-and-modules/maybe.md`, `_tsuzuri/language-reference/built-in-types-and-modules/union.md` |
 
 ## 実装者向け早見
@@ -27,7 +27,7 @@
 
 さらに [W15](W15-abi-nullable-handles.md) は `Maybe<H>` で `None` ⇔ `NULL` を導入するが、D5 で「非 `Maybe` の `H` の結果は `NULL` でも `H` のまま」を残しているため、誤って `NULL` を受け取った `h: H` を `Some h : Maybe<H>` に包むと、**Tsuzuri の `match` では `Some` なのに C ABI へ渡すと `NULL`（＝`None`）になる**という `Some(NULL)` の破綻が生じる（W15「落とし穴」7 項）。また、`Some(NULL)` があり得るせいで `Maybe<H>` に `Niche::NullPointer` を使えず 16 バイトのタグ付き共用体のままになる。
 
-本チケットは Rust の `NonNull<T>` / `Option<NonNull<T>>` および [W25](W25-extern-interface-com.md) の COM インターフェースと同じく、「`H` は非 Null、NULL になり得る境界は `Maybe<H>`」という不変条件を境界検査で強制し、Null 安全性の穴と表現コストを同時に解消する。
+本チケットは Rust の `NonNull<T>` / `Option<NonNull<T>>` および [W25](../W25-extern-interface-com.md) の COM インターフェースと同じく、「`H` は非 Null、NULL になり得る境界は `Maybe<H>`」という不変条件を境界検査で強制し、Null 安全性の穴と表現コストを同時に解消する。
 
 ## 着手条件と停止条件
 
@@ -105,7 +105,7 @@
 
 ## 他チケットへ提供するインターフェース
 
-- ネイティブにおける `Type::Handle` の非 Null 不変条件と `Maybe<H>` の単一 `ptr` レイアウト（[NS02](NS02-export-and-bindings-nullable.md) の `export def` 境界、[NS03](NS03-bindgen-nullability.md) の `bindgen` 生成型、[W21](W21-c-layout-records.md) の `@c_layout` フィールドの `Maybe<H>` がそのまま 8 バイト `ptr` として扱える）。
+- ネイティブにおける `Type::Handle` の非 Null 不変条件と `Maybe<H>` の単一 `ptr` レイアウト（[NS02](../NS02-export-and-bindings-nullable.md) の `export def` 境界、[NS03](../NS03-bindgen-nullability.md) の `bindgen` 生成型、[W21](../W21-c-layout-records.md) の `@c_layout` フィールドの `Maybe<H>` がそのまま 8 バイト `ptr` として扱える）。
 - `TrapKind::NullHandle`。
 
 ## 実装手順
@@ -132,11 +132,11 @@
 
 ## 受け入れ条件
 
-- [ ] ネイティブで非 `Maybe` の `H` / `ref H` に `NULL` が入ろうとする全境界（`extern` 結果・`export` 引数・コールバック引数）が `null extern handle` でトラップする。
-- [ ] ネイティブの `Maybe<H>` が `Niche::NullPointer`（`ptr` 1 つ）になり、`Some(NULL)` が作れない。
-- [ ] WASM で番号 `0` のハンドルが従来どおり動作する。
-- [ ] C#・Python・C++ バインディングが非 `Maybe` ハンドルの `0` / `None` / `nullptr` を拒否する。
-- [ ] `extern type` を使わないプログラムの IR・ヘッダー・診断が byte 単位で一致する。
+- [x] ネイティブで非 `Maybe` の `H` / `ref H` に `NULL` が入ろうとする全境界（`extern` 結果・`export` 引数・コールバック引数）が `null extern handle` でトラップする。
+- [x] ネイティブの `Maybe<H>` が `Niche::NullPointer`（`ptr` 1 つ）になり、`Some(NULL)` が作れない。
+- [x] WASM で番号 `0` のハンドルが従来どおり動作する。
+- [x] C#・Python・C++ バインディングが非 `Maybe` ハンドルの `0` / `None` / `nullptr` を拒否する。
+- [x] `extern type` を使わないプログラムの IR・ヘッダー・診断が byte 単位で一致する。
 
 ## 落とし穴
 
@@ -145,8 +145,8 @@
 
 ## 対象外
 
-- `INVALID_HANDLE_VALUE`（`-1`）など `NULL` 以外のセンチネル値（API ごとに異なるため [W27](W27-win32-package-from-winmd.md) で扱う）。
-- `export def` での `Maybe<H>` 対応（[NS02](NS02-export-and-bindings-nullable.md)）。
+- `INVALID_HANDLE_VALUE`（`-1`）など `NULL` 以外のセンチネル値（API ごとに異なるため [W27](../W27-win32-package-from-winmd.md) で扱う）。
+- `export def` での `Maybe<H>` 対応（[NS02](../NS02-export-and-bindings-nullable.md)）。
 
 ## 決定事項
 

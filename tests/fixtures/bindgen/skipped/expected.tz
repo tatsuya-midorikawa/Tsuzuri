@@ -44,7 +44,7 @@ extern "take_flags" def take_flags :: i32 -> i32
 record Tagged { big: f64 }
 // skipped tagged: anonymous struct; give the struct a tag
 // skipped use_tagged: parameter 1 has unsupported type 'const tagged *'
-extern "use_tag" def use_tag :: ref Tagged -> f64
+extern "use_tag" def use_tag :: Maybe<ref Tagged> -> f64
 // skipped holds_wide: field 'w' has unsupported type 'enum wide_tag'
 const WIDE_TAG_ZERO: i32 = 0
 // skipped take_wide_tag: parameter 1 has unsupported type 'enum wide_tag'

@@ -6,7 +6,7 @@ fn triple value = value * 3
 private def add_item :: i64 -> i32 -> i64
 fn add_item total item = total + (item as i64)
 
-private def peek_plus_one :: ref ExtCounter -> i64
+private def peek_plus_one :: Maybe<ref ExtCounter> -> i64
 fn peek_plus_one counter = Ext.ext_counter_peek counter + 1
 
 private def answer :: unit -> i32
@@ -27,12 +27,14 @@ fn top_case = Ext.EXT_TOP
 
 export def counters :: i64 -> i64
 fn counters start =
-    let counter = Ext.ext_counter_new start
-    let first = Ext.ext_counter_add (ref counter) 5
-    let second = Ext.ext_counter_add (ref counter) 7
-    let peeked = Ext.ext_counter_peek (ref counter)
-    let seen = Ext.ext_visit peek_plus_one (ref counter)
-    first + second + peeked + seen + Ext.ext_counter_free counter
+    match Ext.ext_counter_new start with
+    | Some counter ->
+        let first = Ext.ext_counter_add (Some (ref counter)) 5
+        let second = Ext.ext_counter_add (Some (ref counter)) 7
+        let peeked = Ext.ext_counter_peek (Some (ref counter))
+        let seen = Ext.ext_visit peek_plus_one (Some (ref counter))
+        first + second + peeked + seen + Ext.ext_counter_free (Some counter)
+    | None -> 0
 
 export def callbacks :: i64 -> i64
 fn callbacks value =

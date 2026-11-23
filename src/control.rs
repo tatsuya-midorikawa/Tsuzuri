@@ -330,7 +330,7 @@ impl Checker<'_> {
                         }],
                         Some(&Type::Unit),
                         expression.span,
-                        None,
+                        Some(MatchOrigin::ForDestructuring),
                     )?
                 };
                 self.normal_loop_depth -= 1;
@@ -438,7 +438,7 @@ impl Checker<'_> {
                 body: body.clone(),
                 span: body.span,
             }],
-            origin: MatchOrigin::ComputationDestructuring,
+            origin: MatchOrigin::ForDestructuring,
         });
         let receive = make(ExprKind::Call(
             Box::new(make(ExprKind::QualifiedFunction(named(receive)))),
@@ -478,7 +478,7 @@ impl Checker<'_> {
             body: Box::new(make(ExprKind::Match {
                 value: Box::new(receive),
                 arms,
-                origin: MatchOrigin::ComputationDestructuring,
+                origin: MatchOrigin::Internal,
             })),
         });
         let source = if is_place(&source) {
@@ -548,12 +548,13 @@ impl Checker<'_> {
                 body: body.clone(),
                 span: body.span,
             }],
-            origin: MatchOrigin::ComputationDestructuring,
+            origin: MatchOrigin::ForDestructuring,
         });
         let after_advance = |result| {
             make(ExprKind::Block {
                 bindings: vec![Binding {
                     name: ident("advance"),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -605,7 +606,7 @@ impl Checker<'_> {
         let body = make(ExprKind::Match {
             value: Box::new(step),
             arms,
-            origin: MatchOrigin::ComputationDestructuring,
+            origin: MatchOrigin::Internal,
         });
         let loop_expression = make(ExprKind::While {
             condition: Box::new(make(ExprKind::Bool(true))),
@@ -825,6 +826,7 @@ impl Checker<'_> {
         let slot = coverage.map(|origin| {
             self.coverage.push(MatchCoverage {
                 span,
+                origin,
                 scrutinee: matched.ty.clone(),
                 arms: Vec::new(),
                 append_at: arms

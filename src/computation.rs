@@ -289,11 +289,18 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             .iter_mut()
             .flat_map(SelectArm::expressions_mut)
             .collect(),
-        ExprKind::Block { bindings, result } => bindings
-            .iter_mut()
-            .map(|binding| &mut binding.value)
-            .chain(std::iter::once(result.as_mut()))
-            .collect(),
+        ExprKind::Block { bindings, result } => {
+            let mut values = Vec::with_capacity(bindings.len() + 1);
+            for binding in bindings {
+                if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                    expand_pattern(pattern, names, module)?;
+                    pattern_depth = pattern_depth.max(pattern.depth);
+                }
+                values.push(&mut binding.value);
+            }
+            values.push(result.as_mut());
+            values
+        }
         ExprKind::Record { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
         ExprKind::Slice {
             value, start, end, ..
@@ -382,9 +389,17 @@ fn expand_block(
     let mut depth = 0;
     for statement in &mut body.statements {
         let value = match &mut statement.kind {
-            ComputationStatementKind::Let(binding, _) => &mut binding.value,
+            ComputationStatementKind::Let(binding, _) => {
+                if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                    expand_pattern(pattern, names, module)?;
+                }
+                &mut binding.value
+            }
             ComputationStatementKind::LetAnd(bindings) => {
                 for binding in bindings {
+                    if let Some((pattern, _)) = binding.pattern.as_deref_mut() {
+                        expand_pattern(pattern, names, module)?;
+                    }
                     expand(&mut binding.value, names, module)?;
                 }
                 depth = depth.max(statement.depth());
@@ -581,6 +596,7 @@ impl Lowering<'_> {
                 ComputationStatementKind::Expression(value) => {
                     bindings.push(Binding {
                         name: ident("_", span),
+                        pattern: None,
                         mutable: false,
                         using: false,
                         recursion: Recursion::None,
@@ -608,6 +624,7 @@ impl Lowering<'_> {
                     let tail = self.finish(result, bindings, body.span)?;
                     let binding = Binding {
                         name: ident("_", span),
+                        pattern: None,
                         mutable: false,
                         using: false,
                         recursion: Recursion::None,
@@ -680,6 +697,7 @@ impl Lowering<'_> {
                     let guard = block(
                         vec![Binding {
                             name: name.clone(),
+                            pattern: None,
                             mutable: false,
                             using: false,
                             recursion: Recursion::None,
@@ -779,6 +797,7 @@ impl Lowering<'_> {
             );
             staged.push(Binding {
                 name: name.clone(),
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -791,7 +810,7 @@ impl Lowering<'_> {
             let mut parameters = Vec::new();
             let mut annotations = Vec::new();
             for (index, binding) in group.iter().enumerate() {
-                if binding.annotation.is_some() {
+                if binding.annotation.is_some() || binding.pattern.is_some() {
                     let name = ident(&format!("$computation_callback_{index}"), binding.name.span);
                     parameters.push((name.clone(), false));
                     annotations.push(Binding {
@@ -852,7 +871,7 @@ impl Lowering<'_> {
                         body,
                         span,
                     }],
-                    origin: MatchOrigin::ComputationDestructuring,
+                    origin: MatchOrigin::Internal,
                 },
                 span,
                 depth,
@@ -882,7 +901,7 @@ impl Lowering<'_> {
     }
 
     fn continuation(&self, binding: &Binding, body: Expr, span: Span) -> Result<Expr, Diagnostic> {
-        if binding.annotation.is_none() && !binding.using {
+        if binding.annotation.is_none() && !binding.using && binding.pattern.is_none() {
             let depth = body.depth + 1;
             return make(
                 ExprKind::Lambda(
@@ -899,6 +918,7 @@ impl Lowering<'_> {
         let body = block(
             vec![Binding {
                 name: binding.name.clone(),
+                pattern: binding.pattern.clone(),
                 mutable: binding.mutable,
                 using: binding.using,
                 recursion: binding.recursion,
@@ -920,6 +940,7 @@ impl Lowering<'_> {
         self.continuation(
             &Binding {
                 name: ident("_", span),
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -1125,6 +1146,7 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
                 if index + 1 < count {
                     bindings.push(Binding {
                         name: ident("_", span),
+                        pattern: None,
                         mutable: false,
                         using: false,
                         recursion: Recursion::None,
@@ -1206,6 +1228,7 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
         if index + 1 < count {
             bindings.push(Binding {
                 name: ident("_", span),
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -1408,9 +1431,12 @@ impl Checker<'_> {
                 continue;
             }
             let binding = match &statement.kind {
-                ComputationStatementKind::Let(binding, false) => binding.clone(),
+                ComputationStatementKind::Let(binding, false) if binding.pattern.is_none() => {
+                    binding.clone()
+                }
                 ComputationStatementKind::Expression(value) => Binding {
                     name: ident("_", statement.span),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -1591,6 +1617,7 @@ impl Checker<'_> {
                 ComputationStatementKind::Let(binding, false) => binding.clone(),
                 ComputationStatementKind::Expression(value) => Binding {
                     name: ident("_", statement.span),
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -1671,6 +1698,7 @@ impl Checker<'_> {
             ComputationStatementKind::Let(binding, true) => binding.clone(),
             ComputationStatementKind::Do(value) => Binding {
                 name: ident("_", first.span),
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -1679,6 +1707,7 @@ impl Checker<'_> {
             },
             ComputationStatementKind::Match(value, _) => Binding {
                 name: ident("$computation_match", first.span),
+                pattern: None,
                 mutable: false,
                 using: false,
                 recursion: Recursion::None,
@@ -1739,6 +1768,7 @@ impl Checker<'_> {
                         kind: ComputationStatementKind::Let(
                             Binding {
                                 name: payload,
+                                pattern: None,
                                 mutable: false,
                                 using: false,
                                 recursion: Recursion::None,
@@ -1878,6 +1908,7 @@ impl Checker<'_> {
                 });
                 handler_sources.push(Binding {
                     name,
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -1933,7 +1964,7 @@ impl Checker<'_> {
                         body: rest,
                         span: body.span,
                     }],
-                    origin: MatchOrigin::ComputationDestructuring,
+                    origin: MatchOrigin::Internal,
                 },
                 body.span,
                 depth,

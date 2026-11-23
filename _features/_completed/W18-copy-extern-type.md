@@ -6,11 +6,11 @@
 | 優先度 | P1 |
 | 規模 | M |
 | 依存 | – |
-| 後続 | [W19](W19-thread-bound-handles.md)（`extern type local`）、[W21](W21-c-layout-records.md)（`@c_layout` の field の `copy` ハンドル）、[W27](W27-win32-package-from-winmd.md)（解放関数のないハンドルを `copy` に写す） |
-| 状態 | todo |
+| 後続 | [W19](../W19-thread-bound-handles.md)（`extern type local`）、[W21](../W21-c-layout-records.md)（`@c_layout` の field の `copy` ハンドル）、[W27](../W27-win32-package-from-winmd.md)（解放関数のないハンドルを `copy` に写す） |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
-| 承認 | 要承認（E12 D3、`check.rs` の Sync の理由、D-55）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
-| 手本にする既存実装 | `Type::Shared(Box<Type>, SharedKind)`（種類を型の variant に持つ形）、`DynType::copy`（`is_copy`・`can_capture`・`sync_here` が印で分かれる形）、`Parser::extern_declaration`（`src/parser.rs`）、[E12](_completed/E12-ffi-extensions.md) の段 C（`tests/ffi_extensions.rs` の `parses_extern_types`・`extern_types_are_noncopy_leaf_types`） |
+| 承認 | 要承認（E12 D3、`check.rs` の Sync の理由、D-55）。台帳は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
+| 手本にする既存実装 | `Type::Shared(Box<Type>, SharedKind)`（種類を型の variant に持つ形）、`DynType::copy`（`is_copy`・`can_capture`・`sync_here` が印で分かれる形）、`Parser::extern_declaration`（`src/parser.rs`）、[E12](E12-ffi-extensions.md) の段 C（`tests/ffi_extensions.rs` の `parses_extern_types`・`extern_types_are_noncopy_leaf_types`） |
 | 主な影響ファイル | `src/syntax.rs`・`src/parser.rs`・`src/syntax_codec.rs`・`src/frontend_cache.rs`・`src/check.rs`・`src/polymorph.rs`・`src/llvm.rs`・`src/diagnostic_kinds.rs`・`src/formatter.rs`・`src/docgen.rs`・`src/api_diff.rs`・`src/semantic.rs`・`src/kg_capture.rs`・`src/guide_std.rs`・`src/repl.rs`・`src/find.rs`・`src/type_arena.rs`（と `Type::Handle` を照合する全ファイル）・`tests/ffi_extensions.rs`・`tests/ffi_extensions.mjs`・`tests/ffi_extensions_host.c`・`tests/fixtures/ffi_extensions/Main.tz`・`tests/windows.mjs`・`vsc/syntaxes/tsuzuri.tmLanguage.json`・`spec/rules/ABI.md`・文書 |
 
 ## 実装者向け早見
@@ -209,12 +209,12 @@ pub enum HandleKind {
 
 ## 受け入れ条件
 
-- [ ] 仕様 1〜3 のとおりに動き、テスト計画の Rust のテストと E2E が通る。
-- [ ] 修飾を使わないプログラムの IR・object・header・診断が 1 byte も変わらない（S2 の比較を記録した）。
-- [ ] `extern type copy` だけの行が型 `copy` の宣言のままである。
-- [ ] `FRONTEND_FORMAT` を 1 上げた。
-- [ ] 文書・`spec/rules/ABI.md`・D-55 の表を更新し、`node scripts/check-docs.mjs <変更したページ>` が通る。
-- [ ] T2 が通り、PR に `ci:full` を付けて `windows.yml`・`vscode.yml` が通った。
+- [x] 仕様 1〜3 のとおりに動き、テスト計画の Rust のテストと E2E が通る。
+- [x] 修飾を使わないプログラムの IR・object・header・診断が 1 byte も変わらない（S2 の比較を記録した）。
+- [x] `extern type copy` だけの行が型 `copy` の宣言のままである。
+- [x] `FRONTEND_FORMAT` を 1 上げた。
+- [x] 文書・`spec/rules/ABI.md`・D-55 の表を更新し、`node scripts/check-docs.mjs <変更したページ>` が通る。
+- [x] T2 が通り、PR に `ci:full` を付けて `windows.yml`・`vscode.yml` が通った。
 
 ## 落とし穴
 
@@ -235,7 +235,7 @@ pub enum HandleKind {
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 修飾は `extern type copy Name`。`copy` は `type` の直後で同じ行に識別子が続くときだけの文脈キーワードで、全 edition で読む。今 `check` を通る形のうち意味が変わるのは「型 `copy` の宣言の直後の同じ行に、識別子で始まるトップレベルの式を書いた形」（`const Hwnd: i64 = 3` の後の `extern type copy Hwnd`）だけで、release notes に書く | 予約語を足さない（D-55）。TZ02 の `tzroutine`（直後が `{`）と同じ前例。[共通の綴り](README.md#共通の綴り起票時に決めた契約)のとおり | 要承認（承認前は該当する段に着手しない） |
+| D1 | 修飾は `extern type copy Name`。`copy` は `type` の直後で同じ行に識別子が続くときだけの文脈キーワードで、全 edition で読む。今 `check` を通る形のうち意味が変わるのは「型 `copy` の宣言の直後の同じ行に、識別子で始まるトップレベルの式を書いた形」（`const Hwnd: i64 = 3` の後の `extern type copy Hwnd`）だけで、release notes に書く | 予約語を足さない（D-55）。TZ02 の `tzroutine`（直後が `{`）と同じ前例。[共通の綴り](../README.md#共通の綴り起票時に決めた契約)のとおり | 要承認（承認前は該当する段に着手しない） |
 | D2 | `copy` のハンドルは Copy・捕捉できる・Send・Sync で、drop glue と instance を持たない。E12 D3 と `src/check.rs` の `can_sync` の理由（「host libraries are rarely thread-safe」）を `copy` に限って改める | 関数値は Send・Sync と扱われるので、捕捉できる値は Sync でなければならない。Copy で Send な値は複製を各スレッドへ送れるので、Sync を偽にしても同時の使用は防げず、`Routine.scope` と `Arc` が不便になるだけである。Tsuzuri はハンドルを参照外ししないので、複製で壊れるのはホストの契約だけ | 要承認（承認前は該当する段に着手しない） |
 | D3 | 種類は `Type::Handle(Box<str>, HandleKind)` に持つ | `TypeContext` の表で引く案は、構築する 18 か所（表示だけの `guide_std.rs`・`kg/ids.rs` を含む）のどれかが表を渡し忘れると、型検査と生成で Copy の答えが黙って食い違う。`SharedKind` と同じく型に持てば判定は局所的で、新しい種類を選ぶのは名前の解決の 1 か所（置き換え・作り直しは照合した種類を写すだけ） | 既定案（実装者はこの案に従う） |
 | D4 | ABI・ヘッダー・WASM・`--emit bindings-*` は修飾で変えない。`ref mut H` と record の field は今どおり `E1008` | E12 D4・D5 を保ち、ABI の拡張は W13・W15・W21 にまとめる | 既定案（実装者はこの案に従う） |

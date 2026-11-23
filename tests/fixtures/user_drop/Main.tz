@@ -249,6 +249,21 @@ fn owned_generic =
     let function = keep (resource 4)
     Owned.call (ref function) 1
 
+private def curried_arc :: own string -> own Arc<Atomic<i64>> -> (unit -> i64) -> i64
+fn curried_arc prefix shared extra =
+    let previous = Atomic.fetch_add (Arc.get (ref shared)) (extra ())
+    String.length (ref prefix) + previous
+
+export def owned_curried :: i64
+fn owned_curried =
+    let _guard = resource 11
+    let shared = Arc.new (Atomic.create 10)
+    let prefix = String.repeat 3 (ref "abcd")
+    let w = Owned.function (curried_arc prefix)
+    let g = Owned.call (ref w) (Arc.share (ref shared))
+    Owned.drop w
+    g (\() -> 5) + g (\() -> 7) + Atomic.load (Arc.get (ref shared))
+
 // A record that is stored with its fields sorted by alignment and the live flag after them (PM01): its user
 // drop reads the fields at their stored places, and a moved-out value is not dropped a second time.
 record Packed { flag: bool, id: i64, mark: i8, name: string }

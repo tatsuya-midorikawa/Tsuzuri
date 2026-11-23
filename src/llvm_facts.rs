@@ -31,7 +31,7 @@ fn scalar(ty: &Type) -> bool {
 fn hidden(ty: &Type, module: &CheckedModule) -> bool {
     matches!(
         ty,
-        Type::Shared(..) | Type::Handle(_) | Type::Function(..) | Type::Once(_) | Type::Dyn(_)
+        Type::Shared(..) | Type::Handle(..) | Type::Function(..) | Type::Once(_) | Type::Dyn(_)
     ) || matches!(ty, Type::Record(id, _) if module.records[*id].opaque())
 }
 

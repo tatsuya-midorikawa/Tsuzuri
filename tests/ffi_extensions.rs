@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, analyze_modules, llvm, parser};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_modules, analyze_with_edition, llvm, parser};
 
 fn ir(module: &tsuzuri::check::CheckedModule, wasm: bool) -> String {
     let first = llvm::emit_target(module, llvm::Entry::Library, wasm).unwrap();
@@ -106,6 +107,188 @@ fn link_names_lower_to_symbols_and_wasm_modules() {
 }
 
 #[test]
+fn same_symbol_with_one_c_abi_is_one_declare() {
+    let source = "extern type Hwnd
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+extern \"SendMessageW\" def send_message :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+extern \"SendMessageW\" def send_rect :: ref Hwnd -> i32u -> i64u -> ref Rect -> i64
+def on_event :: ref Hwnd -> i32u -> i64u -> i64 -> i64 = \\_hwnd _msg _wparam lparam -> lparam
+extern \"SetWindowLongPtrW\" def set_window_long :: ref Hwnd -> i32 -> i64 -> i64
+extern \"SetWindowLongPtrW\" def set_window_proc :: ref Hwnd -> i32 -> (ref Hwnd -> i32u -> i64u -> i64 -> i64) -> i64
+export def run :: ref Hwnd -> i64
+fn run hwnd =
+    let r = Rect { left: 1, top: 2, right: 3, bottom: 4 }
+    send_message hwnd 1i32u 2i64u 3 +
+    send_rect hwnd 1i32u 2i64u (ref r) +
+    set_window_long hwnd (-4i32) 0 +
+    set_window_proc hwnd (-4i32) on_event
+";
+    let module = analyze(source).unwrap();
+    let emitted = ir(&module, false);
+    assert_eq!(
+        emitted
+            .matches("declare i64 @SendMessageW(ptr, i32, i64, i64)\n")
+            .count(),
+        1,
+        "{emitted}"
+    );
+    assert_eq!(
+        emitted
+            .matches("declare i64 @SetWindowLongPtrW(ptr, i32, i64)\n")
+            .count(),
+        1,
+        "{emitted}"
+    );
+    assert!(emitted.contains("ptrtoint ptr "), "{emitted}");
+    assert!(
+        emitted.contains("ptrtoint ptr @tz.callback.Main.on_event to i64"),
+        "{emitted}"
+    );
+}
+
+#[test]
+fn canonical_declare_ignores_order_and_same_types_keep_ir() {
+    let forward = "extern type H
+extern \"ffi_pick\" def pick_int :: i64 -> i64
+extern \"ffi_pick\" def pick_handle :: H -> H
+export def run :: H -> H
+fn run h =
+    let _ = pick_int 1
+    pick_handle h
+";
+    let reverse = "extern type H
+extern \"ffi_pick\" def pick_handle :: H -> H
+extern \"ffi_pick\" def pick_int :: i64 -> i64
+export def run :: H -> H
+fn run h =
+    let _ = pick_int 1
+    pick_handle h
+";
+    let f_mod = analyze(forward).unwrap();
+    let r_mod = analyze(reverse).unwrap();
+    let f_ir = ir(&f_mod, false);
+    let r_ir = ir(&r_mod, false);
+    for text in [&f_ir, &r_ir] {
+        assert_eq!(
+            text.matches("declare i64 @ffi_pick(i64)\n").count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("inttoptr i64 "), "{text}");
+    }
+
+    let one = analyze(
+        "extern \"sqrt\" def a :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n",
+    )
+    .unwrap();
+    let two = analyze("extern \"sqrt\" def a :: f64 -> f64\nextern \"sqrt\" def b :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n").unwrap();
+    assert!(two.extern_abis.is_empty());
+    assert_eq!(ir(&one, false), ir(&two, false));
+}
+
+#[test]
+fn class_mismatches_and_same_class_variants_follow_c_abi() {
+    use tsuzuri::diagnostic::RelatedRole;
+    for (source, needle) in [
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: i32 -> i64\n1",
+            "parameter 1 is a 32-bit integer, but a 64-bit integer or pointer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: f64 -> i64\n1",
+            "parameter 1 is a 64-bit float, but a 64-bit integer or pointer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i32 -> i64\nextern \"f\" def b :: f32 -> i64\n1",
+            "parameter 1 is a 32-bit float, but a 32-bit integer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: ref string -> i64\nextern \"f\" def b :: i64 -> i64\n1",
+            "takes 1 C parameter here but 2 in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: i64 -> unit\n1",
+            "the result is void, but a 64-bit integer or pointer in the first declaration",
+        ),
+    ] {
+        let error = analyze(source).unwrap_err();
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1008", Some("conflicting_extern_declaration")),
+            "{source}"
+        );
+        assert!(
+            error.message.contains(needle),
+            "{source}: {}",
+            error.message
+        );
+        assert!(
+            error
+                .related
+                .iter()
+                .any(|item| item.role == RelatedRole::FirstDefinedHere),
+            "{source}: {:?}",
+            error.related
+        );
+    }
+
+    // Module mismatch keeps the original message without related notes.
+    let mod_err = analyze(
+        "extern \"a\" \"f\" def x :: i64 -> i64\nextern \"b\" \"f\" def y :: i64 -> i64\n1",
+    )
+    .unwrap_err();
+    assert_eq!(
+        mod_err.message,
+        "extern symbol 'f' is declared with different signatures or import modules; declare it once and call it from other modules"
+    );
+    assert!(mod_err.related.is_empty());
+
+    // Same-class declarations pass.
+    for ok in [
+        "extern \"f\" def a :: i64 -> bool\nextern \"f\" def b :: i64 -> i32\n1",
+        "extern \"f\" def a :: i8u -> i64\nextern \"f\" def b :: i32 -> i64\n1",
+        "extern \"f\" def a :: (i64 -> i64) -> i64\nextern \"f\" def b :: i64 -> i64\n1",
+        "record R { x: i64 }\nextern \"f\" def a :: unit -> R\nextern \"f\" def b :: i64 -> unit\n1",
+    ] {
+        assert_eq!(code(ok), "ok", "{ok}");
+    }
+}
+
+#[test]
+fn wasm_rejects_differently_typed_reached_declarations() {
+    let both_reached = "extern type H
+extern \"ffi_word\" def word_int :: i64 -> i64
+extern \"ffi_word\" def word_handle :: ref H -> i64
+export def run :: ref H -> i64
+fn run h = word_int 1 + word_handle h
+";
+    let module = analyze(both_reached).unwrap();
+    assert!(ir(&module, false).contains("declare i64 @ffi_word(i64)"));
+    let wasm_err = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap_err();
+    assert_eq!(
+        (wasm_err.code, wasm_err.kind),
+        ("E1008", Some("conflicting_extern_declaration"))
+    );
+    assert!(
+        wasm_err
+            .message
+            .contains("WebAssembly imports one signature per name"),
+        "{}",
+        wasm_err.message
+    );
+
+    // Reaching only one of the declarations succeeds on WASM.
+    let one_reached = "extern type H
+extern \"ffi_word\" def word_int :: i64 -> i64
+extern \"ffi_word\" def word_handle :: ref H -> i64
+export def run :: i64 -> i64
+fn run x = word_int x
+";
+    let module = analyze(one_reached).unwrap();
+    assert!(ir(&module, true).contains("declare i64 @ffi_word(i64)"));
+}
+
+#[test]
 fn link_names_reject_reserved_invalid_and_conflicting() {
     let long = "a".repeat(256);
     let allowed = "a".repeat(255);
@@ -162,6 +345,123 @@ extern \"e12_counter_free\" def counter_free :: Counter -> i64
 
 fn with_handles(body: &str) -> String {
     format!("{HANDLES}\n{body}\n")
+}
+
+#[test]
+fn parses_copy_extern_types() {
+    use tsuzuri::syntax::{HandleKind, Visibility};
+    assert_eq!(
+        std::mem::size_of::<tsuzuri::check::Type>(),
+        4 * std::mem::size_of::<usize>(),
+        "Type must stay four words (W18 S1)"
+    );
+    let program = parser::parse(
+        "extern type copy A\nprivate extern type copy B\n/// documented\nextern type copy C\nextern type copy\nextern type copy local\n42",
+    )
+    .unwrap();
+    let summary: Vec<_> = program
+        .extern_types
+        .iter()
+        .map(|handle| (handle.name.text.as_str(), handle.kind, handle.visibility))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("A", HandleKind::Copy, Visibility::Public),
+            ("B", HandleKind::Copy, Visibility::Private),
+            ("C", HandleKind::Copy, Visibility::Public),
+            ("copy", HandleKind::Owned, Visibility::Public),
+            ("local", HandleKind::Copy, Visibility::Public),
+        ]
+    );
+    assert!(program.extern_types[2].doc.is_some());
+    assert!(program.extern_types[0].kind_span.is_some());
+    assert!(program.extern_types[3].kind_span.is_none());
+
+    let conflict = parser::parse("extern type copy copy X\n42").unwrap_err();
+    assert_eq!(
+        (conflict.code, conflict.kind, conflict.message.as_str()),
+        (
+            "E0002",
+            Some("extern_type_modifier_conflict"),
+            "an extern type takes at most one of 'copy' and 'local'; remove one",
+        )
+    );
+
+    let formatted = tsuzuri::formatter::format_source(
+        "Main.tz",
+        "extern   type  copy   A\nprivate   extern  type   copy  B\nextern   type   copy\n42",
+        tsuzuri::syntax::SourceKind::Code,
+    )
+    .unwrap();
+    assert_eq!(
+        formatted.formatted,
+        "extern type copy A\nprivate extern type copy B\nextern type copy\n42\n"
+    );
+}
+
+#[test]
+fn copy_extern_types_are_copy_capturable_send_sync() {
+    let prelude = "extern type copy Hwnd
+extern \"w18_hwnd\" def make_hwnd :: i64 -> Hwnd
+extern \"w18_use\" def use_hwnd :: Hwnd -> i64
+extern \"w18_peek\" def peek_hwnd :: ref Hwnd -> i64
+";
+    for body in [
+        "let h = make_hwnd 1\nlet copied = h\nuse_hwnd h + use_hwnd copied + peek_hwnd (ref h)",
+        "let h = make_hwnd 1\nlet tag = \"win\"\nlet f = \\x -> use_hwnd h + tag.length + x\nlet g = f\nf 1 + g 2",
+        "record WindowState { hwnd: Hwnd, id: i64 }\nlet s = WindowState { hwnd: make_hwnd 1, id: 7 }\nlet s2 = s\nuse_hwnd s.hwnd + use_hwnd s2.hwnd",
+        "union Tree = Leaf of Hwnd | Node of Tree * Tree\nlet t = Node (Leaf (make_hwnd 1), Leaf (make_hwnd 2))\nlet f = \\() -> match t with | Leaf h -> use_hwnd h | Node _ -> 3\nlet g = f\nf () + g ()",
+        "let h = make_hwnd 1\nmatch DataChannel.bounded 1 with\n| (sender, receiver) ->\n    tzroutine {\n        let _ = DataChannel.send (ref sender) (use_hwnd h)\n        ()\n    }\n    match DataChannel.recv (ref receiver) with | Some v -> v + use_hwnd h | None -> 0",
+        "let h = make_hwnd 1\nlet counts = Routine.scope (ref h) 2 (\\w _i -> peek_hwnd w)\ncounts[0] + counts[1]",
+        "let shared = Arc.new (make_hwnd 1)\nlet copy_arc = Arc.share (ref shared)\nmatch DataChannel.bounded 1 with\n| (sender, receiver) ->\n    tzroutine {\n        let _ = DataChannel.send (ref sender) (peek_hwnd (Arc.get (ref copy_arc)))\n        ()\n    }\n    match DataChannel.recv (ref receiver) with | Some v -> v + peek_hwnd (Arc.get (ref shared)) | None -> 0",
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let source = format!("{prelude}\n{body}\n");
+            let module = analyze_with_edition(&source, edition)
+                .unwrap_or_else(|e| panic!("{edition:?} rejected:\n{source}\n{e:?}"));
+            let _ = ir(&module, false);
+        }
+    }
+
+    // Plain-data, const, instance, and ABI position restrictions remain unchanged.
+    for (bad, expected) in [
+        ("const BAD: Hwnd = make_hwnd 1\n1", "E1026"),
+        (
+            "record Boxed { h: Hwnd }\nexport def out :: Boxed -> i64\nfn out b = 1\n1",
+            "E1008",
+        ),
+        (
+            "extern \"w18_mut\" def mut_hwnd :: ref mut Hwnd -> i64\n1",
+            "E1008",
+        ),
+        ("make_hwnd 1 == make_hwnd 2", "E1005"),
+        ("to_string (make_hwnd 1)", "E1005"),
+        ("pure def bad :: own Hwnd -> i64\nfn bad _h = 1\n1", "E1029"),
+    ] {
+        assert_eq!(code(&format!("{prelude}\n{bad}")), expected, "{bad}");
+    }
+}
+
+#[test]
+fn copy_handles_lower_like_handles() {
+    let body = "extern \"w18_new\" def make_h :: i64 -> H
+extern \"w18_peek\" def peek_h :: ref H -> i64
+extern \"w18_take\" def take_h :: H -> i64
+export def run :: own i64 -> i64
+fn run x =
+    let h = make_h x
+    let seen = peek_h (ref h)
+    seen + take_h h
+export def forward :: own H -> H
+fn forward h = h
+";
+    let owned = analyze(&format!("extern type H\n{body}")).unwrap();
+    let copy = analyze(&format!("extern type copy H\n{body}")).unwrap();
+    for wasm in [false, true] {
+        assert_eq!(ir(&owned, wasm), ir(&copy, wasm), "wasm={wasm}");
+    }
+    assert_eq!(llvm::header(&owned), llvm::header(&copy));
 }
 
 #[test]
@@ -343,10 +643,19 @@ fn handles_lower_to_pointers_and_header_typedefs() {
         assert!(ir.contains("define i64 @tz_borrowed(ptr %arg0)"));
         // A borrowed handle is read from its slot before the host sees it.
         assert!(ir.contains("load ptr, ptr"));
-        // The host passes the handle itself, so the export spills it and lends the slot (E13).
-        assert!(ir.contains(
-            "  %h0 = alloca ptr, align 8\n  store ptr %arg0, ptr %h0\n  %result = call i64 @tz.fn.Main.borrowed(ptr %h0)"
-        ));
+        // The host passes the handle itself, so the export spills it and lends the slot (E13);
+        // on native, NS01 checks that %arg0 is non-null before spilling.
+        if wasm {
+            assert!(ir.contains(
+                "  %h0 = alloca ptr, align 8\n  store ptr %arg0, ptr %h0\n  %result = call i64 @tz.fn.Main.borrowed(ptr %h0)"
+            ));
+        } else {
+            assert!(
+                ir.contains("icmp ne ptr %arg0, null")
+                    && ir.contains("call i64 @tz.fn.Main.borrowed(ptr "),
+                "{ir}"
+            );
+        }
         // Handles are plain pointers: no buffer ABI use and no allocator export.
         assert_eq!(
             ir.matches("%tz.abi.buffer").count(),
@@ -584,4 +893,137 @@ fn ident value = value
         code("export def bad :: (i64 -> i64) -> i64\nfn bad f = 1\n1"),
         "E1008"
     );
+}
+
+#[test]
+fn callback_externs_borrow_temporary_arguments() {
+    let prelude = "record Point { x: i64, y: i64 }
+extern type Counter
+extern \"e12_text\" def apply_text :: (i64 -> i64) -> ref string -> i64
+extern \"e12_point\" def apply_point :: (i64 -> i64) -> ref Point -> i64
+extern \"e12_sum\" def apply_sum :: (i64 -> i64) -> ref [i64] -> i64
+extern \"e12_new\" def counter_new :: i64 -> Counter
+extern \"e12_visit\" def visit :: (ref Counter -> i64) -> ref Counter -> i64
+extern \"e12_len\" def text_len :: ref string -> i64
+private def inc :: i64 -> i64
+fn inc value = value + 1
+private def peek :: ref Counter -> i64
+fn peek counter = 7
+private def label :: own i64 -> string
+fn label value = $\"item-{value}\"
+const NAME: string = \"abcd\"
+";
+    for (body, call_prefix, undefined, declaration) in [
+        (
+            "apply_text inc \"abc\"",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc $\"n={value}\"",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc (label value)",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc NAME",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_point inc (Point { x: value, y: 2 })",
+            "call i64 @e12_point(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_point(",
+            "declare i64 @e12_point(ptr, ptr)",
+        ),
+        (
+            "apply_sum inc [value, 2, 3]",
+            "call i64 @e12_sum(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_sum(",
+            "declare i64 @e12_sum(ptr, ptr, i64)",
+        ),
+        (
+            "visit peek (counter_new value)",
+            "call i64 @e12_visit(ptr @tz.callback.Main.peek, ptr ",
+            "@tz.fn.Main.visit(",
+            "declare i64 @e12_visit(ptr, ptr)",
+        ),
+        (
+            "inc (apply_text inc \"abc\")",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+    ] {
+        let source =
+            format!("{prelude}export def root :: own i64 -> i64\nfn root value = {body}\n");
+        let module = analyze_with_edition(&source, Edition::E2027).unwrap();
+        for wasm in [false, true] {
+            let emitted = ir(&module, wasm);
+            assert!(emitted.contains(call_prefix), "{body}\n{emitted}");
+            assert!(!emitted.contains(undefined), "{body}\n{emitted}");
+            assert_eq!(emitted.matches(declaration).count(), 1, "{body}\n{emitted}");
+            let outside_adapters = emitted
+                .split("\n\n")
+                .filter(|block| {
+                    !block.contains("define internal ") || !block.contains("@tz.apply.")
+                })
+                .any(|block| block.contains("insertvalue %tz.closure"));
+            assert!(!outside_adapters, "{body}\n{emitted}");
+            if wasm {
+                assert!(emitted.contains("\"wasm-import-module\"=\"tsuzuri\""));
+            }
+        }
+    }
+    // Edition 2026 with explicit `ref` on non-string temporaries lowers through the same direct host call,
+    // and the shared E2E fixture compiles in both editions.
+    let fixture = std::fs::read_to_string("tests/fixtures/ffi_extensions/Main.tz").unwrap();
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = analyze_with_edition(&fixture, edition).unwrap();
+        let emitted = ir(&module, false);
+        assert!(emitted.contains("call i64 @e12_pair_mix(ptr @tz.callback.Main.triple, ptr "));
+        assert!(emitted.contains("call i64 @e12_sum_with(ptr @tz.callback.Main.triple, ptr "));
+        assert!(!emitted.contains("@tz.fn.Main.pair_mix("));
+        assert!(!emitted.contains("@tz.fn.Main.sum_with("));
+        assert!(!emitted.contains("@tz.fn.Main.text_units("));
+    }
+    // Non-callback externs keep their generated wrapper function.
+    let module = analyze_with_edition(
+        &format!("{prelude}export def root :: own i64 -> i64\nfn root _value = text_len \"abc\"\n"),
+        Edition::E2027,
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let emitted = ir(&module, wasm);
+        assert!(
+            emitted.contains("call i64 @tz.fn.Main.text_len("),
+            "{emitted}"
+        );
+        assert!(
+            emitted.contains("define internal i64 @tz.fn.Main.text_len("),
+            "{emitted}"
+        );
+        assert!(emitted.contains("call i64 @e12_len("), "{emitted}");
+    }
+    for rejected in [
+        "\"abc\" |> apply_text inc",
+        "let f = apply_text inc\nf \"abc\"",
+    ] {
+        let error =
+            analyze_with_edition(&format!("{prelude}{rejected}\n"), Edition::E2027).unwrap_err();
+        assert_eq!(error.code, "E1008");
+        assert!(
+            error
+                .message
+                .contains("must be called directly with all arguments")
+        );
+    }
 }

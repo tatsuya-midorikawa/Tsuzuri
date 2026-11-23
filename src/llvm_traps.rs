@@ -585,6 +585,8 @@ pub(super) fn instrument_with(
                 // TZ05 and TZ06: the timers and WaitGroup.go call these too.
                 && name.as_str() != "@tz.tzroutine.owned.drop"
                 && !name.starts_with("@tz.waitgroup.go")
+                // E12/NS01: host C and WASM callers invoke `@tz.callback.*` directly without `%tz.context`.
+                && !name.starts_with("@tz.callback.")
                 && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()
@@ -897,7 +899,98 @@ fn report_done(backtrace: bool) -> &'static str {
 }
 
 /// The function that writes a site's message to the standard error, one `write` after another.
-const TRAP_WRITE: &str = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  %done = icmp eq i64 %offset, %length\n  br i1 %done, label %exit, label %write\nwrite:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  %remaining = sub i64 %length, %offset\n  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\nadvance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}\n";
+pub(crate) const TRAP_WRITE: &str = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  %done = icmp eq i64 %offset, %length\n  br i1 %done, label %exit, label %write\nwrite:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  %remaining = sub i64 %length, %offset\n  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\nadvance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}\n";
+
+/// W04: the Windows replacement for `TRAP_WRITE`. Writes directly to the OS standard-error handle
+/// (`STD_ERROR_HANDLE` = -12) without touching CRT file descriptors, and falls back to sending the
+/// whole message to `OutputDebugStringW` when the handle is missing or a write fails.
+pub(crate) const TRAP_WRITE_WINDOWS: &str = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\n\
+entry:\n\
+  %written = alloca i32, align 4\n\
+  %handle = call ptr @GetStdHandle(i32 -12)\n\
+  %is_null = icmp eq ptr %handle, null\n\
+  %invalid = inttoptr i64 -1 to ptr\n\
+  %is_invalid = icmp eq ptr %handle, %invalid\n\
+  %bad_handle = or i1 %is_null, %is_invalid\n\
+  br i1 %bad_handle, label %debugger, label %loop\n\
+loop:\n\
+  %offset = phi i64 [0, %entry], [%next, %advance]\n\
+  %done = icmp eq i64 %offset, %length\n\
+  br i1 %done, label %exit, label %write\n\
+write:\n\
+  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n\
+  %remaining = sub i64 %length, %offset\n\
+  %large = icmp ugt i64 %remaining, 1073741824\n\
+  %chunk64 = select i1 %large, i64 1073741824, i64 %remaining\n\
+  %chunk = trunc i64 %chunk64 to i32\n\
+  store i32 0, ptr %written, align 4\n\
+  %ok = call i32 @WriteFile(ptr %handle, ptr %pointer, i32 %chunk, ptr %written, ptr null)\n\
+  %succeeded = icmp ne i32 %ok, 0\n\
+  %count = load i32, ptr %written, align 4\n\
+  %positive = icmp sgt i32 %count, 0\n\
+  %progress = and i1 %succeeded, %positive\n\
+  br i1 %progress, label %advance, label %debugger\n\
+advance:\n\
+  %step = zext i32 %count to i64\n\
+  %next = add i64 %offset, %step\n\
+  br label %loop\n\
+debugger:\n\
+  call void @tz.debugger.write(ptr %data, i64 %length)\n\
+  br label %exit\n\
+exit:\n\
+  ret void\n\
+}\n";
+
+/// W04: sends UTF-8 bytes to `OutputDebugStringW` in chunks of at most 255 bytes without splitting
+/// UTF-8 continuation sequences, using only 512 bytes of stack.
+pub(crate) const DEBUGGER_WRITE: &str = "define internal void @tz.debugger.write(ptr %data, i64 %length) cold nounwind {\n\
+entry:\n\
+  %wide = alloca [256 x i16], align 2\n\
+  br label %loop\n\
+loop:\n\
+  %offset = phi i64 [0, %entry], [%next, %emit]\n\
+  %done = icmp uge i64 %offset, %length\n\
+  br i1 %done, label %exit, label %piece\n\
+piece:\n\
+  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n\
+  %remaining = sub i64 %length, %offset\n\
+  %fits = icmp ule i64 %remaining, 255\n\
+  br i1 %fits, label %emit_all, label %back_entry\n\
+emit_all:\n\
+  br label %emit\n\
+back_entry:\n\
+  br label %back\n\
+back:\n\
+  %cut = phi i64 [255, %back_entry], [%prev, %back_step]\n\
+  %at_zero = icmp eq i64 %cut, 0\n\
+  br i1 %at_zero, label %cut_fallback, label %check_cont\n\
+cut_fallback:\n\
+  br label %emit\n\
+check_cont:\n\
+  %byte_ptr = getelementptr inbounds i8, ptr %pointer, i64 %cut\n\
+  %byte = load i8, ptr %byte_ptr, align 1\n\
+  %masked = and i8 %byte, -64\n\
+  %is_cont = icmp eq i8 %masked, -128\n\
+  br i1 %is_cont, label %back_step, label %cut_ready\n\
+back_step:\n\
+  %prev = sub i64 %cut, 1\n\
+  br label %back\n\
+cut_ready:\n\
+  br label %emit\n\
+emit:\n\
+  %take = phi i64 [%remaining, %emit_all], [255, %cut_fallback], [%cut, %cut_ready]\n\
+  %in_len = trunc i64 %take to i32\n\
+  %wide_len = call i32 @MultiByteToWideChar(i32 65001, i32 0, ptr %pointer, i32 %in_len, ptr %wide, i32 255)\n\
+  %pos = icmp sgt i32 %wide_len, 0\n\
+  %safe_len = select i1 %pos, i32 %wide_len, i32 0\n\
+  %term = getelementptr inbounds i16, ptr %wide, i32 %safe_len\n\
+  store i16 0, ptr %term, align 2\n\
+  call void @OutputDebugStringW(ptr %wide)\n\
+  %next = add i64 %offset, %take\n\
+  br label %loop\n\
+exit:\n\
+  ret void\n\
+}\n";
 
 /// The module of each source file that has functions, by the index of the file.
 fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {

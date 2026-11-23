@@ -177,18 +177,16 @@ answer ()
 42
 ```
 
-引数パターンの網羅性は、`match` と違ってコンパイル時には検査されません。適用時に一致しなければ実行時トラップです。定数だけのパターンを引数に書くときは、その値以外が来ないことを呼び出し側で保証してください。
+引数パターンには、変数・`_`・`()`・タプル・レコード・1 ケースの共用体などの反駁不可能なパターンを書きます。`Some x` や定数リテラルのような反駁可能パターンは、edition 2027 では `E1021`（`refutable_binding_pattern`）で拒否されます（edition 2026 では警告 `W1012` が出され、不一致の適用で実行時トラップします）。
 
 ## when ガード
 
-引数の直後に `when` 条件を書くと、条件が false の適用もパターン不一致としてトラップします。
-
-```text
-\value when value > 0 -> value / 2
-```
+edition 2026 では引数の直後に `when` 条件を書くことができ、条件が false の適用はパターン不一致としてトラップします。edition 2027 では単一引数の `when` ガードも反駁可能な引数パターンとして `E1021` で拒否されるため、条件分岐には無条件の節を含む [関数ガード](./functions.md#関数ガード)（`\value -> | x when x > 0 -> x / 2 | _ -> 0`）または本体の `if` / `match` を使います。
 
 ```tsuzuri run=42
-let half = \value when value > 0 -> value / 2
+let half = \value ->
+    | x when x > 0 -> x / 2
+    | _ -> 0
 half 84
 ```
 
@@ -198,10 +196,7 @@ half 84
 42
 ```
 
-> [!WARNING]
-> `half 0` や `half (-1)` は、型エラーではなく実行時トラップです。失敗を値で返したいときは `Maybe` や `Result` を返す関数にするか、[関数ガード](./functions.md)の `otherwise` で受けてください。
-
-関数ガードの `|` 節は、名前付き関数の本体向けの書き方です。ラムダの `when` は、その引数 1 つに対する追加条件です。
+関数ガードの `|` 節は末尾に `_`（または `otherwise`）を置けるため、すべての入力を型安全に網羅できます。
 
 ## 捕捉
 
@@ -317,7 +312,7 @@ let later = \() -> ticket.id
 
 どちらも `cannot capture ... in a reusable function; fully apply exclusive borrows, or move the value into a tzroutine body, which runs once` です。排他借用は、その場で完全に適用します。`Drop` 型の値は、1 回だけ走る `tzroutine { ... }` の本体へムーブするか、[Owned](../built-in-types-and-modules/owned.md) の `Owned.function` で包みます。`Drop` を持つ std の型（`Channel` など）と `Owned.Function` も捕捉できません。`Atomic` と `Mutex` も、複製すると別のカウンターやロックになるので捕捉できません。
 
-`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はほかの tzroutine やスレッドへも渡せるので、atomic でない計数がスレッドをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。
+`Rc<T>` と `Rc.Weak<T>`、それを持つ値も捕捉できません（`E1005`）。関数値はほかの tzroutine やスレッドへも渡せるので、atomic でない計数がスレッドをまたぐのを防ぐためです。`Arc<T>` は、`T` が `Rc`、`copy` でない extern ハンドル（`extern type`）、Copy でない `dyn` 値、`Owned.Function` を持たなければ捕捉でき、関数値を複製すると `Arc.share` と同じく所有者が増えます（[Rc と Arc](../built-in-types-and-modules/rc.md)）。`extern type copy` のハンドルはそのまま捕捉でき、`Arc` にも入れられます。
 
 `Drop` 型の値を関数として扱う方法は [Drop](../ownership-and-memory/drop.md) と [Owned](../built-in-types-and-modules/owned.md) を参照してください。
 

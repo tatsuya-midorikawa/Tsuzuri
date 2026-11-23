@@ -334,3 +334,142 @@ fn oversized_matches_are_rejected() {
         )
     );
 }
+
+#[test]
+fn refutable_lambda_and_for_patterns_are_rejected_in_2027_and_warn_in_2026() {
+    use tsuzuri::syntax::Edition;
+    for (source, place, missing) in [
+        (
+            "let xs = [Maybe.Some 1, Maybe.None]\nArray.map (\\(Maybe.Some x) -> x) (ref xs)\n",
+            "a lambda parameter",
+            "None",
+        ),
+        (
+            "let f: [i64] -> i64 = \\[a, b] -> a + b\nf [1, 2]\n",
+            "a lambda parameter",
+            "_",
+        ),
+        ("let f = \\0 -> 1\nf 0\n", "a lambda parameter", "_"),
+        (
+            "let f = \\x when x > 0 -> x\nf 1\n",
+            "a lambda parameter",
+            "_",
+        ),
+        (
+            "for Maybe.Some _x in [Maybe.Some 1] do ()\n0\n",
+            "a 'for' binding",
+            "None",
+        ),
+        (
+            "Maybe {\n    let! (Maybe.Some x) = Maybe.Some (Maybe.Some 1)\n    return x\n}\n",
+            "a computation binding",
+            "None",
+        ),
+        (
+            "Maybe {\n    for Maybe.Some _x in [Maybe.Some 1] do ()\n    return 0\n}\n",
+            "a computation binding",
+            "None",
+        ),
+    ] {
+        let error = tsuzuri::analyze_with_edition(source, Edition::E2027).unwrap_err();
+        assert_eq!(error.code, "E1021", "{source}: {}", error.message);
+        assert_eq!(error.kind, Some("refutable_binding_pattern"), "{source}");
+        assert_eq!(
+            error.message,
+            format!("pattern in {place} is refutable; missing: {missing}"),
+            "{source}"
+        );
+
+        let module = tsuzuri::analyze_with_edition(source, Edition::E2026).expect(source);
+        assert_eq!(module.warnings.len(), 1, "{source}: {:?}", module.warnings);
+        assert_eq!(module.warnings[0].code, "W1012", "{source}");
+        assert_eq!(
+            module.warnings[0].kind,
+            Some("refutable_binding_pattern_warning"),
+            "{source}"
+        );
+        assert_eq!(
+            module.warnings[0].message,
+            format!("pattern in {place} is refutable; missing: {missing}"),
+            "{source}"
+        );
+    }
+
+    // Irrefutable destructuring produces no error or warning in either edition.
+    for source in [
+        "record Point { x: i64, y: i64 }\nunion Boxed = Wrap of i64\n\
+         let add = \\(x, y) -> x + y\n\
+         let px = \\(Point { x: x }) -> x\n\
+         let uid = \\(Wrap n) -> n\n\
+         let mut total = 0\n\
+         for (k, v) in [(1, 2), (3, 4)] do total = total + k + v\n\
+         add (1, 2) + px (Point { x: 5, y: 6 }) + uid (Wrap 7) + total\n",
+        "Maybe {\n    let! (a, b) = Maybe.Some (20, 22)\n    return a + b\n}\n",
+    ] {
+        for edition in [Edition::E2026, Edition::E2027] {
+            let module = tsuzuri::analyze_with_edition(source, edition).expect(source);
+            assert!(
+                module.warnings.is_empty(),
+                "{edition}: {:?}",
+                module.warnings
+            );
+        }
+    }
+}
+
+#[test]
+fn let_destructuring_accepts_irrefutable_patterns_and_rejects_refutable_ones() {
+    use tsuzuri::syntax::{Edition, SourceKind};
+    for edition in [Edition::E2026, Edition::E2027] {
+        for source in [
+            "let (a, b) = (20, 22)\na + b\n",
+            "let (a, _): (i64 * string) = (42, \"ok\")\na\n",
+            "record Point { x: i64, y: string }\nlet p = Point { x: 10, y: \"hello\" }\nlet Point { x: x, y: y } = p\nx + String.length (ref y)\n",
+            "union Boxed = Wrap of i64\nlet Wrap n = Wrap 42\nn\n",
+            "const def sum_pair :: (i64 * i64) -> i64\nfn sum_pair pair =\n    let (a, b) = pair\n    a + b\nconst TOTAL: i64 = sum_pair (20, 22)\nTOTAL\n",
+            "def main :: unit -> i32 = \\() ->\n    let (a, b) = (20i32, 22i32)\n    do! IO.writeln (to_string (a + b))\n    0\n",
+        ] {
+            let module = tsuzuri::analyze_with_edition(source, edition).expect(source);
+            let _ = tsuzuri::llvm::emit(&module, tsuzuri::llvm::Entry::Console).expect(source);
+        }
+
+        // Refutable `let` patterns are E1021 in every edition.
+        for (source, missing) in [
+            ("let Maybe.Some x = Maybe.Some 1\nx\n", "None"),
+            ("let [a, b] = [1, 2]\na + b\n", "_"),
+            ("let 0 = 0\n1\n", "_"),
+        ] {
+            let error = tsuzuri::analyze_with_edition(source, edition).unwrap_err();
+            assert_eq!(error.code, "E1021", "{edition}: {source}");
+            assert_eq!(error.kind, Some("refutable_binding_pattern"));
+            assert_eq!(
+                error.message,
+                format!("pattern in a 'let' binding is refutable; missing: {missing}")
+            );
+        }
+
+        // `let mut` stays restricted to a single identifier.
+        let mut_err =
+            tsuzuri::analyze_with_edition("let mut (a, b) = (1, 2)\na\n", edition).unwrap_err();
+        assert_eq!(mut_err.code, "E0002");
+    }
+
+    // Partial move out of a non-Copy field works just like `match`.
+    let partial_move = "record Pair { first: string, second: string }\n\
+                        let p = Pair { first: \"a\", second: \"b\" }\n\
+                        let Pair { first: first } = p\n\
+                        String.length (ref p.first)\n";
+    assert_eq!(
+        tsuzuri::analyze_with_edition(partial_move, Edition::E2027)
+            .unwrap_err()
+            .code,
+        "E1012"
+    );
+
+    // Formatting preserves `let <pattern> [: Type] = <expr>` without rewriting to `match`.
+    let formatted_source = "let (a, b): (i64 * i64) = (20, 22)\na + b\n";
+    let formatted =
+        tsuzuri::formatter::format_source("Main.tz", formatted_source, SourceKind::Code).unwrap();
+    assert_eq!(formatted.formatted, formatted_source);
+    assert!(!formatted.changed);
+}

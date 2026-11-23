@@ -55,6 +55,75 @@ int64_t e12_run(int64_t (*callback)(void)) { return callback(); }
 
 int64_t e12_visit(int64_t (*callback)(void *), void *handle) { return callback(handle); }
 
+typedef struct {
+    int64_t x;
+    int64_t y;
+} e12_pair;
+
+int64_t e12_text_units(int64_t (*callback)(int64_t), const uint16_t *units, int64_t length, int64_t extra) {
+    (void)units;
+    return callback(length) + extra;
+}
+
+int64_t e12_pair_mix(int64_t (*callback)(int64_t), const e12_pair *pair) {
+    return callback(pair->x * 10 + pair->y);
+}
+
+int64_t e12_sum_with(int64_t (*callback)(int64_t), const int64_t *items, int64_t length) {
+    int64_t sum = 0;
+    for (int64_t index = 0; index < length; index++) sum += items[index];
+    return callback(sum);
+}
+
+void *w18_id_new(int64_t seed) {
+    return (void *)(intptr_t)(seed * 2 + 1);
+}
+
+int64_t w18_id_value(void *handle) {
+    return ((int64_t)(intptr_t)handle - 1) / 2;
+}
+
+int64_t w18_id_borrow(void *handle) {
+    return ((int64_t)(intptr_t)handle - 1) / 2 + 1;
+}
+
+int64_t w14_ffi_word(int64_t kind, int64_t value) {
+    if (kind == 0) return value + 1;
+    const int32_t *rect = (const int32_t *)(intptr_t)value;
+    return rect[0];
+}
+
+typedef struct {
+    int32_t left;
+    int32_t right;
+} w15_span;
+
+static int64_t w15_sentinel = 77;
+
+int32_t w15_is_null(void *pointer) {
+    return pointer == NULL ? 1 : 0;
+}
+
+void *w15_maybe(int32_t kind) {
+    return kind == 0 ? NULL : &w15_sentinel;
+}
+
+int32_t w15_width(const w15_span *span) {
+    return span == NULL ? -1 : span->right - span->left;
+}
+
+int32_t w15_visit(int32_t (*callback)(void *), void *handle) {
+    return callback(NULL) * 10 + callback(handle);
+}
+
+void *ns01_null_handle(void) {
+    return NULL;
+}
+
+int32_t ns01_call_null(int32_t (*callback)(void *)) {
+    return callback(NULL);
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);
@@ -141,6 +210,14 @@ int main(int argc, char **argv) {
     assert(tz_misc(2.0) == 0);
     clean();
     assert(tz_threaded(5) == 15);
+    clean();
+    assert(tz_temporaries(4) == 204);
+    clean();
+    assert(tz_temporary_then_raise(3) == 27);
+    clean();
+    assert(tz_temporary_then_raise(3037000500LL) == -1);
+    clean();
+    assert(tz_copy_handles(10) == 66);
     clean();
     pthread_t threads[8];
     for (intptr_t index = 0; index < 8; index++) assert(pthread_create(&threads[index], NULL, hammer, (void *)(index * 1000)) == 0);

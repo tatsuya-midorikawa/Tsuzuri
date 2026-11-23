@@ -83,6 +83,8 @@ int main(int argc, char **argv) {
     assert(api::counters(10) == 30);
     auto *opaque = reinterpret_cast<tz_handle_4Main_7Counter>(static_cast<std::uintptr_t>(0x1234));
     assert(api::pass_through(opaque) == opaque);
+    assert(throws_invalid_argument([] { (void)api::pass_through(nullptr); }));
+    assert(throws_invalid_argument([] { (void)api::peek(nullptr); }));
     // A borrowed handle reaches the host as the pointer itself: here, an int64 counter cell.
     std::int64_t cell = 41;
     assert(api::peek(reinterpret_cast<tz_handle_4Main_7Counter>(&cell)) == 41);

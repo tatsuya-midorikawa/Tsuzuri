@@ -40,7 +40,7 @@ tsuzuri test wtest --target wasm32                         # Channel を使う t
 
 このチケットでは、launcher が Zig の Debug の UBSan をトラップの形にする。検査の種類は今と同じに保ち、どの object も Zig のランタイムに頼らないようにする。`-O1` 以上の出力は変えない。
 
-関連: [W01](W01-callback-extern-temporary-string.md)（その再現の注記がこの問題を `-fno-sanitize=undefined` で避けている）、[W03](W03-windows-interop-doc-fixes.md)（リンクの失敗の hint と、リンク入力の文書）、[G15](_completed/G15-platform-targets.md)（launcher の target の写像）、[PB01](../_perfs/_completed/PB01-prebuilt-runtime.md)（配布物のランタイム object）、[E12](_completed/E12-ffi-extensions.md) D6（リンク入力）。
+関連: [W01](_completed/W01-callback-extern-temporary-string.md)（その再現の注記がこの問題を `-fno-sanitize=undefined` で避けている）、[W03](W03-windows-interop-doc-fixes.md)（リンクの失敗の hint と、リンク入力の文書）、[G15](_completed/G15-platform-targets.md)（launcher の target の写像）、[PB01](../_perfs/_completed/PB01-prebuilt-runtime.md)（配布物のランタイム object）、[E12](_completed/E12-ffi-extensions.md) D6（リンク入力）。
 
 ## 着手条件と停止条件
 

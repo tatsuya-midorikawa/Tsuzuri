@@ -104,7 +104,7 @@ pub(crate) fn type_id_text(
             members.iter().map(nested).collect::<Vec<_>>().join(" | ")
         ),
         Type::Union(id, args) => declaration(&types.unions[*id].name) + &arguments(args),
-        Type::Handle(name) => declaration(name),
+        Type::Handle(name, _) => declaration(name),
         Type::Array(element) => format!("[{}]", type_id_text(element, types, modules)),
         Type::ArrayView(element) => format!("[{}..]", type_id_text(element, types, modules)),
         Type::List(element) => format!("[|{}|]", type_id_text(element, types, modules)),
@@ -273,7 +273,13 @@ mod tests {
             "(i64 -> bool) -> unit"
         );
         assert_eq!(text(&function(Vec::new(), Type::Unit)), "fn() -> unit");
-        assert_eq!(text(&Type::Handle("Shapes.Handle".into())), "Shapes.Handle");
+        assert_eq!(
+            text(&Type::Handle(
+                "Shapes.Handle".into(),
+                crate::syntax::HandleKind::Owned
+            )),
+            "Shapes.Handle"
+        );
         for scalar in [
             i64,
             Type::Binary(64),

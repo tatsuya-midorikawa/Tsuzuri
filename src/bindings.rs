@@ -88,9 +88,9 @@ fn exports(module: &CheckedModule) -> Vec<&CheckedFunction> {
     exports
 }
 
-/// The host imports that the exports and the entry reach, by WASM import name. A name names one
-/// import: an explicit symbol has one module and type (E12), and implicit names contain a dot.
-fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunction)> {
+/// Every reached `extern` declaration, in id order. Multiple declarations of one explicit native
+/// symbol remain distinct here so native bindings retain all referenced handles and records (W14).
+fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction)> {
     let roots: Vec<_> = module
         .functions
         .iter()
@@ -103,12 +103,33 @@ fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunct
         .filter_map(|id| {
             let function = &module.functions[id];
             match &function.body.kind {
-                TypedExprKind::HostCall(import, _) => {
-                    Some((import.wasm_name.as_str(), (import.as_ref(), function)))
-                }
+                TypedExprKind::HostCall(import, _) => Some((import.as_ref(), function)),
                 _ => None,
             }
         })
+        .collect()
+}
+
+/// Validates that reached explicit imports have one Tsuzuri signature for `--emit bindings-js` (W14).
+pub(crate) fn validate_wasm_imports(
+    module: &CheckedModule,
+) -> Result<(), crate::diagnostic::Diagnostic> {
+    let roots: Vec<_> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| function.exported || module.entry == Some(*id))
+        .map(|(id, _)| id)
+        .collect();
+    let reachable = crate::llvm::reachable_functions(module, Some(&roots), false);
+    crate::llvm::validate_wasm_externs(module, &reachable)
+}
+
+/// The host imports that the exports and the entry reach, by WASM import name.
+fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunction)> {
+    reached_imports(module)
+        .into_iter()
+        .map(|(import, function)| (import.wasm_name.as_str(), (import, function)))
         .collect()
 }
 
@@ -127,7 +148,7 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
         Type::Binary(bits) => json!(format!("f{bits}")),
         Type::Bool => json!("bool"),
         Type::Unit => json!("unit"),
-        Type::Handle(name) => json!(format!("handle:{}", handle_c_name(name))),
+        Type::Handle(name, _) => json!(format!("handle:{}", handle_c_name(name))),
         Type::Record(..) => json!(format!("record:{}", record_name(ty, module))),
         Type::FixedArray(element, _) => {
             json!(["array", descriptor(element, module), fixed_length(ty)])
@@ -153,9 +174,10 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
 /// The record types of the signatures, nested records included, by `record_name`.
 fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
     fn visit(ty: &Type, module: &CheckedModule, records: &mut BTreeMap<String, Type>) {
-        match ty {
+        let viewed = crate::abi::c_view(ty, &module.types());
+        match viewed.as_ref() {
             Type::Reference(inner, _) => visit(inner, module, records),
-            Type::Record(id, arguments)
+            ty @ Type::Record(id, arguments)
                 if records
                     .insert(record_name(ty, module), ty.clone())
                     .is_none() =>
@@ -183,19 +205,21 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
 
 /// The handle types of the signatures, callbacks included, by C name.
 fn handles(module: &CheckedModule) -> BTreeSet<String> {
-    fn visit(ty: &Type, handles: &mut BTreeSet<String>) {
-        match ty {
-            Type::Handle(name) => {
+    fn visit(ty: &Type, types: &crate::check::TypeContext<'_>, handles: &mut BTreeSet<String>) {
+        let viewed = crate::abi::c_view(ty, types);
+        match viewed.as_ref() {
+            Type::Handle(name, _) => {
                 handles.insert(handle_c_name(name));
             }
-            Type::Reference(inner, _) => visit(inner, handles),
+            Type::Reference(inner, _) => visit(inner, types, handles),
             Type::Function(parameters, result) => {
-                parameters.iter().for_each(|ty| visit(ty, handles));
-                visit(result, handles);
+                parameters.iter().for_each(|ty| visit(ty, types, handles));
+                visit(result, types, handles);
             }
             _ => {}
         }
     }
+    let types = module.types();
     let mut handles = BTreeSet::new();
     for function in signatures(module) {
         for ty in function
@@ -204,7 +228,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
             .iter()
             .chain([&function.signature.result])
         {
-            visit(ty, &mut handles);
+            visit(ty, &types, &mut handles);
         }
     }
     handles
@@ -213,7 +237,11 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
 /// The functions whose signatures the bindings describe: the exports, then the reached imports.
 fn signatures(module: &CheckedModule) -> Vec<&CheckedFunction> {
     let mut functions = exports(module);
-    functions.extend(imports(module).into_values().map(|(_, function)| function));
+    functions.extend(
+        reached_imports(module)
+            .into_iter()
+            .map(|(_, function)| function),
+    );
     functions
 }
 
@@ -414,7 +442,7 @@ fn typescript_type_with(ty: &Type, module: &CheckedModule, input: bool, borrow: 
         Type::Integer(..) | Type::Binary(_) => "number".into(),
         Type::Bool => "boolean".into(),
         Type::Unit => "void".into(),
-        Type::Handle(name) => handle_c_name(name),
+        Type::Handle(name, _) => handle_c_name(name),
         Type::Record(..) => record_name(ty, module),
         Type::FixedArray(element, _) => {
             format!("readonly {}[]", typescript_type(element, module, input))

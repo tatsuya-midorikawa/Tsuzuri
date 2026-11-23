@@ -405,6 +405,7 @@ impl Parser<'_> {
                         span: value.span,
                         provenance: Provenance::Generated,
                     },
+                    pattern: None,
                     mutable: false,
                     using: false,
                     recursion: Recursion::None,
@@ -442,6 +443,7 @@ impl Parser<'_> {
                             span: value.span,
                             provenance: Provenance::Generated,
                         },
+                        pattern: None,
                         mutable: false,
                         using: false,
                         recursion: Recursion::None,
@@ -1389,7 +1391,7 @@ impl Parser<'_> {
 
     /// Whether the tokens at `index` are `:` and `?` written together, which start a type test
     /// `:? T` (A24). Apart, `: ?` is no type test.
-    fn type_test_at(&self, index: usize) -> bool {
+    pub(super) fn type_test_at(&self, index: usize) -> bool {
         match (self.tokens.get(index), self.tokens.get(index + 1)) {
             (Some(colon), Some(question)) => {
                 colon.kind == TokenKind::Colon
@@ -1504,7 +1506,7 @@ impl Parser<'_> {
         read.ok().map(|_| probe.position)
     }
 
-    fn make_pattern(
+    pub(super) fn make_pattern(
         &self,
         kind: PatternKind,
         span: Span,

@@ -358,7 +358,7 @@ fn type_entries(module: &str, program: &Program, types: &mut Vec<(String, String
         if extern_type.visibility == Visibility::Private {
             continue;
         }
-        let line = format!("extern type {}", extern_type.name.text);
+        let line = extern_type.header();
         types.push((extern_type.name.text.clone(), line));
     }
 }

@@ -278,6 +278,7 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
+unit_enum!(HandleKind { Owned, Copy });
 unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(RangeOp { Bare, Closed, Open });
 unit_enum!(FixLevel {
@@ -338,6 +339,9 @@ unit_enum!(MatchOrigin {
     FunctionGuard,
     LambdaDestructuring,
     ComputationDestructuring,
+    ForDestructuring,
+    LetDestructuring,
+    Internal,
 });
 unit_enum!(Notation { Symbol, Keyword });
 unit_enum!(FormatAlign {
@@ -1128,10 +1132,14 @@ impl Wire for ExternTypeDecl {
         let ExternTypeDecl {
             doc,
             visibility,
+            kind,
+            kind_span,
             name,
         } = self;
         put_doc(doc, out)?;
         visibility.put(out)?;
+        kind.put(out)?;
+        kind_span.put(out)?;
         name.put(out)
     }
 
@@ -1139,6 +1147,8 @@ impl Wire for ExternTypeDecl {
         Ok(ExternTypeDecl {
             doc: Option::get(input)?,
             visibility: Visibility::get(input)?,
+            kind: HandleKind::get(input)?,
+            kind_span: Option::get(input)?,
             name: Ident::get(input)?,
         })
     }
@@ -2142,6 +2152,7 @@ impl Wire for Binding {
     fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
         let Binding {
             name,
+            pattern,
             mutable,
             using,
             recursion,
@@ -2149,6 +2160,7 @@ impl Wire for Binding {
             value,
         } = self;
         name.put(out)?;
+        pattern.put(out)?;
         mutable.put(out)?;
         using.put(out)?;
         recursion.put(out)?;
@@ -2159,6 +2171,7 @@ impl Wire for Binding {
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(Binding {
             name: Ident::get(input)?,
+            pattern: Option::get(input)?,
             mutable: bool::get(input)?,
             using: bool::get(input)?,
             recursion: Recursion::get(input)?,
@@ -2689,6 +2702,7 @@ mod tests {
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
+        seen.extend(round_trips("extern type H\nextern type copy Hc\n", 0).unwrap());
         // A24: anonymous union types and type test patterns.
         seen.extend(
             round_trips(
@@ -2737,6 +2751,21 @@ mod tests {
                 arms: Vec::new(),
                 origin: MatchOrigin::ComputationDestructuring,
             }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::ForDestructuring,
+            }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::LetDestructuring,
+            }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::Internal,
+            }),
         ]);
         let mut out = Writer::new(Mode::Full, 0, MAX_DEPTH);
         program.put(&mut out).unwrap();
@@ -2757,13 +2786,14 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
+            ("HandleKind", 2),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),
             ("RangeOp", 3),
             ("UnaryOp", 4),
             ("BinaryOp", 21),
-            ("MatchOrigin", 4),
+            ("MatchOrigin", 7),
             ("Notation", 2),
             ("FormatAlign", 3),
             ("FormatKind", 6),
