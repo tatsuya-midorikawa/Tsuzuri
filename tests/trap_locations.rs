@@ -495,9 +495,12 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     .unwrap()
     .ir;
     // MSVC has no compiler-rt for the 128-bit division that `d128` needs (`__udivti3`, `__umodti3`), so a
-    // Windows build appends the helpers of wasm.ll, as `windows_abi` does.
+    // Windows build appends the same helpers that `windows_abi` does.
     let native = if cfg!(windows) {
-        format!("{native}\n{}", include_str!("../src/runtime/wasm.ll"))
+        format!(
+            "{native}\n{}",
+            tsuzuri::llvm::windows_i128_helpers(cfg!(target_arch = "aarch64"))
+        )
     } else {
         native
     };

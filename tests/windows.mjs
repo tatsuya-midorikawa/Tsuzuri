@@ -11,13 +11,13 @@ assert.ok(["x64", "arm64"].includes(process.arch), `unsupported Windows architec
 const named = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
 const directory = mkdtempSync(join(tmpdir(), "tsuzuri-windows-"));
 const nativeFlags = [`--target=${named}`, "-fuse-ld=lld", "-Wno-override-module", "-D_CRT_SECURE_NO_WARNINGS"];
-function execute(program, args, success = true, env = {}) {
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 180000, env: { ...process.env, ...env }, maxBuffer: 8 * 1024 * 1024 });
+function execute(program, args, success = true, env = {}, input = undefined) {
+  const result = spawnSync(program, args, { input, encoding: "utf8", timeout: 180000, env: { ...process.env, ...env }, maxBuffer: 8 * 1024 * 1024 });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
 }
-const cli = (args, success, env) => execute(compiler, args, success, env);
+const cli = (args, success, env, input) => execute(compiler, args, success, env, input);
 // Warnings come first on stderr as JSON lines; the error that --json reports is the last one.
 const diagnostic = (result) => JSON.parse(result.stderr.trim().split("\n").filter((line) => line.startsWith("{")).pop());
 try {
@@ -99,6 +99,136 @@ try {
     assert.equal(trapped.span.line, 2);
   }
   console.log("Windows MSVC: a trap reports its position and ends the process with 0xC000001D at -O0 and -O3");
+
+  // W42: 128-bit division, remainder, multiplication and shifts follow the Windows ABI at -O0 and -O3,
+  // both inside Tsuzuri programs and in C hosts linked with a Tsuzuri object.
+  const wideRun = join(directory, "i128-run");
+  mkdirSync(wideRun);
+  writeFileSync(join(wideRun, "Main.tz"), [
+    "def main :: unit -> i32 = \\() ->",
+    "    let! first_line = IO.readln ()",
+    "    let! second_line = IO.readln ()",
+    "    let first = Maybe.get first_line",
+    "    let second = Maybe.get second_line",
+    "    let a: i128 = Maybe.get (Parse.parse (ref first))",
+    "    let b: i128 = Maybe.get (Parse.parse (ref second))",
+    "    let ua: i128u = a as i128u",
+    "    let ub: i128u = b as i128u",
+    "    do! IO.writeln $\"{a / b} {a % b} {ua / ub} {ua % ub}\"",
+    "    0",
+    "",
+  ].join("\n"));
+  const negUnsigned = BigInt.asUintN(128, -100n);
+  const expectedNeg = `-14 -2 ${negUnsigned / 7n} ${negUnsigned % 7n}\n`;
+  for (const optimization of ["-O0", "-O3"]) {
+    assert.equal(cli(["run", wideRun, "--no-cache", optimization], true, {}, "100\n3\n").stdout, "33 1 33 1\n");
+    assert.equal(cli(["run", wideRun, "--no-cache", optimization], true, {}, "-100\n7\n").stdout, expectedNeg);
+  }
+
+  const wideLib = join(directory, "i128-lib");
+  mkdirSync(wideLib);
+  writeFileSync(join(wideLib, "Main.tz"), [
+    "export def sdiv :: i64 -> i64 -> i64 -> i64",
+    "fn sdiv x scale y = (((x as i128) * (scale as i128)) / (y as i128)) as i64",
+    "export def smod :: i64 -> i64 -> i64 -> i64",
+    "fn smod x scale y = (((x as i128) * (scale as i128)) % (y as i128)) as i64",
+    "export def udiv :: i64 -> i64 -> i64 -> i64",
+    "fn udiv x scale y = ((((x as i64u) as i128u) * ((scale as i64u) as i128u)) / ((y as i64u) as i128u)) as i64",
+    "export def umod :: i64 -> i64 -> i64 -> i64",
+    "fn umod x scale y = ((((x as i64u) as i128u) * ((scale as i64u) as i128u)) % ((y as i64u) as i128u)) as i64",
+    "",
+  ].join("\n"));
+  const wideHost = join(directory, "i128_host.c");
+  writeFileSync(wideHost, [
+    "#undef NDEBUG",
+    "#include <assert.h>",
+    "#include <stdint.h>",
+    "#include <stdio.h>",
+    "typedef unsigned __int128 u128;",
+    "typedef __int128 s128;",
+    "extern u128 __udivmodti4(u128 a, u128 b, u128 *rem);",
+    "extern s128 __ashrti3(s128 a, int count);",
+    "extern int64_t tz_sdiv(int64_t, int64_t, int64_t);",
+    "extern int64_t tz_smod(int64_t, int64_t, int64_t);",
+    "extern int64_t tz_udiv(int64_t, int64_t, int64_t);",
+    "extern int64_t tz_umod(int64_t, int64_t, int64_t);",
+    "static void put128(u128 v) { printf(\"%016llx%016llx \", (unsigned long long)(v >> 64), (unsigned long long)v); }",
+    "static int check_exports(void) {",
+    "  volatile s128 hundred = 100, three = 3;",
+    "  assert(hundred / three == 33);",
+    "  assert(tz_sdiv(100, 1, 3) == 33 && tz_smod(100, 1, 3) == 1);",
+    "  assert(tz_sdiv(-100, 1, 7) == -14 && tz_smod(-100, 1, 7) == -2);",
+    "  assert(tz_sdiv(1000000000000LL, 1000000000000LL, 1000000000000LL) == 1000000000000LL);",
+    "  assert(tz_sdiv(-1000000000000LL, 1000000000000LL, 300000000000LL) == -3333333333333LL);",
+    "  assert(tz_smod(-1000000000000LL, 1000000000000LL, 300000000000LL) == -100000000000LL);",
+    "  assert(tz_udiv(1000000000000LL, 1000000000000LL, 700000LL) == 1428571428571428571LL);",
+    "  assert(tz_umod(1000000000000LL, 1000000000000LL, 700000LL) == 300000LL);",
+    "  return 0;",
+    "}",
+    "int main(void) {",
+    "  check_exports();",
+    "  unsigned long long al, ah, bl, bh; int shift;",
+    "  while (scanf(\"%llx %llx %llx %llx %d\", &al, &ah, &bl, &bh, &shift) == 5) {",
+    "    u128 a = ((u128)ah << 64) | (u128)al;",
+    "    u128 b = ((u128)bh << 64) | (u128)bl;",
+    "    s128 sa = (s128)a, sb = (s128)b;",
+    "    u128 rem = 0;",
+    "    u128 q = __udivmodti4(a, b, &rem);",
+    "    u128 q_null = __udivmodti4(a, b, NULL);",
+    "    put128(a * b); put128(a / b); put128(a % b);",
+    "    put128((u128)(sa / sb)); put128((u128)(sa % sb));",
+    "    put128(q); put128(rem); put128(q_null);",
+    "    put128(a << shift); put128(a >> shift); put128((u128)__ashrti3(sa, shift));",
+    "    putchar('\\n');",
+    "  }",
+    "  return 0;",
+    "}",
+    "",
+  ].join("\n"));
+  const mask128 = (1n << 128n) - 1n;
+  const mask64 = (1n << 64n) - 1n;
+  const hex128 = (v) => (v & mask128).toString(16).padStart(32, "0");
+  const minSigned128 = -(1n << 127n);
+  const pairs = [
+    [0n, 1n, 0], [1n, 1n, 1], [mask128, 1n, 63],
+    [mask128, mask128, 64], [1n << 127n, mask128, 65],
+    [1n << 127n, 1n << 127n, 127], [mask64, mask64, 31],
+    [BigInt.asUintN(128, -100n), 7n, 5],
+    [BigInt.asUintN(128, 100n), BigInt.asUintN(128, -7n), 70],
+    [BigInt.asUintN(128, -100n), BigInt.asUintN(128, -7n), 95],
+  ];
+  let seed = 42n;
+  for (let index = 0; index < 100; index++) {
+    seed = BigInt.asUintN(128, seed * 0x2360ed051fc65da44385df649fccf645n + 1n);
+    const a = seed;
+    seed = BigInt.asUintN(128, seed * 0x2360ed051fc65da44385df649fccf645n + 1n);
+    let b = seed || 1n;
+    if (BigInt.asIntN(128, a) === minSigned128 && BigInt.asIntN(128, b) === -1n) b = 1n;
+    pairs.push([a, b, (index * 13) & 127]);
+  }
+  const stdinLines = pairs.map(([a, b, s]) =>
+    `${(a & mask64).toString(16)} ${(a >> 64n).toString(16)} ${(b & mask64).toString(16)} ${(b >> 64n).toString(16)} ${s}`
+  ).join("\n") + "\n";
+  const expectedWide = pairs.map(([a, b, s]) => {
+    const sa = BigInt.asIntN(128, a);
+    const sb = BigInt.asIntN(128, b);
+    const shift = BigInt(s);
+    return [
+      a * b, a / b, a % b,
+      BigInt.asUintN(128, sa / sb), BigInt.asUintN(128, sa % sb),
+      a / b, a % b, a / b,
+      (a << shift) & mask128, a >> shift, BigInt.asUintN(128, sa >> shift),
+    ].map(hex128).join(" ");
+  });
+  for (const optimization of ["-O0", "-O3"]) {
+    const wideObj = join(directory, `i128${optimization}.obj`);
+    cli(["build", wideLib, "--no-cache", optimization, "--emit", "object", "-o", wideObj]);
+    const wideExe = join(directory, `i128${optimization}.exe`);
+    execute(clang, [...nativeFlags, optimization, wideHost, wideObj, "-o", wideExe]);
+    const lines = execute(wideExe, [], true, {}, stdinLines).stdout.replaceAll("\r\n", "\n").trimEnd().split("\n").map((line) => line.trim());
+    assert.deepEqual(lines, expectedWide, `i128 reference mismatch at ${optimization}`);
+  }
+  console.log("Windows MSVC: 128-bit integer helpers match BigInt across -O0 and -O3");
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });

@@ -173,6 +173,23 @@ pub fn emit_with_export_style(
     })
 }
 
+/// W42: the 128-bit routines that `windows_abi` appends. x86-64 Windows calls them with each i128
+/// operand in a temporary passed by pointer and takes the result in XMM0, the C ABI of `__int128`
+/// there, so the bodies of wasm.ll become internal `tz.runtime.<name>` functions behind wrappers of
+/// that shape. Arm64 passes an i128 in two registers, as the definitions of wasm.ll take it.
+pub fn windows_i128_helpers(aarch64: bool) -> String {
+    let helpers = include_str!("runtime/wasm.ll");
+    if aarch64 {
+        return helpers.to_owned();
+    }
+    const WEAK: &str = "define weak hidden i128 @__";
+    debug_assert_eq!(helpers.matches(WEAK).count(), 9);
+    let mut output = helpers.replace(WEAK, "define internal i128 @tz.runtime.");
+    output.push('\n');
+    output.push_str(include_str!("runtime/i128-windows-x64.ll"));
+    output
+}
+
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     let mut output = String::with_capacity(ir.len());
     let mut exports: BTreeSet<_> = module
@@ -215,7 +232,9 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if has_write {
         output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
-    output.push_str(include_str!("runtime/wasm.ll"));
+    output.push_str(&windows_i128_helpers(
+        crate::target::current_platform().aarch64(),
+    ));
     output
 }
 

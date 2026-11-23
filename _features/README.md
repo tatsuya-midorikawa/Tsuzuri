@@ -372,7 +372,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | todo |
 | W40 | [同梱の launcher の `-x ir` の経路が `-Wl,--gc-sections` を IR のコンパイルに渡し、Windows のすべてのビルドで警告が出る](W40-launcher-ir-forwards-linker-flags.md) | P3 | S | – | todo |
 | W41 | [Windows のタイマーのスレッドの待ちがミリ秒に切り上がり、短い `Time.sleep` が大きく延びる](W41-windows-timer-thread-resolution.md) | P2 | M | W34 | todo |
-| W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](W42-windows-i128-division.md) | P1 | M | – | todo |
+| W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](_completed/W42-windows-i128-division.md) | P1 | M | – | done（Windows x86-64 では `wasm.ll` の 9 個の本体を内部関数に読み替え、Win64 ABI の包み `src/runtime/i128-windows-x64.ll` を添える。Windows Arm64 と WebAssembly の IR は不変） |
 | W43 | [結果の型の注釈がないラムダ・ブロックに `!` のない `do` があると、最後の式ではなく `unit` を返す型になる](W43-plain-do-in-lambda-returns-unit.md) | P2 | S | W38 | todo |
 | W44 | [数のリテラルの制約が破れたときの `E1003` が、単一化した位置ではなくリテラルを指す](W44-literal-constraint-error-location.md) | P3 | S | – | todo |
 

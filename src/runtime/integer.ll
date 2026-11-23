@@ -10,9 +10,8 @@
 ; 64-bit entry points: the caller extends the value to i64. Only the 128-bit entry points multiply
 ; an i128, so a program that shows or parses no i128 or u128 value never needs the 128-bit
 ; multiplication routine. Nothing here divides an i128: the division is done on 32-bit digits with
-; 64-bit operations. LLVM turns an i128 division by anything but a few constants into a call of
-; __udivti3, and on Windows x64 that call passes the operands by pointer and returns in XMM0, which
-; the __udivti3 of src/runtime/wasm.ll, appended to Windows builds, does not follow.
+; 64-bit operations so that formatting or parsing an integer never pulls in a 128-bit division
+; helper (`__udivti3` and its relatives).
 ;
 ; The parsers read the UTF-16 code units of a string directly. The numeric runtime's parser and
 ; formatters, which the tests compare these functions with, give the same results.

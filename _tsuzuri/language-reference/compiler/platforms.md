@@ -164,7 +164,6 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - Windows の `--emit shared` と OS API は未対応です。MSVC の実行ファイルを Windows 以外のホストでリンクする方法は検証していません。
 - 同梱ツールチェーンは、Mach-O の `--emit object` で C ランタイムを含むものを作れません。Windows の COFF のランタイム埋め込み object も `E2002` です。ランタイムを要しない object と LLVM IR は作れます。
-- Windows x64 の `i128`・`i128u` の `/` と `%` は正しい値になりません。LLVM が `__udivti3` の系列を、オペランドをポインターで渡して XMM0 で返す規約で呼ぶのに対し、連結する `runtime/wasm.ll` は `i128` を 2 レジスタで受けるためです（assembly の読解による結論）。整数の表示と `Parse` は `i128` の除算を使わず、影響しません。
 - プロファイル誘導最適化は、ビルド機の native の `exe` と `object`、wasm32 の module だけです。Windows と別の `--target TRIPLE` は `E2000`、同梱の launcher は `E2002` です。LLVM の Clang を指定してください（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 - `--backend fast` は、feature 付きのビルドで macOS Arm64・Linux x64/Arm64 の native と wasm32 だけです。Windows、名前を付けた `--target TRIPLE`、wasm64 は `E2000` です（[コード生成器](option.md#コード生成器)）。
 
@@ -172,7 +171,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - `ci.yml` は、Linux x64 の Clippy と Rust テストに加え、Windows x64・Arm64、Linux Arm64、macOS Arm64 を型検査します。`tests/platforms.mjs` が配布物と CI マトリクスの対応環境を照合します。
 - `targets.yml` の 3 ホストは、ホストの実行、9 triple の object の形式と CPU、同梱ツールチェーンの 7 triple のリンク、Linux での qemu-user を検査します。
-- `windows.yml` の 2 ホストは、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
+- `windows.yml` の 2 ホストは、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、`i128` の除算と剰余、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
 - `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
 
 ## まとめ

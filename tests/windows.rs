@@ -1,4 +1,76 @@
+use std::collections::BTreeSet;
+use tsuzuri::target::{Platform, PlatformScope, Triple};
 use tsuzuri::{analyze, llvm};
+
+#[test]
+fn windows_x64_i128_helpers_follow_the_win64_abi() {
+    let weak_names = |source: &str, prefix: &str| -> BTreeSet<String> {
+        source
+            .lines()
+            .filter_map(|line| line.strip_prefix(prefix))
+            .map(|rest| rest.split('(').next().unwrap().to_owned())
+            .collect()
+    };
+    let wasm_names = weak_names(
+        include_str!("../src/runtime/wasm.ll"),
+        "define weak hidden i128 @__",
+    );
+    let wrapper_names = weak_names(
+        include_str!("../src/runtime/i128-windows-x64.ll"),
+        "define weak hidden <2 x i64> @__",
+    );
+    assert_eq!(wasm_names.len(), 9);
+    assert_eq!(wasm_names, wrapper_names);
+
+    let module = analyze("export def answer :: i64\nfn answer = 42\n").unwrap();
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    for triple in [Triple::X86_64WindowsMsvc, Triple::X86_64WindowsGnu] {
+        let _scope = PlatformScope::enter(Platform::new(Some(triple)));
+        let ir =
+            llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap()
+        );
+        assert_eq!(
+            ir.matches("define weak hidden <2 x i64> @__").count(),
+            9,
+            "{triple:?}"
+        );
+        assert!(!ir.contains("define weak hidden i128 @__"), "{triple:?}");
+        assert_eq!(
+            ir.matches("define internal i128 @tz.runtime.").count(),
+            10,
+            "{triple:?}"
+        );
+        for name in &wasm_names {
+            assert!(
+                ir.contains(&format!("define weak hidden <2 x i64> @__{name}(ptr ")),
+                "missing wrapper {name}"
+            );
+            assert!(
+                ir.contains(&format!("define internal i128 @tz.runtime.{name}(")),
+                "missing internal body {name}"
+            );
+        }
+    }
+    let _arm64 = PlatformScope::enter(Platform::new(Some(Triple::Aarch64WindowsMsvc)));
+    let arm_ir =
+        llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
+    assert!(
+        arm_ir.ends_with(include_str!("../src/runtime/wasm.ll")),
+        "Arm64 Windows keeps wasm.ll unchanged"
+    );
+    assert!(!arm_ir.contains("define weak hidden <2 x i64> @__"));
+}
 
 #[test]
 fn emits_windows_exports_without_changing_default_or_wasm() {
@@ -86,6 +158,7 @@ fn cross_link(sdk: &std::path::Path, source: &str) {
     ));
     fs::create_dir(&root).unwrap();
     let module = analyze(source).unwrap();
+    let _scope = PlatformScope::enter(Platform::new(Some(Triple::X86_64WindowsMsvc)));
     let ir = llvm::emit_with_export_style(
         &module,
         llvm::EmitOptions {
@@ -212,24 +285,6 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
     0
 ";
     let module = tsuzuri::analyze_modules(&[("Main.tz", source)]).unwrap();
-    let ir = llvm::emit_with_export_style(
-        &module,
-        llvm::EmitOptions {
-            entry: llvm::Entry::Console,
-            wasm: false,
-            debug_output: false,
-            runtime_objects: false,
-            wasm_simd128: false,
-            allocator: llvm::Allocator::System,
-            f16: llvm::F16Path::Soft,
-        },
-        llvm::ExportStyle::Dllexport,
-    )
-    .unwrap();
-    assert!(ir.contains("declare i64 @tsuzuri_net_open("));
-    // The allocator of a Windows host has no POSIX-only hooks that a host of another kind adds to the IR.
-    let ir = ir.replace(" weak hidden global ", " internal global ");
-    fs::write(root.join("module.ll"), ir).unwrap();
     // The driver concatenates the runtimes of one program into one translation unit, with net.c first.
     let runtime: String = ["net.c", "io.c"]
         .iter()
@@ -259,10 +314,40 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
         "sdk/include/shared",
         "sdk/include/um",
     ];
-    for (target, architecture) in [
-        ("x86_64-pc-windows-msvc", "x86_64"),
-        ("aarch64-pc-windows-msvc", "aarch64"),
+    for (triple, target, architecture) in [
+        (
+            Triple::X86_64WindowsMsvc,
+            "x86_64-pc-windows-msvc",
+            "x86_64",
+        ),
+        (
+            Triple::Aarch64WindowsMsvc,
+            "aarch64-pc-windows-msvc",
+            "aarch64",
+        ),
     ] {
+        let ir = {
+            let _scope = PlatformScope::enter(Platform::new(Some(triple)));
+            llvm::emit_with_export_style(
+                &module,
+                llvm::EmitOptions {
+                    entry: llvm::Entry::Console,
+                    wasm: false,
+                    debug_output: false,
+                    runtime_objects: false,
+                    wasm_simd128: false,
+                    allocator: llvm::Allocator::System,
+                    f16: llvm::F16Path::Soft,
+                },
+                llvm::ExportStyle::Dllexport,
+            )
+            .unwrap()
+        };
+        assert!(ir.contains("declare i64 @tsuzuri_net_open("));
+        // The allocator of a Windows host has no POSIX-only hooks that a host of another kind adds to the IR.
+        let ir = ir.replace(" weak hidden global ", " internal global ");
+        let module_ll = root.join(format!("module-{architecture}.ll"));
+        fs::write(&module_ll, ir).unwrap();
         for optimization in ["-O0", "-O3"] {
             check(
                 Command::new(&clang)
@@ -272,7 +357,7 @@ fn cross_links_the_net_runtime_with_microsoft_sdk_when_requested() {
                         "-c",
                         optimization,
                     ])
-                    .arg(root.join("module.ll"))
+                    .arg(&module_ll)
                     .arg("-o")
                     .arg(root.join(format!("module-{architecture}.obj"))),
             );

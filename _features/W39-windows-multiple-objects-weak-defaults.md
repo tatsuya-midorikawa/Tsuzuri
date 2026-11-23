@@ -19,7 +19,7 @@
 - 効果: LLVM は COFF の `weak` の定義を、既定の名前が object ごとに違う弱い外部シンボル（`.weak.<name>.default.<object の最初の公開記号>`）で書く。`comdat any` を付けると、同じ名前の普通の外部シンボルを selectany の COMDAT の節に置く。リンカーは同じ名前の COMDAT を 1 つだけ残す。
 - 最初に読む: 「現状」の表 → `src/llvm.rs` の `windows_abi`（末尾の `output.push_str(include_str!("runtime/wasm.ll"))`）→ 「設計」。
 - 最初に書くテスト: `tests/windows.rs` の `windows_weak_definitions_are_comdat_any`。
-- 触ってはいけない: `src/runtime/wasm.ll`・`heap-small.ll`・`src/llvm_abi.rs` の `allocator` の本文（WebAssembly と POSIX が同じ文字列を使う）、`i128` の補助の呼び出し規約（対象外。[W42](W42-windows-i128-division.md)）、`--emit header`。
+- 触ってはいけない: `src/runtime/wasm.ll`・`heap-small.ll`・`src/llvm_abi.rs` の `allocator` の本文（WebAssembly と POSIX が同じ文字列を使う）、`i128` の補助の呼び出し規約（[W42](_completed/W42-windows-i128-division.md) で修正済み）、`--emit header`。
 - 完了の見分け方: Developer PowerShell で、「現状」の `a.obj`・`b.obj`（と `c.obj`・`d.obj`）が `lld-link` と `link.exe` の両方でリンクでき、`llvm-nm` に `.weak.` の名前がない。
 
 ## 目的
@@ -170,7 +170,7 @@ fn with_coff_comdats(ir: &str) -> String
 ## テスト計画
 
 1. **IR**（`tests/windows.rs` の `windows_weak_definitions_are_comdat_any`、すべてのホスト）: 所有バッファを返す export を持つ module を `--allocator small` と既定で `emit_with_export_style(…, Dllexport)` に通す。`tz_soft_*` を参照して `numeric.ll` を足す module（どの式が参照するかは着手時に `--emit llvm` で選ぶ）も通す。すべての `define weak`・`= weak` の行が `comdat` を持ち、その名前ごとに `$<name> = comdat any` がちょうど 1 行あり、2 回の出力が同じ。既存の `emits_windows_exports_without_changing_default_or_wasm` の既定と wasm32 の IR に `comdat` がないことも確かめる。
-2. **E2E**（`tests/windows.mjs` の object ABI の段の後）: `answer`・`twice`、`make_tag`・`make_pad`（既定と `--allocator small`）の object の組（`-O0` と `-O3` のそれぞれ。`linkonce_odr` の失敗は `-O3` だけに出た）を、それぞれ 1 つの C のホストに、`nativeFlags`（`-fuse-ld=lld`）と `-fuse-ld=link`（MSVC の link.exe）でリンクして実行し、結果（`84`、`ABCab`）を確かめる。`llvm-nm` に `.weak.` の名前がないことも見る。`i128` の除算の結果は確かめない（対象外の既知の不具合。[W42](W42-windows-i128-division.md) が先に入っていれば、除算の結果も確かめる）。
+2. **E2E**（`tests/windows.mjs` の object ABI の段の後）: `answer`・`twice`、`make_tag`・`make_pad`（既定と `--allocator small`）の object の組（`-O0` と `-O3` のそれぞれ。`linkonce_odr` の失敗は `-O3` だけに出た）を、それぞれ 1 つの C のホストに、`nativeFlags`（`-fuse-ld=lld`）と `-fuse-ld=link`（MSVC の link.exe）でリンクして実行し、結果（`84`、`ABCab`）を確かめる。`llvm-nm` に `.weak.` の名前がないことも見る。[W42](_completed/W42-windows-i128-division.md) が入ったので、`i128` の除算の結果も確かめる。
 3. **既存**: `tests/windows.mjs` の全段、`tests/fast_backend.rs`、`tests/trap_locations.rs`（どちらも `wasm.ll` を自分で足す）、`tests/host_abi.rs`。
 
 ## ドキュメント
@@ -197,7 +197,7 @@ fn with_coff_comdats(ir: &str) -> String
 
 ## 対象外
 
-- **Windows x86-64 の `i128` の除算の結果**: `wasm.ll` の補助は `i128` を 2 つのレジスタで受けるが、Windows x86-64 の LLVM の呼び出しはオペランドをポインターで渡して XMM0 で返す（[PM08](../_perfs/_completed/PM08-binary-size.md) と `docs/architecture.md` の `integer.ll` の行）。起票時に、`i128` の除算を実行時に行うプログラムが MSVC の `-O0` で `100 / 3` を `0` と出し、同じ除算を export した object を C のホストから呼んでも `0` になった（`-O3` で正しく見えるのは、定数のオペランドを畳み込んで補助の呼び出しが消えた場合だけである。実行時の値なら `-O3` でも誤り、誤った値は `0` とは限らない。[W42](W42-windows-i128-division.md) の「現状」）。利用者のコードの除算は [W42](W42-windows-i128-division.md) が直す。このチケットは補助の linkage だけを変え、本文と規約は変えない。
+- **Windows x86-64 の `i128` の除算の呼び出し規約**: [W42](_completed/W42-windows-i128-division.md) で Win64 の C の ABI の包み `src/runtime/i128-windows-x64.ll` に修正済み。このチケットは補助の包みの linkage（`comdat`）だけを変え、本文と規約は変えない。
 - ランタイムを含む COFF の object の `E2002`（G10 D8 の前半）と、trap ランタイムの強い定義（[W35](W35-windows-trap-mode-return.md)）。
 - DLL の出力（[W05](W05-windows-shared-library.md)）。
 - 今の版のコンパイラで作った object どうしの組（2 つ以上あれば今と同じく失敗する）。
