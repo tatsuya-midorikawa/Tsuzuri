@@ -127,7 +127,10 @@ try {
     "tsuzuri.e12_counter_free:function",
     "tsuzuri.e12_counter_new:function",
     "tsuzuri.e12_fold:function",
+    "tsuzuri.e12_pair_mix:function",
     "tsuzuri.e12_run:function",
+    "tsuzuri.e12_sum_with:function",
+    "tsuzuri.e12_text_units:function",
     "tsuzuri.e12_visit:function",
     "tsuzuri.sqrt:function",
   ];
@@ -153,6 +156,17 @@ try {
         e12_fold: (index, count) => { let total = 0n; for (let item = 1n; item <= count; item++) total = callback(index)(total, item); return total; },
         e12_run: (index) => callback(index)(),
         e12_visit: (index, handle) => callback(index)(handle),
+        e12_text_units: (index, _ptr, length, extra) => callback(index)(length) + extra,
+        e12_pair_mix: (index, ptr) => {
+          const view = new DataView(instance.exports.memory.buffer, Number(ptr), 16);
+          return callback(index)(view.getBigInt64(0, true) * 10n + view.getBigInt64(8, true));
+        },
+        e12_sum_with: (index, ptr, length) => {
+          const items = new BigInt64Array(instance.exports.memory.buffer, Number(ptr), Number(length));
+          let total = 0n;
+          for (const item of items) total += item;
+          return callback(index)(total);
+        },
       },
       env: { e12_host_now: () => 40n },
     };
@@ -161,6 +175,9 @@ try {
     assert.equal(instance.exports.tz_callbacks(4n), 39n);
     assert.equal(instance.exports.tz_callback_shapes(10n), 82n);
     assert.equal(instance.exports.tz_threaded(3n), 9n);
+    assert.equal(instance.exports.tz_temporaries(4n), 204n);
+    assert.equal(instance.exports.tz_temporary_then_raise(3n), 27n);
+    assert.equal(instance.exports.tz_temporary_then_raise(3037000500n), -1n);
     assert.equal(instance.exports.tz_misc(2.25), 40n);
     assert.equal(instance.exports.tz_misc(2), 0n);
     assert.equal(instance.exports.tz_pass_through(wide ? 7n : 7), wide ? 7n : 7);

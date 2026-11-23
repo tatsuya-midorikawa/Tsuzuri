@@ -331,7 +331,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](W01-callback-extern-temporary-string.md) | P1 | S | – | todo |
+| W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](_completed/W01-callback-extern-temporary-string.md) | P1 | S | – | done（`FunctionEmitter::call` の先頭でコールバック `extern` を直接 `host_call` へ送り、`BorrowOperand` を一時領域へ借用して呼び出し後に解放） |
 | W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](W02-break-in-do-function.md) | P2 | S | – | todo |
 | W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
 | W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](W04-windows-trap-report-lost.md) | P1 | S | – | todo |

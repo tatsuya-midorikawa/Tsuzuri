@@ -49,6 +49,7 @@ impl FunctionEmitter<'_, '_> {
         let mut widen: Vec<(usize, String)> = Vec::new();
         // The widened copies of Latin-1 strings, with the length words that say which are copies.
         let mut copies: Vec<(String, String)> = Vec::new();
+        let mut operands = Vec::new();
         for argument in arguments {
             if matches!(argument.ty, Type::Function(..)) {
                 // A callback reaches the host as the address of its C-ABI wrapper.
@@ -63,7 +64,11 @@ impl FunctionEmitter<'_, '_> {
                 ));
                 continue;
             }
-            let value = self.expression(argument);
+            let value = if let TypedExprKind::BorrowOperand(operand) = &argument.kind {
+                self.operand_borrow(argument, operand, &mut operands)
+            } else {
+                self.expression(argument)
+            };
             if argument.ty == Type::Unit {
                 continue;
             }
@@ -163,21 +168,25 @@ impl FunctionEmitter<'_, '_> {
         if *result == Type::Unit || out.is_some() {
             self.instruction(call);
             self.free_copies(&copies);
-            return if let Some(slot) = out {
+            let output = if let Some(slot) = out {
                 self.read_host_result(result, &slot)
             } else {
                 "0".into()
             };
+            self.release_operands(operands);
+            return output;
         }
         let value = self.value(call);
         self.free_copies(&copies);
-        match result {
+        let output = match result {
             Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
             Type::Integer(8 | 16, _) => {
                 self.value(format!("trunc i32 {value} to {}", self.ty(result)))
             }
             _ => value,
-        }
+        };
+        self.release_operands(operands);
+        output
     }
 
     /// Frees the widened copies that `host_call` made of Latin-1 strings: a string that was UTF-16 is

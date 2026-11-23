@@ -7165,6 +7165,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
+        // E12 D9 / W01: a callback extern has no function body, so every call of it is the host call
+        // itself, whatever its arguments are (a borrowed temporary included).
+        if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind
+            && let TypedExprKind::HostCall(import, _) = &self.module.functions[id].body.kind
+            && import.callbacks
+        {
+            return self.host_call(
+                import,
+                arguments,
+                &self.module.functions[id].signature.result,
+            );
+        }
         if arguments
             .iter()
             .any(|argument| matches!(argument.kind, TypedExprKind::BorrowOperand(_)))
@@ -7215,11 +7227,6 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         }
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind {
             let function = &self.module.functions[id];
-            if let TypedExprKind::HostCall(import, _) = &function.body.kind
-                && import.callbacks
-            {
-                return self.host_call(import, arguments, &function.signature.result);
-            }
             if arguments.len() == 1 && call_specialization::is_identity(function) {
                 let value = self.expression(&arguments[0]);
                 self.cover_call(id);

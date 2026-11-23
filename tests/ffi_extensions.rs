@@ -1,4 +1,5 @@
-use tsuzuri::{analyze, analyze_modules, llvm, parser};
+use tsuzuri::syntax::Edition;
+use tsuzuri::{analyze, analyze_modules, analyze_with_edition, llvm, parser};
 
 fn ir(module: &tsuzuri::check::CheckedModule, wasm: bool) -> String {
     let first = llvm::emit_target(module, llvm::Entry::Library, wasm).unwrap();
@@ -584,4 +585,137 @@ fn ident value = value
         code("export def bad :: (i64 -> i64) -> i64\nfn bad f = 1\n1"),
         "E1008"
     );
+}
+
+#[test]
+fn callback_externs_borrow_temporary_arguments() {
+    let prelude = "record Point { x: i64, y: i64 }
+extern type Counter
+extern \"e12_text\" def apply_text :: (i64 -> i64) -> ref string -> i64
+extern \"e12_point\" def apply_point :: (i64 -> i64) -> ref Point -> i64
+extern \"e12_sum\" def apply_sum :: (i64 -> i64) -> ref [i64] -> i64
+extern \"e12_new\" def counter_new :: i64 -> Counter
+extern \"e12_visit\" def visit :: (ref Counter -> i64) -> ref Counter -> i64
+extern \"e12_len\" def text_len :: ref string -> i64
+private def inc :: i64 -> i64
+fn inc value = value + 1
+private def peek :: ref Counter -> i64
+fn peek counter = 7
+private def label :: own i64 -> string
+fn label value = $\"item-{value}\"
+const NAME: string = \"abcd\"
+";
+    for (body, call_prefix, undefined, declaration) in [
+        (
+            "apply_text inc \"abc\"",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc $\"n={value}\"",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc (label value)",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_text inc NAME",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+        (
+            "apply_point inc (Point { x: value, y: 2 })",
+            "call i64 @e12_point(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_point(",
+            "declare i64 @e12_point(ptr, ptr)",
+        ),
+        (
+            "apply_sum inc [value, 2, 3]",
+            "call i64 @e12_sum(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_sum(",
+            "declare i64 @e12_sum(ptr, ptr, i64)",
+        ),
+        (
+            "visit peek (counter_new value)",
+            "call i64 @e12_visit(ptr @tz.callback.Main.peek, ptr ",
+            "@tz.fn.Main.visit(",
+            "declare i64 @e12_visit(ptr, ptr)",
+        ),
+        (
+            "inc (apply_text inc \"abc\")",
+            "call i64 @e12_text(ptr @tz.callback.Main.inc, ptr ",
+            "@tz.fn.Main.apply_text(",
+            "declare i64 @e12_text(ptr, ptr, i64)",
+        ),
+    ] {
+        let source =
+            format!("{prelude}export def root :: own i64 -> i64\nfn root value = {body}\n");
+        let module = analyze_with_edition(&source, Edition::E2027).unwrap();
+        for wasm in [false, true] {
+            let emitted = ir(&module, wasm);
+            assert!(emitted.contains(call_prefix), "{body}\n{emitted}");
+            assert!(!emitted.contains(undefined), "{body}\n{emitted}");
+            assert_eq!(emitted.matches(declaration).count(), 1, "{body}\n{emitted}");
+            let outside_adapters = emitted
+                .split("\n\n")
+                .filter(|block| {
+                    !block.contains("define internal ") || !block.contains("@tz.apply.")
+                })
+                .any(|block| block.contains("insertvalue %tz.closure"));
+            assert!(!outside_adapters, "{body}\n{emitted}");
+            if wasm {
+                assert!(emitted.contains("\"wasm-import-module\"=\"tsuzuri\""));
+            }
+        }
+    }
+    // Edition 2026 with explicit `ref` on non-string temporaries lowers through the same direct host call,
+    // and the shared E2E fixture compiles in both editions.
+    let fixture = std::fs::read_to_string("tests/fixtures/ffi_extensions/Main.tz").unwrap();
+    for edition in [Edition::E2026, Edition::E2027] {
+        let module = analyze_with_edition(&fixture, edition).unwrap();
+        let emitted = ir(&module, false);
+        assert!(emitted.contains("call i64 @e12_pair_mix(ptr @tz.callback.Main.triple, ptr "));
+        assert!(emitted.contains("call i64 @e12_sum_with(ptr @tz.callback.Main.triple, ptr "));
+        assert!(!emitted.contains("@tz.fn.Main.pair_mix("));
+        assert!(!emitted.contains("@tz.fn.Main.sum_with("));
+        assert!(!emitted.contains("@tz.fn.Main.text_units("));
+    }
+    // Non-callback externs keep their generated wrapper function.
+    let module = analyze_with_edition(
+        &format!("{prelude}export def root :: own i64 -> i64\nfn root _value = text_len \"abc\"\n"),
+        Edition::E2027,
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let emitted = ir(&module, wasm);
+        assert!(
+            emitted.contains("call i64 @tz.fn.Main.text_len("),
+            "{emitted}"
+        );
+        assert!(
+            emitted.contains("define internal i64 @tz.fn.Main.text_len("),
+            "{emitted}"
+        );
+        assert!(emitted.contains("call i64 @e12_len("), "{emitted}");
+    }
+    for rejected in [
+        "\"abc\" |> apply_text inc",
+        "let f = apply_text inc\nf \"abc\"",
+    ] {
+        let error =
+            analyze_with_edition(&format!("{prelude}{rejected}\n"), Edition::E2027).unwrap_err();
+        assert_eq!(error.code, "E1008");
+        assert!(
+            error
+                .message
+                .contains("must be called directly with all arguments")
+        );
+    }
 }

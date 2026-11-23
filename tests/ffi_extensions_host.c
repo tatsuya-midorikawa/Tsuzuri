@@ -55,6 +55,26 @@ int64_t e12_run(int64_t (*callback)(void)) { return callback(); }
 
 int64_t e12_visit(int64_t (*callback)(void *), void *handle) { return callback(handle); }
 
+typedef struct {
+    int64_t x;
+    int64_t y;
+} e12_pair;
+
+int64_t e12_text_units(int64_t (*callback)(int64_t), const uint16_t *units, int64_t length, int64_t extra) {
+    (void)units;
+    return callback(length) + extra;
+}
+
+int64_t e12_pair_mix(int64_t (*callback)(int64_t), const e12_pair *pair) {
+    return callback(pair->x * 10 + pair->y);
+}
+
+int64_t e12_sum_with(int64_t (*callback)(int64_t), const int64_t *items, int64_t length) {
+    int64_t sum = 0;
+    for (int64_t index = 0; index < length; index++) sum += items[index];
+    return callback(sum);
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);
@@ -141,6 +161,12 @@ int main(int argc, char **argv) {
     assert(tz_misc(2.0) == 0);
     clean();
     assert(tz_threaded(5) == 15);
+    clean();
+    assert(tz_temporaries(4) == 204);
+    clean();
+    assert(tz_temporary_then_raise(3) == 27);
+    clean();
+    assert(tz_temporary_then_raise(3037000500LL) == -1);
     clean();
     pthread_t threads[8];
     for (intptr_t index = 0; index < 8; index++) assert(pthread_create(&threads[index], NULL, hammer, (void *)(index * 1000)) == 0);

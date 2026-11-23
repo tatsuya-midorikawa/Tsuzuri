@@ -10,6 +10,16 @@ extern "e12_fold" def fold_host :: (i64 -> i64 -> i64) -> i64 -> i64
 extern "e12_run" def run_host :: (unit -> i64) -> i64
 extern "e12_visit" def visit :: (ref Counter -> i64) -> ref Counter -> i64
 extern "e12_apply_threaded" def apply_threaded :: (i64 -> i64) -> i64 -> i64
+extern "e12_text_units" def text_units :: (i64 -> i64) -> ref string -> i64 -> i64
+extern "e12_pair_mix" def pair_mix :: (i64 -> i64) -> ref Pair -> i64
+extern "e12_sum_with" def sum_with :: (i64 -> i64) -> ref [i64] -> i64
+
+record Pair { x: i64, y: i64 }
+
+const GREETING: string = "hello"
+
+private def label :: own i64 -> string
+fn label value = $"item-{value}"
 
 private def triple :: own i64 -> i64
 fn triple value = value * 3
@@ -58,3 +68,24 @@ fn misc value = if c_sqrt value == 1.5 then host_now () else 0
 
 export def pass_through :: own Counter -> Counter
 fn pass_through counter = counter
+
+export def temporaries :: own i64 -> i64
+fn temporaries value =
+    text_units triple "abc" 0 +
+    text_units triple $"n={value}" 0 +
+    text_units triple (label value) 0 +
+    text_units triple GREETING 0 +
+    pair_mix triple (ref (Pair { x: value, y: 2 })) +
+    sum_with triple (ref [value, 2, 3])
+
+export def temporary_then_raise :: own i64 -> i64
+fn temporary_then_raise value =
+    let outcome: Result<i64, Exception> =
+        try
+            text_units triple (label value) (@checked value * value)
+        with
+        | e is OverflowException -> e
+    match outcome with
+    | Result.Ok total -> total
+    | Result.Error _ -> -1
+
