@@ -13,13 +13,15 @@ pub(super) fn header(module: &CheckedModule) -> String {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
+        let viewed_result =
+            crate::abi::c_view(&function.signature.result, &module.types());
         let _ = writeln!(
             output,
             "{} {}({parameters});",
-            if out_result(&function.signature.result) {
+            if out_result(&viewed_result) {
                 "void".into()
             } else {
-                c_type(&function.signature.result)
+                c_type(&viewed_result)
             },
             import.native_symbol
         );
@@ -49,6 +51,7 @@ impl FunctionEmitter<'_, '_> {
         let mut widen: Vec<(usize, String)> = Vec::new();
         // The widened copies of Latin-1 strings, with the length words that say which are copies.
         let mut copies: Vec<(String, String)> = Vec::new();
+        let mut deferred_nullable_records: Vec<(usize, Type, String)> = Vec::new();
         let mut operands = Vec::new();
         for argument in arguments {
             if matches!(argument.ty, Type::Function(..)) {
@@ -70,6 +73,17 @@ impl FunctionEmitter<'_, '_> {
                 self.expression(argument)
             };
             if argument.ty == Type::Unit {
+                continue;
+            }
+            if let Some(nullable) = crate::abi::nullable(&argument.ty, &self.module.types()) {
+                types.push("ptr".into());
+                if matches!(nullable, crate::abi::Nullable::BorrowedRecord(_)) {
+                    deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
+                    values.push(String::new());
+                } else {
+                    let converted = self.nullable_to_c(&argument.ty, &value);
+                    values.push(format!("ptr {converted}"));
+                }
                 continue;
             }
             let inner = if let Type::Reference(inner, false) = &argument.ty {
@@ -142,10 +156,15 @@ impl FunctionEmitter<'_, '_> {
             values[position + 1] = format!("i64 {length}");
             copies.push((copy, word));
         }
+        for (position, ty, value) in deferred_nullable_records {
+            let converted = self.nullable_to_c(&ty, &value);
+            values[position] = format!("ptr {converted}");
+        }
+        let result_nullable = crate::abi::nullable(result, &self.module.types()).is_some();
         let mut output = if *result == Type::Unit || out.is_some() {
             "void".to_owned()
         } else {
-            abi_type(result)
+            abi_type(&crate::abi::c_view(result, &self.module.types()))
         };
         let mut convert_ptr_result = false;
         if !self.globals.wasm
@@ -206,12 +225,16 @@ impl FunctionEmitter<'_, '_> {
             value
         };
         self.free_copies(&copies);
-        let output = match result {
-            Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
-            Type::Integer(8 | 16, _) => {
-                self.value(format!("trunc i32 {value} to {}", self.ty(result)))
+        let output = if result_nullable {
+            self.nullable_from_c(result, &value)
+        } else {
+            match result {
+                Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
+                Type::Integer(8 | 16, _) => {
+                    self.value(format!("trunc i32 {value} to {}", self.ty(result)))
+                }
+                _ => value,
             }
-            _ => value,
         };
         self.release_operands(operands);
         output

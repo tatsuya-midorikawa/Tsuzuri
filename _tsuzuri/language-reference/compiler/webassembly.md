@@ -173,7 +173,7 @@ trap (site 0) trap
 | `extern type` のハンドル | `number & { readonly __tsuzuri: "tz_handle_…" }` | 0 以上 2^32 未満の整数 |
 | コールバック（import の引数） | 関数型 | import の呼び出し中だけ呼べる |
 
-引数の数、型、範囲、レコードのフィールドは、インスタンスに触れる前に検査します。失敗は `TypeError`（`argument 0 of 'total' field 'price' must be a bigint`）か `RangeError`（`argument 0 of 'widen' is out of range for i8`）で、インスタンスは捨てません。
+引数の数、型、範囲、レコードのフィールドは、インスタンスに触れる前に検査します。失敗は `TypeError`（`argument 0 of 'total' field 'price' must be a bigint`）か `RangeError`（`argument 0 of 'widen' is out of range for i8`）で、インスタンスは捨てません。`Maybe<H>` などの NULL ポインタ対応はネイティブ専用であり、WebAssembly のビルド（または `--emit bindings-js`）で到達すると `E1008`（`abi_native_only`）になります。
 
 ### 所有権と withBorrowed
 

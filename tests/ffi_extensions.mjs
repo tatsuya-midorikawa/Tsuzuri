@@ -116,6 +116,16 @@ try {
     execute(compiler, ["build", multiExtern, ...extra, "--link", host, "-l", "pthread", "-o", out]);
     assert.equal(execute(out, []).stdout.trim(), "50");
   }
+  const nullableFixture = resolve("tests/fixtures/abi_nullable");
+  execute(compiler, ["check", nullableFixture]);
+  rejected(["build", nullableFixture, "--target", "wasm32", "-o", join(root, "nullable.wasm")], "E1008");
+  rejected(["build", nullableFixture, "--target", "wasm64", "-o", join(root, "nullable64.wasm")], "E1008");
+  rejected(["build", nullableFixture, "--target", "wasm32", "--emit", "bindings-js", "-o", join(root, "nullable.mjs")], "E1008");
+  for (const optimization of ["-O0", "-O3"]) {
+    const out = join(root, `nullable${optimization}`);
+    execute(compiler, ["build", nullableFixture, optimization, "--link", host, "-l", "pthread", "-o", out]);
+    assert.equal(execute(out, []).stdout.trim(), "45");
+  }
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");

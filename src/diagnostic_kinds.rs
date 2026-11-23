@@ -274,6 +274,8 @@ diagnostic_kinds! {
         (RecordHasNoField, "record_has_no_field", "E1007"),
         (UnknownField, "unknown_field", "E1007"),
         // E1008
+        (AbiNativeOnly, "abi_native_only", "E1008"),
+        (AbiNullablePayload, "abi_nullable_payload", "E1008"),
         (ConflictingExternDeclaration, "conflicting_extern_declaration", "E1008"),
         (ExportActiveRecognizer, "export_active_recognizer", "E1008"),
         (ExportOnExternDeclaration, "export_on_extern_declaration", "E1008"),

@@ -93,6 +93,29 @@ int64_t w14_ffi_word(int64_t kind, int64_t value) {
     return rect[0];
 }
 
+typedef struct {
+    int32_t left;
+    int32_t right;
+} w15_span;
+
+static int64_t w15_sentinel = 77;
+
+int32_t w15_is_null(void *pointer) {
+    return pointer == NULL ? 1 : 0;
+}
+
+void *w15_maybe(int32_t kind) {
+    return kind == 0 ? NULL : &w15_sentinel;
+}
+
+int32_t w15_width(const w15_span *span) {
+    return span == NULL ? -1 : span->right - span->left;
+}
+
+int32_t w15_visit(int32_t (*callback)(void *), void *handle) {
+    return callback(NULL) * 10 + callback(handle);
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

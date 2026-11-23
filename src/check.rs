@@ -9119,10 +9119,21 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
+                if crate::abi::has_invalid_extern_maybe(
+                    &signature.parameters,
+                    &signature.result,
+                    &types,
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::AbiNullablePayload,
+                        "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
+                        function.name.span,
+                    ));
+                }
                 if signature
                     .parameters
                     .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty))
+                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types))
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
@@ -9131,10 +9142,10 @@ fn check_modules_collect(
                     ));
                 }
                 if signature.parameters.iter().any(|ty| {
-                    !crate::abi::parameter(ty, &types)
+                    !crate::abi::extern_parameter(ty, &types)
                         && *ty != Type::Unit
                         && !matches!(ty, Type::Function(..))
-                }) || !crate::abi::result(&signature.result, &types)
+                }) || !crate::abi::extern_result(&signature.result, &types)
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
@@ -9144,8 +9155,11 @@ fn check_modules_collect(
                 }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared =
-                        crate::abi::c_signature(&signature.parameters, &signature.result);
+                    let declared = crate::abi::c_signature(
+                        &signature.parameters,
+                        &signature.result,
+                        &types,
+                    );
                     match explicit_symbols.entry(import.native_symbol.clone()) {
                         std::collections::btree_map::Entry::Vacant(slot) => {
                             slot.insert((

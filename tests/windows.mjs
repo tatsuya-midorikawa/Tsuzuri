@@ -309,6 +309,30 @@ try {
     assert.equal(execute(hwndExe, [], false).status, 1, `copy-hwnd ${optimization}`);
   }
   console.log("Windows MSVC: extern type copy Hwnd passed");
+
+  const nullableWin = join(directory, "nullable-win");
+  mkdirSync(nullableWin);
+  writeFileSync(join(nullableWin, "Main.tz"), [
+    "extern type Module",
+    "extern type ModuleName",
+    "extern type Slot",
+    "@trusted",
+    'extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module>',
+    "@trusted",
+    'extern "TlsAlloc" def tls_alloc :: unit -> i32u',
+    "@trusted",
+    'extern "TlsGetValue" def tls_get :: i32u -> Maybe<Slot>',
+    "def loaded :: Maybe<Module> -> i32 = \\m -> match m with | Some _ -> 1 | None -> 0",
+    "def empty :: Maybe<Slot> -> i32 = \\s -> match s with | Some _ -> 0 | None -> 2",
+    "def main :: unit -> i32 = \\() -> loaded (module_handle None) + empty (tls_get (tls_alloc ()))",
+    "",
+  ].join("\n"));
+  for (const optimization of ["-O0", "-O3"]) {
+    const nullExe = join(directory, `nullable-win${optimization}.exe`);
+    cli(["build", nullableWin, "--no-cache", optimization, "-o", nullExe]);
+    assert.equal(execute(nullExe, [], false).status, 3, `nullable-win ${optimization}`);
+  }
+  console.log("Windows MSVC: Maybe<H> NULL ABI passed");
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
 } finally {
   rmSync(directory, { recursive: true, force: true });

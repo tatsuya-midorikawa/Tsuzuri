@@ -172,9 +172,10 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
 /// The record types of the signatures, nested records included, by `record_name`.
 fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
     fn visit(ty: &Type, module: &CheckedModule, records: &mut BTreeMap<String, Type>) {
-        match ty {
+        let viewed = crate::abi::c_view(ty, &module.types());
+        match viewed.as_ref() {
             Type::Reference(inner, _) => visit(inner, module, records),
-            Type::Record(id, arguments)
+            ty @ Type::Record(id, arguments)
                 if records
                     .insert(record_name(ty, module), ty.clone())
                     .is_none() =>
@@ -202,19 +203,21 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
 
 /// The handle types of the signatures, callbacks included, by C name.
 fn handles(module: &CheckedModule) -> BTreeSet<String> {
-    fn visit(ty: &Type, handles: &mut BTreeSet<String>) {
-        match ty {
+    fn visit(ty: &Type, types: &crate::check::TypeContext<'_>, handles: &mut BTreeSet<String>) {
+        let viewed = crate::abi::c_view(ty, types);
+        match viewed.as_ref() {
             Type::Handle(name, _) => {
                 handles.insert(handle_c_name(name));
             }
-            Type::Reference(inner, _) => visit(inner, handles),
+            Type::Reference(inner, _) => visit(inner, types, handles),
             Type::Function(parameters, result) => {
-                parameters.iter().for_each(|ty| visit(ty, handles));
-                visit(result, handles);
+                parameters.iter().for_each(|ty| visit(ty, types, handles));
+                visit(result, types, handles);
             }
             _ => {}
         }
     }
+    let types = module.types();
     let mut handles = BTreeSet::new();
     for function in signatures(module) {
         for ty in function
@@ -223,7 +226,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
             .iter()
             .chain([&function.signature.result])
         {
-            visit(ty, &mut handles);
+            visit(ty, &types, &mut handles);
         }
     }
     handles

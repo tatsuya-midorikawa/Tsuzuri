@@ -31,7 +31,7 @@ C の実コードでは、`fopen`・`sqlite3_db_handle`・`SSL_new` などの生
 
 ### 着手条件
 
-- [W15](W15-abi-nullable-handles.md) と [NS01](NS01-nonnull-extern-handles.md) が `done` であること。
+- [W15](_completed/W15-abi-nullable-handles.md) と [NS01](NS01-nonnull-extern-handles.md) が `done` であること。
 - 決定事項 D1・D2 の承認があること。
 - `node scripts/repo-kb.mjs brief NS03` を読み、Clang 21 と Clang 23 の JSON AST における `NonNullAttr`・`ReturnsNonNullAttr` と `_Nonnull` / `_Nullable` の `qualType` 表記を確認する。
 
@@ -97,7 +97,7 @@ tsuzuri bindgen header.h -o Module.tz [--nonnull FUNCTION:TARGET]...
 
 ## 前提とする他チケットのインターフェース
 
-- [W15](W15-abi-nullable-handles.md): `extern` 引数の `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`、結果の `Maybe<H>`、コールバック引数の `Maybe<H>`・`Maybe<ref H>`。
+- [W15](_completed/W15-abi-nullable-handles.md): `extern` 引数の `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`、結果の `Maybe<H>`、コールバック引数の `Maybe<H>`・`Maybe<ref H>`。
 - [NS01](NS01-nonnull-extern-handles.md): 非 `Maybe` の `H` の非 Null 不変条件。
 
 ## 他チケットへ提供するインターフェース

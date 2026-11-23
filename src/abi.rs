@@ -221,14 +221,112 @@ pub fn abi_scalar(ty: &Type) -> bool {
         || matches!(ty, Type::Reference(inner, false) if is_handle(inner))
 }
 
+/// Returns the payload `P` when `ty` is `std::Maybe<P>`.
+pub fn std_maybe_payload<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<&'a Type> {
+    let Type::Union(id, arguments) = ty else {
+        return None;
+    };
+    let union = &types.unions[*id];
+    (union.origin == crate::check::ModuleOrigin::Std && union.name == "Maybe.Maybe")
+        .then(|| &arguments[0])
+}
+
+/// W15: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nullable<'a> {
+    Handle(&'a Type),
+    BorrowedHandle(&'a Type),
+    BorrowedRecord(&'a Type),
+}
+
+pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a>> {
+    let payload = std_maybe_payload(ty, types)?;
+    match payload {
+        Type::Handle(..) => Some(Nullable::Handle(payload)),
+        Type::Reference(inner, false) if is_handle(inner) => Some(Nullable::BorrowedHandle(inner)),
+        Type::Reference(inner, false) if scalar_record(inner, types) => {
+            Some(Nullable::BorrowedRecord(inner))
+        }
+        _ => None,
+    }
+}
+
+/// The type as the C side sees it: `Maybe<H>` -> `H`, `Maybe<ref H>` -> `ref H`,
+/// `Maybe<ref R>` -> `ref R`, and any other type unchanged (W15).
+pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> std::borrow::Cow<'a, Type> {
+    match nullable(ty, types) {
+        Some(Nullable::Handle(handle)) => std::borrow::Cow::Borrowed(handle),
+        Some(Nullable::BorrowedHandle(handle)) => {
+            std::borrow::Cow::Owned(Type::Reference(Box::new(handle.clone()), false))
+        }
+        Some(Nullable::BorrowedRecord(record)) => {
+            std::borrow::Cow::Owned(Type::Reference(Box::new(record.clone()), false))
+        }
+        None => std::borrow::Cow::Borrowed(ty),
+    }
+}
+
+pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
+    abi_scalar(ty)
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::Handle(_) | Nullable::BorrowedHandle(_))
+        )
+}
+
+pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
+    parameter(ty, types)
+        || extern_scalar(ty, types)
+        || matches!(nullable(ty, types), Some(Nullable::BorrowedRecord(_)))
+}
+
+pub fn extern_result(ty: &Type, types: &TypeContext<'_>) -> bool {
+    result(ty, types) || matches!(nullable(ty, types), Some(Nullable::Handle(_)))
+}
+
+/// Whether an `extern` signature uses `std::Maybe` in an unsupported ABI position or payload (W15).
+pub fn has_invalid_extern_maybe(
+    parameters: &[Type],
+    result: &Type,
+    types: &TypeContext<'_>,
+) -> bool {
+    let ref_to_maybe =
+        |ty: &Type| matches!(ty, Type::Reference(inner, _) if std_maybe_payload(inner, types).is_some());
+    let bad_param = parameters.iter().any(|param| match param {
+        Type::Function(cb_params, cb_result) => {
+            cb_params.iter().any(|p| {
+                (std_maybe_payload(p, types).is_some() && !extern_scalar(p, types))
+                    || ref_to_maybe(p)
+            }) || std_maybe_payload(cb_result, types).is_some()
+                || ref_to_maybe(cb_result)
+        }
+        _ => {
+            (std_maybe_payload(param, types).is_some() && !extern_parameter(param, types))
+                || ref_to_maybe(param)
+        }
+    });
+    bad_param
+        || (std_maybe_payload(result, types).is_some() && !extern_result(result, types))
+        || ref_to_maybe(result)
+}
+
+/// Whether an `extern` signature uses any native-only `Maybe` ABI form (W15).
+pub fn uses_nullable_abi(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> bool {
+    parameters.iter().any(|param| match param {
+        Type::Function(cb_params, _) => cb_params.iter().any(|p| nullable(p, types).is_some()),
+        _ => nullable(param, types).is_some(),
+    }) || nullable(result, types).is_some()
+}
+
 /// A function type the host can call as a C function pointer: its parameters
 /// are scalars or handles (a lone `unit` is left out of the C signature) and
 /// its result a scalar or `unit`. Buffers, records and nested functions are not.
-pub fn callback(ty: &Type) -> bool {
+pub fn callback(ty: &Type, types: &TypeContext<'_>) -> bool {
     let Type::Function(parameters, result) = ty else {
         return false;
     };
-    (matches!(parameters.as_slice(), [Type::Unit]) || parameters.iter().all(abi_scalar))
+    (matches!(parameters.as_slice(), [Type::Unit])
+        || parameters.iter().all(|param| extern_scalar(param, types)))
         && (result.exportable() || **result == Type::Unit)
 }
 
@@ -365,9 +463,10 @@ fn c_scalar(ty: &Type) -> CType {
     }
 }
 
-pub fn c_signature(parameters: &[Type], result: &Type) -> CSignature {
+pub fn c_signature(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> CSignature {
     let mut lowered = Vec::new();
-    if out_result(result) {
+    let viewed_result = c_view(result, types);
+    if out_result(&viewed_result) {
         lowered.push(CType::Ptr);
     }
     for parameter in parameters {
@@ -378,7 +477,8 @@ pub fn c_signature(parameters: &[Type], result: &Type) -> CSignature {
             lowered.push(CType::Ptr);
             continue;
         }
-        let inner = match parameter {
+        let viewed = c_view(parameter, types);
+        let inner = match viewed.as_ref() {
             Type::Reference(inner, false) => inner.as_ref(),
             other => other,
         };
@@ -387,13 +487,13 @@ pub fn c_signature(parameters: &[Type], result: &Type) -> CSignature {
         } else if matches!(inner, Type::Record(..) | Type::Handle(..)) {
             lowered.push(CType::Ptr);
         } else {
-            lowered.push(c_scalar(parameter));
+            lowered.push(c_scalar(&viewed));
         }
     }
-    let lowered_result = if *result == Type::Unit || out_result(result) {
+    let lowered_result = if *viewed_result == Type::Unit || out_result(&viewed_result) {
         CType::Void
     } else {
-        c_scalar(result)
+        c_scalar(&viewed_result)
     };
     CSignature {
         parameters: lowered,

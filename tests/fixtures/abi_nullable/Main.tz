@@ -1,0 +1,29 @@
+extern type Handle
+record Span { left: i32, right: i32 }
+
+extern "w15_is_null" def is_null_owned :: Maybe<Handle> -> i32
+extern "w15_is_null" def is_null_ref :: Maybe<ref Handle> -> i32
+extern "w15_maybe" def maybe_handle :: i32 -> Maybe<Handle>
+extern "w15_width" def span_width :: Maybe<ref Span> -> i32
+extern "w15_visit" def visit_owned :: (Maybe<Handle> -> i32) -> ref Handle -> i32
+extern "w15_visit" def visit_ref :: (Maybe<ref Handle> -> i32) -> ref Handle -> i32
+
+private def on_owned :: own Maybe<Handle> -> i32
+fn on_owned m = match m with | None -> 1i32 | Some _ -> 2i32
+
+private def on_ref :: own Maybe<ref Handle> -> i32
+fn on_ref m = match m with | None -> 2i32 | Some _ -> 0i32
+
+let none_check = match maybe_handle 0i32 with | None -> is_null_owned None + is_null_ref None | Some _ -> -100i32
+let some_check =
+    match maybe_handle 1i32 with
+    | Some h ->
+        let r = Span { left: 3i32, right: 15i32 }
+        let widths = span_width (Some (ref r)) + span_width None
+        let cbs = visit_owned on_owned (ref h) + visit_ref on_ref (ref h)
+        let refs = is_null_ref (Some (ref h))
+        let moved = is_null_owned (Some h)
+        widths + cbs + refs + moved
+    | None -> -100i32
+
+none_check + some_check

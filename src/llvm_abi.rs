@@ -16,11 +16,14 @@ fn host_function(function: &CheckedFunction) -> bool {
 }
 
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
+    let types = module.types();
     module.functions.iter().any(|function| {
         extended(function)
             || (matches!(function.body.kind, TypedExprKind::HostCall(..))
                 && (function.signature.parameters.iter().any(|ty| {
-                    !abi_scalar(ty) && *ty != Type::Unit && !matches!(ty, Type::Function(..))
+                    !crate::abi::extern_scalar(ty, &types)
+                        && *ty != Type::Unit
+                        && !matches!(ty, Type::Function(..))
                 }) || out_result(&function.signature.result)))
     })
 }
@@ -37,19 +40,21 @@ pub(crate) fn handle_c_name(name: &str) -> String {
 
 /// Typedefs for the extern handles that the header's prototypes mention, in name order.
 pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
-    fn visit(ty: &Type, names: &mut BTreeSet<String>) {
-        match ty {
+    fn visit(ty: &Type, types: &crate::check::TypeContext<'_>, names: &mut BTreeSet<String>) {
+        let viewed = crate::abi::c_view(ty, types);
+        match viewed.as_ref() {
             Type::Handle(name, _) => {
                 names.insert(name.to_string());
             }
-            Type::Reference(inner, _) => visit(inner, names),
+            Type::Reference(inner, _) => visit(inner, types, names),
             Type::Function(parameters, result) => {
-                parameters.iter().for_each(|ty| visit(ty, names));
-                visit(result, names);
+                parameters.iter().for_each(|ty| visit(ty, types, names));
+                visit(result, types, names);
             }
             _ => {}
         }
     }
+    let types = module.types();
     let mut names = BTreeSet::new();
     for function in module.functions.iter().filter(|function| {
         // An explicit import has no prototype in the header.
@@ -62,7 +67,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
             .iter()
             .chain([&function.signature.result])
         {
-            visit(ty, &mut names);
+            visit(ty, &types, &mut names);
         }
     }
     names
@@ -94,10 +99,11 @@ pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
 
 fn record_types(module: &CheckedModule) -> Vec<Type> {
     fn visit(ty: &Type, module: &CheckedModule, seen: &mut BTreeSet<Type>, result: &mut Vec<Type>) {
-        let ty = if let Type::Reference(inner, false) = ty {
-            inner
+        let viewed = crate::abi::c_view(ty, &module.types());
+        let ty = if let Type::Reference(inner, false) = viewed.as_ref() {
+            inner.as_ref()
         } else {
-            ty
+            viewed.as_ref()
         };
         if let Type::Record(id, arguments) = ty {
             // The convention variants of a record are one type (A29).
@@ -235,6 +241,7 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
 }
 
 pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -> String {
+    let types = module.types();
     let mut parameters = Vec::new();
     let result = &function.signature.result;
     if let Some(buffer) = Buffer::of(result) {
@@ -251,11 +258,17 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
             let inputs = if matches!(inputs.as_slice(), [Type::Unit]) {
                 "void".to_owned()
             } else {
-                inputs.iter().map(c_type).collect::<Vec<_>>().join(", ")
+                inputs
+                    .iter()
+                    .map(|input| c_type(&crate::abi::c_view(input, &types)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             };
             parameters.push(format!("{} (*arg{index})({inputs})", c_type(output)));
             continue;
         }
+        let viewed = crate::abi::c_view(ty, &types);
+        let ty = viewed.as_ref();
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -578,6 +591,10 @@ pub(super) fn wrapper(
                 value
             };
             values.push(format!("{} {value}", emitter.ty(ty)));
+        } else if crate::abi::nullable(ty, &module.types()).is_some() {
+            parameters.push(format!("ptr %arg{index}"));
+            let value = emitter.nullable_from_c(ty, &format!("%arg{index}"));
+            values.push(format!("{} {value}", emitter.ty(ty)));
         } else if let Type::Reference(handle, false) = ty
             && matches!(handle.as_ref(), Type::Handle(..))
         {
@@ -702,6 +719,106 @@ impl FunctionEmitter<'_, '_> {
             "call i1 @tz.string.validate_utf8(ptr {pointer}, i64 {length})"
         ));
         self.guard(&valid, TrapKind::Encoding);
+    }
+
+    /// W15: lowers a `Maybe<H>` / `Maybe<ref H>` / `Maybe<ref R>` SSA value to a C `ptr` (`None` -> `null`).
+    pub(crate) fn nullable_to_c(&mut self, ty: &Type, value: &str) -> String {
+        let types = self.module.types();
+        match crate::abi::nullable(ty, &types).expect("checked nullable ABI type") {
+            crate::abi::Nullable::Handle(_) => {
+                if matches!(
+                    self.union_layout(ty),
+                    layout::UnionLayout::Niche {
+                        niche: layout::Niche::NullPointer,
+                        ..
+                    }
+                ) {
+                    return value.to_owned();
+                }
+                let Type::Union(id, _) = ty else {
+                    unreachable!()
+                };
+                let some_case = self.module.unions[*id]
+                    .cases
+                    .iter()
+                    .position(|(name, payload)| name == "Some" && payload.is_some())
+                    .expect("std::Maybe has Some");
+                let tag = self.tag_value(ty, value);
+                let is_some = self.value(format!("icmp eq i32 {tag}, {some_case}"));
+                let slot = self.spill(ty, value);
+                let payload_ptr = self.payload_pointer(ty, &slot);
+                let handle = self.value(format!("load ptr, ptr {payload_ptr}"));
+                self.value(format!("select i1 {is_some}, ptr {handle}, ptr null"))
+            }
+            crate::abi::Nullable::BorrowedHandle(_) => {
+                let null_slot = self.fresh();
+                self.allocas.push(format!("{null_slot} = alloca ptr, align 8"));
+                self.instruction(format!("store ptr null, ptr {null_slot}"));
+                let is_null = self.value(format!("icmp eq ptr {value}, null"));
+                let safe_slot =
+                    self.value(format!("select i1 {is_null}, ptr {null_slot}, ptr {value}"));
+                self.value(format!("load ptr, ptr {safe_slot}"))
+            }
+            crate::abi::Nullable::BorrowedRecord(record) => {
+                let slot = self.host_result_slot(record);
+                let nonnull = self.value(format!("icmp ne ptr {value}, null"));
+                let from_none = self.block.clone();
+                let copy_block = self.label();
+                let done_block = self.label();
+                self.branch(&nonnull, &copy_block, &done_block);
+                self.begin(&copy_block);
+                let loaded = self.value(format!("load {}, ptr {value}", self.ty(record)));
+                self.write_host_record(record, &loaded, &slot);
+                let from_some = self.block.clone();
+                self.jump(&done_block);
+                self.begin(&done_block);
+                self.value(format!(
+                    "phi ptr [ null, %{from_none} ], [ {slot}, %{from_some} ]"
+                ))
+            }
+        }
+    }
+
+    /// W15: decodes a C `ptr` (`null` -> `None`) into a `Maybe<H>` or `Maybe<ref H>` SSA value.
+    pub(crate) fn nullable_from_c(&mut self, ty: &Type, pointer: &str) -> String {
+        let types = self.module.types();
+        match crate::abi::nullable(ty, &types).expect("checked nullable ABI type") {
+            crate::abi::Nullable::Handle(_) => {
+                if matches!(
+                    self.union_layout(ty),
+                    layout::UnionLayout::Niche {
+                        niche: layout::Niche::NullPointer,
+                        ..
+                    }
+                ) {
+                    return pointer.to_owned();
+                }
+                let Type::Union(id, _) = ty else {
+                    unreachable!()
+                };
+                let some_case = self.module.unions[*id]
+                    .cases
+                    .iter()
+                    .position(|(name, payload)| name == "Some" && payload.is_some())
+                    .expect("std::Maybe has Some");
+                let is_null = self.value(format!("icmp eq ptr {pointer}, null"));
+                let none_val = self.nullary_value(ty, "None");
+                let some_val =
+                    self.construct_value(ty, some_case, Some((pointer.to_owned(), "ptr".into())));
+                let llvm = self.ty(ty);
+                self.value(format!(
+                    "select i1 {is_null}, {llvm} {none_val}, {llvm} {some_val}"
+                ))
+            }
+            crate::abi::Nullable::BorrowedHandle(handle) => {
+                let slot = self.spill(handle, pointer);
+                let is_null = self.value(format!("icmp eq ptr {pointer}, null"));
+                self.value(format!("select i1 {is_null}, ptr null, ptr {slot}"))
+            }
+            crate::abi::Nullable::BorrowedRecord(_) => {
+                unreachable!("Maybe<ref R> is only an extern input parameter")
+            }
+        }
     }
 
     fn decode_host_scalar(&mut self, ty: &Type, value: &str) -> String {

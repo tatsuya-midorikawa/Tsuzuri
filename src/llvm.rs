@@ -3979,12 +3979,24 @@ pub(crate) fn validate_wasm_externs(
     module: &CheckedModule,
     reachable: &BTreeSet<usize>,
 ) -> Result<(), Diagnostic> {
+    let types = module.types();
     let mut seen: BTreeMap<&str, (Type, Span)> = BTreeMap::new();
     for &id in reachable {
         let function = &module.functions[id];
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if crate::abi::uses_nullable_abi(
+            &function.signature.parameters,
+            &function.signature.result,
+            &types,
+        ) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'Maybe' at the C ABI passes None as a null pointer, which only native targets support; build for a native target",
+                function.span,
+            ));
+        }
         if !import.explicit {
             continue;
         }
