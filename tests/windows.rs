@@ -90,14 +90,24 @@ fn emits_windows_exports_without_changing_default_or_wasm() {
         f16: llvm::F16Path::Soft,
     };
     let ir = llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
+    assert_eq!(
+        ir,
+        llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap()
+    );
     assert!(ir.contains("define dllexport i64 @tz_answer("));
     assert!(ir.contains("declare i32 @_write(i32, ptr, i32)"));
     assert!(!ir.contains("declare i64 @write("));
-    assert!(
-        !llvm::emit_with_options(&module, options)
-            .unwrap()
-            .contains("dllexport")
+    assert_eq!(
+        ir.matches("declare void @OutputDebugStringW(ptr)").count(),
+        1
     );
+    assert_eq!(
+        ir.matches("define internal void @tz.debug.write(").count(),
+        1
+    );
+    let posix_ir = llvm::emit_with_options(&module, options).unwrap();
+    assert!(!posix_ir.contains("dllexport"));
+    assert!(!posix_ir.contains("OutputDebugStringW"));
     assert_eq!(
         llvm::emit_with_export_style(
             &module,

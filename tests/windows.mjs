@@ -125,12 +125,21 @@ function runGuiStage(compiler, clang, directory) {
   const kernelTrapCodes = [0xc000001d];
 
   for (const optimization of ["-O0", "-O3"]) {
-    // 4. io_without_handles
+    // 4. io_without_handles (W08: try_writeln -> Unavailable (13), try_readln -> Unavailable (24), Debug.print -> OutputDebugStringW)
     const ioExe = join(directory, `gui-io${optimization}.exe`);
     execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io"), "--no-cache", optimization, "-o", ioExe]);
     assert.equal(execute(ioExe, [], false).status, 10, `io with handles ${optimization}`);
-    const ioNoHandles = launchWithoutHandles(ioExe, [], { launcher });
-    assert.ok(ioNoHandles !== 10 && ioNoHandles !== 0, `io without handles ${optimization}: ${ioNoHandles}`);
+    assert.equal(launchWithoutHandles(ioExe, [], { launcher }), 13, `io without handles ${optimization}`);
+
+    const ioReadExe = join(directory, `gui-io-read${optimization}.exe`);
+    execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io_read"), "--no-cache", optimization, "-o", ioReadExe]);
+    assert.equal(launchWithoutHandles(ioReadExe, [], { launcher }), 24, `io_read without handles ${optimization}`);
+
+    const debugGuiExe = join(directory, `gui-debug${optimization}.exe`);
+    execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/debug_out"), "--no-cache", optimization, "-o", debugGuiExe]);
+    const debugGuiOds = join(directory, `gui-debug-ods${optimization}.txt`);
+    assert.equal(launchWithoutHandles(debugGuiExe, [], { launcher, debugStrings: debugGuiOds }), 5, `debug without handles ${optimization}`);
+    assert.deepEqual(readFileSync(debugGuiOds, "utf8").trimEnd().split("\n"), ["note"]);
 
     const ioTrapExe = join(directory, `gui-io-trap${optimization}.exe`);
     execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io_trap"), "--no-cache", optimization, "-o", ioTrapExe]);

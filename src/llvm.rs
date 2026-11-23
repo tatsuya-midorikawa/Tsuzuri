@@ -192,8 +192,42 @@ pub fn windows_i128_helpers(aarch64: bool) -> String {
     output
 }
 
+fn replace_windows_debug_write(ir: &str) -> (String, bool) {
+    let Some(start) = ir.find("define internal void @tz.debug.write(") else {
+        return (ir.to_owned(), false);
+    };
+    let rest = &ir[start..];
+    let Some(end_offset) = rest.find("\n}\n").map(|index| index + 3) else {
+        return (ir.to_owned(), false);
+    };
+    let original = &rest[..end_offset];
+    let header_line = original.lines().next().unwrap_or_default();
+    let has_context = header_line.contains(", i32 %tz.context)");
+    let mut replacement = include_str!("runtime/debug-windows.ll").to_owned();
+    if has_context {
+        replacement = replacement.replacen(
+            "define internal void @tz.debug.write(%tz.utf8string %text) nounwind {",
+            "define internal void @tz.debug.write(%tz.utf8string %text, i32 %tz.context) nounwind {",
+            1,
+        );
+        if let Some(bad_idx) = original.find("\nbad:\n") {
+            let orig_bad = &original[bad_idx + 1..];
+            if let Some(rep_bad_idx) = replacement.find("\nbad:\n") {
+                replacement.truncate(rep_bad_idx + 1);
+                replacement.push_str(orig_bad);
+            }
+        }
+    }
+    let mut out = String::with_capacity(ir.len() + replacement.len());
+    out.push_str(&ir[..start]);
+    out.push_str(&replacement);
+    out.push_str(&rest[end_offset..]);
+    (out, true)
+}
+
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) -> String {
     let aarch64 = crate::target::current_platform().aarch64();
+    let (ir, has_debug_write) = replace_windows_debug_write(&ir);
     let has_trap_write = ir.contains("define internal void @tz.trap.write(");
     let ir = if has_trap_write {
         assert_eq!(
@@ -272,6 +306,29 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
     }
     if has_trap_write || executable {
         traps::ensure_windows_report_writer(&mut output);
+    } else if has_debug_write {
+        if !output.contains("define internal void @tz.debugger.write(") {
+            output.push_str(traps::DEBUGGER_WRITE);
+        }
+        for declaration in [
+            "declare void @OutputDebugStringW(ptr)",
+            "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
+    }
+    if has_debug_write {
+        for declaration in [
+            "declare i64 @_get_osfhandle(i32)",
+            "declare ptr @_errno()",
+            "declare ptr @_set_thread_local_invalid_parameter_handler(ptr)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
     }
     if needs_trap_fail {
         output.push_str(traps::TRAP_FAIL_WINDOWS);

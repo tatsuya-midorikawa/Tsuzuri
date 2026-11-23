@@ -635,6 +635,7 @@ mod tests {
             include_str!("runtime/character.ll"),
             include_str!("runtime/closure.ll"),
             include_str!("runtime/console.ll"),
+            include_str!("runtime/debug-windows.ll"),
             include_str!("runtime/debug.ll"),
             include_str!("runtime/display.ll"),
             include_str!("runtime/heap-native.ll"),

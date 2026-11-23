@@ -61,7 +61,7 @@ impl FunctionEmitter<'_, '_> {
         let bytes = Type::Array(Box::new(Type::Integer(8, false)));
         let slot = self.host_result_slot(&bytes);
         let status = self.value(format!("call i32 @tsuzuri_io_read_line(ptr {slot})"));
-        let valid = self.value(format!("icmp ult i32 {status}, 3"));
+        let valid = self.value(format!("icmp ult i32 {status}, 4"));
         self.guard(&valid, TrapKind::BoundsCheck);
         let value = self.read_host_result(&bytes, &slot);
         let result_type = self.ty(&signature.after_arguments(1));

@@ -1,0 +1,4 @@
+def main :: unit -> i32 = \() ->
+    let s = "note"
+    Debug.print (ref s)
+    5
