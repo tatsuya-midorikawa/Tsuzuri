@@ -134,15 +134,10 @@ try {
   writeFileSync(join(nullTrap, "Main.tz"), [
     "extern type H",
     'extern "ns01_null_handle" def bad_return :: unit -> H',
-    'extern "ns01_call_null" def bad_callback :: (H -> i32) -> i32',
-    "private def take_cb :: own H -> i32",
-    "fn take_cb _h = 1i32",
     "export def bad_export :: own H -> i32",
     "fn bad_export _h = 1i32",
     "export def trigger_return :: i32 -> i32",
     "fn trigger_return _ = { let _ = bad_return (); 0i32 }",
-    "export def trigger_callback :: i32 -> i32",
-    "fn trigger_callback _ = bad_callback take_cb",
     "",
   ].join("\n"));
   const nullHeader = join(root, "null_trap.h");
@@ -155,21 +150,33 @@ try {
     "#include <assert.h>",
     '#include "null_trap.h"',
     "void *ns01_null_handle(void) { return 0; }",
-    "int32_t ns01_call_null(int32_t (*cb)(void *)) { return cb(0); }",
     "int main(void) {",
     "  tsuzuri_trap_info trap = {0, 0}; int32_t out = 0;",
     "  assert(tsuzuri_try_bad_export(&trap, &out, 0) == 1 && trap.kind == 18);",
     "  trap = (tsuzuri_trap_info){0, 0};",
     "  assert(tsuzuri_try_trigger_return(&trap, &out, 0) == 1 && trap.kind == 18);",
-    "  trap = (tsuzuri_trap_info){0, 0};",
-    "  assert(tsuzuri_try_trigger_callback(&trap, &out, 0) == 1 && trap.kind == 18);",
     "  return 0;",
     "}",
     "",
   ].join("\n"));
   const nullRunner = join(root, "null_runner");
-  execute(clang, ["-O2", "-I", root, nullDriver, nullObj, "-o", nullRunner]);
+  execute(clang, ["-O2", "-pthread", "-I", root, nullDriver, nullObj, "-lm", "-o", nullRunner]);
   execute(nullRunner, []);
+  const nullCbTrap = join(root, "null-cb-trap");
+  mkdirSync(nullCbTrap);
+  writeFileSync(join(nullCbTrap, "Main.tz"), [
+    "extern type H",
+    'extern "ns01_call_null" def bad_callback :: (H -> i32) -> i32',
+    "private def take_cb :: own H -> i32",
+    "fn take_cb _h = 1i32",
+    "bad_callback take_cb",
+    "",
+  ].join("\n"));
+  const nullCbRunner = join(root, "null_cb_runner");
+  execute(compiler, ["build", nullCbTrap, "-O3", "--trap-info", "--link", host, "-l", "pthread", "-o", nullCbRunner]);
+  const cbTrapRun = execute(nullCbRunner, [], false);
+  assert.notEqual(cbTrapRun.status, 0);
+  assert.match(cbTrapRun.stderr, /trap: null extern handle/);
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");

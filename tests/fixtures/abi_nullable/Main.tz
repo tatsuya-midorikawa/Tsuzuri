@@ -14,6 +14,9 @@ fn on_owned m = match m with | None -> 1i32 | Some _ -> 2i32
 private def on_ref :: own Maybe<ref Handle> -> i32
 fn on_ref m = match m with | None -> 2i32 | Some _ -> 0i32
 
+export def check_nullable :: i32 -> i32
+fn check_nullable x = x
+
 let none_check = match maybe_handle 0i32 with | None -> is_null_owned None + is_null_ref None | Some _ -> -100i32
 let some_check =
     match maybe_handle 1i32 with

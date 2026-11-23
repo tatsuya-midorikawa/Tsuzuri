@@ -585,6 +585,8 @@ pub(super) fn instrument_with(
                 // TZ05 and TZ06: the timers and WaitGroup.go call these too.
                 && name.as_str() != "@tz.tzroutine.owned.drop"
                 && !name.starts_with("@tz.waitgroup.go")
+                // E12/NS01: host C and WASM callers invoke `@tz.callback.*` directly without `%tz.context`.
+                && !name.starts_with("@tz.callback.")
                 && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()
