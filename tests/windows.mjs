@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -206,15 +206,49 @@ function runGuiStage(compiler, clang, directory) {
     }
   }
 
-  // 10. pe_headers
+  // 10. pe_headers & W09 (--subsystem windows / [windows] subsystem)
   const consoleCheckExe = join(directory, "pe-console.exe");
   const peConsoleDir = join(directory, "pe-console");
   mkdirSync(peConsoleDir, { recursive: true });
-  writeFileSync(join(peConsoleDir, "Main.tz"), "def main :: unit -> i32 = \\() -> 0\n");
+  writeFileSync(join(peConsoleDir, "Main.tz"), "def main :: unit -> i32 = \\() -> 7\n");
   execute(compiler, ["build", peConsoleDir, "--no-cache", "-o", consoleCheckExe]);
   const consolePe = peHeaders(consoleCheckExe);
   assert.equal(consolePe.subsystem, 3);
   assert.equal(consolePe.machine, process.arch);
+
+  const explicitConsoleExe = join(directory, "pe-explicit-console.exe");
+  execute(compiler, ["build", peConsoleDir, "--no-cache", "--subsystem", "console", "-o", explicitConsoleExe]);
+  assert.equal(peHeaders(explicitConsoleExe).subsystem, 3);
+
+  const cliGuiExe = join(directory, "pe-cli-gui.exe");
+  execute(compiler, ["build", peConsoleDir, "--no-cache", "--subsystem", "windows", "-o", cliGuiExe]);
+  const cliGuiPe = peHeaders(cliGuiExe);
+  assert.equal(cliGuiPe.subsystem, 2);
+  assert.equal(cliGuiPe.machine, process.arch);
+  assert.equal(launchWithoutHandles(cliGuiExe, [], { launcher }), 7);
+  assert.equal(execute(cliGuiExe, [], false).status, 7);
+
+  // Manifest `[windows] subsystem = "windows"`, CLI override `--subsystem console`, `run`, `test`, and build cache.
+  const manifestGuiDir = join(directory, "manifest-gui");
+  mkdirSync(manifestGuiDir, { recursive: true });
+  writeFileSync(join(manifestGuiDir, "Tsuzuri.toml"), '[package]\nname = "gui-app"\nversion = "0.1.0"\nedition = "2027"\n\n[windows]\nsubsystem = "windows"\n');
+  writeFileSync(join(manifestGuiDir, "Main.tz"), 'def main :: unit -> i32 = \\() ->\n    let! res = IO.try_writeln "hi"\n    match res with\n    | Result.Ok () -> 0\n    | Result.Error IO.Unavailable -> 13\n    | Result.Error _ -> 11\n\ntest "runner stays console" = assert (1 + 1 == 2)\n');
+  const subsysCacheDir = join(directory, "subsys-cache");
+  mkdirSync(subsysCacheDir, { recursive: true });
+  const cacheEnv = { TSUZURI_CACHE_DIR: subsysCacheDir };
+  const manifestGuiExe = join(directory, "manifest-gui.exe");
+  execute(compiler, ["build", manifestGuiDir, "-o", manifestGuiExe], true, cacheEnv);
+  assert.equal(peHeaders(manifestGuiExe).subsystem, 2);
+  assert.equal(launchWithoutHandles(manifestGuiExe, [], { launcher }), 13);
+  execute(compiler, ["build", manifestGuiDir, "-o", manifestGuiExe], true, cacheEnv);
+  const countCacheEntries = () => readdirSync(subsysCacheDir).filter((name) => /^[0-9a-f]{64}$/.test(name)).length;
+  assert.equal(countCacheEntries(), 1);
+  const overrideConsoleExe = join(directory, "manifest-override.exe");
+  execute(compiler, ["build", manifestGuiDir, "--subsystem", "console", "-o", overrideConsoleExe], true, cacheEnv);
+  assert.equal(peHeaders(overrideConsoleExe).subsystem, 3);
+  assert.equal(countCacheEntries(), 2);
+  assert.equal(execute(compiler, ["run", manifestGuiDir, "--subsystem", "windows"]).stdout, "hi\n");
+  execute(compiler, ["test", manifestGuiDir]);
 
   const guiProbeC = join(directory, "pe_gui_probe.c");
   writeFileSync(guiProbeC, "int main(void) { return 0; }\n");

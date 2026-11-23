@@ -396,6 +396,13 @@ pub enum Backend {
     Fast,
 }
 
+/// The PE subsystem of a Windows executable (W09). `None` in `BuildOptions` is the console default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subsystem {
+    Console,
+    Windows,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct BuildOptions {
     pub target: Target,
@@ -445,6 +452,8 @@ pub struct BuildOptions {
     pub triple: Option<Triple>,
     /// `--overflow-report`: report the integer arithmetic that wraps (A23).
     pub overflow_report: bool,
+    /// `--subsystem` or `[windows] subsystem` (W09): the PE subsystem of a Windows executable.
+    pub subsystem: Option<Subsystem>,
 }
 
 impl Default for BuildOptions {
@@ -475,6 +484,7 @@ impl Default for BuildOptions {
             wasm_opt: false,
             triple: None,
             overflow_report: false,
+            subsystem: None,
         }
     }
 }
@@ -716,6 +726,20 @@ impl BuildOptions {
                 ));
             }
         }
+        if self.subsystem.is_some() {
+            if self.target != Target::Native || self.emit != Emit::Executable {
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionRequiresBuild,
+                    "--subsystem requires native executable output (--emit exe)",
+                ));
+            }
+            if !self.platform().windows() {
+                return Err(driver_error_of(
+                    DiagnosticKind::OptionUnsupportedPlatform,
+                    "--subsystem applies only to Windows targets; build for *-pc-windows-msvc or *-pc-windows-gnu, or remove it",
+                ));
+            }
+        }
         if self.wasm_opt {
             if self.target != Target::Wasm32 || self.emit != Emit::Wasm {
                 return Err(driver_error_of(
@@ -820,6 +844,7 @@ impl BuildOptions {
             wasm_opt,
             triple,
             overflow_report: _,
+            subsystem: _,
         } = self;
         if optimization != OptLevel::O0 {
             return Err(driver_error_of(
@@ -1138,6 +1163,18 @@ impl BuildOptions {
         }
         if self.target.is_wasm() && self.emit == Emit::Wasm {
             self.wasm_stack_size = self.wasm_stack_size.or(wasm.stack_size);
+        }
+        self
+    }
+
+    /// Fills options the command line left unset from the root manifest's
+    /// `[windows]`, for Windows native executable builds and runs (W09).
+    pub fn with_manifest_windows(mut self, windows: &crate::package::WindowsSettings) -> Self {
+        if self.target == Target::Native
+            && self.emit == Emit::Executable
+            && self.platform().windows()
+        {
+            self.subsystem = self.subsystem.or(windows.subsystem);
         }
         self
     }
@@ -1713,6 +1750,8 @@ pub struct Project {
     pub native: LinkInputs,
     /// The capabilities that the manifests allow each package (E15); `None` without a root manifest.
     pub capabilities: Option<crate::capabilities::Policy>,
+    /// The root package's `[windows]` section (W09).
+    pub windows: crate::package::WindowsSettings,
 }
 
 #[derive(Debug)]
@@ -2776,6 +2815,9 @@ impl Project {
         let capabilities = crate::capabilities::Policy::build(directory, &packages);
         let root_package = packages.iter().find(|package| package.id.root == directory);
         let root_id = root_package.map(|package| package.id.clone());
+        let windows = root_package
+            .map(|package| package.manifest.windows.clone())
+            .unwrap_or_default();
         // A lockfile belongs to the root manifest, which is there whenever the lockfile is.
         let root_edition = root_package.map_or(Edition::MANIFEST_DEFAULT, |package| {
             package.manifest.edition
@@ -2814,6 +2856,7 @@ impl Project {
             wasm,
             native,
             capabilities,
+            windows,
         })
     }
 
@@ -2986,6 +3029,7 @@ impl Project {
             wasm: Default::default(),
             native: LinkInputs::default(),
             capabilities: None,
+            windows: Default::default(),
         }
     }
 
@@ -5174,7 +5218,11 @@ fn build_complete(
             if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
                 clang
                     .args(sdk_args(platform)?)
-                    .args(final_link_args(platform)?);
+                    .args(final_link_args(platform)?)
+                    .args(subsystem_link_args(
+                        options.subsystem,
+                        msvc_linker_for(platform),
+                    ));
             } else {
                 clang.args(no_sdk_args(platform));
             }
@@ -5883,6 +5931,23 @@ fn codeview_for(platform: Platform, clang: &OsStr) -> bool {
 /// [`msvc_linker`] for a build for `platform`: a MinGW target never links with the MSVC linker.
 pub(crate) fn msvc_linker_for(platform: Platform) -> bool {
     platform.msvc() && msvc_linker()
+}
+
+/// W09: Clang linker flags selecting the Windows PE subsystem while keeping C `main` as entry.
+fn subsystem_link_args(subsystem: Option<Subsystem>, msvc: bool) -> Vec<OsString> {
+    match subsystem {
+        None | Some(Subsystem::Console) => Vec::new(),
+        Some(Subsystem::Windows) if msvc => [
+            "-Xlinker",
+            "/subsystem:windows",
+            "-Xlinker",
+            "/entry:mainCRTStartup",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect(),
+        Some(Subsystem::Windows) => vec![OsString::from("-Wl,--subsystem,windows")],
+    }
 }
 
 /// The PDB of the `-g` executable `output` on Windows: `<output>` with the extension `.pdb`.
@@ -8047,6 +8112,76 @@ mod tests {
             );
             merged.validate().unwrap();
         }
+    }
+
+    #[test]
+    fn subsystem_link_args_follow_the_linker() {
+        assert!(subsystem_link_args(None, true).is_empty());
+        assert!(subsystem_link_args(None, false).is_empty());
+        assert!(subsystem_link_args(Some(Subsystem::Console), true).is_empty());
+        assert!(subsystem_link_args(Some(Subsystem::Console), false).is_empty());
+        assert_eq!(
+            subsystem_link_args(Some(Subsystem::Windows), true),
+            vec![
+                OsString::from("-Xlinker"),
+                OsString::from("/subsystem:windows"),
+                OsString::from("-Xlinker"),
+                OsString::from("/entry:mainCRTStartup"),
+            ]
+        );
+        assert_eq!(
+            subsystem_link_args(Some(Subsystem::Windows), false),
+            vec![OsString::from("-Wl,--subsystem,windows")]
+        );
+    }
+
+    #[test]
+    fn validate_limits_subsystem_to_windows_executables() {
+        for triple in [Triple::X86_64WindowsGnu, Triple::Aarch64WindowsMsvc] {
+            let options = BuildOptions {
+                triple: Some(triple),
+                subsystem: Some(Subsystem::Windows),
+                ..BuildOptions::default()
+            };
+            options.validate().unwrap();
+        }
+        let non_exe = BuildOptions {
+            emit: Emit::Object,
+            triple: Some(Triple::X86_64WindowsMsvc),
+            subsystem: Some(Subsystem::Windows),
+            ..BuildOptions::default()
+        };
+        assert_eq!(non_exe.validate().unwrap_err().code, "E2000");
+
+        let non_windows = BuildOptions {
+            triple: Some(Triple::X86_64LinuxGnu),
+            subsystem: Some(Subsystem::Windows),
+            ..BuildOptions::default()
+        };
+        assert_eq!(non_windows.validate().unwrap_err().code, "E2000");
+
+        let manifest = crate::package::WindowsSettings {
+            subsystem: Some(Subsystem::Windows),
+        };
+        assert_eq!(
+            BuildOptions {
+                emit: Emit::Object,
+                triple: Some(Triple::X86_64WindowsMsvc),
+                ..BuildOptions::default()
+            }
+            .with_manifest_windows(&manifest)
+            .subsystem,
+            None
+        );
+        assert_eq!(
+            BuildOptions {
+                triple: Some(Triple::X86_64LinuxGnu),
+                ..BuildOptions::default()
+            }
+            .with_manifest_windows(&manifest)
+            .subsystem,
+            None
+        );
     }
 
     #[test]

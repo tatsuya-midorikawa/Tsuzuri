@@ -115,6 +115,7 @@ diagnostic_kinds! {
         (InvalidRegistryDependency, "invalid_registry_dependency", "E0002"),
         (InvalidRegistrySetting, "invalid_registry_setting", "E0002"),
         (InvalidWasmSize, "invalid_wasm_size", "E0002"),
+        (InvalidWindowsSetting, "invalid_windows_setting", "E0002"),
         (LambdaWithoutParameters, "lambda_without_parameters", "E0002"),
         (LengthParameterType, "length_parameter_type", "E0002"),
         (LetFunctionNeedsLambda, "let_function_needs_lambda", "E0002"),
