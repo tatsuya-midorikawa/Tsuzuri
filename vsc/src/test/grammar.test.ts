@@ -161,6 +161,15 @@ test('a select arm keeps the tokens of its value', async () => {
 		for (const line of ['let select = 1', 'select + 1', 'f select xs']) {
 			assert.ok(!scopesAt(line, 'select').includes('keyword.control.tsuzuri'), line);
 		}
+		for (const line of ['extern type copy Hwnd', 'private extern   type\tcopy   Hwnd']) {
+			for (const kw of ['extern', 'type', 'copy']) {
+				assert.ok(scopesAt(line, kw).includes('keyword.declaration.tsuzuri'), `${line}: ${kw}`);
+			}
+			assert.ok(scopesAt(line, 'Hwnd').includes('entity.name.type.tsuzuri'), `${line}: Hwnd`);
+		}
+		assert.ok(scopesAt('extern type copy', 'copy').includes('entity.name.type.tsuzuri'));
+		assert.ok(!scopesAt('extern type copy', 'copy').includes('keyword.declaration.tsuzuri'));
+		assert.ok(!scopesAt('let copy = 1', 'copy').includes('keyword.declaration.tsuzuri'));
 	} finally { registry.dispose(); }
 });
 
