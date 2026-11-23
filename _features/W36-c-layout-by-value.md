@@ -49,7 +49,7 @@ LLVM IR は構造体の値渡しを C の ABI に下げない。Clang はフロ�
 - W21 の Phase 1 が done（`grep -n "fn c_layout_fields" src/llvm_abi.rs`、`grep -n "c_layout" src/check.rs`）。
 - W21 が、`ref` の無い `@c_layout` record を `extern def` の引数と結果でどう受けて出荷したかを確かめる（`grep -rn "c_layout_by_value_pending" src/` と、W21 のテストの `positions`）。D2 のとおり `E1008` で綴りを空けていれば進める。W21 の仕様 4 の表のとおり `const T *` と先頭の out 引数で受けていれば S1。
 - D1・D2 が承認されている。承認前は手順 1（参照表を作るだけ）まで。
-- [W14](W14-extern-multiple-declarations.md) が done なら、その `abi::c_signature` に値渡しの形を足す（手順 4）。
+- [W14](_completed/W14-extern-multiple-declarations.md) が done なら、その `abi::c_signature` に値渡しの形を足す（手順 4）。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1`（native、`--target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-linux-gnu`・`aarch64-apple-darwin`・`wasm32`）と、`export` か `extern` を持つものの `--emit header` を `target/scratch/w36/base/` に保存する。
 
 ### 停止条件
@@ -229,7 +229,7 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
 ## 前提とする他チケットのインターフェース
 
 - [W21](W21-c-layout-records.md): `CheckedRecord.c_layout`、`abi::c_layout_record`・`abi::host_record`、`llvm_abi::record_layout`・`c_layout_fields`、`@c_layout` の `read_host_record`・`write_host_record`（packed struct の境界の型、葉の整列）、Phase 2 の field の位置の規則と kind、`abi_native_only` の共有の口。D2 の予約（`c_layout_by_value_pending`。W21 の改訂の提案）。
-- [W14](W14-extern-multiple-declarations.md)（done なら）: `abi::CType`・`AbiClass`・`c_signature`。
+- [W14](_completed/W14-extern-multiple-declarations.md)（done なら）: `abi::CType`・`AbiClass`・`c_signature`。
 
 ## 他チケットへ提供するインターフェース
 
@@ -237,7 +237,7 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
 - [W25](W25-extern-interface-com.md) Phase 3: メソッドの値渡しの引数（`D2D1_POINT_2F`）は `host_call` の共有でそのまま使える。W25 の仕様 9 と D10 の値渡しの部分は、このチケットへの参照に置き換えてあり、W25 Phase 3 の着手条件にこのチケットが入っている。
 - [W26](W26-com-objects-in-tsuzuri.md) Phase 3: `IDropTarget::DragEnter` の `POINTL`（呼ばれる側）は、コールバックの wrapper で `classify` と `by_value_from_abi`（引数）・`by_value_to_abi`（結果）を使う。呼ばれる側の wrapper の変更は W26 の範囲。
 - [W27](W27-win32-package-from-winmd.md): win32metadata のポインターでない構造体の引数・結果を `ref` の無い `@c_layout` record に写す。
-- [W14](W14-extern-multiple-declarations.md): 上の分類。
+- [W14](_completed/W14-extern-multiple-declarations.md): 上の分類。
 
 ## 実装手順
 

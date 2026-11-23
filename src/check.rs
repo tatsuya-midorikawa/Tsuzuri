@@ -4724,6 +4724,9 @@ pub struct CheckedModule {
     /// E15: the generic functions written in source code. Specialization replaces each with its
     /// instances and drops one that nothing calls, so `audit` counts the declarations from here.
     pub generic_declarations: Vec<GenericDeclaration>,
+    /// W14: canonical C signatures for explicit extern symbols declared with mixed `ptr`/`i64`
+    /// positions; empty when every symbol's declarations share one LLVM signature.
+    pub extern_abis: BTreeMap<String, crate::abi::CSignature>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -8878,8 +8881,11 @@ fn check_modules_collect(
     }
     names.flush_renamed(diagnostics).check()?;
     let mut export_names = BTreeSet::new();
-    // The function type and WASM module of each explicit extern symbol; a symbol may be declared again only identically.
-    let mut explicit_symbols: BTreeMap<String, (Type, String)> = BTreeMap::new();
+    // W14: first lowered C signature, canonical signature, mixed flag, WASM module, and first span per explicit symbol.
+    let mut explicit_symbols: BTreeMap<
+        String,
+        (crate::abi::CSignature, crate::abi::CSignature, bool, String, Span),
+    > = BTreeMap::new();
     regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
     classes.instances(
@@ -9138,19 +9144,49 @@ fn check_modules_collect(
                 }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared = (signature.as_type(), import.wasm_module.clone());
-                    let known = explicit_symbols
-                        .entry(import.native_symbol.clone())
-                        .or_insert_with(|| declared.clone());
-                    if *known != declared {
-                        return Err(Diagnostic::of(
-                            DiagnosticKind::ConflictingExternDeclaration,
-                            format!(
-                                "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
-                                import.native_symbol
-                            ),
-                            function.name.span,
-                        ));
+                    let declared =
+                        crate::abi::c_signature(&signature.parameters, &signature.result);
+                    match explicit_symbols.entry(import.native_symbol.clone()) {
+                        std::collections::btree_map::Entry::Vacant(slot) => {
+                            slot.insert((
+                                declared.clone(),
+                                declared,
+                                false,
+                                import.wasm_module.clone(),
+                                function.name.span,
+                            ));
+                        }
+                        std::collections::btree_map::Entry::Occupied(mut slot) => {
+                            let (first, canonical, mixed, wasm_module, first_span) = slot.get_mut();
+                            if *wasm_module != import.wasm_module {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    format!(
+                                        "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
+                                        import.native_symbol
+                                    ),
+                                    function.name.span,
+                                ));
+                            }
+                            if let Some(reason) = declared.mismatch(first) {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    format!(
+                                        "extern symbol '{}' has a different C ABI here: {reason}; declarations of one symbol may differ only in types that pass the same way",
+                                        import.native_symbol
+                                    ),
+                                    function.name.span,
+                                )
+                                .related(
+                                    RelatedRole::FirstDefinedHere,
+                                    "first defined here",
+                                    *first_span,
+                                ));
+                            }
+                            if canonical.merge_canonical(&declared) || declared != *first {
+                                *mixed = true;
+                            }
+                        }
                     }
                 }
             }
@@ -9777,6 +9813,10 @@ fn check_modules_collect(
     ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
+    let extern_abis: BTreeMap<String, crate::abi::CSignature> = explicit_symbols
+        .into_iter()
+        .filter_map(|(symbol, (_, canonical, mixed, _, _))| mixed.then_some((symbol, canonical)))
+        .collect();
     let mut module = CheckedModule {
         records,
         unions,
@@ -9797,6 +9837,7 @@ fn check_modules_collect(
         effects: None,
         noncanonical: root_noncanonical(modules, &reference_borrows),
         generic_declarations: Vec::new(),
+        extern_abis,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -10211,6 +10252,7 @@ fn recovery_module(
         effects: None,
         noncanonical: Vec::new(),
         generic_declarations: Vec::new(),
+        extern_abis: BTreeMap::new(),
     }
 }
 

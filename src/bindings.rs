@@ -88,9 +88,9 @@ fn exports(module: &CheckedModule) -> Vec<&CheckedFunction> {
     exports
 }
 
-/// The host imports that the exports and the entry reach, by WASM import name. A name names one
-/// import: an explicit symbol has one module and type (E12), and implicit names contain a dot.
-fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunction)> {
+/// Every reached `extern` declaration, in id order. Multiple declarations of one explicit native
+/// symbol remain distinct here so native bindings retain all referenced handles and records (W14).
+fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction)> {
     let roots: Vec<_> = module
         .functions
         .iter()
@@ -103,12 +103,31 @@ fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunct
         .filter_map(|id| {
             let function = &module.functions[id];
             match &function.body.kind {
-                TypedExprKind::HostCall(import, _) => {
-                    Some((import.wasm_name.as_str(), (import.as_ref(), function)))
-                }
+                TypedExprKind::HostCall(import, _) => Some((import.as_ref(), function)),
                 _ => None,
             }
         })
+        .collect()
+}
+
+/// Validates that reached explicit imports have one Tsuzuri signature for `--emit bindings-js` (W14).
+pub(crate) fn validate_wasm_imports(module: &CheckedModule) -> Result<(), crate::diagnostic::Diagnostic> {
+    let roots: Vec<_> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(id, function)| function.exported || module.entry == Some(*id))
+        .map(|(id, _)| id)
+        .collect();
+    let reachable = crate::llvm::reachable_functions(module, Some(&roots), false);
+    crate::llvm::validate_wasm_externs(module, &reachable)
+}
+
+/// The host imports that the exports and the entry reach, by WASM import name.
+fn imports(module: &CheckedModule) -> BTreeMap<&str, (&HostImport, &CheckedFunction)> {
+    reached_imports(module)
+        .into_iter()
+        .map(|(import, function)| (import.wasm_name.as_str(), (import, function)))
         .collect()
 }
 
@@ -213,7 +232,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
 /// The functions whose signatures the bindings describe: the exports, then the reached imports.
 fn signatures(module: &CheckedModule) -> Vec<&CheckedFunction> {
     let mut functions = exports(module);
-    functions.extend(imports(module).into_values().map(|(_, function)| function));
+    functions.extend(reached_imports(module).into_iter().map(|(_, function)| function));
     functions
 }
 

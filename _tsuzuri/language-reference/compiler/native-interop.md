@@ -175,7 +175,17 @@ int main(void) {
 }
 ```
 
-シンボル名は 255 バイト以下の C 識別子です。`tz_`、`tsuzuri`、`__` で始まる名前と、`malloc` や `write` などランタイムが使う名前は `E1008` です。同じシンボルを複数の `extern` で宣言することはできますが、型が違うと `E1008` です。
+シンボル名は 255 バイト以下の C 識別子です。`tz_`、`tsuzuri`、`__` で始まる名前と、`malloc` や `write` などランタイムが使う名前は `E1008` です。ネイティブでは、`SendMessageW` のように 1 つの C シンボルを用途ごとの別名で複数回 `extern` 宣言でき、インポートモジュール名と下げた C の各位置の ABI 分類（32 ビット整数・64 ビット整数またはポインタ・`f32`・`f64`・`void`）が一致していれば 1 つの外部宣言に集約されます（分類が違う場合や、WebAssembly で型の異なる複数の宣言に到達する場合は `E1008` です）。
+
+```tsuzuri
+extern type copy Hwnd
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+
+@trusted
+extern "SendMessageW" def send_message :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+@trusted
+extern "SendMessageW" def send_rect :: ref Hwnd -> i32u -> i64u -> ref Rect -> i64
+```
 
 呼び出しは副作用として扱われ、引数は左から右に評価されます。部分適用はできます。コンパイラが純粋な計算だと思って消すことはありません。`const` の初期化から `extern` を呼ぶことはできません。
 

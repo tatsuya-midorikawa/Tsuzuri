@@ -1880,6 +1880,9 @@ fn emit_program_in(
         });
     let pruned = roots.is_some() && tests.is_none();
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
+    if wasm {
+        validate_wasm_externs(module, &reachable)?;
+    }
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -3968,6 +3971,48 @@ pub(crate) fn reachable_functions(
     benches: bool,
 ) -> BTreeSet<usize> {
     program_reach(module, roots, benches).1
+}
+
+/// W14: WebAssembly imports one signature per name, so reached explicit symbols must agree on their
+/// Tsuzuri signature. Unreached declarations do not become imports and are ignored.
+pub(crate) fn validate_wasm_externs(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+) -> Result<(), Diagnostic> {
+    let mut seen: BTreeMap<&str, (Type, Span)> = BTreeMap::new();
+    for &id in reachable {
+        let function = &module.functions[id];
+        let TypedExprKind::HostCall(import, _) = &function.body.kind else {
+            continue;
+        };
+        if !import.explicit {
+            continue;
+        }
+        let declared = function.signature.as_type();
+        match seen.entry(import.native_symbol.as_str()) {
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert((declared, function.span));
+            }
+            std::collections::btree_map::Entry::Occupied(known) => {
+                if known.get().0 != declared {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ConflictingExternDeclaration,
+                        format!(
+                            "extern symbol '{}' is reached through declarations of different types; WebAssembly imports one signature per name, so use one declaration for this target",
+                            import.native_symbol
+                        ),
+                        function.span,
+                    )
+                    .related(
+                        crate::diagnostic::RelatedRole::FirstDefinedHere,
+                        "first defined here",
+                        known.get().1,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Runtime resources whose readers need a dedicated runner or an explicit allocator.

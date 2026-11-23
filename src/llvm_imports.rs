@@ -142,11 +142,34 @@ impl FunctionEmitter<'_, '_> {
             values[position + 1] = format!("i64 {length}");
             copies.push((copy, word));
         }
-        let output = if *result == Type::Unit || out.is_some() {
+        let mut output = if *result == Type::Unit || out.is_some() {
             "void".to_owned()
         } else {
             abi_type(result)
         };
+        let mut convert_ptr_result = false;
+        if !self.globals.wasm
+            && import.explicit
+            && let Some(canonical) = self.module.extern_abis.get(&import.native_symbol)
+        {
+            for (index, slot_type) in types.iter_mut().enumerate() {
+                let target = canonical.parameters[index].llvm();
+                if slot_type != target {
+                    let raw = values[index]
+                        .strip_prefix("ptr ")
+                        .expect("only ptr/i64 slots differ in Word64");
+                    let cast = self.value(format!("ptrtoint ptr {raw} to i64"));
+                    *slot_type = target.to_owned();
+                    values[index] = format!("{target} {cast}");
+                }
+            }
+            let target_result = canonical.result.llvm();
+            if output != target_result {
+                debug_assert_eq!((output.as_str(), target_result), ("ptr", "i64"));
+                output = target_result.to_owned();
+                convert_ptr_result = true;
+            }
+        }
         let attributes = if self.globals.wasm {
             format!(
                 " \"wasm-import-module\"=\"{}\" \"wasm-import-name\"=\"{}\"",
@@ -177,6 +200,11 @@ impl FunctionEmitter<'_, '_> {
             return output;
         }
         let value = self.value(call);
+        let value = if convert_ptr_result {
+            self.value(format!("inttoptr i64 {value} to ptr"))
+        } else {
+            value
+        };
         self.free_copies(&copies);
         let output = match result {
             Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),

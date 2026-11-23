@@ -5759,6 +5759,9 @@ fn build_bindings(
     } else {
         crate::bindings::JsFlavor::Single
     };
+    if options.emit == Emit::BindingsJs {
+        crate::bindings::validate_wasm_imports(module)?;
+    }
     // TZ09: the glue of a module that spawns runs its tzroutines with JSPI, as the module's build does.
     if options.emit == Emit::BindingsJs && llvm::spawns(module) {
         if options.wasm_threads {

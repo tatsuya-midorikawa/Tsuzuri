@@ -107,6 +107,180 @@ fn link_names_lower_to_symbols_and_wasm_modules() {
 }
 
 #[test]
+fn same_symbol_with_one_c_abi_is_one_declare() {
+    let source = "extern type Hwnd
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+extern \"SendMessageW\" def send_message :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+extern \"SendMessageW\" def send_rect :: ref Hwnd -> i32u -> i64u -> ref Rect -> i64
+def on_event :: ref Hwnd -> i32u -> i64u -> i64 -> i64 = \\_hwnd _msg _wparam lparam -> lparam
+extern \"SetWindowLongPtrW\" def set_window_long :: ref Hwnd -> i32 -> i64 -> i64
+extern \"SetWindowLongPtrW\" def set_window_proc :: ref Hwnd -> i32 -> (ref Hwnd -> i32u -> i64u -> i64 -> i64) -> i64
+export def run :: ref Hwnd -> i64
+fn run hwnd =
+    let r = Rect { left: 1, top: 2, right: 3, bottom: 4 }
+    send_message hwnd 1i32u 2i64u 3 +
+    send_rect hwnd 1i32u 2i64u (ref r) +
+    set_window_long hwnd (-4i32) 0 +
+    set_window_proc hwnd (-4i32) on_event
+";
+    let module = analyze(source).unwrap();
+    let emitted = ir(&module, false);
+    assert_eq!(
+        emitted
+            .matches("declare i64 @SendMessageW(ptr, i32, i64, i64)\n")
+            .count(),
+        1,
+        "{emitted}"
+    );
+    assert_eq!(
+        emitted
+            .matches("declare i64 @SetWindowLongPtrW(ptr, i32, i64)\n")
+            .count(),
+        1,
+        "{emitted}"
+    );
+    assert!(emitted.contains("ptrtoint ptr "), "{emitted}");
+    assert!(
+        emitted.contains("ptrtoint ptr @tz.callback.Main.on_event to i64"),
+        "{emitted}"
+    );
+}
+
+#[test]
+fn canonical_declare_ignores_order_and_same_types_keep_ir() {
+    let forward = "extern type H
+extern \"ffi_pick\" def pick_int :: i64 -> i64
+extern \"ffi_pick\" def pick_handle :: H -> H
+export def run :: H -> H
+fn run h =
+    let _ = pick_int 1
+    pick_handle h
+";
+    let reverse = "extern type H
+extern \"ffi_pick\" def pick_handle :: H -> H
+extern \"ffi_pick\" def pick_int :: i64 -> i64
+export def run :: H -> H
+fn run h =
+    let _ = pick_int 1
+    pick_handle h
+";
+    let f_mod = analyze(forward).unwrap();
+    let r_mod = analyze(reverse).unwrap();
+    let f_ir = ir(&f_mod, false);
+    let r_ir = ir(&r_mod, false);
+    for text in [&f_ir, &r_ir] {
+        assert_eq!(
+            text.matches("declare i64 @ffi_pick(i64)\n").count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("inttoptr i64 "), "{text}");
+    }
+
+    let one = analyze("extern \"sqrt\" def a :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n").unwrap();
+    let two = analyze("extern \"sqrt\" def a :: f64 -> f64\nextern \"sqrt\" def b :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n").unwrap();
+    assert!(two.extern_abis.is_empty());
+    assert_eq!(ir(&one, false), ir(&two, false));
+}
+
+#[test]
+fn class_mismatches_and_same_class_variants_follow_c_abi() {
+    use tsuzuri::diagnostic::RelatedRole;
+    for (source, needle) in [
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: i32 -> i64\n1",
+            "parameter 1 is a 32-bit integer, but a 64-bit integer or pointer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: f64 -> i64\n1",
+            "parameter 1 is a 64-bit float, but a 64-bit integer or pointer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i32 -> i64\nextern \"f\" def b :: f32 -> i64\n1",
+            "parameter 1 is a 32-bit float, but a 32-bit integer in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: ref string -> i64\nextern \"f\" def b :: i64 -> i64\n1",
+            "takes 1 C parameter here but 2 in the first declaration",
+        ),
+        (
+            "extern \"f\" def a :: i64 -> i64\nextern \"f\" def b :: i64 -> unit\n1",
+            "the result is void, but a 64-bit integer or pointer in the first declaration",
+        ),
+    ] {
+        let error = analyze(source).unwrap_err();
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1008", Some("conflicting_extern_declaration")),
+            "{source}"
+        );
+        assert!(error.message.contains(needle), "{source}: {}", error.message);
+        assert!(
+            error
+                .related
+                .iter()
+                .any(|item| item.role == RelatedRole::FirstDefinedHere),
+            "{source}: {:?}",
+            error.related
+        );
+    }
+
+    // Module mismatch keeps the original message without related notes.
+    let mod_err =
+        analyze("extern \"a\" \"f\" def x :: i64 -> i64\nextern \"b\" \"f\" def y :: i64 -> i64\n1")
+            .unwrap_err();
+    assert_eq!(
+        mod_err.message,
+        "extern symbol 'f' is declared with different signatures or import modules; declare it once and call it from other modules"
+    );
+    assert!(mod_err.related.is_empty());
+
+    // Same-class declarations pass.
+    for ok in [
+        "extern \"f\" def a :: i64 -> bool\nextern \"f\" def b :: i64 -> i32\n1",
+        "extern \"f\" def a :: i8u -> i64\nextern \"f\" def b :: i32 -> i64\n1",
+        "extern \"f\" def a :: (i64 -> i64) -> i64\nextern \"f\" def b :: i64 -> i64\n1",
+        "record R { x: i64 }\nextern \"f\" def a :: unit -> R\nextern \"f\" def b :: i64 -> unit\n1",
+    ] {
+        assert_eq!(code(ok), "ok", "{ok}");
+    }
+}
+
+#[test]
+fn wasm_rejects_differently_typed_reached_declarations() {
+    let both_reached = "extern type H
+extern \"ffi_word\" def word_int :: i64 -> i64
+extern \"ffi_word\" def word_handle :: ref H -> i64
+export def run :: ref H -> i64
+fn run h = word_int 1 + word_handle h
+";
+    let module = analyze(both_reached).unwrap();
+    assert!(ir(&module, false).contains("declare i64 @ffi_word(i64)"));
+    let wasm_err = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap_err();
+    assert_eq!(
+        (wasm_err.code, wasm_err.kind),
+        ("E1008", Some("conflicting_extern_declaration"))
+    );
+    assert!(
+        wasm_err
+            .message
+            .contains("WebAssembly imports one signature per name"),
+        "{}",
+        wasm_err.message
+    );
+
+    // Reaching only one of the declarations succeeds on WASM.
+    let one_reached = "extern type H
+extern \"ffi_word\" def word_int :: i64 -> i64
+extern \"ffi_word\" def word_handle :: ref H -> i64
+export def run :: i64 -> i64
+fn run x = word_int x
+";
+    let module = analyze(one_reached).unwrap();
+    assert!(ir(&module, true).contains("declare i64 @ffi_word(i64)"));
+}
+
+#[test]
 fn link_names_reject_reserved_invalid_and_conflicting() {
     let long = "a".repeat(256);
     let allowed = "a".repeat(255);

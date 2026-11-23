@@ -87,6 +87,12 @@ int64_t w18_id_borrow(void *handle) {
     return ((int64_t)(intptr_t)handle - 1) / 2 + 1;
 }
 
+int64_t w14_ffi_word(int64_t kind, int64_t value) {
+    if (kind == 0) return value + 1;
+    const int32_t *rect = (const int32_t *)(intptr_t)value;
+    return rect[0];
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

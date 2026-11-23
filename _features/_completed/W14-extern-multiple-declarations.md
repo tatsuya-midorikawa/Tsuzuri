@@ -6,10 +6,10 @@
 | 優先度 | P1 |
 | 規模 | S |
 | 依存 | – |
-| 後続 | [W27](W27-win32-package-from-winmd.md)（生成器が 1 つの関数に用途ごとの宣言を出す） |
-| 状態 | todo |
+| 後続 | [W27](../W27-win32-package-from-winmd.md)（生成器が 1 つの関数に用途ごとの宣言を出す） |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
-| 承認 | 要承認（[E12](_completed/E12-ffi-extensions.md) D2 の改訂）。決定事項 D1 が要承認、ほかは既定案。方針は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
+| 承認 | 要承認（[E12](E12-ffi-extensions.md) D2 の改訂）。決定事項 D1 が要承認、ほかは既定案。方針は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 手本にする既存実装 | `src/check.rs` の `check_modules_collect` の `explicit_symbols`（今の照合）、`src/llvm_imports.rs` の `host_call`（`declare` の組み立てと `intrinsics` への登録）、`src/llvm_abi.rs` の `c_parameters`（下げた C の引数の並びの規則）、`Diagnostic::related` と `RelatedRole::FirstDefinedHere` |
 | 主な影響ファイル | `src/abi.rs`、`src/check.rs`、`src/llvm_imports.rs`、`src/llvm.rs`、`src/bindings.rs`、`tests/ffi_extensions.rs`、`tests/ffi_extensions.mjs`・`tests/ffi_extensions_host.c`、`src/explain/codes/E1008.md`、`spec/rules/ABI.md`、文書 |
 
@@ -149,10 +149,10 @@ E2E（`tests/ffi_extensions.mjs`、native、`-O0`・`-O3`、`--backend fast`）:
 
 ## 受け入れ条件
 
-- [ ] 仕様 1〜4 のとおりに動く（native の `-O0`・`-O3`、`--backend fast`、wasm32）。
-- [ ] 宣言が 1 つか同じ型だけの symbol を持つプログラムの IR・object・header・診断が、手順 1 の保存物と 1 byte も変わらない。WASM の既存の出力も変わらない。
-- [ ] 型の違う宣言の拒否は、分類が違うときだけ新しい文（module の違いは今の文）。
-- [ ] 文書・`spec/rules/ABI.md`・explain を更新した。T2 が通り、PR に `ci:full` を付けた。
+- [x] 仕様 1〜4 のとおりに動く（native の `-O0`・`-O3`、`--backend fast`、wasm32）。
+- [x] 宣言が 1 つか同じ型だけの symbol を持つプログラムの IR・object・header・診断が、手順 1 の保存物と 1 byte も変わらない。WASM の既存の出力も変わらない。
+- [x] 型の違う宣言の拒否は、分類が違うときだけ新しい文（module の違いは今の文）。
+- [x] 文書・`spec/rules/ABI.md`・explain を更新した。T2 が通り、PR に `ci:full` を付けた。
 
 ## 落とし穴
 

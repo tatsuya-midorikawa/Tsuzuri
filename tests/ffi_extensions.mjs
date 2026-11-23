@@ -101,6 +101,21 @@ try {
     "",
   ].join("\n"));
   assert.equal(execute(compiler, ["run", routineHandles, "--link", host, "-l", "pthread"]).stdout.trim(), "43");
+  const multiExtern = join(root, "multi-extern");
+  mkdirSync(multiExtern);
+  writeFileSync(join(multiExtern, "Main.tz"), [
+    "record Rect { left: i32, top: i32, right: i32, bottom: i32 }",
+    'extern "w14_ffi_word" def word_int :: i64 -> i64 -> i64',
+    'extern "w14_ffi_word" def word_rect :: i64 -> ref Rect -> i64',
+    "let r = Rect { left: 7i32, top: 8i32, right: 9i32, bottom: 10i32 }",
+    "word_int 0 42 + word_rect 1 (ref r)",
+    "",
+  ].join("\n"));
+  for (const extra of [["-O0"], ["-O3"], ...(process.platform === "win32" ? [] : [["--backend", "fast"]])]) {
+    const out = join(root, `multi-${extra.join("")}`);
+    execute(compiler, ["build", multiExtern, ...extra, "--link", host, "-l", "pthread", "-o", out]);
+    assert.equal(execute(out, []).stdout.trim(), "50");
+  }
   rejected(["run", app], "E2002");
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");

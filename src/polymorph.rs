@@ -5353,6 +5353,7 @@ pub(super) fn specialize(
         effects: None,
         noncanonical: module.noncanonical,
         generic_declarations,
+        extern_abis: module.extern_abis,
     })
 }
 

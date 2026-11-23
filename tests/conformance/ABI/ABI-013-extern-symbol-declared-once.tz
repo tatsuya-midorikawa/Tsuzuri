@@ -1,0 +1,16 @@
+extern type Hwnd
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+
+extern "SendMessageW" def send_int :: ref Hwnd -> i64 -> i64
+extern "SendMessageW" def send_rect :: ref Hwnd -> ref Rect -> i64
+
+export def call_both :: ref Hwnd -> i64 = \hwnd ->
+    let r = Rect { left: 1i32, top: 2i32, right: 3i32, bottom: 4i32 }
+    send_int hwnd 0 + send_rect hwnd (ref r)
+
+0
+
+// rule: ABI-013
+// cli: build $DIR --emit llvm -o $DIR/out.ll
+// expect: exit 0
+// expect: file-has out.ll "declare i64 @SendMessageW(ptr, i64)"

@@ -344,7 +344,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W11 | [Windows の OS API（`File`・`Dir`・`Env`・`Random`・`Process`・`Time` の OS 時計）](W11-windows-os-api.md) | P1 | L | – | todo |
 | W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](W12-static-callback-lifetime.md) | P1 | M | W06, W07 | todo |
 | W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | todo |
-| W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](W14-extern-multiple-declarations.md) | P1 | S | – | todo |
+| W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](_completed/W14-extern-multiple-declarations.md) | P1 | S | – | done |
 | W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](W15-abi-nullable-handles.md) | P1 | M | – | todo |
 | W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
 | W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |

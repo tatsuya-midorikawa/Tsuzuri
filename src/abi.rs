@@ -236,6 +236,171 @@ pub fn out_result(ty: &Type) -> bool {
     Buffer::of(ty).is_some() || matches!(ty, Type::Record(..))
 }
 
+/// The LLVM / C scalar or pointer type of one lowered host parameter or result (W14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CType {
+    I32,
+    I64,
+    F32,
+    F64,
+    Ptr,
+    Void,
+}
+
+/// The native 64-bit C ABI register/stack class of a `CType` (W14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AbiClass {
+    I32,
+    Word64,
+    F32,
+    F64,
+    Void,
+}
+
+impl CType {
+    pub fn class(self) -> AbiClass {
+        match self {
+            Self::I32 => AbiClass::I32,
+            Self::I64 | Self::Ptr => AbiClass::Word64,
+            Self::F32 => AbiClass::F32,
+            Self::F64 => AbiClass::F64,
+            Self::Void => AbiClass::Void,
+        }
+    }
+
+    pub fn llvm(self) -> &'static str {
+        match self {
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::F32 => "float",
+            Self::F64 => "double",
+            Self::Ptr => "ptr",
+            Self::Void => "void",
+        }
+    }
+
+    fn canonical(self, other: Self) -> Self {
+        debug_assert_eq!(self.class(), other.class());
+        if self == other { self } else { Self::I64 }
+    }
+}
+
+impl AbiClass {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::I32 => "a 32-bit integer",
+            Self::Word64 => "a 64-bit integer or pointer",
+            Self::F32 => "a 32-bit float",
+            Self::F64 => "a 64-bit float",
+            Self::Void => "void",
+        }
+    }
+}
+
+/// The lowered C parameter and result types of an `extern` declaration (W14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CSignature {
+    pub parameters: Vec<CType>,
+    pub result: CType,
+}
+
+impl CSignature {
+    /// Combines another C-ABI-compatible signature into the canonical `declare` signature.
+    /// Returns `true` when any position differed in `CType` (`ptr` vs `i64`).
+    pub fn merge_canonical(&mut self, other: &Self) -> bool {
+        let mut mixed = false;
+        for (slot, &next) in self.parameters.iter_mut().zip(&other.parameters) {
+            if *slot != next {
+                mixed = true;
+                *slot = slot.canonical(next);
+            }
+        }
+        if self.result != other.result {
+            mixed = true;
+            self.result = self.result.canonical(other.result);
+        }
+        mixed
+    }
+
+    /// Returns a human-readable mismatch reason against `first`, or `None` when C ABI classes match.
+    pub fn mismatch(&self, first: &Self) -> Option<String> {
+        if self.parameters.len() != first.parameters.len() {
+            let here = self.parameters.len();
+            let noun = if here == 1 { "parameter" } else { "parameters" };
+            return Some(format!(
+                "takes {here} C {noun} here but {} in the first declaration",
+                first.parameters.len()
+            ));
+        }
+        for (index, (here, expected)) in self.parameters.iter().zip(&first.parameters).enumerate() {
+            if here.class() != expected.class() {
+                return Some(format!(
+                    "parameter {} is {}, but {} in the first declaration",
+                    index + 1,
+                    here.class().description(),
+                    expected.class().description()
+                ));
+            }
+        }
+        if self.result.class() != first.result.class() {
+            return Some(format!(
+                "the result is {}, but {} in the first declaration",
+                self.result.class().description(),
+                first.result.class().description()
+            ));
+        }
+        None
+    }
+}
+
+fn c_scalar(ty: &Type) -> CType {
+    match ty {
+        Type::Bool | Type::Integer(8 | 16 | 32, _) => CType::I32,
+        Type::Integer(64, _) => CType::I64,
+        Type::Binary(32) => CType::F32,
+        Type::Binary(64) => CType::F64,
+        Type::Handle(..) => CType::Ptr,
+        Type::Reference(inner, false) if is_handle(inner) => CType::Ptr,
+        _ => unreachable!("checked ABI scalar: {ty:?}"),
+    }
+}
+
+pub fn c_signature(parameters: &[Type], result: &Type) -> CSignature {
+    let mut lowered = Vec::new();
+    if out_result(result) {
+        lowered.push(CType::Ptr);
+    }
+    for parameter in parameters {
+        if *parameter == Type::Unit {
+            continue;
+        }
+        if matches!(parameter, Type::Function(..)) {
+            lowered.push(CType::Ptr);
+            continue;
+        }
+        let inner = match parameter {
+            Type::Reference(inner, false) => inner.as_ref(),
+            other => other,
+        };
+        if Buffer::of(inner).is_some() {
+            lowered.extend([CType::Ptr, CType::I64]);
+        } else if matches!(inner, Type::Record(..) | Type::Handle(..)) {
+            lowered.push(CType::Ptr);
+        } else {
+            lowered.push(c_scalar(parameter));
+        }
+    }
+    let lowered_result = if *result == Type::Unit || out_result(result) {
+        CType::Void
+    } else {
+        c_scalar(result)
+    };
+    CSignature {
+        parameters: lowered,
+        result: lowered_result,
+    }
+}
+
 pub fn field_name(name: &str) -> String {
     const KEYWORDS: &[&str] = &[
         "alignas",

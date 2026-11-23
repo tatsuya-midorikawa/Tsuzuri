@@ -220,7 +220,7 @@ tsuzuri bindgen --winmd FILE --api LIST -o DIR [--json]
 ## 前提とする他チケットのインターフェース
 
 - [W13](W13-extern-ref-mut-and-mutable-buffers.md): `ref mut T`・`ref mut [T]`・`Buffer::{I16U, I32, I32U}`・`@count`。[W15](W15-abi-nullable-handles.md): `Maybe<H>`・`Maybe<ref R>`・`Maybe<ref ZString>`。[W16](W16-last-error-attribute.md): `@last_error` と結果の組の型 `R * i32u`。[W17](W17-link-attribute-dllimport.md): `@link("name")`（git・registry の依存からも使える）。[W18](_completed/W18-copy-extern-type.md): `extern type copy`・`HandleKind::Copy`。[W19](W19-thread-bound-handles.md): `extern type local`。[W20](W20-zstring.md): `ZString`・`ref ZString`。[W21](W21-c-layout-records.md): `@c_layout`・`pack`・固定長の配列の field（Phase 2 で `FnPtr` の field）。[W22](W22-fnptr-values.md): `FnPtr<F>`。[W24](W24-extern-view.md): `extern view` の宣言の形。[W25](W25-extern-interface-com.md): `extern interface`、`Result<J, i32>`、`Com.create` の `const` の CLSID、`Com.Iid<I>`、連鎖の中の同じ名前の `E1001`。
-- [W14](W14-extern-multiple-declarations.md): 利用者が同じ symbol を別の型で宣言しても衝突しない（生成物と手書きの宣言が並ぶ）。
+- [W14](_completed/W14-extern-multiple-declarations.md): 利用者が同じ symbol を別の型で宣言しても衝突しない（生成物と手書きの宣言が並ぶ）。
 - [W23](W23-anchor-state.md)（Phase 2）: `Anchor.create`・`Anchor.token`・`Anchor.read`・`Anchor.update`。公式パッケージの例（ウィンドウプロシージャから `GWLP_USERDATA` の鍵で窓の状態に届く書き方）に使う。生成器の写像には使わない。
 - [W01](_completed/W01-callback-extern-temporary-string.md): コールバックを取る `extern` に一時値を渡す呼び出しが正しく下がる。
 - [W06](W06-windows-gui-test-harness.md): 窓を出して自分で閉じる検査（早見の完了の見分け方、公式パッケージの CI）。
