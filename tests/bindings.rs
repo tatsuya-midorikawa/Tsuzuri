@@ -409,6 +409,9 @@ fn native_bindings_are_deterministic_and_follow_the_c_abi() {
     let trapping = bindings::python(&module, "native", true);
     assert!(trapping.contains("        library.tsuzuri_try_add.argtypes = (_ctypes.POINTER(_Trap), _ctypes.POINTER(_ctypes.c_int64), _ctypes.c_int64, _ctypes.c_int64)\n"));
     assert!(trapping.contains("class TsuzuriTrap(Exception):\n"));
+    assert!(
+        python.contains("if type(self.value) is not int or not 1 <= self.value <= _POINTER_MAX:")
+    );
     assert!(python.contains(
         "raise ValueError(\"tz_handle_4Main_7Counter requires a non-null integer pointer\")"
     ));

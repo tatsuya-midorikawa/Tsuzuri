@@ -828,6 +828,9 @@ fn python_name(name: &str) -> String {
 
 /// The converters and ctypes declarations that every Python module shares.
 const PYTHON_SUPPORT: &str = r#"
+_POINTER_MAX = (1 << (_ctypes.sizeof(_ctypes.c_void_p) * 8)) - 1
+
+
 class _Buffer(_ctypes.Structure):
     _fields_ = [("ptr", _ctypes.c_void_p), ("len", _ctypes.c_int64)]
 
@@ -1078,7 +1081,7 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     for handle in &handles {
         let _ = writeln!(
             output,
-            "\n\n@_dataclasses.dataclass(frozen=True)\nclass {handle}:\n    \"\"\"An extern type handle: a pointer that the host owns.\"\"\"\n\n    value: int\n\n    def __post_init__(self):\n        if type(self.value) is not int or self.value == 0:\n            raise ValueError(\"{handle} requires a non-null integer pointer\")"
+            "\n\n@_dataclasses.dataclass(frozen=True)\nclass {handle}:\n    \"\"\"An extern type handle: a pointer that the host owns.\"\"\"\n\n    value: int\n\n    def __post_init__(self):\n        if type(self.value) is not int or not 1 <= self.value <= _POINTER_MAX:\n            raise ValueError(\"{handle} requires a non-null integer pointer\")"
         );
     }
     for (record, ty) in &records {
@@ -1233,7 +1236,7 @@ fn python_export(
             Shape::Handle(handle) => {
                 argtypes.push("_ctypes.c_void_p".to_owned());
                 prepare.push(format!(
-                    "if not isinstance({argument}, {handle}):\n            raise TypeError(f\"argument {index} of '{name}' must be a {handle}\")\n        if type({argument}.value) is not int or {argument}.value == 0:\n            raise ValueError(f\"argument {index} of '{name}' cannot be a null handle\")"
+                    "if not isinstance({argument}, {handle}):\n            raise TypeError(f\"argument {index} of '{name}' must be a {handle}\")\n        if type({argument}.value) is not int or not 1 <= {argument}.value <= _POINTER_MAX:\n            raise ValueError(f\"argument {index} of '{name}' cannot be a null handle\")"
                 ));
                 arguments.push(format!("{argument}.value"));
             }

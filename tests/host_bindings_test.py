@@ -85,6 +85,11 @@ def check_common(native, lib):
     raises(TypeError, lambda: lib.pass_through(0x1234), "must be a tz_handle_4Main_7Counter")
     raises(ValueError, lambda: native.tz_handle_4Main_7Counter(0), "non-null")
     raises(ValueError, lambda: native.tz_handle_4Main_7Counter(None), "non-null")
+    wrapped_null = 1 << (ctypes.sizeof(ctypes.c_void_p) * 8)
+    raises(ValueError, lambda: native.tz_handle_4Main_7Counter(wrapped_null), "non-null")
+    bypassed = object.__new__(native.tz_handle_4Main_7Counter)
+    object.__setattr__(bypassed, "value", wrapped_null)
+    raises(ValueError, lambda: lib.pass_through(bypassed), "null handle")
     # A borrowed handle reaches the host as the pointer itself: here, an int64 counter cell.
     cell = ctypes.c_int64(41)
     assert lib.peek(native.tz_handle_4Main_7Counter(ctypes.addressof(cell))) == 41
