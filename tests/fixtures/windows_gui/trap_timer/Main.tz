@@ -1,0 +1,13 @@
+@trusted
+extern "w06_gui_pump" def pump :: (i32u -> i64u -> i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w06_gui_mark" def mark :: ref string -> unit
+
+def on_timer :: i32u -> i64u -> i64 -> i64 = \msg _wparam _lparam ->
+    if msg == 275i32u then 10 / ((msg as i64) - 275) else 0
+
+def main :: Array<string> -> i32 = \args ->
+    let _r = pump on_timer 1
+    if Array.length args > 1 then mark (ref args[1]) else ()
+    77

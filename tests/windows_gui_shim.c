@@ -1,0 +1,197 @@
+/* W06: Headless Win32 message-only window (`HWND_MESSAGE`) test shim.
+ * Never calls tested functions inside `assert(...)` because `zig cc` defines `NDEBUG` at `-O1+`. */
+#undef NDEBUG
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef UNICODE
+#define UNICODE
+#endif
+#include <windows.h>
+#include <process.h>
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef int64_t (*tz_msg_cb)(uint32_t message, uint64_t wparam, int64_t lparam);
+
+typedef struct tz_pump_state {
+    tz_msg_cb callback;
+    int64_t count;
+    int64_t expected;
+    int timed_out;
+} tz_pump_state;
+
+typedef struct tz_poster_arg {
+    HWND hwnd;
+    WPARAM wparam;
+} tz_poster_arg;
+
+static tz_msg_cb g_create_callback = NULL;
+static int64_t g_create_result = 0;
+
+static LRESULT CALLBACK tz_test_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+    if (msg == WM_NCCREATE) {
+        CREATESTRUCTW *cs = (CREATESTRUCTW *)lparam;
+        if (cs && cs->lpCreateParams) {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+        }
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    if (msg == WM_CREATE && g_create_callback != NULL) {
+        tz_msg_cb cb = g_create_callback;
+        g_create_callback = NULL;
+        g_create_result = cb((uint32_t)msg, (uint64_t)wparam, (int64_t)(intptr_t)hwnd);
+        return 0;
+    }
+    tz_pump_state *state = (tz_pump_state *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    if (state && state->callback) {
+        if (msg == WM_TIMER || msg == WM_APP || msg == (WM_APP + 1)) {
+            if (msg == WM_TIMER) {
+                KillTimer(hwnd, (UINT_PTR)wparam);
+            }
+            int64_t r = state->callback((uint32_t)msg, (uint64_t)wparam, (int64_t)lparam);
+            if (msg == (WM_APP + 1)) {
+                return (LRESULT)r;
+            }
+            state->count += r;
+            if (state->expected > 0 && state->count >= state->expected) {
+                DestroyWindow(hwnd);
+            }
+            return (LRESULT)r;
+        }
+    }
+    if (msg == WM_DESTROY && state != NULL) {
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static int ensure_test_class(void) {
+    WNDCLASSEXW wc;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = tz_test_wndproc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = L"tz-test";
+    if (!RegisterClassExW(&wc)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_CLASS_ALREADY_EXISTS) return 0;
+    }
+    return 1;
+}
+
+static unsigned __stdcall post_worker(void *param) {
+    tz_poster_arg *arg = (tz_poster_arg *)param;
+    Sleep(15);
+    (void)PostMessageW(arg->hwnd, WM_APP, arg->wparam, (LPARAM)(intptr_t)arg->hwnd);
+    free(arg);
+    return 0;
+}
+
+int64_t w06_gui_pump(tz_msg_cb on_message, int64_t expected) {
+    if (!ensure_test_class()) return -2;
+    tz_pump_state state;
+    state.callback = on_message;
+    state.count = 0;
+    state.expected = expected;
+    state.timed_out = 0;
+
+    HWND hwnd = CreateWindowExW(0, L"tz-test", L"pump", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), &state);
+    if (!hwnd) return -3;
+
+    UINT_PTR guard = SetTimer(NULL, 0, 5000, NULL);
+    SetTimer(hwnd, 1, 10, NULL);
+    SetTimer(hwnd, 2, 15, NULL);
+
+    tz_poster_arg *arg = (tz_poster_arg *)malloc(sizeof(tz_poster_arg));
+    if (!arg) {
+        if (guard) KillTimer(NULL, guard);
+        DestroyWindow(hwnd);
+        return -4;
+    }
+    arg->hwnd = hwnd;
+    arg->wparam = 7;
+    HANDLE worker = (HANDLE)_beginthreadex(NULL, 0, post_worker, arg, 0, NULL);
+    if (!worker) free(arg);
+
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.hwnd == NULL && msg.message == WM_TIMER && msg.wParam == guard) {
+            state.timed_out = 1;
+            if (IsWindow(hwnd)) DestroyWindow(hwnd);
+            break;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (guard) KillTimer(NULL, guard);
+    if (worker) {
+        WaitForSingleObject(worker, 5000);
+        CloseHandle(worker);
+    }
+    return state.timed_out ? -1 : state.count;
+}
+
+int64_t w06_gui_send(int64_t window, uint32_t message, uint64_t wparam, int64_t lparam) {
+    return (int64_t)SendMessageW((HWND)(intptr_t)window, (UINT)message, (WPARAM)wparam, (LPARAM)lparam);
+}
+
+int64_t w06_gui_window(void) {
+    if (!ensure_test_class()) return 0;
+    HWND hwnd = CreateWindowExW(0, L"tz-test", L"wait", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+    return (int64_t)(intptr_t)hwnd;
+}
+
+int64_t w06_gui_wait(int64_t window) {
+    HWND hwnd = (HWND)(intptr_t)window;
+    if (!hwnd) return -2;
+    UINT_PTR guard = SetTimer(NULL, 0, 5000, NULL);
+    int64_t result = -1;
+    MSG msg;
+    while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+        if (msg.hwnd == NULL && msg.message == WM_TIMER && msg.wParam == guard) {
+            result = -1;
+            break;
+        }
+        if (msg.hwnd == hwnd && msg.message == WM_APP) {
+            result = (int64_t)msg.wParam;
+            break;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    if (guard) KillTimer(NULL, guard);
+    if (IsWindow(hwnd)) DestroyWindow(hwnd);
+    return result;
+}
+
+int64_t w06_gui_post(int64_t window, uint64_t wparam) {
+    BOOL ok = PostMessageW((HWND)(intptr_t)window, WM_APP, (WPARAM)wparam, 0);
+    return ok ? 1 : 0;
+}
+
+int64_t w06_gui_create(tz_msg_cb on_create) {
+    if (!ensure_test_class()) return -2;
+    g_create_callback = on_create;
+    g_create_result = -1;
+    HWND hwnd = CreateWindowExW(0, L"tz-test", L"create", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+    g_create_callback = NULL;
+    if (hwnd) DestroyWindow(hwnd);
+    return g_create_result;
+}
+
+void w06_gui_mark(const uint16_t *path, int64_t length) {
+    if (!path || length <= 0 || length >= 4096) return;
+    WCHAR wide[4096];
+    for (int64_t i = 0; i < length; i++) {
+        wide[i] = (WCHAR)path[i];
+    }
+    wide[length] = 0;
+    HANDLE file = CreateFileW(wide, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        (void)WriteFile(file, "marked\n", 7, &written, NULL);
+        CloseHandle(file);
+    }
+}

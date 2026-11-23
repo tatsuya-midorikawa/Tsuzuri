@@ -1,26 +1,258 @@
 import assert from "node:assert/strict";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { peHeaders, peResources, unwindFunctions, writeTestRes } from "./windows-pe.mjs";
 
-if (process.platform !== "win32") throw new Error("Windows E2E requires a Windows host; use TSUZURI_WINDOWS_SDK cargo test --test windows for cross-link validation");
-const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri.exe");
-const clang = process.env.TSUZURI_CLANG ?? "clang";
-assert.ok(["x64", "arm64"].includes(process.arch), `unsupported Windows architecture: ${process.arch}`);
-const named = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
-const directory = mkdtempSync(join(tmpdir(), "tsuzuri-windows-"));
-const nativeFlags = [`--target=${named}`, "-fuse-ld=lld", "-Wno-override-module", "-D_CRT_SECURE_NO_WARNINGS"];
+const selfPath = fileURLToPath(import.meta.url);
+const repository = resolve(dirname(selfPath), "..");
+const isMain = Boolean(process.argv[1]) && resolve(process.argv[1]) === selfPath;
+
+function currentClang() {
+  return process.env.TSUZURI_CLANG ?? "clang";
+}
+
+function isBundledClang(clangBin = currentClang()) {
+  return /tsuzuri-clang(?:\.exe)?$/i.test(clangBin);
+}
+
+function msvcNativeFlags() {
+  const named = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
+  return [`--target=${named}`, "-fuse-ld=lld", "-Wno-override-module", "-D_CRT_SECURE_NO_WARNINGS"];
+}
+
+function cCompileFlags(clangBin = currentClang()) {
+  return isBundledClang(clangBin) ? ["-D_CRT_SECURE_NO_WARNINGS"] : msvcNativeFlags();
+}
+
 function execute(program, args, success = true, env = {}, input = undefined) {
   const result = spawnSync(program, args, { input, encoding: "utf8", timeout: 180000, env: { ...process.env, ...env }, maxBuffer: 8 * 1024 * 1024 });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
 }
-const cli = (args, success, env, input) => execute(compiler, args, success, env, input);
-// Warnings come first on stderr as JSON lines; the error that --json reports is the last one.
-const diagnostic = (result) => JSON.parse(result.stderr.trim().split("\n").filter((line) => line.startsWith("{")).pop());
-try {
+
+let sharedWorkDir = null;
+let sharedLauncher = null;
+let sharedShimObj = null;
+let buildCounter = 0;
+
+function ensureSharedWorkDir() {
+  if (!sharedWorkDir) {
+    sharedWorkDir = mkdtempSync(join(tmpdir(), "tsuzuri-win-gui-"));
+    process.on("exit", () => {
+      try { rmSync(sharedWorkDir, { recursive: true, force: true }); } catch {}
+    });
+  }
+  return sharedWorkDir;
+}
+
+function ensureLauncher(workDir = ensureSharedWorkDir(), clangBin = currentClang()) {
+  if (sharedLauncher && existsSync(sharedLauncher)) return sharedLauncher;
+  const out = join(workDir, "windows_launch.exe");
+  execute(clangBin, [...cCompileFlags(clangBin), "-O1", join(repository, "tests/windows_launch.c"), "-o", out]);
+  sharedLauncher = out;
+  return out;
+}
+
+export function launchWithoutHandles(exe, args = [], options = {}) {
+  if (process.platform !== "win32") throw new Error("launchWithoutHandles requires a Windows host");
+  const launcher = options.launcher ?? ensureLauncher(options.directory, options.clang);
+  const launchArgs = ["--no-handles"];
+  if (options.firstException) launchArgs.push("--first-exception");
+  if (options.debugStrings) launchArgs.push("--debug-strings", options.debugStrings);
+  if (options.timeoutMs !== undefined) launchArgs.push("--timeout-ms", String(options.timeoutMs));
+  launchArgs.push("--", exe, ...args);
+  const result = execute(launcher, launchArgs, true, options.env ?? {});
+  const lastLine = result.stdout.trim().split(/\r?\n/).pop() ?? "";
+  assert.notEqual(lastLine, "timeout", `child timed out: ${exe} ${args.join(" ")}`);
+  const match = lastLine.match(/^exit=0x([0-9a-fA-F]{8})$/);
+  assert.ok(match, `unexpected windows_launch output for ${exe}:\n${result.stdout}\n${result.stderr}`);
+  return Number.parseInt(match[1], 16) >>> 0;
+}
+
+export function buildGui(fixture, flags = [], options = {}) {
+  if (process.platform !== "win32") throw new Error("buildGui requires a Windows host");
+  const workDir = options.directory ?? ensureSharedWorkDir();
+  const compilerBin = options.compiler ?? resolve(process.argv[2] ?? join(repository, "target/release/tsuzuri.exe"));
+  const clangBin = options.clang ?? currentClang();
+  if (!sharedShimObj || !existsSync(sharedShimObj)) {
+    const obj = join(workDir, "windows_gui_shim.obj");
+    execute(clangBin, [...cCompileFlags(clangBin), "-c", "-O1", join(repository, "tests/windows_gui_shim.c"), "-o", obj]);
+    sharedShimObj = obj;
+  }
+  const fixturePath = existsSync(fixture) ? fixture : join(repository, "tests/fixtures/windows_gui", fixture);
+  const out = options.output ?? join(workDir, `gui-${++buildCounter}.exe`);
+  execute(compilerBin, ["build", fixturePath, "--no-cache", "--link", sharedShimObj, "-l", "user32", ...flags, "-o", out], true, options.env ?? {});
+  return out;
+}
+
+function runGuiStage(compiler, clang, directory) {
+  sharedLauncher = null;
+  sharedShimObj = null;
+  const toolchainLabel = isBundledClang(clang) ? "bundled MinGW" : "LLVM MSVC";
+  const cFlags = cCompileFlags(clang);
+  const launcher = ensureLauncher(directory, clang);
+
+  // 1. launch_without_handles
+  const probeOut = join(directory, "gui-probe.txt");
+  assert.equal(launchWithoutHandles(launcher, ["--probe", probeOut], { launcher }), 0);
+  const probeLines = readFileSync(probeOut, "utf8").trim().split(/\r?\n/);
+  assert.equal(probeLines.length, 3);
+  for (let fd = 0; fd < 3; fd++) {
+    assert.match(probeLines[fd], new RegExp(`^fd${fd}=-2 handle${fd}=(?:0+|0x0+|\\(null\\))$`, "i"));
+  }
+
+  // 2. debug_strings
+  const probeDebug = join(directory, "gui-probe-debug.txt");
+  assert.equal(launchWithoutHandles(launcher, ["--probe-debug"], { launcher, debugStrings: probeDebug }), 0);
+  assert.deepEqual(readFileSync(probeDebug, "utf8").trimEnd().split("\n"), ["probe 1", "probe 2"]);
+
+  // 3. launch_exit_codes
+  for (const code of [0, 7, 255]) {
+    const exitDir = join(directory, `gui-exit-${code}`);
+    mkdirSync(exitDir, { recursive: true });
+    writeFileSync(join(exitDir, "Main.tz"), `def main :: unit -> i32 = \\() -> ${code}\n`);
+    const exitExe = join(directory, `gui-exit-${code}.exe`);
+    execute(compiler, ["build", exitDir, "--no-cache", "-o", exitExe]);
+    assert.equal(launchWithoutHandles(exitExe, [], { launcher }), code);
+  }
+
+  const allowedTrapCodes = [0xc000001d, 0xc000041d, 0xc0000005];
+  const dispatchedTrapCodes = [0xc000001d, 0xc0000005];
+  const kernelTrapCodes = [0xc000001d, 0xc000041d];
+
+  for (const optimization of ["-O0", "-O3"]) {
+    // 4. io_without_handles
+    const ioExe = join(directory, `gui-io${optimization}.exe`);
+    execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io"), "--no-cache", optimization, "-o", ioExe]);
+    assert.equal(execute(ioExe, [], false).status, 10, `io with handles ${optimization}`);
+    const ioNoHandles = launchWithoutHandles(ioExe, [], { launcher });
+    assert.ok(ioNoHandles !== 10 && ioNoHandles !== 0, `io without handles ${optimization}: ${ioNoHandles}`);
+
+    const ioTrapExe = join(directory, `gui-io-trap${optimization}.exe`);
+    execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io_trap"), "--no-cache", optimization, "-o", ioTrapExe]);
+    assert.equal(execute(ioTrapExe, [], false).status, 0, `io_trap with handles ${optimization}`);
+    const ioTrapCode = launchWithoutHandles(ioTrapExe, [], { launcher });
+    assert.ok(allowedTrapCodes.includes(ioTrapCode), `io_trap without handles ${optimization}: 0x${ioTrapCode.toString(16)}`);
+
+    // 5. message_window
+    const pumpExe = buildGui("pump", [optimization], { compiler, clang, directory });
+    assert.equal(execute(pumpExe, [], false).status, 3, `pump with handles ${optimization}`);
+    assert.equal(launchWithoutHandles(pumpExe, [], { launcher }), 3, `pump without handles ${optimization}`);
+
+    // 6. message_window_reentry
+    const reentryExe = buildGui("reentry", [optimization], { compiler, clang, directory });
+    assert.equal(execute(reentryExe, [], false).status, 2, `reentry with handles ${optimization}`);
+    assert.equal(launchWithoutHandles(reentryExe, [], { launcher }), 2, `reentry without handles ${optimization}`);
+
+    // 7. tzroutine_wakes_pump
+    const wakeExe = buildGui("wake", [optimization], { compiler, clang, directory });
+    for (const procs of ["1", "4"]) {
+      const env = { TSUZURI_MAXPROCS: procs };
+      assert.equal(execute(wakeExe, [], false, env).status, 1, `wake with handles ${optimization} P=${procs}`);
+      assert.equal(launchWithoutHandles(wakeExe, [], { launcher, env }), 1, `wake without handles ${optimization} P=${procs}`);
+    }
+
+    // 8. trap_in_dispatched_callback
+    const trapTimerExe = buildGui("trap_timer", [optimization], { compiler, clang, directory });
+    const timerMarker = join(directory, `marker-timer${optimization}.txt`);
+    const timerCode = launchWithoutHandles(trapTimerExe, [timerMarker], { launcher });
+    assert.ok(dispatchedTrapCodes.includes(timerCode), `trap_timer ${optimization}: 0x${timerCode.toString(16)}`);
+    assert.ok(!existsSync(timerMarker), `trap_timer marker should not exist (${optimization})`);
+
+    // 9. trap_in_kernel_callback
+    const trapCreateExe = buildGui("trap_create", [optimization], { compiler, clang, directory });
+    const createMarker = join(directory, `marker-create${optimization}.txt`);
+    const createCode = launchWithoutHandles(trapCreateExe, [createMarker], { launcher });
+    assert.ok(kernelTrapCodes.includes(createCode), `trap_create ${optimization}: 0x${createCode.toString(16)}`);
+    assert.ok(!existsSync(createMarker), `trap_create marker should not exist (${optimization})`);
+  }
+
+  // 10. pe_headers
+  const consoleCheckExe = join(directory, "pe-console.exe");
+  const peConsoleDir = join(directory, "pe-console");
+  mkdirSync(peConsoleDir, { recursive: true });
+  writeFileSync(join(peConsoleDir, "Main.tz"), "def main :: unit -> i32 = \\() -> 0\n");
+  execute(compiler, ["build", peConsoleDir, "--no-cache", "-o", consoleCheckExe]);
+  const consolePe = peHeaders(consoleCheckExe);
+  assert.equal(consolePe.subsystem, 3);
+  assert.equal(consolePe.machine, process.arch);
+
+  const guiProbeC = join(directory, "pe_gui_probe.c");
+  writeFileSync(guiProbeC, "int main(void) { return 0; }\n");
+  const guiProbeExe = join(directory, "pe-gui.exe");
+  const guiSubsysFlags = isBundledClang(clang)
+    ? ["-Wl,--subsystem,windows"]
+    : ["-Xlinker", "/subsystem:windows", "-Xlinker", "/entry:mainCRTStartup"];
+  execute(clang, [...cFlags, ...guiSubsysFlags, guiProbeC, "-o", guiProbeExe]);
+  const guiPe = peHeaders(guiProbeExe);
+  assert.equal(guiPe.subsystem, 2);
+  assert.equal(guiPe.machine, process.arch);
+
+  // 11. pe_resources
+  const resFile = join(directory, "test.res");
+  writeTestRes(resFile, [
+    { type: 24, name: 1, language: 1033, data: "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\"/>" },
+    { type: 16, name: 1, language: 1033, data: "version-payload" },
+  ]);
+  const resExe = join(directory, "pe-res.exe");
+  execute(clang, [...cFlags, guiProbeC, resFile, "-o", resExe]);
+  const resources = peResources(resExe);
+  assert.ok(resources.some((r) => r.type === 24 && r.name === 1 && r.language === 1033), JSON.stringify(resources));
+  assert.ok(resources.some((r) => r.type === 16 && r.name === 1 && r.language === 1033), JSON.stringify(resources));
+
+  // 12. unwind_functions
+  const unwindC = join(directory, "unwind_probe.c");
+  writeFileSync(unwindC, "extern int tz_ext_callee(int);\nint tz_probe_nonleaf(int x) { return tz_ext_callee(x) + 1; }\n");
+  const unwindCObj = join(directory, "unwind_probe.obj");
+  execute(clang, [...cFlags, "-c", "-O1", unwindC, "-o", unwindCObj]);
+  const cUnwind = unwindFunctions(unwindCObj);
+  assert.ok(cUnwind.has("tz_probe_nonleaf"), `expected tz_probe_nonleaf in ${[...cUnwind].join(", ")}`);
+
+  const unwindTzDir = join(directory, "unwind-tz");
+  mkdirSync(unwindTzDir, { recursive: true });
+  writeFileSync(join(unwindTzDir, "Main.tz"), "export def rec fact :: i64 -> i64\nfn rec fact n = if n <= 1 then 1 * fact 1 - 0 else fact (n - 1) + n\n");
+  const unwindTzObj = join(directory, "unwind_tz.obj");
+  execute(compiler, ["build", unwindTzDir, "--no-cache", "-O3", "--emit", "object", "-o", unwindTzObj]);
+  const tzUnwind = unwindFunctions(unwindTzObj);
+  console.log(`Windows GUI: Tsuzuri object unwind entries (${toolchainLabel}): ${tzUnwind.size}`);
+  console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
+}
+
+if (isMain) {
+  if (process.platform !== "win32") throw new Error("Windows E2E requires a Windows host; use TSUZURI_WINDOWS_SDK cargo test --test windows for cross-link validation");
+  const args = process.argv.slice(2);
+  let stage = null;
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--stage") {
+      stage = args[++i];
+    } else {
+      positional.push(args[i]);
+    }
+  }
+  const compiler = resolve(positional[0] ?? join(repository, "target/release/tsuzuri.exe"));
+  for (const name of ["TSUZURI_CLANG", "TSUZURI_WASM_LD"]) {
+    if (/[\\/]/.test(process.env[name] ?? "")) process.env[name] = resolve(process.env[name]);
+  }
+  process.chdir(repository);
+  const clang = currentClang();
+  assert.ok(["x64", "arm64"].includes(process.arch), `unsupported Windows architecture: ${process.arch}`);
+  const named = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`;
+  const directory = mkdtempSync(join(tmpdir(), "tsuzuri-windows-"));
+  const nativeFlags = msvcNativeFlags();
+  const cli = (cliArgs, success, env, input) => execute(compiler, cliArgs, success, env, input);
+  // Warnings come first on stderr as JSON lines; the error that --json reports is the last one.
+  const diagnostic = (result) => JSON.parse(result.stderr.trim().split("\n").filter((line) => line.startsWith("{")).pop());
+  try {
+    if (stage === "gui") {
+      runGuiStage(compiler, clang, directory);
+    } else if (stage !== null) {
+      throw new Error(`unknown --stage '${stage}'; expected gui`);
+    } else {
   const project = join(directory, "console");
   mkdirSync(project);
   const input = join(project, "Main.tz");
@@ -333,7 +565,10 @@ try {
     assert.equal(execute(nullExe, [], false).status, 3, `nullable-win ${optimization}`);
   }
   console.log("Windows MSVC: Maybe<H> NULL ABI passed");
+  runGuiStage(compiler, clang, directory);
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
-} finally {
-  rmSync(directory, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
