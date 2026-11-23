@@ -374,6 +374,8 @@ fn niche_layout(
         Type::Reference(..) if payload.slice_element().is_none() && !webassembly() => {
             Niche::NullPointer
         }
+        // NS01: native extern handles are non-null, so Maybe<H> is a single ptr with null = None.
+        Type::Handle(..) if !webassembly() => Niche::NullPointer,
         Type::Function(..) | Type::Once(_) => Niche::NullDescriptor,
         _ => return None,
     };

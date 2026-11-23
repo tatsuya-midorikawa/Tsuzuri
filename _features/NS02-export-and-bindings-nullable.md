@@ -16,20 +16,20 @@
 ## 実装者向け早見
 
 - 範囲: [W15](_completed/W15-abi-nullable-handles.md) が `extern def` とコールバック引数に限っていた NULL 境界変換を、ネイティブの `export def` の引数（`Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`）と結果（`Maybe<H>`）に広げ、`--emit header`・`--trap-mode return`・`--emit bindings-cs`・`bindings-py`・`bindings-cpp` を対応させる。WASM（`wasm32`・`wasm64` および `--emit bindings-js`）では W15 D2 と同じく `E1008`（`abi_native_only`）で拒否する。
-- 最初に読む: ① 仕様 1〜3 ② [W15](_completed/W15-abi-nullable-handles.md) と [NS01](NS01-nonnull-extern-handles.md) ③ `src/llvm_abi.rs` の `wrapper`・`try_prototype` ④ `src/bindings_native.rs` の `Shape`（140〜175 行）と 3 言語の生成部。
+- 最初に読む: ① 仕様 1〜3 ② [W15](_completed/W15-abi-nullable-handles.md) と [NS01](_completed/NS01-nonnull-extern-handles.md) ③ `src/llvm_abi.rs` の `wrapper`・`try_prototype` ④ `src/bindings_native.rs` の `Shape`（140〜175 行）と 3 言語の生成部。
 - 最初に書くテスト: `tests/abi_nullable.rs` の `export_nullable_positions_are_accepted` と `wasm_rejects_nullable_exports`。
 - 触ってはいけない: `Maybe` を `export def` に使わないモジュールの IR・ヘッダー・バインディング出力、WASM の `bindings-js` の既存出力。
 - 完了の見分け方: `export def find_item :: Maybe<ref Filter> -> Maybe<Item>` を `--emit shared` と `bindings-cs`・`bindings-py`・`bindings-cpp` でビルドし、3 言語すべてで `null` / `None` / `std::nullopt` の往復が成功する。
 
 ## 目的
 
-[W15](_completed/W15-abi-nullable-handles.md) D3 は、実装規模を抑えるため `export def` での `Maybe` を `E1008` のまま残した。しかし Tsuzuri を C・C++・C#・Python ホストへ組み込むライブラリとして使う際、`export def` 側で省略可能なレコード参照や「見つからなければ無し」のハンドル結果を表現できなければ、公開 API の利用者・実装者の双方がダミー値や別引数フラグに頼らざるを得ない。[NS01](NS01-nonnull-extern-handles.md) によって `H` と `Maybe<H>` の境界表現が整理された上で、公開 ABI とネイティブ 3 言語のバインディング生成器まで一貫して Null 安全にする。
+[W15](_completed/W15-abi-nullable-handles.md) D3 は、実装規模を抑えるため `export def` での `Maybe` を `E1008` のまま残した。しかし Tsuzuri を C・C++・C#・Python ホストへ組み込むライブラリとして使う際、`export def` 側で省略可能なレコード参照や「見つからなければ無し」のハンドル結果を表現できなければ、公開 API の利用者・実装者の双方がダミー値や別引数フラグに頼らざるを得ない。[NS01](_completed/NS01-nonnull-extern-handles.md) によって `H` と `Maybe<H>` の境界表現が整理された上で、公開 ABI とネイティブ 3 言語のバインディング生成器まで一貫して Null 安全にする。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- [W15](_completed/W15-abi-nullable-handles.md) と [NS01](NS01-nonnull-extern-handles.md) が `done` であること。
+- [W15](_completed/W15-abi-nullable-handles.md) と [NS01](_completed/NS01-nonnull-extern-handles.md) が `done` であること。
 - 決定事項 D1 の承認があること。
 - `node scripts/repo-kb.mjs brief NS02` を読み、`ABI_VERSION`（`src/bindings.rs`）と既存の `tests/host_bindings_native.mjs` の構成を確認する。
 
@@ -84,7 +84,7 @@
 ## 前提とする他チケットのインターフェース
 
 - [W15](_completed/W15-abi-nullable-handles.md): `abi::Nullable`, `abi::nullable`, `abi::c_view`, `DiagnosticKind::AbiNullablePayload`, `DiagnosticKind::AbiNativeOnly`。
-- [NS01](NS01-nonnull-extern-handles.md): ネイティブの `Maybe<H>` の `Niche::NullPointer` レイアウトと非 `Maybe` ハンドルの非 Null ガード。
+- [NS01](_completed/NS01-nonnull-extern-handles.md): ネイティブの `Maybe<H>` の `Niche::NullPointer` レイアウトと非 `Maybe` ハンドルの非 Null ガード。
 
 ## 他チケットへ提供するインターフェース
 

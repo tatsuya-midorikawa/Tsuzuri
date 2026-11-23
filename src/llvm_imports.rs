@@ -228,6 +228,10 @@ impl FunctionEmitter<'_, '_> {
         let output = if result_nullable {
             self.nullable_from_c(result, &value)
         } else {
+            if !self.globals.wasm && matches!(result, Type::Handle(..)) {
+                let valid = self.value(format!("icmp ne ptr {value}, null"));
+                self.guard(&valid, TrapKind::NullHandle);
+            }
             match result {
                 Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
                 Type::Integer(8 | 16, _) => {

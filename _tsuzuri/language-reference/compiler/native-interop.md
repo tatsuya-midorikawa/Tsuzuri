@@ -217,6 +217,8 @@ C ではどちらも `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポ�
 
 #### NULL を渡す・受ける（Maybe）
 
+ネイティブターゲットでは、非 `Maybe` の `H` と `ref H` は常に非 Null ポインタです。`H` を返す `extern def` に C が `NULL` を返したときや、`export def`・静的コールバックの `H`・`ref H` 引数にホストが `NULL` を渡したときは、境界で直ちに `null extern handle` でトラップします（C#・Python・C++ の生成バインディングも `0`・`None`・`nullptr` を例外で拒否します）。そのためネイティブの `Maybe<H>` はタグを持たない 1 つのポインタ（8 バイト、`None` が `NULL`）になり、`Some(NULL)` は作れません。`NULL` を取り得る C API には必ず `Maybe<H>` または `Maybe<ref H>` を使います（WebAssembly ではハンドル番号 `0` が有効値になり得るため、非 Null 検査も NULL niche も行いません）。
+
 ネイティブターゲットの `extern def` では、引数の `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`R` はスカラーレコード）と戻り値の `Maybe<H>`、および静的コールバック引数の `Maybe<H>`・`Maybe<ref H>` において、`None` が C の `NULL`、`Some` が非 `NULL` のポインタに対応します。所有ハンドルを消費せずに省略可能引数へ渡すときは `Maybe<ref H>`（`Some (ref handle)`）を使います。それ以外の `Maybe` の形は `E1008`（`abi_nullable_payload`）、WebAssembly で到達した場合は `E1008`（`abi_native_only`）です。
 
 ```tsuzuri

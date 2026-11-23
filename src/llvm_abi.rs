@@ -11,6 +11,15 @@ pub(super) fn extended(function: &CheckedFunction) -> bool {
             || out_result(&function.signature.result))
 }
 
+/// NS01: native exports taking non-`Maybe` `H` or `ref H` validate non-null entry pointers.
+pub(super) fn has_handle_parameter(function: &CheckedFunction) -> bool {
+    function.signature.parameters.iter().any(|ty| match ty {
+        Type::Handle(..) => true,
+        Type::Reference(inner, false) => matches!(inner.as_ref(), Type::Handle(..)),
+        _ => false,
+    })
+}
+
 fn host_function(function: &CheckedFunction) -> bool {
     function.exported || matches!(function.body.kind, TypedExprKind::HostCall(..))
 }
@@ -600,10 +609,18 @@ pub(super) fn wrapper(
         {
             // The host passes the handle itself; a borrow needs it in a slot.
             parameters.push(format!("ptr %arg{index}"));
+            if !emitter.globals.wasm {
+                let valid = emitter.value(format!("icmp ne ptr %arg{index}, null"));
+                emitter.guard(&valid, TrapKind::NullHandle);
+            }
             let slot = emitter.spill(handle, &format!("%arg{index}"));
             values.push(format!("ptr {slot}"));
         } else {
             parameters.push(format!("{} %arg{index}", abi_type(ty)));
+            if !emitter.globals.wasm && matches!(ty, Type::Handle(..)) {
+                let valid = emitter.value(format!("icmp ne ptr %arg{index}, null"));
+                emitter.guard(&valid, TrapKind::NullHandle);
+            }
             let value = emitter.decode_host_scalar(ty, &format!("%arg{index}"));
             values.push(format!("{} {value}", emitter.ty(ty)));
         }

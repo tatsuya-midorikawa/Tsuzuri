@@ -116,6 +116,14 @@ int32_t w15_visit(int32_t (*callback)(void *), void *handle) {
     return callback(NULL) * 10 + callback(handle);
 }
 
+void *ns01_null_handle(void) {
+    return NULL;
+}
+
+int32_t ns01_call_null(int32_t (*callback)(void *)) {
+    return callback(NULL);
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

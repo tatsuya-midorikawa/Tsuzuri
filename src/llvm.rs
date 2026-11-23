@@ -2052,20 +2052,22 @@ fn emit_program_in(
             &mut specializations,
         ));
         if function.exported {
-            let wrapper = if host_abi::extended(function) {
-                host_abi::wrapper(
-                    module,
-                    function,
-                    id,
-                    host_abi::WrapperKind::Export,
-                    &mut builtins,
-                    &mut intrinsics,
-                    &mut globals,
-                    &mut specializations,
-                )
-            } else {
-                export_wrapper(function, module)
-            };
+            let wrapper =
+                if host_abi::extended(function) || (!wasm && host_abi::has_handle_parameter(function))
+                {
+                    host_abi::wrapper(
+                        module,
+                        function,
+                        id,
+                        host_abi::WrapperKind::Export,
+                        &mut builtins,
+                        &mut intrinsics,
+                        &mut globals,
+                        &mut specializations,
+                    )
+                } else {
+                    export_wrapper(function, module)
+                };
             output.push_str(&debug::wrapper(
                 wrapper,
                 module,

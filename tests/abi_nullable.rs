@@ -190,3 +190,109 @@ fn both x =
         "{combo_ir}"
     );
 }
+
+#[test]
+fn nonnull_handle_result_export_and_callback_trap_on_null_on_native_only() {
+    use tsuzuri::trap::{TrapKind, TrapSource};
+    let source = "extern type H
+extern \"ns01_make\" def make_h :: unit -> H
+extern \"ns01_visit\" def visit :: (H -> ref H -> i32) -> i32
+private def cb :: own H -> ref H -> i32
+fn cb _owned _borrowed = 1i32
+export def take_owned :: own H -> i32
+fn take_owned _h = 1i32
+export def take_ref :: ref H -> i32
+fn take_ref _h = 2i32
+export def call_all :: i32 -> i32
+fn call_all _ =
+    let _ = make_h ()
+    visit cb
+";
+    let module = analyze(source).unwrap();
+    let trap_sources = [TrapSource {
+        path: "Main.tz",
+        text: source,
+    }];
+    let options = |wasm| llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let emitted = llvm::emit_with_trap_info(&module, options(false), &trap_sources).unwrap();
+    let null_sites: Vec<_> = emitted
+        .trap_sites
+        .iter()
+        .filter(|site| site.kind == TrapKind::NullHandle)
+        .collect();
+    // make_h return (1), take_owned param (1), take_ref param (1), cb owned + borrowed params (2) = 5 sites.
+    assert!(
+        null_sites.len() >= 4,
+        "expected NullHandle sites for extern return, exports, and callback: {null_sites:?}\n{}",
+        emitted.ir
+    );
+    assert!(
+        emitted.ir.contains("icmp ne ptr %arg0, null"),
+        "{}",
+        emitted.ir
+    );
+
+    // WASM keeps handle 0 valid: no NullHandle guards are emitted.
+    let wasm = llvm::emit_with_trap_info(&module, options(true), &trap_sources).unwrap();
+    assert!(
+        wasm.trap_sites
+            .iter()
+            .all(|site| site.kind != TrapKind::NullHandle),
+        "WASM must not emit NullHandle traps: {:?}",
+        wasm.trap_sites
+    );
+}
+
+#[test]
+fn maybe_handle_uses_null_pointer_niche_on_native_only() {
+    let source = "extern type H
+extern \"ns01_opt\" def opt_h :: Maybe<H> -> Maybe<H>
+export def round :: i32 -> i32
+fn round _ =
+    match opt_h None with
+    | Some h ->
+        match opt_h (Some h) with
+        | Some _ -> 1i32
+        | None -> 2i32
+    | None -> 0i32
+";
+    let module = analyze(source).unwrap();
+    let native_ir = ir(&module, false);
+    // On native, Maybe<H> uses Niche::NullPointer (single ptr), so no union type definition is emitted for Maybe<H>.
+    assert!(
+        !native_ir.contains("%\"tz.union.Maybe.Maybe[extern.Main.H]\""),
+        "{native_ir}"
+    );
+    assert!(
+        native_ir.contains("define internal ptr @tz.fn.Main.opt_h(ptr %arg0)"),
+        "{native_ir}"
+    );
+
+    // On WASM (without ABI Maybe<H>), Maybe<H> stays a tagged union so handle 0 remains distinct from None.
+    let wasm_internal = analyze(
+        "extern type H
+extern \"ns01_zero\" def zero_h :: unit -> H
+export def keep :: i32 -> i32
+fn keep _ =
+    let m: Maybe<H> = Some (zero_h ())
+    match m with
+    | Some _ -> 1i32
+    | None -> 0i32
+",
+    )
+    .unwrap();
+    let wasm_ir = ir(&wasm_internal, true);
+    assert!(
+        wasm_ir.contains("%\"tz.union.Maybe.Maybe[extern.Main.H]\" = type { i8, ptr }"),
+        "{wasm_ir}"
+    );
+}
+

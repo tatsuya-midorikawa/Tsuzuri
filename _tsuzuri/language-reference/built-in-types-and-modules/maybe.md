@@ -261,7 +261,7 @@ match Maybe.to_result "missing" missing with
 
 ## C ABI での NULL 対応
 
-ネイティブターゲットの `extern def` と静的コールバックでは、不透明ハンドル `H` やスカラーレコード参照 `ref R` を包んだ `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` が C の `NULL` と対応します（`None` ⇔ `NULL`）。WebAssembly では `E1008`（`abi_native_only`）です。詳しくは [ネイティブ連携の NULL を渡す・受ける](../compiler/native-interop.md#null-を渡す受けるmaybe) を参照してください。
+ネイティブターゲットでは不透明ハンドル `H` が非 Null 不変条件を持つため、`Maybe<H>` 自身もタグを持たない 1 つのポインタ（8 バイト、`None` が `NULL`）として表現されます。`extern def` と静的コールバックでは、不透明ハンドル `H` やスカラーレコード参照 `ref R` を包んだ `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` が C の `NULL` と対応します（`None` ⇔ `NULL`）。WebAssembly では `E1008`（`abi_native_only`）です。詳しくは [ネイティブ連携の NULL を渡す・受ける](../compiler/native-interop.md#null-を渡す受けるmaybe) を参照してください。
 
 ## ビルダー操作
 

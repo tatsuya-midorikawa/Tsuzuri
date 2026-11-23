@@ -15,7 +15,7 @@
 
 ## 実装者向け早見
 
-- 範囲: `tsuzuri bindgen` が C ヘッダーのポインタ（不透明 struct へのポインタ、および `const struct TAG *` のレコード入力）を変換するとき、Clang の Nullability 注釈（`_Nonnull`・`_Nullable`・`_Nullable_result`・`_Null_unspecified`）と関数属性（`__attribute__((nonnull))`・`__attribute__((returns_nonnull))`）、および新しい CLI 注釈 `--nonnull TARGET` を読んで型を決める。**非 Null の根拠がない C ポインタは既定で `Maybe<...>` に写し**、[NS01](NS01-nonnull-extern-handles.md) の境界トラップで落ちる偽の非 Null シグネチャを生成しないようにする。
+- 範囲: `tsuzuri bindgen` が C ヘッダーのポインタ（不透明 struct へのポインタ、および `const struct TAG *` のレコード入力）を変換するとき、Clang の Nullability 注釈（`_Nonnull`・`_Nullable`・`_Nullable_result`・`_Null_unspecified`）と関数属性（`__attribute__((nonnull))`・`__attribute__((returns_nonnull))`）、および新しい CLI 注釈 `--nonnull TARGET` を読んで型を決める。**非 Null の根拠がない C ポインタは既定で `Maybe<...>` に写し**、[NS01](_completed/NS01-nonnull-extern-handles.md) の境界トラップで落ちる偽の非 Null シグネチャを生成しないようにする。
 - 最初に読む: ① 仕様 1〜3 ② `src/bindgen.rs` の 1035〜1070 行（`_Nonnull` / `_Nullable` を捨てている箇所）と 2295〜2360 行（`value_type`・`callback`）③ 2130〜2290 行（`--consume`・`--buffer` の検証）。
 - 最初に書くテスト: `tests/bindgen.rs` の `unannotated_pointers_default_to_maybe` と `nonnull_qualifiers_and_attributes_emit_non_maybe`。
 - 触ってはいけない: スカラー・enum・マクロ・`--buffer`（空スライスはもともと `NULL` と長さ `0` を許容）の変換規則。
@@ -25,13 +25,13 @@
 
 現行の `src/bindgen.rs`（1040〜1041 行、1063〜1064 行）は `_Nonnull`・`_Nullable`・`_Null_unspecified`・`_Nullable_result` をすべて無視し、不透明 struct ポインタを常に `ref H`（引数）・`H`（結果）、構造体ポインタを常に `ref Record` として出力する。
 
-C の実コードでは、`fopen`・`sqlite3_db_handle`・`SSL_new` などの生成関数は失敗時に `NULL` を返すのが標準であり、ほとんどの C ヘッダーは `_Nullable` を書かない。このまま [NS01](NS01-nonnull-extern-handles.md)（非 `Maybe` の `H` で `NULL` が返るとトラップ）を入れると、`bindgen` が生成した宣言が失敗系でトラップしてしまう。Swift の C インポートや Rust bindgen の安全ラッパーと同様に、「非 Null と証明・指定された箇所だけ `H` / `ref H` / `ref R`、それ以外は `Maybe<...>`」とすることで、自動生成バインディングを最初から Null 安全にする。
+C の実コードでは、`fopen`・`sqlite3_db_handle`・`SSL_new` などの生成関数は失敗時に `NULL` を返すのが標準であり、ほとんどの C ヘッダーは `_Nullable` を書かない。このまま [NS01](_completed/NS01-nonnull-extern-handles.md)（非 `Maybe` の `H` で `NULL` が返るとトラップ）を入れると、`bindgen` が生成した宣言が失敗系でトラップしてしまう。Swift の C インポートや Rust bindgen の安全ラッパーと同様に、「非 Null と証明・指定された箇所だけ `H` / `ref H` / `ref R`、それ以外は `Maybe<...>`」とすることで、自動生成バインディングを最初から Null 安全にする。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- [W15](_completed/W15-abi-nullable-handles.md) と [NS01](NS01-nonnull-extern-handles.md) が `done` であること。
+- [W15](_completed/W15-abi-nullable-handles.md) と [NS01](_completed/NS01-nonnull-extern-handles.md) が `done` であること。
 - 決定事項 D1・D2 の承認があること。
 - `node scripts/repo-kb.mjs brief NS03` を読み、Clang 21 と Clang 23 の JSON AST における `NonNullAttr`・`ReturnsNonNullAttr` と `_Nonnull` / `_Nullable` の `qualType` 表記を確認する。
 
@@ -98,7 +98,7 @@ tsuzuri bindgen header.h -o Module.tz [--nonnull FUNCTION:TARGET]...
 ## 前提とする他チケットのインターフェース
 
 - [W15](_completed/W15-abi-nullable-handles.md): `extern` 引数の `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`、結果の `Maybe<H>`、コールバック引数の `Maybe<H>`・`Maybe<ref H>`。
-- [NS01](NS01-nonnull-extern-handles.md): 非 `Maybe` の `H` の非 Null 不変条件。
+- [NS01](_completed/NS01-nonnull-extern-handles.md): 非 `Maybe` の `H` の非 Null 不変条件。
 
 ## 他チケットへ提供するインターフェース
 
