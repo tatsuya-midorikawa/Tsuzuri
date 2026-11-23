@@ -100,6 +100,63 @@ try {
   }
   console.log("Windows MSVC: a trap reports its position and ends the process with 0xC000001D at -O0 and -O3");
 
+  // W04: when standard error is missing, `--trap-info` and tzroutine runtime reports fall back to
+  // OutputDebugStringW; when standard error is present, nothing is sent to the debugger.
+  const launcher = join(directory, "windows_launch.exe");
+  execute(clang, [...nativeFlags, "-O1", "tests/windows_launch.c", "-o", launcher]);
+  const probeOut = join(directory, "probe.txt");
+  const probeRun = execute(launcher, ["--no-handles", "--", launcher, "--probe", probeOut]);
+  assert.match(probeRun.stdout.trim(), /^exit=0x00000000$/);
+  const probeLines = readFileSync(probeOut, "utf8").trim().split(/\r?\n/);
+  assert.equal(probeLines.length, 3);
+  for (let fd = 0; fd < 3; fd++) {
+    assert.match(probeLines[fd], new RegExp(`^fd${fd}=-2 handle${fd}=(?:0+|0x0+|\\(null\\))$`, "i"));
+  }
+  const probeDebug = join(directory, "probe-debug.txt");
+  assert.match(execute(launcher, ["--no-handles", "--debug-strings", probeDebug, "--", launcher, "--probe-debug"]).stdout.trim(), /^exit=0x00000000$/);
+  assert.deepEqual(readFileSync(probeDebug, "utf8").trimEnd().split("\n"), ["probe 1", "probe 2"]);
+
+  const wgProject = join(directory, "wg-negative");
+  mkdirSync(wgProject);
+  writeFileSync(join(wgProject, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let group = WaitGroup.create ()\n    WaitGroup.done (ref group)\n    0\n");
+  const jpDir = join(directory, "\u65e5\u672c\u8a9e");
+  mkdirSync(jpDir);
+  writeFileSync(join(jpDir, "Main.tz"), "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n");
+
+  for (const optimization of ["-O0", "-O3"]) {
+    const trapExe = join(directory, `trap-ods${optimization}.exe`);
+    cli(["build", trapping, "--no-cache", optimization, "--trap-info", "-o", trapExe]);
+    const odsTrap = join(directory, `ods-trap${optimization}.txt`);
+    execute(launcher, ["--no-handles", "--debug-strings", odsTrap, "--", trapExe]);
+    const trapLines = readFileSync(odsTrap, "utf8").trimEnd().split("\n");
+    assert.equal(trapLines.length, 1, trapLines.join("\n"));
+    assert.match(trapLines[0], /^trap: integer division by zero at .*Main\.tz:2:15$/);
+    const trapExit = execute(launcher, ["--no-handles", "--", trapExe]);
+    assert.match(trapExit.stdout.trim().split(/\r?\n/).pop(), /^exit=0xC000001D$/i);
+
+    // With inherited standard error, the trap report goes to stderr and not to OutputDebugStringW.
+    const odsInherited = join(directory, `ods-inherited${optimization}.txt`);
+    const inherited = execute(launcher, ["--debug-strings", odsInherited, "--", trapExe]);
+    assert.equal(readFileSync(odsInherited, "utf8"), "");
+    assert.match(inherited.stderr, /trap: integer division by zero at /);
+
+    const wgExe = join(directory, `wg-ods${optimization}.exe`);
+    cli(["build", wgProject, "--no-cache", optimization, "-o", wgExe]);
+    const odsWg = join(directory, `ods-wg${optimization}.txt`);
+    execute(launcher, ["--no-handles", "--debug-strings", odsWg, "--", wgExe]);
+    const wgLines = readFileSync(odsWg, "utf8").trimEnd().split("\n");
+    assert.deepEqual(wgLines, ["Tsuzuri runtime: negative WaitGroup counter"]);
+
+    const jpExe = join(directory, `jp-ods${optimization}.exe`);
+    cli(["build", jpDir, "--no-cache", optimization, "--trap-info", "-o", jpExe]);
+    const odsJp = join(directory, `ods-jp${optimization}.txt`);
+    execute(launcher, ["--no-handles", "--debug-strings", odsJp, "--", jpExe]);
+    const jpLines = readFileSync(odsJp, "utf8").trimEnd().split("\n");
+    assert.equal(jpLines.length, 1);
+    assert.ok(jpLines[0].includes("\u65e5\u672c\u8a9e"), jpLines[0]);
+  }
+  console.log("Windows MSVC: trap and runtime reports fall back to OutputDebugStringW without standard error at -O0 and -O3");
+
   // W42: 128-bit division, remainder, multiplication and shifts follow the Windows ABI at -O0 and -O3,
   // both inside Tsuzuri programs and in C hosts linked with a Tsuzuri object.
   const wideRun = join(directory, "i128-run");

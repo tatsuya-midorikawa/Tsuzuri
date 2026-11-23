@@ -127,7 +127,7 @@ Windows では、fd 0〜2 に対する CRT の呼び出し（`_setmode`・書き
 - `IO.Error` の末尾に `Unavailable` を足す（`union Error = ReadFailed | WriteFailed | InvalidEncoding | Unavailable`）。意味は「その標準ストリームがプロセスに無い」（D2）。
 - `try_write`・`try_writeln`・`try_write_err`・`try_write_errln`: 状態 2 を `Error Unavailable` にする。孤立サロゲートの `InvalidEncoding` が先なのは今と同じ。
 - `try_readln`: 状態 3 を `Error Unavailable` にする。入力の終わり（`None`）とは区別する。
-- 非 `try_` の 5 つは、`Unavailable` でも今と同じくトラップする。トラップの報告は、標準エラーが無ければ [W04](W04-windows-trap-report-lost.md) の経路で `OutputDebugStringW` に届く。W04 が入る前は、報告は失われ、トラップだけが起きる（今と同じ）。
+- 非 `try_` の 5 つは、`Unavailable` でも今と同じくトラップする。トラップの報告は、標準エラーが無ければ [W04](_completed/W04-windows-trap-report-lost.md) の経路で `OutputDebugStringW` に届く。
 - **D2 が却下されたとき**: case を足さない。状態 2・3 を、それぞれ `WriteFailed`・`ReadFailed` にする。このとき `std/IO.tc` は変えず、ランタイムだけが新しい状態を返す。`IO.tc` の受け方が「0 以外は失敗」なので、結果は今と同じになる。仕様 3 の `Debug.print` は D2 によらず入れる。
 
 ### 3. `Debug.print`・`Debug.trace`
@@ -185,7 +185,7 @@ static int tz_io_absent(int fd) {
   - 本体は `debug.ll` と同じく `@write(2, ...)` で書く。そのため `windows_abi` の `_setmode`・`_write` の shim はそのまま使う（W04 が `_setmode` の −1 を失敗にする）。
   - 書き込みの前後を、`io.c` と同じくスレッド局所の何もしない処理（IR の `@tz.debug.quiet`）で挟む。閉じた fd 2 の `_setmode` で終わらないようにするためである。
   - 失敗の分岐で `offset == 0` かつ fd 2 が無い（`_get_osfhandle(2)` が `-2`、または `-1` で `errno` が `EBADF`。`errno` は `_errno()` で読む）なら、`@tz.debugger.write(ptr %data, i64 %length)` を呼んで戻る。それ以外はトラップする。
-  - 送る部分は [W04](W04-windows-trap-report-lost.md) の `@tz.debugger.write(ptr %data, i64 %length)`（`src/llvm_traps.rs` の `DEBUGGER_WRITE`。スタックの 512 バイトで 255 バイトずつ `MultiByteToWideChar` で変換して `OutputDebugStringW` に送る）の 1 つだけを使い、別名の補助は作らない。W04 が入っていれば呼ぶだけ。W04 が入っていなければ、W04 の仕様（W04 の「設計」と D4・D5）どおりの `DEBUGGER_WRITE` を同じ名前・同じ型でこのチケットが足し、後から入る W04 はそれを使う（定義が無いときだけ足す。`intrinsics` と同じく重複させない）。改行は足さない: `debug.ll` の `@tz.debug.write` は改行を別の `@write` で書くので、送るのは文の本体だけで、`OutputDebugStringW` の 1 回の呼び出しがデバッガーの 1 項目になる（255 バイトを超える文は W04 と同じく複数の項目に分かれる）。
+  - 送る部分は [W04](_completed/W04-windows-trap-report-lost.md) の `@tz.debugger.write(ptr %data, i64 %length)`（`src/llvm_traps.rs` の `DEBUGGER_WRITE`。スタックの 512 バイトで 255 バイトずつ `MultiByteToWideChar` で変換して `OutputDebugStringW` に送る）の 1 つだけを使い、別名の補助は作らない。改行は足さない: `debug.ll` の `@tz.debug.write` は改行を別の `@write` で書くので、送るのは文の本体だけで、`OutputDebugStringW` の 1 回の呼び出しがデバッガーの 1 項目になる（255 バイトを超える文は W04 と同じく複数の項目に分かれる）。
   - 宣言の型は `declare i64 @_get_osfhandle(i32)`、`declare ptr @_errno()`、`declare ptr @_set_thread_local_invalid_parameter_handler(ptr)`、`declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)`、`declare void @OutputDebugStringW(ptr)`。kernel32 と CRT の関数なので、リンクの入力は増えない。
   - 長さが `INT32_MAX` を超える文字列は、`MultiByteToWideChar` の `int` に合わせて分けて送る。
 - `windows_abi` は、`define internal void @tz.debug.write(%tz.utf8string %text) nounwind {` の行から対応する `}` までを、`debug-windows.ll` の定義に置き換える。宣言は重複させない（`intrinsics` と同じく、既にある `declare` は足さない）。
@@ -200,7 +200,7 @@ static int tz_io_absent(int fd) {
 ## 前提とする他チケットのインターフェース
 
 - [W06](W06-windows-gui-test-harness.md) の仕様 4: `windows_launch.exe --no-handles`・`--debug-strings <path>`、`launchWithoutHandles`。W06 が未着手なら、同じ形で足す（着手条件）。
-- [W04](W04-windows-trap-report-lost.md): 標準エラーが無いときのトラップの報告の `OutputDebugStringW` への経路。このチケットは、それを前提にしない（W04 がなくてもトラップは起きる）。デバッガーへ送る補助は W04 の `@tz.debugger.write(ptr, i64)`（`DEBUGGER_WRITE`）を名前・型・仕様のまま使い、W04 が未着手ならこのチケットが同じものを足す。
+- [W04](_completed/W04-windows-trap-report-lost.md): 標準エラーが無いときのトラップの報告の `OutputDebugStringW` への経路。デバッガーへ送る補助は W04 の `@tz.debugger.write(ptr, i64)`（`DEBUGGER_WRITE`）をそのまま使う。
 
 ## 他チケットへ提供するインターフェース
 

@@ -103,7 +103,7 @@ add 20 22
 42
 ```
 
-`--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。
+`--emit llvm` は、自分で `llc` や `clang` に渡す IR です。`--emit exe` は Tsuzuri の入口を持つ実行ファイルで、C の `main` と一緒にはリンクしません。C が `main` を持つときは object を使います。Windows では、object を埋め込んだホストでも `--trap-info` のトラップ報告は OS の標準エラーハンドル（`GetStdHandle(STD_ERROR_HANDLE)`）へ直接書くため、CRT のファイル記述子 2 のリダイレクト（`_dup2`）には従いません（標準エラーが無い・書けないときは `OutputDebugStringW` へ送ります）。
 
 C のホストに入れる object も、プロファイルで最適化できます。`--emit object --profile-generate DIR` の object は計装されていますが、プロファイルのランタイムを持たないので、最後のリンクに `-fprofile-generate=DIR` を付けます（付けないと、macOS では `___llvm_profile_runtime` が未定義です）。ホストを動かすと `DIR` にプロファイルができ、`--emit object --profile-use DIR` で作り直します（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 

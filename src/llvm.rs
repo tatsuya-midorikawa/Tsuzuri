@@ -191,6 +191,17 @@ pub fn windows_i128_helpers(aarch64: bool) -> String {
 }
 
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
+    let has_trap_write = ir.contains("define internal void @tz.trap.write(");
+    let ir = if has_trap_write {
+        assert_eq!(
+            ir.matches(traps::TRAP_WRITE).count(),
+            1,
+            "unexpected @tz.trap.write definition in Windows IR"
+        );
+        ir.replacen(traps::TRAP_WRITE, traps::TRAP_WRITE_WINDOWS, 1)
+    } else {
+        ir
+    };
     let mut output = String::with_capacity(ir.len());
     let mut exports: BTreeSet<_> = module
         .functions
@@ -201,7 +212,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if io_entry(module) || main_entry(module) {
         exports.insert("tsuzuri_main".into());
     }
-    let has_write = ir.contains("declare i64 @write(i32, ptr, i64)");
+    let has_write = ir.contains("call i64 @write(");
     let has_console = ir.contains("define internal i32 @tz.console.write(");
     let mut console = false;
     for line in ir.lines() {
@@ -226,11 +237,26 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
             console = false;
         }
     }
+    if has_trap_write {
+        if !output.contains("define internal void @tz.debugger.write(") {
+            output.push_str(traps::DEBUGGER_WRITE);
+        }
+        for declaration in [
+            "declare ptr @GetStdHandle(i32)",
+            "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+            "declare void @OutputDebugStringW(ptr)",
+            "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
+    }
     if has_console || has_write {
         output.push_str("declare i32 @_setmode(i32, i32)\n");
     }
     if has_write {
-        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
+        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
     output.push_str(&windows_i128_helpers(
         crate::target::current_platform().aarch64(),
@@ -10820,5 +10846,90 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             boxed(function(vec![Type::String], &[], true, Type::I64))
         );
         assert_ne!(codegen_identity(&pure), plain);
+    }
+
+    #[test]
+    fn windows_trap_report_falls_back_to_the_debugger() {
+        let source = "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n";
+        let module = analyze(source).unwrap();
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let options = EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        for numbering in [TrapNumbering::Dense, TrapNumbering::Stable] {
+            for debug_info in [false, true] {
+                for optimized in [false, true] {
+                    if !debug_info && optimized {
+                        continue;
+                    }
+                    let base = if debug_info {
+                        emit_with_debug_info_numbered(
+                            &module,
+                            options,
+                            &sources,
+                            optimized,
+                            true,
+                            &|_| numbering,
+                        )
+                        .unwrap()
+                        .ir
+                    } else {
+                        emit_with_trap_info_numbered(&module, options, &sources, &|_| numbering)
+                            .unwrap()
+                            .ir
+                    };
+                    assert!(!base.contains("@GetStdHandle"));
+                    assert!(!base.contains("@tz.debugger.write("));
+                    let win = windows_abi(base.clone(), &module);
+                    assert_eq!(win, windows_abi(base, &module));
+                    assert!(win.contains("call ptr @GetStdHandle(i32 -12)"));
+                    assert!(!win.contains("call i64 @write("));
+                    assert!(!win.contains("define internal i64 @write("));
+                    assert_eq!(
+                        win.matches("define internal void @tz.debugger.write(")
+                            .count(),
+                        1
+                    );
+                    for declaration in [
+                        "declare ptr @GetStdHandle(i32)",
+                        "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+                        "declare void @OutputDebugStringW(ptr)",
+                        "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+                    ] {
+                        assert_eq!(win.matches(declaration).count(), 1, "{declaration}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windows_write_shim_reports_a_failed_setmode() {
+        let module = analyze(
+            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }",
+        )
+        .unwrap();
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let win = emit_with_export_style(&module, options, ExportStyle::Dllexport).unwrap();
+        assert!(win.contains("define internal i64 @write("));
+        assert!(win.contains("%bad_mode = icmp eq i32 %mode, -1"));
+        assert!(win.contains("ret i64 -1"));
     }
 }

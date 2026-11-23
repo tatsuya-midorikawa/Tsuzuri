@@ -255,9 +255,20 @@ static void tzr_fatal(const char *message);
 
 /* ---------------------------------------------------------------- failure */
 
-static void tzr_fatal(const char *message) {
-    fprintf(stderr, "Tsuzuri runtime: %s\n", message);
+#if !defined(_WIN32)
+static void tzr_report(const char *text, size_t length) {
+    fwrite(text, 1, length, stderr);
     fflush(stderr);
+}
+#endif
+
+static void tzr_fatal(const char *message) {
+    char buffer[512];
+    int length = snprintf(buffer, sizeof buffer, "Tsuzuri runtime: %s\n", message);
+    if (length > 0) {
+        size_t count = (size_t)length < sizeof buffer ? (size_t)length : sizeof buffer - 1;
+        tzr_report(buffer, count);
+    }
     abort();
 }
 
@@ -1096,9 +1107,19 @@ static void tzr_report_deadlock(void) {
         }
     }
     tzr_lock_release(&tzr_pseudo_lock);
-    fprintf(stderr, "Tsuzuri runtime: all tzroutines are asleep - deadlock! (%lld waiting%s%s)\n",
-            (long long)(waiting + tzr_sched.npseudo_parked), reasons[0] ? ": " : "", reasons);
-    fflush(stderr);
+    char buffer[640];
+    int length = snprintf(
+        buffer,
+        sizeof buffer,
+        "Tsuzuri runtime: all tzroutines are asleep - deadlock! (%lld waiting%s%s)\n",
+        (long long)(waiting + tzr_sched.npseudo_parked),
+        reasons[0] ? ": " : "",
+        reasons
+    );
+    if (length > 0) {
+        size_t count = (size_t)length < sizeof buffer ? (size_t)length : sizeof buffer - 1;
+        tzr_report(buffer, count);
+    }
 }
 
 /* Called with tzr_sched.lock held whenever an M goes idle or a pseudo-G parks. */
@@ -2785,8 +2806,12 @@ TZR_API void tsuzuri_tz_report(int32_t what) {
         "Semaphore weight is negative or larger than its capacity",
     };
     if (what > 0 && what < (int32_t)(sizeof messages / sizeof messages[0])) {
-        fprintf(stderr, "Tsuzuri runtime: %s\n", messages[what]);
-        fflush(stderr);
+        char buffer[256];
+        int length = snprintf(buffer, sizeof buffer, "Tsuzuri runtime: %s\n", messages[what]);
+        if (length > 0) {
+            size_t count = (size_t)length < sizeof buffer ? (size_t)length : sizeof buffer - 1;
+            tzr_report(buffer, count);
+        }
     }
 }
 

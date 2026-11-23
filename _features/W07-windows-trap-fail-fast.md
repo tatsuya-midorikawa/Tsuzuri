@@ -23,7 +23,7 @@
 
 ## 目的
 
-ドキュメントは「トラップしたあとに例外として捕まえることはできません」と約束する（`basic-types.md`）。Windows のトラップは `ud2`（Arm64 は `brk #0x1`）が起こす普通の SEH の例外なので、Tsuzuri の外の SEH のフィルターが捕まえうる。捕まえられると、tzroutine の P の状態などが壊れたまま続く（`src/runtime/tzroutine.c` の `tsuzuri_tz_callback_enter` が `syscall_depth` を 0 にし、`tsuzuri_tz_callback_exit` が戻さないまま extern の呼び出しが返ると、`tsuzuri_tz_blocking_exit` が深さを −1 にして `tzr_exitsyscall` をもう一度呼ぶ）。このチケットは、どの OS のフレームの下でもトラップがプロセスを同じ終了コードで終わらせるようにし、デバッガーと WER がスタックを辿れるよう `.pdata` を出す。[E14](_completed/E14-trap-boundary.md) の D9 が「Windows は G10 の完了後に vectored exception handler で同じ報告をする」とし、[G10](_completed/G10-windows.md) が後続の作業に挙げたものを、トラップまで広げて実装する（[GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)）。報告の届け先は [W04](W04-windows-trap-report-lost.md)、検査の基盤は [W06](W06-windows-gui-test-harness.md)。
+ドキュメントは「トラップしたあとに例外として捕まえることはできません」と約束する（`basic-types.md`）。Windows のトラップは `ud2`（Arm64 は `brk #0x1`）が起こす普通の SEH の例外なので、Tsuzuri の外の SEH のフィルターが捕まえうる。捕まえられると、tzroutine の P の状態などが壊れたまま続く（`src/runtime/tzroutine.c` の `tsuzuri_tz_callback_enter` が `syscall_depth` を 0 にし、`tsuzuri_tz_callback_exit` が戻さないまま extern の呼び出しが返ると、`tsuzuri_tz_blocking_exit` が深さを −1 にして `tzr_exitsyscall` をもう一度呼ぶ）。このチケットは、どの OS のフレームの下でもトラップがプロセスを同じ終了コードで終わらせるようにし、デバッガーと WER がスタックを辿れるよう `.pdata` を出す。[E14](_completed/E14-trap-boundary.md) の D9 が「Windows は G10 の完了後に vectored exception handler で同じ報告をする」とし、[G10](_completed/G10-windows.md) が後続の作業に挙げたものを、トラップまで広げて実装する（[GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)）。報告の届け先は [W04](_completed/W04-windows-trap-report-lost.md)、検査の基盤は [W06](W06-windows-gui-test-harness.md)。
 
 ## 着手条件と停止条件
 

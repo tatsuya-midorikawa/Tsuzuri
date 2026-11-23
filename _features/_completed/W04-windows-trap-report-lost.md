@@ -6,8 +6,8 @@
 | 優先度 | P1（修正。GUI サブシステムの実行ファイル（W09）や標準エラーを閉じたホストでは、トラップの理由がどこにも残らない） |
 | 規模 | S（IR の書き手 2 つの差し替え、ランタイム C の報告 3 か所、Windows の E2E の段と小さな C の補助） |
 | 依存 | – |
-| 後続 | W07 |
-| 状態 | todo |
+| 後続 | [W07](../W07-windows-trap-fail-fast.md) |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 不要（報告の届け先を足すだけで、トラップの意味・終了コード・報告の文・POSIX と WASM の出力は変えない） |
 | 手本にする既存実装 | `src/llvm.rs` の `windows_abi`（Windows だけの IR の差し替えと宣言の追加）、`src/llvm_traps.rs` の `TRAP_WRITE`・`with_frame_pointers`、`src/runtime/stack.c` の `tz_stack_fault`（報告を書いてから終わる）、`src/runtime/tzroutine-windows.h`（Windows だけの C を `tzroutine.c` に埋め込む） |
@@ -126,7 +126,7 @@ exit:
 ## 他チケットへ提供するインターフェース
 
 - IR `@tz.debugger.write(ptr %data, i64 %length)`（Windows だけ、internal・cold・nounwind、UTF-8 をデバッガーの出力へ）。W07（スタック枯渇の報告）と W08（標準エラーの無い `Debug.print`）が使う。デバッガーへ送る補助はこの 1 つだけにする。W08 が先に入ったときは、W08 がこの名前・型・仕様の `DEBUGGER_WRITE` を足しているので、このチケットはそれを使い、定義を重ねない。
-- `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write`）。W07 は `--trap-info` のないビルドでも、VEH の報告のためにこれを足す（定義が無いときだけ）。[W32](W32-silent-write-failures.md) は、Windows の `--overflow-report` の `@tz.overflow.write` をこれへの転送に置き換え、無ければ同じく足す（W07 と共有する 1 つの補助。W32 の D6）。どちらも、このチケットの `TRAP_WRITE` → `TRAP_WRITE_WINDOWS` の置き換えの後に足す。このチケットが先に無ければ、W32 が同じ名前・同じ本文の定数を足し、このチケットはそれを使う。
+- `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write`）。W07 は `--trap-info` のないビルドでも、VEH の報告のためにこれを足す（定義が無いときだけ）。[W32](../W32-silent-write-failures.md) は、Windows の `--overflow-report` の `@tz.overflow.write` をこれへの転送に置き換え、無ければ同じく足す（W07 と共有する 1 つの補助。W32 の D6）。どちらも、このチケットの `TRAP_WRITE` → `TRAP_WRITE_WINDOWS` の置き換えの後に足す。このチケットが先に無ければ、W32 が同じ名前・同じ本文の定数を足し、このチケットはそれを使う。
 - ランタイム C の `tzr_report(const char *, size_t)`。W07 のランタイムのトラップが使う。
 - W04 が W06 より先に入ったときは、W06 の起動器の一部（上の 4 つの引数）。
 
@@ -156,10 +156,10 @@ exit:
 
 ## 受け入れ条件
 
-- [ ] 「仕様」の 1〜4 のとおりに動き、E2E の (1)〜(4) が MSVC で通る。同梱の MinGW でも手元で通した（記録する）。
-- [ ] POSIX と WASM の `--emit llvm` と、POSIX のランタイム C の出力のバイト列が変わらない。Windows の IR が変わるのは `--trap-info` の報告と `@write` の shim だけ。
-- [ ] 宣言が重複せず、Windows の IR が決定的。
-- [ ] 文書を直し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
+- [x] 「仕様」の 1〜4 のとおりに動き、E2E の (1)〜(4) が MSVC で通る。同梱の MinGW でも手元で通した。
+- [x] POSIX と WASM の `--emit llvm` と、POSIX のランタイム C の出力のバイト列が変わらない。Windows の IR が変わるのは `--trap-info` の報告と `@write` の shim だけ。
+- [x] 宣言が重複せず、Windows の IR が決定的。
+- [x] 文書を直し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
 
 ## 落とし穴
 
@@ -172,8 +172,8 @@ exit:
 
 ## 対象外
 
-- トラップの終わり方（fail-fast、VEH、`uwtable`）と、`tzr_fatal` の `abort()` の 0xC0000409 を 0xC000001D にそろえるかどうか（[W07](W07-windows-trap-fail-fast.md)）。
-- `Debug.print`・`Debug.trace`・`IO.*` の、標準ストリームが無いとき（閉じた fd で静的な UCRT が `_setmode` の中で終わる件を含む）の意味（[W08](W08-io-without-std-streams.md)）。結果の表示と `--overflow-report` の、書けないときの扱い（今は黙って捨てる）は、W08 の決定に従って [W32](W32-silent-write-failures.md) が直す。shim の `_setmode` の変更は仕様 4 だけ。
+- トラップの終わり方（fail-fast、VEH、`uwtable`）と、`tzr_fatal` の `abort()` の 0xC0000409 を 0xC000001D にそろえるかどうか（[W07](../W07-windows-trap-fail-fast.md)）。
+- `Debug.print`・`Debug.trace`・`IO.*` の、標準ストリームが無いとき（閉じた fd で静的な UCRT が `_setmode` の中で終わる件を含む）の意味（[W08](../W08-io-without-std-streams.md)）。結果の表示と `--overflow-report` の、書けないときの扱い（今は黙って捨てる）は、W08 の決定に従って [W32](../W32-silent-write-failures.md) が直す。shim の `_setmode` の変更は仕様 4 だけ。
 - 自前のダイアログ（`MessageBoxW`）。GPU のランタイムの診断の文（`gpu.c`・`gpu-vulkan.c`。致命的な報告ではなく状態を返す）。
 - POSIX で標準エラーが閉じているときの届け先（`syslog` など）。
 
@@ -181,9 +181,16 @@ exit:
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 書けないときの届け先は `OutputDebugStringW` だけ | どの Windows の開発環境でも読め、権限も設定も要らない。イベントログはソースの登録が要り、ファイルは場所の取り決めが要る | 既定案（実装者はこの案に従う） |
-| D2 | Windows の報告は CRT を通らず `GetStdHandle`・`WriteFile` で書く | `_setmode` の結果を見ても、静的な UCRT は閉じた fd で `_setmode` の中で終わる（測定）。CRT のロックと無効な引数のハンドラーを避け、W07 の VEH からも呼べる | 既定案（実装者はこの案に従う） |
-| D3 | 標準エラーに書けたときはデバッガーへ送らない | 報告を二重にしない。コンソールの実行の出力を変えない | 既定案（実装者はこの案に従う） |
-| D4 | 送るのは文の全体（先頭から） | 途中まで書けた文の残りだけでは位置が読めない | 既定案（実装者はこの案に従う） |
-| D5 | UTF-16 への変換は実行時に `MultiByteToWideChar` で行う（コンパイル時に UTF-16 の複製を持たない） | 地点ごとの文の定数とその IR を変えずに済み、データが倍にならない。報告は一度しか走らない | 既定案（実装者はこの案に従う） |
-| D6 | shim の `_setmode` は `io.c` と同じく −1 を失敗にする | 2 つの書き込みの経路の規則をそろえる。測った場合の結果は変わらない | 既定案（実装者はこの案に従う） |
+| D1 | 書けないときの届け先は `OutputDebugStringW` だけ | どの Windows の開発環境でも読め、権限も設定も要らない。イベントログはソースの登録が要り、ファイルは場所の取り決めが要る | 確定・実装済み |
+| D2 | Windows の報告は CRT を通らず `GetStdHandle`・`WriteFile` で書く | `_setmode` の結果を見ても、静的な UCRT は閉じた fd で `_setmode` の中で終わる（測定）。CRT のロックと無効な引数のハンドラーを避け、W07 の VEH からも呼べる | 確定・実装済み |
+| D3 | 標準エラーに書けたときはデバッガーへ送らない | 報告を二重にしない。コンソールの実行の出力を変えない | 確定・実装済み |
+| D4 | 送るのは文の全体（先頭から） | 途中まで書けた文の残りだけでは位置が読めない | 確定・実装済み |
+| D5 | UTF-16 への変換は実行時に `MultiByteToWideChar` で行う（コンパイル時に UTF-16 の複製を持たない） | 地点ごとの文の定数とその IR を変えずに済み、データが倍にならない。報告は一度しか走らない | 確定・実装済み |
+| D6 | shim の `_setmode` は `io.c` と同じく −1 を失敗にする | 2 つの書き込みの経路の規則をそろえる。測った場合の結果は変わらない | 確定・実装済み |
+
+## 実装と検証（2026-11-23）
+
+- `src/llvm_traps.rs` に `TRAP_WRITE_WINDOWS` と `DEBUGGER_WRITE` を追加し、`src/llvm.rs` の `windows_abi` で `@tz.trap.write` を OS ハンドル書き込み + `OutputDebugStringW` フォールバックへ差し替え、`@write` shim は `call i64 @write(` が残るときだけ出力して `_setmode == -1` で `-1` を返すようにした。
+- `src/runtime/tzroutine-windows.h` と `src/runtime/tzroutine.c` に `tzr_report`（Windows では `WriteFile` + `tzr_debugger_write`、POSIX では `fwrite` + `fflush`）を追加し、`tzr_fatal`・`tzr_report_deadlock`・`tsuzuri_tz_report` を通した。
+- `tests/windows_launch.c`、`src/llvm.rs` の単体テスト、`tests/windows.mjs` の E2E 検査（ハンドルなしトラップ・`WaitGroup` 負値・ハンドル継承時・日本語パス）、`docs/architecture.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/native-interop.md` を更新した。
+

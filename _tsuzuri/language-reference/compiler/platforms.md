@@ -164,6 +164,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - Windows の `--emit shared` と OS API は未対応です。MSVC の実行ファイルを Windows 以外のホストでリンクする方法は検証していません。
 - 同梱ツールチェーンは、Mach-O の `--emit object` で C ランタイムを含むものを作れません。Windows の COFF のランタイム埋め込み object も `E2002` です。ランタイムを要しない object と LLVM IR は作れます。
+- Windows の `--trap-info` のトラップ報告（`tsuzuri run` は既定で有効。`--trap-info` のない既定の `build` はどの OS でもトラップの文を出しません）と tzroutine ランタイムの報告は、OS の標準エラーハンドル（`STD_ERROR_HANDLE`）へ直接書きます。標準エラーが無い、または書き込みに失敗したときは、文全体を `OutputDebugStringW`（Visual Studio の出力ウィンドウ、WinDbg、DebugView）へ送ります。
 - プロファイル誘導最適化は、ビルド機の native の `exe` と `object`、wasm32 の module だけです。Windows と別の `--target TRIPLE` は `E2000`、同梱の launcher は `E2002` です。LLVM の Clang を指定してください（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
 - `--backend fast` は、feature 付きのビルドで macOS Arm64・Linux x64/Arm64 の native と wasm32 だけです。Windows、名前を付けた `--target TRIPLE`、wasm64 は `E2000` です（[コード生成器](option.md#コード生成器)）。
 
