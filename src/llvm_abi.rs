@@ -769,7 +769,8 @@ impl FunctionEmitter<'_, '_> {
             }
             crate::abi::Nullable::BorrowedHandle(_) => {
                 let null_slot = self.fresh();
-                self.allocas.push(format!("{null_slot} = alloca ptr, align 8"));
+                self.allocas
+                    .push(format!("{null_slot} = alloca ptr, align 8"));
                 self.instruction(format!("store ptr null, ptr {null_slot}"));
                 let is_null = self.value(format!("icmp eq ptr {value}, null"));
                 let safe_slot =

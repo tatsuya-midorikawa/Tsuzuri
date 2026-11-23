@@ -820,7 +820,6 @@ fn copy_extern_type_addition_is_compatible_and_removal_is_breaking() {
     std::fs::remove_dir_all(new).unwrap();
 }
 
-
 #[test]
 fn effective_command_is_opt_in_validates_flags_and_reports_analysis_errors() {
     let old_source = "type Word = i64\ndef f :: Word -> Word = \\n -> n\n";

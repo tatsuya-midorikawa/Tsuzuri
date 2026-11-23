@@ -13,8 +13,7 @@ pub(super) fn header(module: &CheckedModule) -> String {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
-        let viewed_result =
-            crate::abi::c_view(&function.signature.result, &module.types());
+        let viewed_result = crate::abi::c_view(&function.signature.result, &module.types());
         let _ = writeln!(
             output,
             "{} {}({parameters});",

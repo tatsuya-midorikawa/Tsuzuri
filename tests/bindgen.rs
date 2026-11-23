@@ -2201,13 +2201,21 @@ fn nonnull_qualifiers_and_attributes_emit_non_maybe() {
 fn consume_combines_with_nullability() {
     let mut nodes = vec![
         json!({ "kind": "RecordDecl", "name": "ctx", "tagUsed": "struct" }),
-        named_function("close_plain", "void (struct ctx *)", &[("ctx", "struct ctx *")]),
+        named_function(
+            "close_plain",
+            "void (struct ctx *)",
+            &[("ctx", "struct ctx *")],
+        ),
         named_function(
             "close_qual",
             "void (struct ctx * _Nonnull)",
             &[("ctx", "struct ctx * _Nonnull")],
         ),
-        named_function("close_cli", "void (struct ctx *)", &[("ctx", "struct ctx *")]),
+        named_function(
+            "close_cli",
+            "void (struct ctx *)",
+            &[("ctx", "struct ctx *")],
+        ),
     ];
     nodes[0]["loc"]["file"] = json!(PATH);
     let generated = generate_with(
@@ -2294,17 +2302,31 @@ fn invalid_nonnull_annotations_are_rejected() {
     for (buffers, nonnulls, needle) in [
         (&[][..], &[nonnull("missing", "1")][..], "does not declare"),
         (&[], &[nonnull("plain", "9")], "has 1 parameter"),
-        (&[], &[nonnull("plain", "ctx"), nonnull("plain", "1")], "another annotation"),
-        (&[buffer("work", "items", "count")], &[nonnull("work", "items")], "another annotation"),
+        (
+            &[],
+            &[nonnull("plain", "ctx"), nonnull("plain", "1")],
+            "another annotation",
+        ),
+        (
+            &[buffer("work", "items", "count")],
+            &[nonnull("work", "items")],
+            "another annotation",
+        ),
         (&[], &[nonnull("work", "flags")], "not a convertible"),
         (&[], &[nonnull("plain", "return")], "not a convertible"),
         (&[], &[nonnull("work", "ctx")], "conflicts with _Nullable"),
-        (&[], &[nonnull("work", "return")], "conflicts with _Nullable"),
+        (
+            &[],
+            &[nonnull("work", "return")],
+            "conflicts with _Nullable",
+        ),
     ] {
         let Err(Failure::Annotation(message)) = run_nonnull(buffers, nonnulls) else {
             panic!("expected annotation error for {nonnulls:?}");
         };
-        assert!(message.contains(needle), "{message} did not contain {needle}");
+        assert!(
+            message.contains(needle),
+            "{message} did not contain {needle}"
+        );
     }
 }
-

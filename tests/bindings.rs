@@ -385,7 +385,9 @@ fn native_bindings_are_deterministic_and_follow_the_c_abi() {
     assert!(trapping.contains("\"integer division by zero\""));
     assert!(trapping.contains("\"null extern handle\""));
     assert!(csharp.contains("throw new ArgumentNullException(nameof(arg0), \"argument 0 of 'pass_through' cannot be a null handle\");"));
-    assert!(csharp.contains("throw new InvalidOperationException(\"result of 'pass_through' is a null handle\");"));
+    assert!(csharp.contains(
+        "throw new InvalidOperationException(\"result of 'pass_through' is a null handle\");"
+    ));
     // Python: ctypes argtypes of the same C types, and records after the records of their fields.
     let python = bindings::python(&module, "native", false);
     assert!(python.starts_with(&format!("# {banner}")));
@@ -407,7 +409,9 @@ fn native_bindings_are_deterministic_and_follow_the_c_abi() {
     let trapping = bindings::python(&module, "native", true);
     assert!(trapping.contains("        library.tsuzuri_try_add.argtypes = (_ctypes.POINTER(_Trap), _ctypes.POINTER(_ctypes.c_int64), _ctypes.c_int64, _ctypes.c_int64)\n"));
     assert!(trapping.contains("class TsuzuriTrap(Exception):\n"));
-    assert!(python.contains("raise ValueError(\"tz_handle_4Main_7Counter requires a non-null integer pointer\")"));
+    assert!(python.contains(
+        "raise ValueError(\"tz_handle_4Main_7Counter requires a non-null integer pointer\")"
+    ));
     assert!(python.contains("raise RuntimeError(\"result of 'pass_through' is a null handle\")"));
     assert!(!python.contains("raw or 0"));
     // C++: inline functions over the C header of the same stem, with RAII results.

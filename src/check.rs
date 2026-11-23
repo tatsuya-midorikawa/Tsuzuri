@@ -8884,7 +8884,13 @@ fn check_modules_collect(
     // W14: first lowered C signature, canonical signature, mixed flag, WASM module, and first span per explicit symbol.
     let mut explicit_symbols: BTreeMap<
         String,
-        (crate::abi::CSignature, crate::abi::CSignature, bool, String, Span),
+        (
+            crate::abi::CSignature,
+            crate::abi::CSignature,
+            bool,
+            String,
+            Span,
+        ),
     > = BTreeMap::new();
     regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
@@ -9155,11 +9161,8 @@ fn check_modules_collect(
                 }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared = crate::abi::c_signature(
-                        &signature.parameters,
-                        &signature.result,
-                        &types,
-                    );
+                    let declared =
+                        crate::abi::c_signature(&signature.parameters, &signature.result, &types);
                     match explicit_symbols.entry(import.native_symbol.clone()) {
                         std::collections::btree_map::Entry::Vacant(slot) => {
                             slot.insert((

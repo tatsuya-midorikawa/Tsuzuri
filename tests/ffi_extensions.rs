@@ -177,7 +177,10 @@ fn run h =
         assert!(text.contains("inttoptr i64 "), "{text}");
     }
 
-    let one = analyze("extern \"sqrt\" def a :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n").unwrap();
+    let one = analyze(
+        "extern \"sqrt\" def a :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n",
+    )
+    .unwrap();
     let two = analyze("extern \"sqrt\" def a :: f64 -> f64\nextern \"sqrt\" def b :: f64 -> f64\nexport def run :: f64 -> f64\nfn run x = a x\n").unwrap();
     assert!(two.extern_abis.is_empty());
     assert_eq!(ir(&one, false), ir(&two, false));
@@ -214,7 +217,11 @@ fn class_mismatches_and_same_class_variants_follow_c_abi() {
             ("E1008", Some("conflicting_extern_declaration")),
             "{source}"
         );
-        assert!(error.message.contains(needle), "{source}: {}", error.message);
+        assert!(
+            error.message.contains(needle),
+            "{source}: {}",
+            error.message
+        );
         assert!(
             error
                 .related
@@ -226,9 +233,10 @@ fn class_mismatches_and_same_class_variants_follow_c_abi() {
     }
 
     // Module mismatch keeps the original message without related notes.
-    let mod_err =
-        analyze("extern \"a\" \"f\" def x :: i64 -> i64\nextern \"b\" \"f\" def y :: i64 -> i64\n1")
-            .unwrap_err();
+    let mod_err = analyze(
+        "extern \"a\" \"f\" def x :: i64 -> i64\nextern \"b\" \"f\" def y :: i64 -> i64\n1",
+    )
+    .unwrap_err();
     assert_eq!(
         mod_err.message,
         "extern symbol 'f' is declared with different signatures or import modules; declare it once and call it from other modules"
@@ -372,11 +380,7 @@ fn parses_copy_extern_types() {
 
     let conflict = parser::parse("extern type copy copy X\n42").unwrap_err();
     assert_eq!(
-        (
-            conflict.code,
-            conflict.kind,
-            conflict.message.as_str()
-        ),
+        (conflict.code, conflict.kind, conflict.message.as_str()),
         (
             "E0002",
             Some("extern_type_modifier_conflict"),
@@ -433,10 +437,7 @@ extern \"w18_peek\" def peek_hwnd :: ref Hwnd -> i64
         ),
         ("make_hwnd 1 == make_hwnd 2", "E1005"),
         ("to_string (make_hwnd 1)", "E1005"),
-        (
-            "pure def bad :: own Hwnd -> i64\nfn bad _h = 1\n1",
-            "E1029",
-        ),
+        ("pure def bad :: own Hwnd -> i64\nfn bad _h = 1\n1", "E1029"),
     ] {
         assert_eq!(code(&format!("{prelude}\n{bad}")), expected, "{bad}");
     }

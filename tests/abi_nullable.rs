@@ -88,10 +88,9 @@ fn other_maybe_payloads_keep_their_errors() {
     );
 
     // export def keeps UnsupportedExportSignature.
-    let export_err = analyze(
-        "extern type H\nexport def bad :: Maybe<H> -> i32\nfn bad _m = 0i32\n1",
-    )
-    .unwrap_err();
+    let export_err =
+        analyze("extern type H\nexport def bad :: Maybe<H> -> i32\nfn bad _m = 0i32\n1")
+            .unwrap_err();
     assert_eq!(
         (export_err.code, export_err.kind),
         ("E1008", Some("unsupported_export_signature"))
@@ -125,7 +124,9 @@ fn run _x =
         "{header}"
     );
     assert!(
-        header.contains("tz_handle_4Main_1H tsuzuri_host_Main_implicit_maybe(tz_handle_4Main_1H arg0);"),
+        header.contains(
+            "tz_handle_4Main_1H tsuzuri_host_Main_implicit_maybe(tz_handle_4Main_1H arg0);"
+        ),
         "{header}"
     );
     assert!(
@@ -145,11 +146,16 @@ fn run x =
     )
     .unwrap();
     let rect_ir = ir(&record_maybe, false);
-    assert!(rect_ir.contains("%tz_record_4Main_4Rect = type"), "{rect_ir}");
+    assert!(
+        rect_ir.contains("%tz_record_4Main_4Rect = type"),
+        "{rect_ir}"
+    );
     assert!(rect_ir.contains("phi ptr [ null, %"), "{rect_ir}");
     let rect_header = llvm::header(&record_maybe);
     assert!(
-        rect_header.contains("int32_t tsuzuri_host_Main_implicit_rect(const tz_record_4Main_4Rect *arg0);"),
+        rect_header.contains(
+            "int32_t tsuzuri_host_Main_implicit_rect(const tz_record_4Main_4Rect *arg0);"
+        ),
         "{rect_header}"
     );
 
@@ -185,7 +191,9 @@ fn both x =
     .unwrap();
     let combo_ir = ir(&w14_combo, false);
     assert_eq!(
-        combo_ir.matches("declare i64 @SendMessageW(ptr, i64)\n").count(),
+        combo_ir
+            .matches("declare i64 @SendMessageW(ptr, i64)\n")
+            .count(),
         1,
         "{combo_ir}"
     );
@@ -295,4 +303,3 @@ fn keep _ =
         "{wasm_ir}"
     );
 }
-

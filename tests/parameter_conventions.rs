@@ -1014,7 +1014,7 @@ fn annotated_reference_lambdas_meet_convention_function_types() {
         chooser(
             &[TEXT_LENGTH],
             &[
-                "    let chosen = if n > 0 then text_length else \\(text: ref string) when text.length > 0 -> text.length * 10",
+                "    let chosen = if n > 0 then text_length else (\\(text: ref string) -> | text.length > 0 -> text.length * 10 | otherwise -> 0)",
                 "    let text = \"hello\"",
                 "    chosen (ref text)",
             ],

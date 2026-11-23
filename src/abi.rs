@@ -290,8 +290,7 @@ pub fn has_invalid_extern_maybe(
     result: &Type,
     types: &TypeContext<'_>,
 ) -> bool {
-    let ref_to_maybe =
-        |ty: &Type| matches!(ty, Type::Reference(inner, _) if std_maybe_payload(inner, types).is_some());
+    let ref_to_maybe = |ty: &Type| matches!(ty, Type::Reference(inner, _) if std_maybe_payload(inner, types).is_some());
     let bad_param = parameters.iter().any(|param| match param {
         Type::Function(cb_params, cb_result) => {
             cb_params.iter().any(|p| {

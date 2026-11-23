@@ -1109,7 +1109,11 @@ impl<'a> TypeParser<'_, 'a> {
             } else {
                 CType::Unsupported
             };
-            ty = CType::Pointer(Box::new(function), Qualifiers::default(), pointer.nullability);
+            ty = CType::Pointer(
+                Box::new(function),
+                Qualifiers::default(),
+                pointer.nullability,
+            );
             qualifiers = Qualifiers {
                 constant: pointer.constant,
                 volatile: pointer.volatile,
@@ -1237,11 +1241,9 @@ fn parameter_list(
         .map(|range| {
             parse_tokens(piece(range), nesting + 1).map_or(CType::Unsupported, |(ty, outer)| {
                 match ty {
-                    CType::Pointer(pointee, pointee_quals, pointer_null) => CType::Pointer(
-                        pointee,
-                        pointee_quals,
-                        outer.nullability.or(pointer_null),
-                    ),
+                    CType::Pointer(pointee, pointee_quals, pointer_null) => {
+                        CType::Pointer(pointee, pointee_quals, outer.nullability.or(pointer_null))
+                    }
                     other => other,
                 }
             })
@@ -2705,12 +2707,7 @@ impl<'t, 'a> Emitter<'t, 'a> {
     }
 
     /// A parameter that `--consume` names: the handle moves into the call.
-    fn consumed(
-        &self,
-        spelled: &str,
-        cli_nonnull: bool,
-        attr_nonnull: bool,
-    ) -> Option<String> {
+    fn consumed(&self, spelled: &str, cli_nonnull: bool, attr_nonnull: bool) -> Option<String> {
         let (CType::Pointer(pointee, qualifiers, pointer_nullability), _) =
             self.tables.c_type(spelled)
         else {

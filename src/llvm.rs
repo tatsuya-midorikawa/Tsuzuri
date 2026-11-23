@@ -2052,22 +2052,22 @@ fn emit_program_in(
             &mut specializations,
         ));
         if function.exported {
-            let wrapper =
-                if host_abi::extended(function) || (!wasm && host_abi::has_handle_parameter(function))
-                {
-                    host_abi::wrapper(
-                        module,
-                        function,
-                        id,
-                        host_abi::WrapperKind::Export,
-                        &mut builtins,
-                        &mut intrinsics,
-                        &mut globals,
-                        &mut specializations,
-                    )
-                } else {
-                    export_wrapper(function, module)
-                };
+            let wrapper = if host_abi::extended(function)
+                || (!wasm && host_abi::has_handle_parameter(function))
+            {
+                host_abi::wrapper(
+                    module,
+                    function,
+                    id,
+                    host_abi::WrapperKind::Export,
+                    &mut builtins,
+                    &mut intrinsics,
+                    &mut globals,
+                    &mut specializations,
+                )
+            } else {
+                export_wrapper(function, module)
+            };
             output.push_str(&debug::wrapper(
                 wrapper,
                 module,
@@ -3366,7 +3366,9 @@ fn c_type(ty: &Type) -> String {
         Type::Bool => "int32_t".into(),
         Type::Unit => "void".into(),
         Type::Handle(name, _) => host_abi::handle_c_name(name),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => c_type(inner),
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => {
+            c_type(inner)
+        }
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }

@@ -1600,9 +1600,8 @@ fn add_items(
             continue;
         }
         let header = declaration.header();
-        let mut item =
-            Item::new("extern type", qualified(&declaration.name.text), header)
-                .documented(declaration.doc.as_ref());
+        let mut item = Item::new("extern type", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
         item.copy_handle = declaration.kind == HandleKind::Copy;
         add(item);
     }

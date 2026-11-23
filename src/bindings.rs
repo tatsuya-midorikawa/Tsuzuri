@@ -111,7 +111,9 @@ fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction
 }
 
 /// Validates that reached explicit imports have one Tsuzuri signature for `--emit bindings-js` (W14).
-pub(crate) fn validate_wasm_imports(module: &CheckedModule) -> Result<(), crate::diagnostic::Diagnostic> {
+pub(crate) fn validate_wasm_imports(
+    module: &CheckedModule,
+) -> Result<(), crate::diagnostic::Diagnostic> {
     let roots: Vec<_> = module
         .functions
         .iter()
@@ -235,7 +237,11 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
 /// The functions whose signatures the bindings describe: the exports, then the reached imports.
 fn signatures(module: &CheckedModule) -> Vec<&CheckedFunction> {
     let mut functions = exports(module);
-    functions.extend(reached_imports(module).into_iter().map(|(_, function)| function));
+    functions.extend(
+        reached_imports(module)
+            .into_iter()
+            .map(|(_, function)| function),
+    );
     functions
 }
 
