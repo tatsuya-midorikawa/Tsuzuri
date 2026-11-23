@@ -4,13 +4,13 @@
 | --- | --- |
 | ID | NS08 |
 | 優先度 | P0（安全なコードで非 Copy 値の二重解放・解放後読み出し（heap use-after-free）が起きる健全性不具合） |
-| 規模 | S（`Owned.function` / `Owned.call` の多引数カリー化に対する `Capture` 制約または引数個数検査の統一、回帰テストと文書） |
+| 規模 | S（`Owned.function` / `Owned.call` の多引数カリー化に対する `Capture` 制約の統一、回帰テストと文書） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
-| 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)、および [A33](A33-remaining-store-soundness-holes.md) が「格納と破棄の順序のモデルとは別に直す必要がある」と記録した `owned2` の独立チケット化。HEAD `edc61676` で確認） |
+| 状態 | done |
+| 起票 | 2026-11-22（[GUIDE D-64](../GUIDE.md#d-64-null-安全性の徹底ns01ns08)、および [A33](../A33-remaining-store-soundness-holes.md) が「格納と破棄の順序のモデルとは別に直す必要がある」と記録した `owned2` の独立チケット化。HEAD `edc61676` で確認） |
 | 承認 | 不要（危険なプログラムで起きる解放後読み出しを既存の規則に沿って拒否する不具合修正） |
-| 手本にする既存実装 | [A30](_completed/A30-owned-function-from-borrowing-value.md)（`Owned.function` の健全性修正）、`src/closures.rs` 31〜36 行（`OwnedFunctionParameterCount`）、`src/polymorph.rs` 3989〜4009 行（`OwnedFunction`・`OwnedCall` のインスタンス検査）と `captures`（部分適用への `Class::Capture` 要求） |
+| 手本にする既存実装 | [A30](A30-owned-function-from-borrowing-value.md)（`Owned.function` の健全性修正）、`src/closures.rs` 31〜36 行（`OwnedFunctionParameterCount`）、`src/polymorph.rs` 3989〜4009 行（`OwnedFunction`・`OwnedCall` のインスタンス検査）と `captures`（部分適用への `Class::Capture` 要求） |
 | 主な影響ファイル | `src/polymorph.rs`, `src/check.rs`, `src/ownership.rs`, `tests/owned.rs`（または `tests/drop.rs`）, `tests/features.mjs`, `_features/A33-remaining-store-soundness-holes.md`, `_tsuzuri/language-reference/built-in-types-and-modules/owned.md` |
 
 ## 実装者向け早見
@@ -51,26 +51,24 @@ Null 安全・メモリ安全の土台である「すべての所有値と参照
 
 - 結果型 `'b` が関数型でない通常の `Owned.Function<'a, 'b>` と `Owned.call (ref f) a`（2 引数適用で結果が `f` の借用を持たない A30 の規則を含む）。
 
-## 仕様
+## 仕様（実装前に最新化）
 
-1. **`Capture` 制約と環境借用の整合（D1）**:
-   - `Owned.call :: ref (Owned.Function<'a, 'b>) -> 'a -> 'b` において、結果型 `'b` が関数型 `Type::Function(..)` に解決される場合:
-     1. 束縛される第 2 引数 `'a` に `Class::Capture` 制約を課す（`Mutex`・非 Copy で `Drop` を持つ `Holder`・`Rc`・排他参照などは通常の部分適用と同じ `E1005` で拒否される）。
-     2. 返される関数値は元の `Owned.Function` の環境（`borrowed = true` で複製されなかった先頭環境）を参照し続けるため、`src/ownership.rs`（3402 行付近の A30 特例「2 引数の `Owned.call` は `f` の借用を残さない」）を **`'b` が関数型でないときだけ**に限定し、`'b` が関数型のときは返り値が第 1 引数 `ref f` の共有借用を保持する（`f` を先に drop してから返り値の関数を呼ぶコードが `E1013` / `E1014` で拒否される！ A33 の `d4s_owned_call_holder_dropped_first` もこれで完全に塞がる！）。
+1. **`Capture` 制約と環境複製の実態に合わせた最新化（D1 改訂）**:
+   - `Owned.call :: ref (Owned.Function<'a, 'b>) -> 'a -> 'b` において、結果型 `'b` が関数型 `Type::Function(..)` に解決される場合、束縛される第 2 引数 `'a` に `Class::Capture` 制約を課す（直接呼び出し・パイプライン `x |> Owned.call (ref w)`・過飽和適用・1 引数部分適用・関数値としての使用・ジェネリック単相化の全経路）。これにより、`Mutex`・非 Copy で `Drop` を持つ `Holder`・`Rc`・排他参照などは通常の部分適用と同じ `E1005` で拒否され、`d6_owned_call_moves_bound` と `d4s_owned_call_holder_dropped_first`（`Type::Function` が秘密裏に `Drop` 型を所有して破棄順序検査をすり抜ける穴）の両方が塞がる。
+   - **起票時の仮定の再検証**: 起票時は `borrowed = true` により元の `w: Owned.Function` の環境が複製されず共有されると仮定して `ownership.rs` の A30 免除を絞る案を併記していたが、`src/llvm.rs` の `closure_wrappers`（3138〜3274 行）を精査した結果、(a) インライン 1 引数ラムダ（`owned_captures = true`）は常に 1 引数で即座に実行されて独立した新しい関数値を返し（所有捕捉のムーブや借用の返却は `E1012` / `E1013` で既に禁止済み）、(b) 多引数関数値（`owned_captures = false`）は捕捉がすべて `Capture` を満たしかつ A30 で借用を持たず、`count + 1 < arity` の `borrowed = true` 呼び出しでは `@tz.env.clone` で環境をディープコピーした新しい独立環境を確保するため、返り値の関数が `w` の環境を共有することは一切ない。逆に `ownership.rs` で `ref w` の借用を残すと A30 の確定仕様（`tests/tzroutine.rs:366-380` および `owned.md:123-139` の `Owned.drop make; size ()`）を壊して停止条件 S1 に抵触するため、A30 の規則はそのまま維持する（第 2 引数 `'a` が貸す借用と 1 引数部分適用 `Owned.call (ref w)` の `w` 借用は従来どおり保持される）。
 
 ## 設計
 
-- **`src/polymorph.rs`**: `Builtin::OwnedCall` の具体化・制約検査（および `captures` 検査パス）において、`types[1]`（`'b`）を解決した型が `Type::Function(..)` であれば `self.require(Class::Capture, types[0].clone(), span)` を要求する（ジェネリック関数内で `'b` が型変数のまま `Owned.call` された場合も、単相化で具体型 `'b = B -> C` が決まった時点で同じ検査を走らせる）。
-- **`src/ownership.rs`（3402 行付近）**: A30 が入れた「`Owned.call` を 2 引数に直接適用した結果は第 1 引数 `ref w` の loan を持たない」という免除に、`!matches!(result_ty, Type::Function(..))` の条件を追加する。これにより `let g = Owned.call (ref w) x` で `g` が関数のときは `g` が `w` の借用を保持し、`w` が先にスコープを抜けて解放される `d4s_owned_call_holder_dropped_first` を `E1013` で確実に防ぐ。
+- **`src/polymorph.rs`（`captures`）**: 型検査末尾と単相化時の両方で走る `captures` において、`Builtin::OwnedCall` の `types[1]`（`'b`）が `Type::Function(..)` であれば `("Capture", types[0].clone(), span)` を要求する（2 引数以上の呼び出しでは第 2 引数の `span`、`x |> Owned.call (ref w)` では `x.span`、それ以外の部分適用・関数値では `Owned.call` の `span`）。
 - **`_features/A33-remaining-store-soundness-holes.md`**: 完了時に `owned2` の行へ「NS08 で修正済み」と注記する。
 
 ## 前提とする他チケットのインターフェース
 
-- なし（[A30](_completed/A30-owned-function-from-borrowing-value.md) の実装の上に立つ）。
+- なし（[A30](A30-owned-function-from-borrowing-value.md) の実装の上に立つ）。
 
 ## 他チケットへ提供するインターフェース
 
-- [A33](A33-remaining-store-soundness-holes.md) の範囲から `owned2` を解消済みにする。
+- [A33](../A33-remaining-store-soundness-holes.md) の範囲から `owned2` を解消済みにする。
 
 ## 実装手順
 
@@ -91,21 +89,26 @@ Null 安全・メモリ安全の土台である「すべての所有値と参照
 
 ## 受け入れ条件
 
-- [ ] `d6`（非 `Capture` 引数の部分適用）が `E1005`、`d4s`（`w` が先に破棄される部分適用）が `E1013` で静的に拒否される（ジェネリック経由を含む）。
-- [ ] `d7`（`Arc` 等の `Capture` 値の部分適用、および通常の 1 引数 `Owned.call`）が native / WASM `-O0`・`-O3` で通り、`live == 0`。
-- [ ] 既存の全テストの動作と IR が変わらない。
+- [x] `d6`・`d4s`（非 `Capture` 引数の部分適用）が `E1005`、第 2 引数の借用流出と 1 引数部分適用の `w` 先行破棄が `E1013` で静的に拒否される（ジェネリック経由を含む）。
+- [x] `d7`（`Arc` 等の `Capture` 値の部分適用、および通常の 1 引数 `Owned.call`）が native / WASM `-O0`・`-O3` で通り、`live == 0`。
+- [x] 既存の全テストの動作と IR が変わらない。
 
 ## 落とし穴
 
-- **2 つの穴の両方を塞ぐこと**: `Holder` に `Capture` を求めるだけでは、第 1 引数が `i64`（`Capture` を満たす）で `w` 自身が所有環境を持つ 2 引数クロージャだった場合に、`let g = { let w = ...; Owned.call (ref w) 1 }` で `w` の解放後に `g ()` が解放済み環境を読む穴（`d4s`）が残る。必ず `src/ownership.rs` 3402 行の借用免除も「結果が非関数型のときだけ」に絞ること！
-- ジェネリック関数 `def step :: ref (Owned.Function<'a, 'b>) -> own 'a -> 'b = \w x -> Owned.call w x` を `'b = i64 -> i64` で呼んだ場合も抜け道にならないよう、単相化時の検査と `ownership.rs` の関数要約（A28）の両方で確認する。
+- ジェネリック関数 `def step :: ref (Owned.Function<'a, 'b>) -> own 'a -> 'b = \w x -> Owned.call w x` を `'b = i64 -> i64` で呼んだ場合や、`let c = Owned.call (ref w)` / `let c = Owned.call` のように関数値経由で呼んだ場合も抜け道にならないよう、`polymorph::captures` で `Builtin::OwnedCall` のすべての出現と単相化後の検査を行う。
 
 ## 対象外
 
-- [A33](A33-remaining-store-soundness-holes.md) 本体の格納・破棄順序モデルの統合。
+- [A33](../A33-remaining-store-soundness-holes.md) 本体の格納・破棄順序モデルの統合。
 
 ## 決定事項
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | `Owned.call` の結果型が関数型のとき、(1) 第 2 引数に `Capture` を要求し、(2) 結果が第 1 引数 `ref w` の共有借用を保持するようにする（代替案 B「`Owned.function` で結果が関数型になる関数自体を `E1006` にする」は、`d7` のような安全な `Arc`/スカラー束縛を壊すため採らない。ただし停止条件 S2 に当たった場合のみ B を検討） | 通常のカリー化部分適用の規則と一致し、既存の安全なプログラムを最大限保ったまま `d6` と `d4s` の両方の解放後読み出しを根絶できるため | 既定案（実装者はこの案に従う） |
+| D1 | `Owned.call` の結果型 `'b` が関数型のとき、第 2 引数 `'a` に `Capture` を要求する。A30 の「2 引数の `Owned.call` の結果は `w` を借用しない」規則はそのまま保つ（`closure_wrappers` が多引数環境の捕捉を `@tz.env.clone` で独立環境へ複製するため共有は起きず、`ref w` を借用させると A30 の確定仕様を壊すため） | 通常のカリー化部分適用の規則と一致し、A30 の安全なプログラム（`Owned.drop w` 後の返り値関数呼び出しや `Owned.function` 再包装）を保ったまま `owned2`（`d6`・`d4s`）の解放後読み出しを根絶できるため | 確定・実装済み |
+
+## 実装と検証（2026-11-23）
+
+- `src/polymorph.rs` の `captures` で、`Builtin::OwnedCall` の結果型 `types[1]` が関数型に解決されたすべての箇所（直接呼び出し、パイプライン `x |> Owned.call (ref w)`、過飽和呼び出し、部分適用・関数値、ジェネリック単相化）について `types[0]: Capture` を検査するよう修正した。
+- `tests/user_drop.rs`（`owned_call_returning_function_requires_capture_on_bound_argument`）、`tests/fixtures/user_drop/Main.tz`（`owned_curried`: `w` を先に `Owned.drop` した後も `Arc` と `string` を持つ部分適用関数を複数回呼んで `live == 0` になる検査）、`tests/user_drop.mjs`、`tests/user_drop_runtime.c`、`_tsuzuri/language-reference/built-in-types-and-modules/owned.md`、`_features/A33-remaining-store-soundness-holes.md` を更新した。
+

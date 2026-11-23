@@ -86,6 +86,7 @@ try {
     assert.equal(call("owned_array"), 31n); values([1, 2]);
     assert.equal(call("owned_nested"), 8n); values([3]);
     assert.equal(call("owned_generic"), 2n); values([4]);
+    assert.equal(call("owned_curried"), 71n); values([11]);
     // A Drop record whose fields are stored by alignment: 5 + 6 + 1 + 3000, the drop reads id and mark in place.
     assert.equal(call("packed_scopes"), 3012n); values([204, 103]);
     assert.equal(call("packed_reassign"), 26n); values([305, 406]);

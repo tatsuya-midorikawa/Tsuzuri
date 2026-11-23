@@ -4768,19 +4768,48 @@ fn captures(
         },
     };
     let mut immediate = Vec::new();
-    walk(body, &mut |expression| {
-        if let TypedExprKind::Binary(BinaryOp::Pipe, _, right) = &expression.kind {
-            if let TypedExprKind::Call(callee, arguments) = &right.kind {
-                if arguments.len() + 1 >= arity(callee) {
-                    immediate.push(right.span);
-                }
-            }
-        }
-        Ok(())
-    })?;
+    let mut bound_owned_calls = Vec::new();
     let mut result = Vec::new();
     walk(body, &mut |expression| {
         match &expression.kind {
+            TypedExprKind::Binary(BinaryOp::Pipe, left, right) => {
+                if let TypedExprKind::Call(callee, arguments) = &right.kind {
+                    if arguments.len() + 1 >= arity(callee) {
+                        immediate.push(right.span);
+                    }
+                    if arguments.len() == 1
+                        && let TypedExprKind::Function(FunctionRef::Builtin(instance)) =
+                            &callee.kind
+                        && instance.builtin == Builtin::OwnedCall
+                        && matches!(instance.types.get(1), Some(Type::Function(..)))
+                    {
+                        bound_owned_calls.push(callee.span);
+                        result.push(("Capture", instance.types[0].clone(), left.span));
+                    }
+                }
+            }
+            TypedExprKind::Call(callee, arguments) if arguments.len() >= 2 => {
+                if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+                    && instance.builtin == Builtin::OwnedCall
+                    && matches!(instance.types.get(1), Some(Type::Function(..)))
+                {
+                    bound_owned_calls.push(callee.span);
+                    result.push(("Capture", instance.types[0].clone(), arguments[1].span));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+    walk(body, &mut |expression| {
+        match &expression.kind {
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::OwnedCall
+                    && matches!(instance.types.get(1), Some(Type::Function(..)))
+                    && !bound_owned_calls.contains(&expression.span) =>
+            {
+                result.push(("Capture", instance.types[0].clone(), expression.span));
+            }
             TypedExprKind::Call(callee, arguments)
                 if arguments.len() < arity(callee) && !immediate.contains(&expression.span) =>
             {
