@@ -39,6 +39,9 @@
 #ifndef TZR_API
 #define TZR_API __attribute__((weak, visibility("hidden")))
 #endif
+#ifndef TZR_TRAP
+#define TZR_TRAP() __builtin_trap()
+#endif
 
 typedef struct { uint32_t word; uint32_t pad; } tzr_lock;
 static inline void tzr_lock_acquire(tzr_lock *l) { (void)l; }

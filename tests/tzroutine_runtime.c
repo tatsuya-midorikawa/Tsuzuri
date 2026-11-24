@@ -3262,9 +3262,11 @@ static void test_pseudo_without_entry(void) {
 }
 
 static _Atomic int w12_reenter_ready;
+static _Atomic int w12_reenter_go;
 static void w12_reenter_sender(tzr_chan *c) {
     (void)tzr_current();
     atomic_store(&w12_reenter_ready, 1);
+    while (!atomic_load(&w12_reenter_go)) tzr_os_yield();
     for (int64_t i = 1; i <= 1000; i++) {
         CHECK(tsuzuri_tz_chan_send(c, &i, 1) == TZR_OK);
     }
@@ -3276,6 +3278,7 @@ static void *w12_reenter_posix(void *p) { w12_reenter_sender(p); return NULL; }
 #endif
 static void test_pseudo_reenters_runtime(void) {
     atomic_store(&w12_reenter_ready, 0);
+    atomic_store(&w12_reenter_go, 0);
     void *scope = tsuzuri_tz_scope_enter();
     tsuzuri_tz_boundary_leave(scope); /* main pseudo-G is now outside == 1 */
     tzr_chan *c = chan_make(8, 0);
@@ -3287,6 +3290,8 @@ static void test_pseudo_reenters_runtime(void) {
     CHECK(pthread_create(&th, NULL, w12_reenter_posix, c) == 0);
 #endif
     while (!atomic_load(&w12_reenter_ready)) tzr_os_yield();
+    tsuzuri_tz_yield(); /* re-enters runtime from outside == 1 before sender parks */
+    atomic_store(&w12_reenter_go, 1);
     int64_t sum = 0;
     for (int i = 0; i < 1000; i++) {
         int64_t v = 0;

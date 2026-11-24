@@ -50,13 +50,13 @@ def anchor_bump :: i64 -> i64 = \tok ->
     | Result.Error _ -> -1000
 
 def main :: Array<string> -> i32 = \args ->
-    let has_arg = Array.length args > 1
-    if has_arg && args[1] == "deadlock" then
+    let has_arg = Array.length args > 0
+    if has_arg && args[0] == "deadlock" then
         start_idle_host_thread triple
         let ch: Channel<i64> = Channel.make 0
         let _r = Channel.recv ch
         0
-    elif has_arg && args[1] == "after_main" then
+    elif has_arg && args[0] == "after_main" then
         register_atexit triple
         42
     else

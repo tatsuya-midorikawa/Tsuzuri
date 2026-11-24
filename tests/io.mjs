@@ -275,35 +275,39 @@ IO {
       const closedIn = execute("sh", ["-c", 'exec "$1" <&-', "sh", executable]);
       assert.equal(closedIn.stderr, reports("unavailable", "written"));
 
-      const errProbeSrc = join(root, "err_probe.tz");
-      writeFileSync(errProbeSrc, `let! r1 = IO.try_write_errln "x"
+      const errProbeDir = join(root, `err-probe${optimization}`);
+      mkdirSync(errProbeDir, { recursive: true });
+      writeFileSync(join(errProbeDir, "Main.tz"), `let! r1 = IO.try_write_errln "x"
 let! r2 = IO.try_write_err ""
 do! IO.writeln (match (r1, r2) with | (Result.Error IO.Unavailable, Result.Error IO.Unavailable) -> "unavailable" | _ -> "other")
 `);
-      const errProbeExe = join(root, `err-probe${optimization}`);
-      execute(compiler, ["build", errProbeSrc, optimization, "-o", errProbeExe]);
+      const errProbeExe = join(root, `err-probe${optimization}.bin`);
+      execute(compiler, ["build", errProbeDir, optimization, "-o", errProbeExe]);
       assert.equal(execute("sh", ["-c", 'exec "$1" 2>&-', "sh", errProbeExe]).stdout, "unavailable\n");
 
-      const emptyOutSrc = join(root, "empty_out.tz");
-      writeFileSync(emptyOutSrc, `let! r = IO.try_write ""
+      const emptyOutDir = join(root, `empty-out${optimization}`);
+      mkdirSync(emptyOutDir, { recursive: true });
+      writeFileSync(join(emptyOutDir, "Main.tz"), `let! r = IO.try_write ""
 do! IO.write_errln (match r with | Result.Error IO.Unavailable -> "unavailable" | _ -> "other")
 `);
-      const emptyOutExe = join(root, `empty-out${optimization}`);
-      execute(compiler, ["build", emptyOutSrc, optimization, "-o", emptyOutExe]);
+      const emptyOutExe = join(root, `empty-out${optimization}.bin`);
+      execute(compiler, ["build", emptyOutDir, optimization, "-o", emptyOutExe]);
       assert.equal(execute("sh", ["-c", 'exec "$1" >&-', "sh", emptyOutExe]).stderr, "unavailable\n");
 
-      const trapClosedSrc = join(root, "trap_closed.tz");
-      writeFileSync(trapClosedSrc, 'IO {\n    do! IO.writeln "x"\n    do! IO.write_err "after"\n}\n');
-      const trapClosedExe = join(root, `trap-closed${optimization}`);
-      execute(compiler, ["build", trapClosedSrc, optimization, "-o", trapClosedExe]);
+      const trapClosedDir = join(root, `trap-closed${optimization}`);
+      mkdirSync(trapClosedDir, { recursive: true });
+      writeFileSync(join(trapClosedDir, "Main.tz"), 'IO {\n    do! IO.writeln "x"\n    do! IO.write_err "after"\n}\n');
+      const trapClosedExe = join(root, `trap-closed${optimization}.bin`);
+      execute(compiler, ["build", trapClosedDir, optimization, "-o", trapClosedExe]);
       const trappedClosed = execute("sh", ["-c", 'exec "$1" >&-', "sh", trapClosedExe], {}, false);
       assert.notEqual(trappedClosed.status, 0);
       assert.equal(trappedClosed.stderr, "");
 
-      const dbgClosedSrc = join(root, "dbg_closed.tz");
-      writeFileSync(dbgClosedSrc, 'let s = "note"\nDebug.print (ref s)\n0\n');
-      const dbgClosedExe = join(root, `dbg-closed${optimization}`);
-      execute(compiler, ["build", dbgClosedSrc, optimization, "-o", dbgClosedExe]);
+      const dbgClosedDir = join(root, `dbg-closed${optimization}`);
+      mkdirSync(dbgClosedDir, { recursive: true });
+      writeFileSync(join(dbgClosedDir, "Main.tz"), 'let s = "note"\nDebug.print (ref s)\n0\n');
+      const dbgClosedExe = join(root, `dbg-closed${optimization}.bin`);
+      execute(compiler, ["build", dbgClosedDir, optimization, "-o", dbgClosedExe]);
       assert.notEqual(execute("sh", ["-c", 'exec "$1" 2>&-', "sh", dbgClosedExe], {}, false).status, 0);
     }
     const wasm = join(root, `errors${optimization}.wasm`);

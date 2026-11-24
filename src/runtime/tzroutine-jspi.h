@@ -52,6 +52,10 @@
 
 /* ---------------------------------------------------------------- failure, memory, time */
 
+#ifndef TZR_TRAP
+#define TZR_TRAP() __builtin_trap()
+#endif
+
 static void tzr_fatal(const char *message) {
     (void)message;
     __builtin_trap();

@@ -299,7 +299,7 @@ fn grown i =
   build(nested, ["--emit", "llvm", "--allocator", "small"], nestedIr);
   const realloc = readFileSync(join(root, "src/runtime/heap-small.ll"), "utf8").split(/\r?\n/).find((line) => line.startsWith("define internal ptr @tz_small_realloc("));
   const nestedRealloc = readFileSync(nestedIr, "utf8").split(/\r?\n/).filter((line) => line.startsWith("define internal ptr @tz_small_realloc("));
-  assert.deepEqual(nestedRealloc.map((line) => line.replace(' "probe-stack"="inline-asm"', "")), [realloc.replace(/ \{$/, " noinline {")], "nested: tz_small_realloc is noinline");
+  assert.deepEqual(nestedRealloc.map((line) => line.replace(' "probe-stack"="inline-asm"', "").replace(" uwtable", "")), [realloc.replace(/ \{$/, " noinline {")], "nested: tz_small_realloc is noinline");
   const fixtures = {
     grow: { source: library, body: "    assert(tz_grow(100) == 5050); settled(); assert(tz_grow(0) == 0); settled(); assert(tz_grow(20000) == 200010000); settled();" },
     primitives: {

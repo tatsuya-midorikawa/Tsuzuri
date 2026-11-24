@@ -58,6 +58,8 @@ export def io_actions :: i64 -> i64 = \_n ->
     let _at = IO.ReturnFrom (IO.Return 1)
     let _au = IO.While (\() -> false) (IO.writeln 1)
     let _av = IO.Using (\k -> k 1) (\x -> IO.Return (x + 1))
+    let _zs = ZString.of "hi"
+    let _zstr = match _zs with | Result.Ok z -> ZString.to_string (ref z) | Result.Error _ -> ""
     0
 
 export def pure_values :: i64 -> i64 = \_n ->

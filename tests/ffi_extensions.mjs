@@ -217,10 +217,10 @@ try {
       assert.equal(execute(out, []).stdout.trim(), "42");
     }
   }
-  // W19: thread-bound `extern type local` handles stay on their creating OS thread across yields and MAXPROCS=1/4.
+  // W19: thread-bound `extern type local` handles stay on their creating OS thread across yields and MAXPROCS=1/4, and also lower cleanly on WASM.
   const threadBoundFixture = resolve("tests/fixtures/thread_bound");
   execute(compiler, ["check", threadBoundFixture]);
-  rejected(["build", threadBoundFixture, "--target", "wasm32", "-o", join(root, "tb.wasm")], "E1008");
+  execute(compiler, ["build", threadBoundFixture, "--target", "wasm32", "--wasm-feature", "jspi", "-o", join(root, "tb.wasm")]);
   for (const optimization of ["-O0", "-O3"]) {
     const out = join(root, `w19-thread-bound${optimization}`);
     execute(compiler, ["build", threadBoundFixture, "--no-cache", optimization, "--link", host, "-l", "pthread", "-o", out]);

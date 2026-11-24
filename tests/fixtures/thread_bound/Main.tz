@@ -29,4 +29,6 @@ def run_all :: unit -> i64 = \() ->
         grand_total = grand_total + v
     grand_total
 
-run_all ()
+def main :: unit -> i32 = \() ->
+    do! IO.writeln (run_all ())
+    0

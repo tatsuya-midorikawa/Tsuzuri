@@ -31,6 +31,11 @@ write_failed:
   %first_byte = icmp eq i64 %offset, 0
   br i1 %first_byte, label %check_absent, label %restore_bad
 check_absent:
+  %std_err = call ptr @GetStdHandle(i32 -12)
+  %std_null = icmp eq ptr %std_err, null
+  %std_inv_ptr = inttoptr i64 -1 to ptr
+  %std_inv = icmp eq ptr %std_err, %std_inv_ptr
+  %std_missing = or i1 %std_null, %std_inv
   %err_ptr = call ptr @_errno()
   store i32 0, ptr %err_ptr, align 4
   %osfh = call i64 @_get_osfhandle(i32 2)
@@ -39,7 +44,8 @@ check_absent:
   %err_val = load i32, ptr %err_ptr, align 4
   %is_ebadf = icmp eq i32 %err_val, 9
   %closed_fd = and i1 %neg_one, %is_ebadf
-  %absent = or i1 %no_console, %closed_fd
+  %crt_absent = or i1 %no_console, %closed_fd
+  %absent = or i1 %std_missing, %crt_absent
   br i1 %absent, label %fallback, label %restore_bad
 fallback:
   %restored_ok = call ptr @_set_thread_local_invalid_parameter_handler(ptr %prev)

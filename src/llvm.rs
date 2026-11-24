@@ -321,6 +321,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
     }
     if has_debug_write {
         for declaration in [
+            "declare ptr @GetStdHandle(i32)",
             "declare i64 @_get_osfhandle(i32)",
             "declare ptr @_errno()",
             "declare ptr @_set_thread_local_invalid_parameter_handler(ptr)",
