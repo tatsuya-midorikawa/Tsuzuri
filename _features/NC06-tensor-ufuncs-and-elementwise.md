@@ -84,7 +84,9 @@
 
 ## 設計
 
-- 1D 連続高速経路は `ref data[offset .. offset + total]` の単純 `for i in 0i64 ..= (total - 1)` ループとする。ただし、汎用高階関数 `map2` 経由ではクロージャ間接呼び出し（`call double %fn(...)`）が残って LLVM が自動ベクトル化できないことがあるため、主要二項・単項演算（`add`/`sub`/`mul`/`div`/`scale`/`fma` 等）の連続高速経路は最適化後 LLVM IR（`--emit llvm -O3`）で間接呼び出しが残らず自動ベクトル化されることを確認し、インライン化されない場合はクロージャを経由しない直接ループで実装する（[Matrix.tz](../std/Matrix.tz) の `multiply_rows` と同じ流儀）。
+- 1D 連続高速経路は `ref data[offset .. offset + total]` の単純 `for i in 0i64 ..= (total - 1)` ループとする。
+- 単一パス複合処理（例: `Tensor.map_into (\x -> Math.exp (x - bias)) src out` のような減算＋超越関数の 1 走査化）は、`map_into` / `map2_into` で追加の中間配列を作らずに記述する方針とする（汎用式テンプレート融合は入れない）。
+- **最適化後 IR の確認ルール**: `tsuzuri build --emit llvm -O3` は **Clang 実行前の未最適化 IR** を書き出す（`src/driver.rs:4620`）。そのため `map` / `map_into` / `map2` へ渡したクロージャがインライン化・自動ベクトル化されるかの検証は、必ず **Clang `-O3` 通過後の IR（`clang -x ir -O3 -S -emit-llvm`）または生成オブジェクトの逆アセンブル**で確認する。主要二項・単項演算（`add`/`sub`/`mul`/`div`/`scale`/`fma` 等）で Clang `-O3` 後も間接呼び出しが残る場合のみ、クロージャを経由しない直接ループへ書き直す（[Matrix.tz](../std/Matrix.tz) の `multiply_rows` と同じ流儀）。
 - 汎用ストライド経路は最内軸（`axis == rank - 1`）をタイトな内側ループにし、外側軸だけ再帰または明示スタックで走査する。
 - `Alloc`（F14）を使って `*_into` 関数が追加ヒープ確保 0 回であることをテストで構造的に表明する。
 
@@ -117,7 +119,7 @@
 ## 受け入れ条件
 
 - 全 ufunc がブロードキャスト・負ストライド・空テンソルを正しく扱い、`*_into` がヒープ確保 0 回で動作すること。
-- 主要二項・単項演算（`add`/`sub`/`mul`/`div`/`scale` 等）の連続高速経路について、`-O3 --emit llvm` の最適化後コードにクロージャ間接呼び出しが残らず自動ベクトル化可能であることを確認済みであること。
+- 主要二項・単項演算（`add`/`sub`/`mul`/`div`/`scale` 等）および `map_into` 単一パス複合処理の連続高速経路について、**Clang `-O3` 通過後の IR／逆アセンブル**でクロージャ間接呼び出しが残らず自動ベクトル化されることを確認済みであること。
 - 暗黙 FMA・`fast-math` を一切含まず、native/WASM `-O0`/`-O3` でビット一致し、`effects_alloc_conservative` と T2 が通ること。
 
 ## 落とし穴
@@ -125,7 +127,7 @@
 - 非可換の二項演算（`sub`/`div`/`rem`/`pow`）は `AGENTS.md`（「複数の引数が対象の関数は F# の順序を保つ」）どおり `left -> right` で統一する。パイプラインで `x |> Tensor.sub y` と書くと `y - x` になるため、数式は `NC03` の演算子 `x - y` または明示の `Tensor.sub x y` を使うこと。
 - `Tensor.round` は `Math.round`（0 から遠い側へ丸め）であり、NumPy の `np.round(2.5) == 2.0` に相当するのは `Tensor.round_even` である。また NumPy の `np.remainder` に相当するのは `Tensor.floor_mod` であり、IEEE 剰余は `Tensor.ieee_remainder` として区別する。
 - `std/Tensor.tz` から `Complex` の関数（`real`/`imag`/`conj`/`angle`）を直接参照する場合は `OPT_IN` の `Tensor.uses` に `"Complex"` を追加する（`OPT_IN.uses` は直接参照するモジュールのみの一致検査）。
-- 高階関数 `map2` へクロージャを渡すと、現在の最適化経路では間接呼び出しが残って自動ベクトル化が止まる場合がある。主要算術 ufunc の連続経路は直接ループまたは実測＋IR 確認を忘れないこと。
+- `tsuzuri build --emit llvm -O3` の出力は Clang 実行前の IR（`src/driver.rs:4620`）のため、未最適化のまま見てクロージャ間接呼び出しと誤認しやすい。自動ベクトル化の有無は必ず `clang -x ir -O3 -S -emit-llvm` または `objdump` で確認すること。
 
 ## 対象外
 
