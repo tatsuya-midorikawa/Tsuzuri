@@ -1535,7 +1535,7 @@ fn domain_without_callbacks(module: &CheckedModule, ir: &str) -> Result<(), Diag
     if ir.contains("@tz.callback.") {
         return Err(Diagnostic::of(
             DiagnosticKind::OptionConflict,
-            "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+            "Domain.run cannot be combined with extern callbacks or FnPtr values: a trap would unwind through the host's frames",
             crate::check::domain_calls(module)
                 .first()
                 .copied()
@@ -3563,7 +3563,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(..) | Type::FnPtr(_) | Type::Shared(..) => "ptr".into(),
         Type::FixedArray(element, _) => {
             format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
         }
@@ -3963,6 +3963,7 @@ pub(crate) fn codegen_identity(ty: &Type) -> Type {
             | Type::List(inner)
             | Type::Vec(inner)
             | Type::Once(inner)
+            | Type::FnPtr(inner)
             | Type::Reference(inner, _)
             | Type::Shared(inner, _) => erase(inner),
             Type::Partial(partial) => partial.trailing.iter_mut().for_each(erase),
@@ -4061,6 +4062,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Once(result) => format!("once[{}]", canonical_type(result, module)),
+        Type::FnPtr(inner) => format!("fnptr[{}]", canonical_type(inner, module)),
         Type::Shared(value, kind) => format!(
             "{}[{}]",
             match kind {
@@ -4122,13 +4124,52 @@ pub(crate) fn validate_wasm_externs(
     module: &CheckedModule,
     reachable: &BTreeSet<usize>,
 ) -> Result<(), Diagnostic> {
+    fn find_fnptr_of(expression: &TypedExpr) -> Option<Span> {
+        if let TypedExprKind::Call(callee, _) = &expression.kind
+            && matches!(
+                &callee.kind,
+                TypedExprKind::Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::FnPtrOf
+            )
+        {
+            return Some(expression.span);
+        }
+        let mut found = None;
+        let _ = expression.try_for_each_child(&mut |child| {
+            if found.is_none() {
+                found = find_fnptr_of(child);
+            }
+            Ok(())
+        });
+        found
+    }
+
     let types = module.types();
     let mut seen: BTreeMap<&str, (Type, Span)> = BTreeMap::new();
     for &id in reachable {
         let function = &module.functions[id];
+        if let Some(span) = find_fnptr_of(&function.body) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'FnPtr.of' produces a native C function pointer, which only native targets support; build for a native target",
+                span,
+            ));
+        }
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if function
+            .signature
+            .parameters
+            .iter()
+            .any(|ty| matches!(ty, Type::FnPtr(_)))
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'FnPtr' at the C ABI passes a native code pointer, which only native targets support; build for a native target",
+                function.span,
+            ));
+        }
         if crate::abi::uses_nullable_abi(
             &function.signature.parameters,
             &function.signature.result,
@@ -4616,7 +4657,7 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(32) => "float".into(),
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
-        Type::Handle(..) => "ptr".into(),
+        Type::Handle(..) | Type::FnPtr(_) => "ptr".into(),
         Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => "ptr".into(),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
@@ -7416,6 +7457,24 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             && let [value] = arguments
         {
             return self.dyn_of(instance, value);
+        }
+        // W22: `FnPtr.of target` produces the static C callback wrapper address of `target`.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && instance.builtin == Builtin::FnPtrOf
+            && let [target] = arguments
+        {
+            let mut target = target;
+            while let TypedExprKind::Cast(inner) = &target.kind {
+                target = inner;
+            }
+            let TypedExprKind::Function(FunctionRef::User(id)) = target.kind else {
+                unreachable!("validate_callbacks checked FnPtr.of argument");
+            };
+            self.globals.callbacks.insert(id);
+            return format!(
+                "@tz.callback.{}",
+                self.module.functions[id].qualified_name()
+            );
         }
         // A16: a direct `FixedArray.init f` fills the array in place, calling a known `f` directly.
         if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind

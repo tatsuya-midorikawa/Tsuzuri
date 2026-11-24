@@ -157,6 +157,7 @@ fn rank(ty: &Type) -> Option<u8> {
         Type::Reference(..) => 22,
         Type::Dyn(_) => 23,
         Type::Shared(..) => 24,
+        Type::FnPtr(_) => 25,
     })
 }
 
@@ -205,6 +206,7 @@ pub(super) fn order(left: &Type, right: &Type, names: &dyn DeclarationNames) -> 
             sequence(elements.iter(), others.iter(), names)
         }
         (Type::Handle(name, _), Type::Handle(other, _)) => Order::of(name.cmp(other)),
+        (Type::FnPtr(inner), Type::FnPtr(other)) => order(inner, other, names),
         (Type::Function(parameters, result), Type::Function(others, other_result)) => {
             let curried = functions(
                 FunctionKey::of(parameters, result),

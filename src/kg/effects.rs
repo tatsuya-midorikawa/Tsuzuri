@@ -34,9 +34,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         RoutineWithLockedThread => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
-        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
-            None
-        }
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
+        | FnPtrOf => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }

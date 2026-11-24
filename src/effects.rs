@@ -539,6 +539,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineWithLockedThread => {
             facts(Some(Effect::Task), false, false, false, true, false, None)
         }
+        // W22: `FnPtr.of` produces the static address of a callback wrapper without side effects or allocation.
+        FnPtrOf => facts(None, false, false, false, false, false, None),
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
         TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -3554,10 +3556,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations.
-        assert_eq!(Builtin::ALL.len(), 340);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of.
+        assert_eq!(Builtin::ALL.len(), 341);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 165);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 176);
     }
 
     #[test]

@@ -722,6 +722,23 @@ fn lower_expression(
             };
             expression.kind = Function(FunctionRef::User(id));
         }
+        Call(callee, arguments)
+            if matches!(
+                &callee.kind,
+                Function(FunctionRef::Builtin(instance))
+                    if matches!(instance.builtin, Builtin::FnPtrOf)
+            ) =>
+        {
+            for argument in arguments {
+                let mut inner: &TypedExpr = argument;
+                while let Cast(sub) = &inner.kind {
+                    inner = sub;
+                }
+                if !matches!(inner.kind, Function(FunctionRef::User(_))) {
+                    lower_expression(argument, functions, types, generated, origin)?;
+                }
+            }
+        }
         _ => {
             expression.try_for_each_child_mut(&mut |child| {
                 lower_expression(child, functions, types, generated, origin)

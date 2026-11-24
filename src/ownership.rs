@@ -4130,7 +4130,7 @@ fn scheme_runs_code(ty: &crate::check::BuiltinType, types: &crate::check::TypeCo
         | B::Reference(element, _)
         | B::FixedArrayOf(element) => scheme_runs_code(element, types),
         B::Tuple(elements) => elements.iter().any(|ty| scheme_runs_code(ty, types)),
-        B::UnsignedOf(_) | B::WidenOf(_) | B::SimdLane(..) | B::SimdMask(_) => false,
+        B::FnPtr(_) | B::UnsignedOf(_) | B::WidenOf(_) | B::SimdLane(..) | B::SimdMask(_) => false,
     }
 }
 

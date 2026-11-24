@@ -153,6 +153,7 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
         Type::FixedArray(element, _) => {
             json!(["array", descriptor(element, module), fixed_length(ty)])
         }
+        Type::FnPtr(inner) => descriptor(inner, module),
         Type::Function(parameters, result) => json!([
             "callback",
             host_parameters(parameters)
@@ -212,6 +213,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
                 handles.insert(handle_c_name(name));
             }
             Type::Reference(inner, _) => visit(inner, types, handles),
+            Type::FnPtr(inner) => visit(inner, types, handles),
             Type::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| visit(ty, types, handles));
                 visit(result, types, handles);
@@ -447,6 +449,7 @@ fn typescript_type_with(ty: &Type, module: &CheckedModule, input: bool, borrow: 
         Type::FixedArray(element, _) => {
             format!("readonly {}[]", typescript_type(element, module, input))
         }
+        Type::FnPtr(inner) => typescript_type(inner, module, input),
         Type::Function(parameters, result) => format!(
             "({}) => {}",
             host_parameters(parameters)

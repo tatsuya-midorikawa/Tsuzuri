@@ -182,6 +182,8 @@ pub enum Type {
     /// `Rc<T>`, `Rc.Weak<T>`, `Arc<T>`, or `Arc.Weak<T>` (C10 Phase 2): a pointer to a
     /// reference-counted heap block `{ i64 strong, i64 weak, T value }`.
     Shared(Box<Type>, SharedKind),
+    /// `FnPtr<F>` (W22): a C function pointer value with normalized C-callable signature `F`.
+    FnPtr(Box<Type>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,6 +330,28 @@ impl Type {
     pub const I32: Self = Self::Integer(32, true);
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
+
+    /// W22: normalizes the inner function type `F` of `FnPtr<F>` so curried `a -> b -> c`,
+    /// `pure`, and parameter-convention annotations collapse to one canonical C function type.
+    pub(crate) fn normalize_fnptr_inner(inner: Self) -> Self {
+        match inner {
+            Self::Function(mut parameters, mut result) => {
+                while let Self::Function(next_params, next_result) = *result {
+                    parameters.types.extend(next_params.types);
+                    result = next_result;
+                }
+                Self::Function(
+                    Box::new(FunctionParameters {
+                        types: parameters.types,
+                        conventions: Box::default(),
+                        pure: false,
+                    }),
+                    result,
+                )
+            }
+            other => other,
+        }
+    }
 
     /// The element type of a slice, which is a `%tz.array` value: a shared `ref [T]` or an
     /// exclusive `ref mut [T..]` (C08).
@@ -546,6 +570,14 @@ impl Type {
             ),
             Self::Once(_) => "tzroutine body".into(),
             Self::Handle(name, _) => names.handle_display(name),
+            Self::FnPtr(inner) => {
+                let text = inner.display_with(names);
+                if matches!(**inner, Self::Function(..)) {
+                    format!("FnPtr<({text})>")
+                } else {
+                    format!("FnPtr<{text}>")
+                }
+            }
             Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
@@ -589,6 +621,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Once(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_error(),
             Self::Function(parameters, result) => {
@@ -612,6 +645,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Once(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_constructor(),
             Self::Function(parameters, result) => {
@@ -1158,6 +1192,7 @@ impl Type {
             | Self::Length(_)
             | Self::Once(_)
             | Self::Handle(..)
+            | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
     }
@@ -1226,6 +1261,7 @@ impl Type {
             | Self::List(_)
             | Self::Vec(_)
             | Self::Tuple(_)
+            | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
     }
@@ -1617,6 +1653,9 @@ pub enum Builtin {
     /// `Dyn.of :: 'a -> 'b`, where the expected type `'b` is a `dyn` type whose classes `'a`
     /// implements (A14). Only a direct application with one argument type-checks.
     DynOf,
+    /// `FnPtr.of :: 'f -> FnPtr<'f>`, producing the static C callback wrapper address of a
+    /// top-level user function (W22).
+    FnPtrOf,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2082,6 +2121,7 @@ pub enum BuiltinType {
     ArrayView(Box<BuiltinType>),
     List(Box<BuiltinType>),
     Vec(Box<BuiltinType>),
+    FnPtr(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
     /// `Rc<T>` and the other shared pointers (C10).
     Shared(Box<BuiltinType>, SharedKind),
@@ -2212,6 +2252,7 @@ impl Builtin {
         Self::ArraySplitAtMut,
         Self::FixedArrayInit,
         Self::DynOf,
+        Self::FnPtrOf,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2561,6 +2602,7 @@ impl Builtin {
             Self::ArraySplitAtMut => "Array.split_at_mut",
             Self::FixedArrayInit => "FixedArray.init",
             Self::DynOf => "Dyn.of",
+            Self::FnPtrOf => "FnPtr.of",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3333,6 +3375,7 @@ impl Builtin {
             ),
             // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
             Self::DynOf => (vec![a()], Var("b"), Vec::new()),
+            Self::FnPtrOf => (vec![a()], BuiltinType::FnPtr(Box::new(a())), Vec::new()),
             Self::ListCons => (
                 vec![a(), BuiltinType::List(Box::new(a()))],
                 BuiltinType::List(Box::new(a())),
@@ -3976,6 +4019,7 @@ impl BuiltinType {
             | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
@@ -8562,7 +8606,7 @@ fn check_modules_collect(
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
                 || matches!(
                     class.name.text.as_str(),
-                    "_" | "Array" | "Vec" | "Rc" | "Arc"
+                    "_" | "Array" | "Vec" | "FnPtr" | "Rc" | "Arc"
                 )
             {
                 diagnostics.push(duplicate(&class.name));
@@ -9084,6 +9128,18 @@ fn check_modules_collect(
             if function.exported
                 && (public_parameters
                     .iter()
+                    .any(|ty| crate::abi::reaches_fnptr(ty, &types))
+                    || crate::abi::reaches_fnptr(public_result, &types))
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FnptrFromHost,
+                    "FnPtr values pass Tsuzuri callbacks to the host and cannot appear in 'export def' signatures",
+                    function.name.span,
+                ));
+            }
+            if function.exported
+                && (public_parameters
+                    .iter()
                     .any(|ty| !crate::abi::parameter(ty, &types))
                     || !crate::abi::result(public_result, &types))
             {
@@ -9133,6 +9189,30 @@ fn check_modules_collect(
                     return Err(Diagnostic::of(
                         DiagnosticKind::AbiNullablePayload,
                         "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
+                        function.name.span,
+                    ));
+                }
+                if crate::abi::reaches_fnptr(&signature.result, &types)
+                    || signature.parameters.iter().any(|ty| match ty {
+                        Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
+                        Type::Reference(inner, true) => crate::abi::reaches_fnptr(inner, &types),
+                        _ => false,
+                    })
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrFromHost,
+                        "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
+                        function.name.span,
+                    ));
+                }
+                if signature
+                    .parameters
+                    .iter()
+                    .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
                         function.name.span,
                     ));
                 }
@@ -10052,12 +10132,16 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
 /// static C function pointer, so nothing needs a context or a lifetime.
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
-    if !(0..module.functions.len()).any(is_callback_extern) {
-        return Ok(());
-    }
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
         _ => None,
+    };
+    let is_fnptr_of = |expression: &TypedExpr| {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::FnPtrOf
+        )
     };
     let direct_only = |id: usize, span: Span| {
         Diagnostic::of(
@@ -10069,21 +10153,60 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             span,
         )
     };
-    let plain_function = |argument: &TypedExpr| match &argument.kind {
-        TypedExprKind::Function(FunctionRef::User(id)) => {
-            let function = &module.functions[*id];
-            function.origin.module == ModuleOrigin::User
-                && function.origin.provenance == Provenance::User
-                && function.origin.parent.is_none()
-                && function.origin.test.is_none()
-                && function.type_parameters.is_empty()
-                && !matches!(function.body.kind, TypedExprKind::HostCall(..))
-        }
-        _ => false,
+    let fnptr_direct_only = |span: Span| {
+        Diagnostic::of(
+            DiagnosticKind::FnptrCallForm,
+            "FnPtr.of must be called directly with one top-level function argument",
+            span,
+        )
     };
+    let plain_function = |mut argument: &TypedExpr| {
+        while let TypedExprKind::Cast(inner) = &argument.kind {
+            argument = inner;
+        }
+        match &argument.kind {
+            TypedExprKind::Function(FunctionRef::User(id)) => {
+                let function = &module.functions[*id];
+                function.origin.module == ModuleOrigin::User
+                    && function.origin.provenance == Provenance::User
+                    && function.origin.parent.is_none()
+                    && function.origin.test.is_none()
+                    && function.type_parameters.is_empty()
+                    && !matches!(function.body.kind, TypedExprKind::HostCall(..))
+            }
+            _ => false,
+        }
+    };
+    let types = module.types();
     for function in &module.functions {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expression.kind
+                && is_fnptr_of(callee)
+            {
+                if arguments.len() != 1 {
+                    return Err(fnptr_direct_only(expression.span));
+                }
+                let argument = &arguments[0];
+                if !plain_function(argument) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrArgument,
+                        "FnPtr.of requires a concrete top-level user function without captures; move the logic into a 'def' and pass its name",
+                        argument.span,
+                    ));
+                }
+                if !crate::abi::fnptr(&expression.ty, &types) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, pure, and nested functions are not supported",
+                        expression.span,
+                    ));
+                }
+                continue;
+            }
+            if is_fnptr_of(expression) {
+                return Err(fnptr_direct_only(expression.span));
+            }
             if let TypedExprKind::Call(callee, arguments) = &expression.kind
                 && let Some(id) = callback_extern(callee)
             {
@@ -10453,7 +10576,7 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
 pub fn reserved_type_name(name: &str) -> bool {
     crate::numeric::primitive(name).is_some()
-        || matches!(name, "_" | "Array" | "Vec" | "Rc" | "Arc")
+        || matches!(name, "_" | "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
         || polymorph::BUILTIN_CLASSES.contains(&name)
 }
 
@@ -10545,7 +10668,7 @@ fn collect_unions(
                     .push(vec![false; union.parameters.len()].into());
                 return Ok(());
             }
-            if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
+            if matches!(name.text.as_str(), "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -10622,7 +10745,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
+                if matches!(name.text.as_str(), "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)
@@ -10734,10 +10857,18 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
     resolve_type_with_kinds(expression, module, names, &BTreeMap::new())
 }
 
+fn is_fnptr_type_name(name: &str) -> bool {
+    let name = name
+        .strip_prefix(crate::stdlib::NAMESPACE)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .unwrap_or(name);
+    name == "FnPtr"
+}
+
 /// Whether an applied type name is a builtin type constructor rather than a declaration:
-/// `Vec`, or a shared pointer such as `Rc` or `Arc.Weak` (C10).
+/// `Vec`, `FnPtr`, or a shared pointer such as `Rc` or `Arc.Weak` (C10).
 fn builtin_type_head(name: &str) -> bool {
-    name == "Vec" || SharedKind::named(name).is_some()
+    name == "Vec" || is_fnptr_type_name(name) || SharedKind::named(name).is_some()
 }
 
 fn resolve_type_with_kinds(
@@ -10773,6 +10904,23 @@ fn resolve_type_with_kinds(
                 ));
             };
             Type::Vec(Box::new(resolve(element)?))
+        }
+        TypeExprKind::Apply(head, args) if is_fnptr_type_name(&head.text) => {
+            let [inner] = &**args else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeArgumentCount,
+                    "FnPtr expects exactly one function type, as in 'FnPtr<i64 -> i64>'",
+                    expression.span,
+                ));
+            };
+            Type::FnPtr(Box::new(Type::normalize_fnptr_inner(resolve(inner)?)))
+        }
+        TypeExprKind::Named(name) if is_fnptr_type_name(name) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeArgumentCount,
+                "FnPtr expects exactly one function type, as in 'FnPtr<i64 -> i64>'",
+                expression.span,
+            ));
         }
         TypeExprKind::Apply(head, args) if SharedKind::named(&head.text).is_some() => {
             let kind = SharedKind::named(&head.text).expect("checked by the guard");
@@ -11927,6 +12075,23 @@ impl Validation<'_> {
                     ));
                 }
                 self.check(value, span)?;
+                8
+            }
+            Type::FnPtr(inner) => {
+                if !polymorph::variables(inner).is_empty() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternSignatureNotConcrete,
+                        "FnPtr signatures must be concrete; type variables cannot cross the C callback ABI",
+                        span,
+                    ));
+                }
+                if !crate::abi::callback(inner, &self.layouts.types) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                        span,
+                    ));
+                }
                 8
             }
             Type::Once(result) => {
@@ -14524,6 +14689,7 @@ impl<'a> Checker<'a> {
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::Once(ty)
+                | Type::FnPtr(ty)
                 | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => closed(checker, ty, open),
                 Type::Function(parameters, result) => {

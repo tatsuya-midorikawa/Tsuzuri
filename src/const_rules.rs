@@ -34,6 +34,7 @@ fn value_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         | Type::Vec(_)
         | Type::Once(_)
         | Type::Handle(..)
+        | Type::FnPtr(_)
         | Type::Function(..)
         | Type::Reference(..)
         | Type::Dyn(_)

@@ -153,6 +153,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     // TZ07: cancellation and groups of work.
     "Context",
     "ErrGroup",
+    // W22: static function pointer values.
+    "FnPtr",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -840,7 +842,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 73);
+        assert_eq!(RESERVED_MODULES.len(), 74);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

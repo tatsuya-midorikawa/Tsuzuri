@@ -4063,7 +4063,7 @@ fn build_complete(
             if output.ir.contains("@tz.callback.") {
                 return Err(driver_error_of(
                     DiagnosticKind::OptionConflict,
-                    "--trap-mode return cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+                    "--trap-mode return cannot be combined with extern callbacks or FnPtr values: a trap would unwind through the host's frames",
                 ));
             }
             trap_sites = output.trap_sites;

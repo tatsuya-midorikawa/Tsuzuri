@@ -261,6 +261,11 @@ int64_t w12_gui_register_class(w12_wndproc_t proc) {
     return RegisterClassExW(&wc) ? 1 : 0;
 }
 
+int64_t w22_gui_register_class(int64_t tag, w12_wndproc_t proc) {
+    if (w12_gui_register_class(proc) == 0) return 0;
+    return tag;
+}
+
 int64_t w12_gui_create_registered(void) {
     HWND hwnd = CreateWindowExW(0, g_w12_class_name, L"w12", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
     return (int64_t)(intptr_t)hwnd;

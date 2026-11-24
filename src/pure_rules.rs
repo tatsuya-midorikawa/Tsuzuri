@@ -69,7 +69,9 @@ fn plain_part(ty: &Type, types: &TypeContext<'_>) -> bool {
         | Type::Array(_)
         | Type::List(_)
         | Type::Vec(_)
-        | Type::Tuple(_) => true,
+        // Plain data includes static `FnPtr` values (Copy pointer constants without mutable state or Drop).
+        | Type::Tuple(_)
+        | Type::FnPtr(_) => true,
         Type::FixedArray(_, length) => matches!(**length, Type::Length(_)),
         Type::Record(id, _) => !types.records[*id].user_drop,
         Type::Union(id, _) => !types.unions[*id].user_drop,
@@ -195,9 +197,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
-        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
-            None
-        }
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
+        | FnPtrOf => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }

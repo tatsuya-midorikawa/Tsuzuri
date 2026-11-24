@@ -2,13 +2,22 @@
 extern "w12_register" def register :: (i64 -> i64) -> unit
 
 @trusted
+extern "w22_register_tagged" def register_tagged :: i64 -> FnPtr<(i64 -> i64)> -> unit
+
+@trusted
 extern "w12_fire" def fire :: i64 -> i64
 
 @trusted
 extern "w12_run_thread_sum" def run_thread_sum :: (i64 -> i64) -> i64 -> i64
 
 @trusted
+extern "w12_run_thread_sum" def run_thread_sum_ptr :: FnPtr<(i64 -> i64)> -> i64 -> i64
+
+@trusted
 extern "w12_pool_submit_wait" def pool_submit_wait :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_pool_submit_wait" def pool_submit_wait_ptr :: FnPtr<(i64 -> i64)> -> i64 -> i64
 
 @trusted
 extern "w12_host_mark" def host_mark :: i64 -> unit
@@ -19,7 +28,13 @@ extern "w12_start_idle_host_thread" def start_idle_host_thread :: (i64 -> i64) -
 @trusted
 extern "w12_register_atexit" def register_atexit :: (i64 -> i64) -> unit
 
+record HandlerEntry {
+    proc: FnPtr<(i64 -> i64)>,
+}
+
 def triple :: i64 -> i64 = \x -> x * 3
+
+pure def plus_ten :: i64 -> i64 = \x -> x + 10
 
 def on_pool :: i64 -> i64 = \x ->
     tzroutine {
@@ -43,4 +58,12 @@ def main :: Array<string> -> i32 = \args ->
         let stored = fire 14
         let threaded = run_thread_sum triple 1000
         let marked = pool_submit_wait on_pool 7
-        if stored == 42 && threaded == 1501500 && marked == 78 then 42 else 1
+        // W22: store FnPtr in a record & array, partially apply extern taking FnPtr, and invoke across threads + tzroutine scope.
+        let entry = HandlerEntry { proc: FnPtr.of triple }
+        let reg = register_tagged 99
+        reg entry.proc
+        let via_record = fire 14
+        let table: [FnPtr<(i64 -> i64)>] = [FnPtr.of triple, FnPtr.of plus_ten]
+        let via_table = run_thread_sum_ptr table[1] 100
+        let via_pool = pool_submit_wait_ptr (FnPtr.of on_pool) 9
+        if stored == 42 && via_record == 42 && threaded == 1501500 && via_table == 6050 && marked == 78 && via_pool == 100 then 42 else 1

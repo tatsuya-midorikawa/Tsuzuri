@@ -418,6 +418,7 @@ fn builtin_type(ty: &BuiltinType) -> String {
         BuiltinType::ArrayView(element) => format!("[{}..]", builtin_type(element)),
         BuiltinType::List(element) => format!("[|{}|]", builtin_type(element)),
         BuiltinType::Vec(element) => format!("Vec<{}>", builtin_type(element)),
+        BuiltinType::FnPtr(inner) => format!("FnPtr<({})>", builtin_type(inner)),
         BuiltinType::Tuple(elements) => format!("({})", builtin_types(elements, " * ")),
         BuiltinType::Shared(value, kind) => format!("{}<{}>", kind.name(), builtin_type(value)),
         BuiltinType::Reference(target, false) => format!("ref {}", builtin_type(target)),

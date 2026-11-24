@@ -1,0 +1,70 @@
+extern type copy Hwnd
+
+record WindowSpec {
+    proc: FnPtr<(ref Hwnd -> i32u -> i64u -> i64 -> i64)>,
+}
+
+@trusted
+extern "w22_gui_register_class" def register_class_tagged :: i64 -> FnPtr<(ref Hwnd -> i32u -> i64u -> i64 -> i64)> -> i64
+
+@trusted
+extern "w12_gui_create_registered" def create_window :: unit -> Hwnd
+
+@trusted
+extern "w12_gui_def_proc" def def_proc :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w12_gui_destroy" def destroy_window :: ref Hwnd -> i64
+
+@trusted
+extern "w12_gui_pump_pending" def pump_pending :: unit -> i64
+
+@trusted
+extern "w12_gui_set_userdata" def set_userdata :: ref Hwnd -> i64 -> i64
+
+@trusted
+extern "w12_gui_get_userdata" def get_userdata :: ref Hwnd -> i64
+
+@trusted
+extern "w06_gui_send" def send_msg :: ref Hwnd -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w06_gui_post" def post_msg :: ref Hwnd -> i64u -> i64
+
+@trusted
+extern "w12_gui_set_mark" def set_mark :: i64 -> unit
+
+@trusted
+extern "w12_gui_get_mark" def get_mark :: unit -> i64
+
+def wndproc :: ref Hwnd -> i32u -> i64u -> i64 -> i64 = \hwnd msg wparam lparam ->
+    if msg == 1i32u then
+        let _old = set_userdata hwnd 1
+        0
+    elif msg == 32768i32u then
+        let cur = get_userdata hwnd
+        let _old = set_userdata hwnd (cur * 10 + (wparam as i64))
+        0
+    elif msg == 16i32u then
+        let cur = get_userdata hwnd
+        let _old = set_userdata hwnd (cur * 10 + 4)
+        let _d = destroy_window hwnd
+        0
+    elif msg == 2i32u then
+        let cur = get_userdata hwnd
+        set_mark (cur * 10 + 5)
+        0
+    else
+        def_proc hwnd msg wparam lparam
+
+def main :: unit -> i32 = \() ->
+    let spec = WindowSpec { proc: FnPtr.of wndproc }
+    let register_77 = register_class_tagged 77
+    let tag = register_77 spec.proc
+    let hwnd = create_window ()
+    let _s1 = send_msg (ref hwnd) 32768i32u 2i64u 0
+    let _p1 = post_msg (ref hwnd) 3i64u
+    let _pumped = pump_pending ()
+    let _closed = send_msg (ref hwnd) 16i32u 0i64u 0
+    let trace = get_mark ()
+    if tag == 77 && trace == 12345 then 42 else 1

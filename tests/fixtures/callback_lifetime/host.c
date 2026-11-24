@@ -19,6 +19,11 @@ void w12_register(w12_cb cb) {
     g_stored = cb;
 }
 
+void w22_register_tagged(int64_t tag, w12_cb cb) {
+    (void)tag;
+    g_stored = cb;
+}
+
 int64_t w12_fire(int64_t x) {
     return g_stored ? g_stored(x) : -1;
 }

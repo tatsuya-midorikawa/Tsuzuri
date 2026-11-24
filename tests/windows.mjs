@@ -200,6 +200,10 @@ function runGuiStage(compiler, clang, directory) {
     assert.equal(launchWithoutHandles(w12AfterExe, [], { launcher, debugStrings: w12AfterOds }), 0xc000001d, `w12_after_main ${optimization}`);
     assert.match(readFileSync(w12AfterOds, "utf8"), /a callback was called after main returned/);
 
+    // W22: FnPtr<F> stored in a record and passed through a partially applied extern to RegisterClassExW.
+    const w22FnPtrExe = buildGui("w22_fnptr", [optimization], { compiler, clang, directory });
+    assert.equal(launchWithoutHandles(w22FnPtrExe, [], { launcher }), 42, `w22_fnptr ${optimization}`);
+
     // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
     const tickDir = join(directory, `tick-obj${optimization}`);
     mkdirSync(tickDir, { recursive: true });

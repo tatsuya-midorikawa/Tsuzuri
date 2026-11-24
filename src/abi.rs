@@ -266,6 +266,17 @@ pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> std::borrow::Cow<'a,
     }
 }
 
+/// W22: whether `ty` is `FnPtr<F>` for a C-callable function type `F`.
+pub fn fnptr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(ty, Type::FnPtr(inner) if callback(inner, types))
+}
+
+/// W22: whether `ty` contains `FnPtr` in a position that receives values from the host.
+pub fn reaches_fnptr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    types.reaches(ty, |part| matches!(part, Type::FnPtr(_)))
+        || matches!(ty, Type::Function(params, res) if params.iter().any(|p| reaches_fnptr(p, types)) || reaches_fnptr(res, types))
+}
+
 pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
     abi_scalar(ty)
         || matches!(
@@ -277,6 +288,7 @@ pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
 pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     parameter(ty, types)
         || extern_scalar(ty, types)
+        || fnptr(ty, types)
         || matches!(nullable(ty, types), Some(Nullable::BorrowedRecord(_)))
 }
 
@@ -313,6 +325,10 @@ pub fn has_invalid_extern_maybe(
 pub fn uses_nullable_abi(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> bool {
     parameters.iter().any(|param| match param {
         Type::Function(cb_params, _) => cb_params.iter().any(|p| nullable(p, types).is_some()),
+        Type::FnPtr(inner) => match inner.as_ref() {
+            Type::Function(cb_params, _) => cb_params.iter().any(|p| nullable(p, types).is_some()),
+            _ => false,
+        },
         _ => nullable(param, types).is_some(),
     }) || nullable(result, types).is_some()
 }
@@ -456,7 +472,7 @@ fn c_scalar(ty: &Type) -> CType {
         Type::Integer(64, _) => CType::I64,
         Type::Binary(32) => CType::F32,
         Type::Binary(64) => CType::F64,
-        Type::Handle(..) => CType::Ptr,
+        Type::Handle(..) | Type::FnPtr(_) => CType::Ptr,
         Type::Reference(inner, false) if is_handle(inner) => CType::Ptr,
         _ => unreachable!("checked ABI scalar: {ty:?}"),
     }
@@ -472,7 +488,7 @@ pub fn c_signature(parameters: &[Type], result: &Type, types: &TypeContext<'_>) 
         if *parameter == Type::Unit {
             continue;
         }
-        if matches!(parameter, Type::Function(..)) {
+        if matches!(parameter, Type::Function(..) | Type::FnPtr(_)) {
             lowered.push(CType::Ptr);
             continue;
         }

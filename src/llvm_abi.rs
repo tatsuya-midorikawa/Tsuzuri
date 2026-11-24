@@ -32,7 +32,7 @@ pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
-                        && !matches!(ty, Type::Function(..))
+                        && !matches!(ty, Type::Function(..) | Type::FnPtr(_))
                 }) || out_result(&function.signature.result)))
     })
 }
@@ -56,6 +56,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
                 names.insert(name.to_string());
             }
             Type::Reference(inner, _) => visit(inner, types, names),
+            Type::FnPtr(inner) => visit(inner, types, names),
             Type::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| visit(ty, types, names));
                 visit(result, types, names);
@@ -262,7 +263,10 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         if *ty == Type::Unit {
             continue;
         }
-        if let Type::Function(inputs, output) = ty {
+        if let Type::Function(inputs, output) = match ty {
+            Type::FnPtr(inner) => inner.as_ref(),
+            other => other,
+        } {
             // A callback is a C function pointer; a lone `unit` input is `void`.
             let inputs = if matches!(inputs.as_slice(), [Type::Unit]) {
                 "void".to_owned()

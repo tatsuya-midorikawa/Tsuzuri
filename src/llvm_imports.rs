@@ -55,7 +55,11 @@ impl FunctionEmitter<'_, '_> {
         for argument in arguments {
             if matches!(argument.ty, Type::Function(..)) {
                 // A callback reaches the host as the address of its C-ABI wrapper.
-                let TypedExprKind::Function(FunctionRef::User(id)) = &argument.kind else {
+                let mut target = argument;
+                while let TypedExprKind::Cast(inner) = &target.kind {
+                    target = inner;
+                }
+                let TypedExprKind::Function(FunctionRef::User(id)) = &target.kind else {
                     unreachable!("validated callback arguments name a function");
                 };
                 self.globals.callbacks.insert(*id);
