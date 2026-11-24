@@ -1888,16 +1888,22 @@ fn add_items(
     }
     for declaration in instances {
         let header = fresh().least(|renaming| {
-            let ty = renaming.ty(&declaration.ty);
+            let mut args = vec![type_text(&renaming.ty(&declaration.ty))];
+            for extra in &declaration.extra_args {
+                args.push(type_text(&renaming.ty(extra)));
+            }
             let constraints = renaming.constraints(&declaration.constraints);
             let class = renaming.class_name(&declaration.class);
-            let name = format!("{}<{}>", class.text, type_text(&ty));
+            let name = format!("{}<{}>", class.text, args.join(", "));
             format!("instance {}{name}", constraints_text(&constraints))
         });
         let name = Renaming::new(true, resolved).least(|key| {
-            let ty = key.ty(&declaration.ty);
+            let mut args = vec![type_text(&key.ty(&declaration.ty))];
+            for extra in &declaration.extra_args {
+                args.push(type_text(&key.ty(extra)));
+            }
             let class = key.class_name(&declaration.class);
-            format!("{}<{}>", class.text, type_text(&ty))
+            format!("{}<{}>", class.text, args.join(", "))
         });
         // Two modules can spell the same instance for their own types, so the module is part of it.
         let mut item = Item::new("instance", qualified(&name), header);

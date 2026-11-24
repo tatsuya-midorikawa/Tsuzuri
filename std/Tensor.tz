@@ -1588,7 +1588,11 @@ instance Display<'a> => Display<View<'a>> {
 private def slice_raw { r } :: own [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> View<'a> { r }
 fn slice_raw axes data offset shape strides =
     let in_rank = shape.length
-    let mut new_offset = offset
+    let mut input_empty = false
+    for d in 0i64 ..= (in_rank - 1) do
+        if shape[d] == 0 then input_empty = true else ()
+    let mut new_offset = if input_empty then 0 else offset
+    let mut out_empty = input_empty
     let mut out_shape = Vec.empty()
     let mut out_strides = Vec.empty()
     let mut in_axis = 0
@@ -1603,12 +1607,18 @@ fn slice_raw axes data offset shape strides =
             let stride = strides[in_axis]
             match Slice.resolve dim (ref axes[i]) with
             | Slice.Resolved.Index pos ->
-                new_offset = new_offset + pos * stride
+                if !input_empty then
+                    new_offset = new_offset + pos * stride
+                else ()
             | Slice.Resolved.Slice (start, len, step) ->
-                if len > 0 then
+                if len == 0 then
+                    out_empty = true
+                elif !input_empty then
                     new_offset = new_offset + start * stride
+                else ()
                 let new_stride =
-                    if len <= 1 then stride
+                    if input_empty || len <= 1 then
+                        if input_empty then 0 else stride
                     else
                         match Int.checked_mul stride step with
                         | Maybe.Some s -> s
@@ -1623,12 +1633,16 @@ fn slice_raw axes data offset shape strides =
             in_axis = in_axis + 1
     while in_axis < in_rank do
         Vec.push_mut shape[in_axis] (ref mut out_shape)
-        Vec.push_mut strides[in_axis] (ref mut out_strides)
+        Vec.push_mut (if input_empty then 0 else strides[in_axis]) (ref mut out_strides)
         in_axis = in_axis + 1
     let shape_arr = Vec.to_array out_shape
-    let strides_arr = Vec.to_array out_strides
     assert (shape_arr.length <= 64)
-    View { data: data, offset: new_offset, shape: shape_arr, strides: strides_arr }
+    if out_empty then
+        let zero_strides = new [i64](shape_arr.length, \_ -> 0)
+        View { data: data, offset: 0, shape: shape_arr, strides: zero_strides }
+    else
+        let strides_arr = Vec.to_array out_strides
+        View { data: data, offset: new_offset, shape: shape_arr, strides: strides_arr }
 
 /// Applies per-axis `Slice.Axis` descriptors to `view` without copying, supporting `All`, `At`,
 /// `Range`, `From`, `To`, `Step` (including negative steps), `rev`, and `NewAxis`. Trailing

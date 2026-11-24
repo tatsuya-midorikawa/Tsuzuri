@@ -5,6 +5,7 @@ import {
 } from "node:fs";
 import os, { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // E2E for the standard File, Dir, Env, Time, Random, Path, and Os modules (E08). Native programs run
 // as real executables in per-case directories; expectations come from Node's fs and os modules, and the
@@ -118,8 +119,9 @@ async function runWindowsSuite() {
   const cFlags = isBundledClang
     ? ["-D_CRT_SECURE_NO_WARNINGS"]
     : [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"];
+  const refSource = fileURLToPath(new URL("./os_windows_reference.c", import.meta.url));
   const refBin = join(root, "os_windows_reference.exe");
-  execute(clang, [...cFlags, "-O1", "tests/os_windows_reference.c", "-o", refBin]);
+  execute(clang, [...cFlags, "-O1", refSource, "-o", refBin]);
 
   const winProgram = (name, source) => {
     const directory = join(root, `win-${name}`);

@@ -1387,6 +1387,48 @@ fn aliases_constants_externs_exports_and_derives() {
 }
 
 #[test]
+fn index_instances_distinguish_key_and_output_overloads() {
+    let base = "\
+record Grid { value: i64 }
+instance Index<Grid, i64, i64> {
+    fn index k self = self.value + k
+}
+instance Index<Grid, string, i64> {
+    fn index k self = self.value + k.length
+}
+";
+    let removed_key = "\
+record Grid { value: i64 }
+instance Index<Grid, i64, i64> {
+    fn index k self = self.value + k
+}
+";
+    check(
+        base,
+        removed_key,
+        &["breaking removed instance Main.Index<Grid, string, i64>"],
+    );
+
+    let changed_output = "\
+record Grid { value: i64 }
+instance Index<Grid, i64, i32> {
+    fn index k self = (self.value + k) as i32
+}
+instance Index<Grid, string, i64> {
+    fn index k self = self.value + k.length
+}
+";
+    check(
+        base,
+        changed_output,
+        &[
+            "breaking removed instance Main.Index<Grid, i64, i64>",
+            "non-breaking added instance Main.Index<Grid, i64, i32>",
+        ],
+    );
+}
+
+#[test]
 fn private_declarations_are_not_api() {
     check(
         "private def p :: i64 = 1\nprivate record R { x: i64 }\nprivate union U = A\nprivate type T = i64\nprivate const C: i64 = 1\n",
