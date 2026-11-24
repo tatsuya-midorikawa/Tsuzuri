@@ -264,6 +264,8 @@ diagnostic_kinds! {
         (StdRepresentationMismatch, "std_representation_mismatch", "E1005"),
         (UnsizedSliceTypePosition, "unsized_slice_type_position", "E1005"),
         (UseRequiresDrop, "use_requires_drop", "E1005"),
+        (ZstringLiteralArgument, "zstring_literal_argument", "E1005"),
+        (ZstringLiteralInteriorNul, "zstring_literal_interior_nul", "E1005"),
         // E1006
         (ActivePatternArgumentCount, "active_pattern_argument_count", "E1006"),
         (ActiveRecognizerParameters, "active_recognizer_parameters", "E1006"),

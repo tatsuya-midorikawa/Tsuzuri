@@ -271,12 +271,24 @@ pub fn std_maybe_payload<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<&'
         .then(|| &arguments[0])
 }
 
-/// W15: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
+/// W20: whether `ty` is the standard `ZString` opaque record.
+pub fn zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Record(id, args)
+            if args.is_empty()
+                && types.records[*id].origin == crate::check::ModuleOrigin::Std
+                && types.records[*id].name == "ZString.ZString"
+    )
+}
+
+/// W15 / W20: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nullable<'a> {
     Handle(&'a Type),
     BorrowedHandle(&'a Type),
     BorrowedRecord(&'a Type),
+    BorrowedZString(&'a Type),
 }
 
 pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a>> {
@@ -284,6 +296,9 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
     match payload {
         Type::Handle(..) => Some(Nullable::Handle(payload)),
         Type::Reference(inner, false) if is_handle(inner) => Some(Nullable::BorrowedHandle(inner)),
+        Type::Reference(inner, false) if zstring(inner, types) => {
+            Some(Nullable::BorrowedZString(inner))
+        }
         Type::Reference(inner, false) if scalar_record(inner, types) => {
             Some(Nullable::BorrowedRecord(inner))
         }
@@ -292,14 +307,14 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
 }
 
 /// The type as the C side sees it: `Maybe<H>` -> `H`, `Maybe<ref H>` -> `ref H`,
-/// `Maybe<ref R>` -> `ref R`, and any other type unchanged (W15).
+/// `Maybe<ref R>` -> `ref R`, `Maybe<ref ZString>` -> `ref ZString`, and any other type unchanged.
 pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> std::borrow::Cow<'a, Type> {
     match nullable(ty, types) {
         Some(Nullable::Handle(handle)) => std::borrow::Cow::Borrowed(handle),
         Some(Nullable::BorrowedHandle(handle)) => {
             std::borrow::Cow::Owned(Type::Reference(Box::new(handle.clone()), false))
         }
-        Some(Nullable::BorrowedRecord(record)) => {
+        Some(Nullable::BorrowedRecord(record) | Nullable::BorrowedZString(record)) => {
             std::borrow::Cow::Owned(Type::Reference(Box::new(record.clone()), false))
         }
         None => std::borrow::Cow::Borrowed(ty),
@@ -339,18 +354,23 @@ pub fn extern_buffer_parameter(ty: &Type) -> Option<(Buffer, bool)> {
     }
 }
 
-/// W13: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers, or `@count`.
+/// W13 / W20: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers,
+/// `ref ZString`, or `@count`.
 pub fn uses_w13_native_only(
     parameters: &[Type],
     counts: &[(usize, crate::syntax::CountLength)],
+    types: &TypeContext<'_>,
 ) -> bool {
     !counts.is_empty()
         || parameters.iter().any(|ty| match ty {
             Type::Reference(_, true) => true,
-            Type::Reference(inner, false) => matches!(
-                Buffer::of_extern(inner),
-                Some(Buffer::I16U | Buffer::I32 | Buffer::I32U)
-            ),
+            Type::Reference(inner, false) => {
+                zstring(inner, types)
+                    || matches!(
+                        Buffer::of_extern(inner),
+                        Some(Buffer::I16U | Buffer::I32 | Buffer::I32U)
+                    )
+            }
             _ => false,
         })
 }
@@ -359,7 +379,11 @@ pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     parameter(ty, types)
         || extern_scalar(ty, types)
         || fnptr(ty, types)
-        || matches!(nullable(ty, types), Some(Nullable::BorrowedRecord(_)))
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::BorrowedRecord(_) | Nullable::BorrowedZString(_))
+        )
+        || matches!(ty, Type::Reference(inner, false) if zstring(inner, types))
         || extern_buffer_parameter(ty).is_some()
         || matches!(
             ty,

@@ -466,7 +466,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 44] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 45] = [
     "Net.__classify",
     "Unicode.__table_length",
     "Unicode.__table_entry",
@@ -511,6 +511,7 @@ pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 44] = [
     "Gen.__seed",
     "Domain.__run",
     "Domain.__message",
+    "Anchor.__release",
 ];
 
 fn multiplexed(name: &str) -> bool {

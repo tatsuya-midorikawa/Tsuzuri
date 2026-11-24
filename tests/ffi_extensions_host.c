@@ -182,6 +182,13 @@ void w13_write_counted_none(int32_t n, int32_t *buf) {
     }
 }
 
+int64_t w20_zlen(const uint16_t *s) {
+    if (s == NULL) return -1;
+    int64_t n = 0;
+    while (s[n] != 0) n++;
+    return n;
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

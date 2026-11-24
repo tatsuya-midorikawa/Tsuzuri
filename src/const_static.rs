@@ -244,6 +244,61 @@ pub(super) fn too_big(span: Span) -> Diagnostic {
     )
 }
 
+/// W20: appends a synthetic `ZString.literal` static entry (deduplicated by `units_with_nul`) while
+/// enforcing the module-wide `MAX_STATIC_BYTES` ceiling.
+pub(in super::super) fn intern_zstring(
+    statics: &mut BTreeMap<usize, StaticData>,
+    dedup: &mut BTreeMap<Vec<u16>, usize>,
+    next_id: &mut usize,
+    total_bytes: &mut usize,
+    zstring_record_id: usize,
+    units_with_nul: Vec<u16>,
+    span: Span,
+) -> Result<usize, Diagnostic> {
+    if let Some(&id) = dedup.get(&units_with_nul) {
+        return Ok(id);
+    }
+    let added = units_with_nul.len().saturating_mul(2).saturating_add(16);
+    *total_bytes = total_bytes.saturating_add(added);
+    if *total_bytes > MAX_STATIC_BYTES {
+        return Err(too_big(span));
+    }
+    let id = *next_id;
+    *next_id += 1;
+    let u16_ty = Type::Integer(16, false);
+    let arr_expr = TypedExpr {
+        kind: TypedExprKind::Array(
+            units_with_nul
+                .iter()
+                .map(|&unit| TypedExpr {
+                    kind: TypedExprKind::Int(u128::from(unit)),
+                    ty: u16_ty.clone(),
+                    span,
+                })
+                .collect(),
+        ),
+        ty: Type::Array(Box::new(u16_ty)),
+        span,
+    };
+    let zstr_expr = TypedExpr {
+        kind: TypedExprKind::Record(vec![(0, arr_expr)]),
+        ty: Type::Record(zstring_record_id, Box::default()),
+        span,
+    };
+    statics.insert(id, StaticData { value: zstr_expr });
+    dedup.insert(units_with_nul, id);
+    Ok(id)
+}
+
+pub(in super::super) fn total_static_bytes(
+    statics: &BTreeMap<usize, StaticData>,
+    types: &TypeContext<'_>,
+) -> usize {
+    statics.values().fold(0usize, |acc, item| {
+        acc.saturating_add(bytes(&item.value, types))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

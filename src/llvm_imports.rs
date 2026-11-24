@@ -97,13 +97,27 @@ impl FunctionEmitter<'_, '_> {
             }
             if let Some(nullable) = crate::abi::nullable(&argument.ty, &self.module.types()) {
                 types.push("ptr".into());
-                if matches!(nullable, crate::abi::Nullable::BorrowedRecord(_)) {
+                if matches!(
+                    nullable,
+                    crate::abi::Nullable::BorrowedRecord(_)
+                        | crate::abi::Nullable::BorrowedZString(_)
+                ) {
                     deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
                     values.push(String::new());
                 } else {
                     let converted = self.nullable_to_c(&argument.ty, &value);
                     values.push(format!("ptr {converted}"));
                 }
+                continue;
+            }
+            if let Type::Reference(inner, false) = &argument.ty
+                && crate::abi::zstring(inner, &self.module.types())
+            {
+                let rec = self.value(format!("load {}, ptr {value}", self.ty(inner)));
+                let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));
+                let ptr = self.value(format!("extractvalue %tz.array {arr}, 0"));
+                types.push("ptr".into());
+                values.push(format!("ptr {ptr}"));
                 continue;
             }
             if let Some((_, mutable)) = crate::abi::extern_buffer_parameter(&argument.ty) {

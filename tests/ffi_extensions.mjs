@@ -180,6 +180,43 @@ try {
     assert.equal(built.status, 0, built.stderr);
     assert.equal(execute(out, []).stdout.trim(), "42");
   }
+  // W20: ZString.literal, ZString.of (Latin-1 & non-BMP), ZString.to_string, and Maybe<ref ZString> under default and compact strings.
+  const w20Dir = join(root, "w20-zstring");
+  mkdirSync(w20Dir);
+  writeFileSync(join(w20Dir, "Main.tz"), [
+    'extern "w20_zlen" def zlen :: ref ZString -> i64',
+    'extern "w20_zlen" def opt_zlen :: Maybe<ref ZString> -> i64',
+    "",
+    "def check_all :: unit -> i64 = \\() ->",
+    '    let lit = ZString.literal "Tsuzuri"',
+    '    let empty_lit = ZString.literal ""',
+    '    let latin = "abc"',
+    '    let astral = "Hi😀!"',
+    "    let z_latin = match ZString.of (ref latin) with | Result.Ok z -> zlen (ref z) | Result.Error _ -> -99",
+    "    let z_astral = match ZString.of (ref astral) with",
+    "        | Result.Ok z ->",
+    "            let back = ZString.to_string (ref z)",
+    "            if back == astral then zlen (ref z) else -88",
+    "        | Result.Error _ -> -77",
+    '    let nul_err = match ZString.of "ab\\0cd" with',
+    '        | Result.Error err -> if to_string err == "U+0000 at UTF-16 index 2 cannot be in a NUL-terminated string" then 1 else 0',
+    "        | Result.Ok _ -> 0",
+    "    let opt_some = opt_zlen (Maybe.Some lit)",
+    "    let opt_none = opt_zlen Maybe.None",
+    "    if zlen lit == 7 && zlen empty_lit == 0 && z_latin == 3 && z_astral == 5 && nul_err == 1 && opt_some == 7 && opt_none == -1 then 42 else -1",
+    "",
+    "check_all ()",
+    "",
+  ].join("\n"));
+  for (const compact of [false, true]) {
+    for (const optimization of ["-O0", "-O3"]) {
+      const out = join(root, `w20-${compact ? "compact" : "utf16"}${optimization}`);
+      const env = compact ? { ...process.env, TSUZURI_STRINGS: "compact" } : process.env;
+      const res = spawnSync(compiler, ["build", w20Dir, "--no-cache", optimization, "--link", host, "-l", "pthread", "-o", out], { encoding: "utf8", env });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(execute(out, []).stdout.trim(), "42");
+    }
+  }
   // NS01: non-Maybe extern handles trap with "null extern handle" on NULL across extern return, export param, and callback param.
   const nullTrap = join(root, "null-trap");
   mkdirSync(nullTrap);

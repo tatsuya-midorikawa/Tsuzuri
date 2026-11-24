@@ -539,8 +539,8 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineWithLockedThread => {
             facts(Some(Effect::Task), false, false, false, true, false, None)
         }
-        // W22: `FnPtr.of` produces the static address of a callback wrapper without side effects or allocation.
-        FnPtrOf => facts(None, false, false, false, false, false, None),
+        // W22: `FnPtr.of` and W20: `ZString.literal` produce static addresses without side effects or allocation.
+        FnPtrOf | ZStringLiteral => facts(None, false, false, false, false, false, None),
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
         AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
         AnchorRead | AnchorUpdate => {
@@ -3586,10 +3586,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins.
-        assert_eq!(Builtin::ALL.len(), 345);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal.
+        assert_eq!(Builtin::ALL.len(), 346);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 176);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 177);
     }
 
     #[test]

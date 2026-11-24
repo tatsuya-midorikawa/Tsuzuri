@@ -212,6 +212,10 @@ function runGuiStage(compiler, clang, directory) {
     const w13Win32Exe = buildGui("w13_win32", [optimization], { compiler, clang, directory });
     assert.equal(launchWithoutHandles(w13Win32Exe, [], { launcher }), 42, `w13_win32 ${optimization}`);
 
+    // W20: ZString.literal, ZString.of, Maybe<ref ZString>, lstrlenW, SetWindowTextW, and GetWindowTextW round-trip.
+    const w20ZStringExe = buildGui("w20_zstring", [optimization], { compiler, clang, directory });
+    assert.equal(launchWithoutHandles(w20ZStringExe, [], { launcher }), 42, `w20_zstring ${optimization}`);
+
     // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
     const tickDir = join(directory, `tick-obj${optimization}`);
     mkdirSync(tickDir, { recursive: true });

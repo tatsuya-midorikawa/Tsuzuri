@@ -115,7 +115,9 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
         } else {
             viewed.as_ref()
         };
-        if let Type::Record(id, arguments) = ty {
+        if let Type::Record(id, arguments) = ty
+            && !crate::abi::zstring(ty, &module.types())
+        {
             // The convention variants of a record are one type (A29).
             let ty = &codegen_identity(ty);
             if !seen.insert(ty.clone()) {
@@ -319,6 +321,12 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         }
         let viewed = crate::abi::c_view(ty, &types);
         let ty = viewed.as_ref();
+        if let Type::Reference(inner, false) = ty
+            && crate::abi::zstring(inner, &types)
+        {
+            parameters.push(format!("const uint16_t *arg{index}"));
+            continue;
+        }
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -829,6 +837,23 @@ impl FunctionEmitter<'_, '_> {
                     self.value(format!("select i1 {is_null}, ptr {null_slot}, ptr {value}"));
                 self.value(format!("load ptr, ptr {safe_slot}"))
             }
+            crate::abi::Nullable::BorrowedZString(zstr) => {
+                let nonnull = self.value(format!("icmp ne ptr {value}, null"));
+                let from_none = self.block.clone();
+                let some_block = self.label();
+                let done_block = self.label();
+                self.branch(&nonnull, &some_block, &done_block);
+                self.begin(&some_block);
+                let rec = self.value(format!("load {}, ptr {value}", self.ty(zstr)));
+                let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(zstr)));
+                let data = self.value(format!("extractvalue %tz.array {arr}, 0"));
+                let from_some = self.block.clone();
+                self.jump(&done_block);
+                self.begin(&done_block);
+                self.value(format!(
+                    "phi ptr [ null, %{from_none} ], [ {data}, %{from_some} ]"
+                ))
+            }
             crate::abi::Nullable::BorrowedRecord(record) => {
                 let slot = self.host_result_slot(record);
                 let nonnull = self.value(format!("icmp ne ptr {value}, null"));
@@ -885,8 +910,8 @@ impl FunctionEmitter<'_, '_> {
                 let is_null = self.value(format!("icmp eq ptr {pointer}, null"));
                 self.value(format!("select i1 {is_null}, ptr null, ptr {slot}"))
             }
-            crate::abi::Nullable::BorrowedRecord(_) => {
-                unreachable!("Maybe<ref R> is only an extern input parameter")
+            crate::abi::Nullable::BorrowedRecord(_) | crate::abi::Nullable::BorrowedZString(_) => {
+                unreachable!("Maybe<ref R> and Maybe<ref ZString> are only extern input parameters")
             }
         }
     }

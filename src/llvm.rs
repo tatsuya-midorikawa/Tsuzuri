@@ -3667,6 +3667,26 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
 /// elements in `@tz.static.N.data`, which its header points at, and has no global when it is
 /// empty; any other value is `@tz.static.N` itself. Both are private, unnamed, and constant.
 fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Option<String> {
+    if crate::abi::zstring(&value.ty, &module.types())
+        && let TypedExprKind::Record(fields) = &value.kind
+        && let [(_, array_expr)] = fields.as_slice()
+        && let TypedExprKind::Array(elements) = &array_expr.kind
+    {
+        let items = elements
+            .iter()
+            .map(|el| match el.kind {
+                TypedExprKind::Int(n) => format!("i16 {}", n as u16),
+                _ => unreachable!("ZString literal elements are u16"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let len = elements.len();
+        let rec_ty = llvm_type(&value.ty, module);
+        return Some(format!(
+            "@tz.static.{id}.data = private unnamed_addr constant [{len} x i16] [{items}], align 2\n\
+             @tz.static.{id} = private unnamed_addr constant {rec_ty} {{ %tz.array {{ ptr @tz.static.{id}.data, i64 {len} }} }}"
+        ));
+    }
     let (Type::Array(element), TypedExprKind::Array(elements)) = (&value.ty, &value.kind) else {
         return Some(format!(
             "@tz.static.{id} = private unnamed_addr constant {} {}",
@@ -4175,10 +4195,11 @@ pub(crate) fn validate_wasm_externs(
                 function.span,
             ));
         }
-        if crate::abi::uses_w13_native_only(&function.signature.parameters, &import.counts) {
+        if crate::abi::uses_w13_native_only(&function.signature.parameters, &import.counts, &types)
+        {
             return Err(Diagnostic::of(
                 DiagnosticKind::AbiNativeOnly,
-                "extern 'ref mut' parameters, i16u/i32/i32u buffers, and '@count' are supported only on native targets; build for a native target",
+                "extern 'ref mut' parameters, i16u/i32/i32u buffers, 'ref ZString', and '@count' are supported only on native targets; build for a native target",
                 function.span,
             ));
         }

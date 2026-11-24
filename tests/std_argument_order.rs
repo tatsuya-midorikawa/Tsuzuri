@@ -156,6 +156,7 @@ const MODULES: &[(&str, Kind)] = &[
     ),
     ("Vec", subject(&["Vec"])),
     ("WaitGroup", Exempt(BUILTIN_HANDLE)),
+    ("ZString", subject(&["ZString"])),
 ];
 
 /// Pure functions of a module that is exempt as a whole, or whose subject is a type variable: their parameter types.

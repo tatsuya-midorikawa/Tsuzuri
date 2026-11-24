@@ -1,0 +1,59 @@
+/// A NUL-terminated UTF-16 string without interior U+0000 code units (`W20`).
+/// A shared borrow `ref ZString` lowers to a single `const uint16_t *` pointer at the native C ABI.
+record ZString { units: [i16u] }
+
+/// Why `ZString.of` rejected a `string`: the UTF-16 code unit offset of the first U+0000.
+union Error = InteriorNul of i64 deriving (Eq)
+
+instance Display<Error> {
+    fn display error =
+        match error with
+        | InteriorNul index -> $"U+0000 at UTF-16 index {index} cannot be in a NUL-terminated string"
+}
+
+private def first_nul :: ref string -> Maybe<i64>
+fn first_nul text =
+    let n = text.length
+    let mut index = 0
+    let mut at = -1
+    while index < n && at < 0 do
+        if text[index] == 0i16u then
+            at = index
+        else
+            index = index + 1
+    if at >= 0 then Maybe.Some at else Maybe.None
+
+/// Copies `text` into a NUL-terminated UTF-16 `ZString`, or returns `Error (InteriorNul i)` at the
+/// first U+0000 code unit.
+///
+/// @complexity O(n)
+///
+/// ```tsuzuri run=Tsuzuri%201
+/// let ok = match ZString.of "Tsuzuri" with
+///     | Result.Ok z -> ZString.to_string (ref z)
+///     | Result.Error _ -> "?"
+/// let bad = match ZString.of "a\0b" with
+///     | Result.Ok _ -> -1
+///     | Result.Error (ZString.InteriorNul i) -> i
+/// $"{ok} {bad}"
+/// ```
+def of :: ref string -> Result<ZString, Error>
+fn of text =
+    match first_nul text with
+    | Maybe.Some index -> Result.Error (InteriorNul index)
+    | Maybe.None ->
+        let n = text.length
+        let units = new [i16u](n + 1, \index -> if index < n then text[index] else 0i16u)
+        Result.Ok (ZString { units: units })
+
+/// Copies the UTF-16 code units of `zstring` before its trailing NUL into an owned `string`.
+///
+/// @complexity O(n)
+///
+/// ```tsuzuri run=hello
+/// ZString.to_string (ZString.literal "hello")
+/// ```
+def to_string :: ref ZString -> string
+fn to_string zstring =
+    let count = zstring.units.length - 1
+    String.from_code_units (Array.truncate count (ref zstring.units))

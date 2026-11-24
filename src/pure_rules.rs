@@ -198,7 +198,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
-        | FnPtrOf => None,
+        | FnPtrOf | ZStringLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }

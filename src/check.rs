@@ -1674,6 +1674,8 @@ pub enum Builtin {
     AnchorRead,
     AnchorUpdate,
     AnchorRelease,
+    /// W20: `ZString.literal :: string -> ref ZString`, rewritten to a borrow of static UTF-16+NUL data.
+    ZStringLiteral,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2275,6 +2277,7 @@ impl Builtin {
         Self::AnchorRead,
         Self::AnchorUpdate,
         Self::AnchorRelease,
+        Self::ZStringLiteral,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2629,6 +2632,7 @@ impl Builtin {
             Self::AnchorRead => "Anchor.read",
             Self::AnchorUpdate => "Anchor.update",
             Self::AnchorRelease => "Anchor.__release",
+            Self::ZStringLiteral => "ZString.literal",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3405,6 +3409,18 @@ impl Builtin {
             Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
                 self.anchor_scheme()
             }
+            Self::ZStringLiteral => (
+                vec![Concrete(Type::String)],
+                Reference(
+                    Box::new(BuiltinType::Std {
+                        module: "ZString",
+                        name: "ZString",
+                        args: Vec::new(),
+                    }),
+                    false,
+                ),
+                Vec::new(),
+            ),
             Self::ListCons => (
                 vec![a(), BuiltinType::List(Box::new(a()))],
                 BuiltinType::List(Box::new(a())),
@@ -9086,10 +9102,12 @@ fn check_modules_collect(
         if function.pure {
             names.pure_functions.insert(id);
         }
+        let opt_in_std =
+            names.origin(module) == ModuleOrigin::Std && crate::stdlib::is_opt_in(module);
         if function.name.text == "_"
-            || Builtin::ALL
-                .iter()
-                .any(|builtin| builtin.name() == function.name.text || builtin.name() == qualified)
+            || Builtin::ALL.iter().any(|builtin| {
+                (!opt_in_std && builtin.name() == function.name.text) || builtin.name() == qualified
+            })
             || names.cases.contains_key(&qualified)
             || names.functions.insert(qualified.clone(), info).is_some()
         {
@@ -10025,14 +10043,21 @@ fn check_modules_collect(
             *requested = index;
         }
     }
+    let zstring_record_id = names.records.get("ZString.ZString").map(|info| info.id);
+    if zstring_record_id.is_some() {
+        validate_zstring_literals(&functions)?;
+    }
     let const_uses =
         constants::const_def_uses(&functions, &names.constants, &names.const_functions);
-    let statics = constants::fold(
+    let mut statics = constants::fold(
         &mut functions,
         &names.constants,
         &names.const_functions,
         &types,
     )?;
+    if let Some(zstring_id) = zstring_record_id {
+        lower_zstring_literals(&mut functions, zstring_id, &mut statics, &types)?;
+    }
     let mut references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
     // A `const def` that a constant calls is used, although `fold` replaced the call by a value.
@@ -10270,6 +10295,138 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
 /// callback argument names a top-level user function: no lambda, local, partial
 /// application, generic function, std function, or extern. The host gets a
 /// static C function pointer, so nothing needs a context or a lifetime.
+/// W20: validates every `ZString.literal` occurrence before constant folding so `const` strings,
+/// variables, `$` string interpolations, function values, and interior U+0000 literals are rejected.
+fn validate_zstring_literals(functions: &[CheckedFunction]) -> Result<(), Diagnostic> {
+    let is_zstr_lit = |expr: &TypedExpr| {
+        matches!(
+            &expr.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ZStringLiteral
+        )
+    };
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && is_zstr_lit(callee)
+            {
+                let [argument] = arguments.as_slice() else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralArgument,
+                        "'ZString.literal' must be called directly with one string literal argument",
+                        expr.span,
+                    ));
+                };
+                let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralArgument,
+                        "'ZString.literal' requires a plain string literal without interpolation; use 'ZString.of' for dynamic strings",
+                        argument.span,
+                    ));
+                };
+                if units.contains(&0) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralInteriorNul,
+                        "string literal passed to 'ZString.literal' contains U+0000, which cannot appear inside a NUL-terminated string",
+                        argument.span,
+                    ));
+                }
+                continue;
+            }
+            if is_zstr_lit(expr) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ZstringLiteralArgument,
+                    "'ZString.literal' must be called directly with a string literal argument and cannot be used as a function value",
+                    expr.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// W20: rewrites validated `ZString.literal "..."` calls into `Borrow(Static(id), false)` backed by
+/// deduplicated UTF-16+NUL static arrays.
+fn lower_zstring_literals(
+    functions: &mut [CheckedFunction],
+    zstring_record_id: usize,
+    statics: &mut BTreeMap<usize, StaticData>,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    fn rewrite(
+        expr: &mut TypedExpr,
+        zstring_record_id: usize,
+        statics: &mut BTreeMap<usize, StaticData>,
+        dedup: &mut BTreeMap<Vec<u16>, usize>,
+        next_id: &mut usize,
+        total_bytes: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        if let TypedExprKind::Call(callee, arguments) = &expr.kind
+            && matches!(
+                &callee.kind,
+                TypedExprKind::Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::ZStringLiteral
+            )
+            && let [argument] = arguments.as_slice()
+            && let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind
+        {
+            let mut with_nul = Vec::with_capacity(units.len() + 1);
+            with_nul.extend_from_slice(units);
+            with_nul.push(0);
+            let id = constants::intern_zstring(
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+                zstring_record_id,
+                with_nul,
+                expr.span,
+            )?;
+            let zstr_ty = Type::Record(zstring_record_id, Box::default());
+            let static_expr = TypedExpr {
+                kind: TypedExprKind::Static(id),
+                ty: zstr_ty.clone(),
+                span: expr.span,
+            };
+            expr.kind = TypedExprKind::Borrow(Box::new(static_expr), false);
+            expr.ty = Type::Reference(Box::new(zstr_ty), false);
+            return Ok(());
+        }
+        expr.try_for_each_child_mut(&mut |child| {
+            rewrite(
+                child,
+                zstring_record_id,
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+            )
+        })
+    }
+
+    let mut next_id = functions
+        .len()
+        .max(statics.keys().next_back().map_or(0, |last| last + 1));
+    let mut total_bytes = constants::total_static_bytes(statics, types);
+    let mut dedup: BTreeMap<Vec<u16>, usize> = BTreeMap::new();
+    for function in functions.iter_mut() {
+        rewrite(
+            &mut function.body,
+            zstring_record_id,
+            statics,
+            &mut dedup,
+            &mut next_id,
+            &mut total_bytes,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
