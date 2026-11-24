@@ -133,7 +133,7 @@ Git Bash で `T=/c/Users/tmidorikawa/.vscode/extensions/tmidorikawa.tsuzuri-0.1.
 ## 変えてはいけない意味
 
 - `@c_layout` の無い record の受け渡し（E05: `const T *` と先頭の out 引数）、そのヘッダーと JS の糊。
-- `ref R`（`const T *`）、`ref mut R`（[W13](W13-extern-ref-mut-and-mutable-buffers.md)、`T *`）、`Maybe<ref R>`（[W15](_completed/W15-abi-nullable-handles.md)）。
+- `ref R`（`const T *`）、`ref mut R`（[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)、`T *`）、`Maybe<ref R>`（[W15](_completed/W15-abi-nullable-handles.md)）。
 - `export def` の `@c_layout` record の引数と結果（W21: `const T *` と先頭の out 引数）。コールバックの型の規則（record を取らない）。
 - 引数の評価順（左から右）。トラップの意味。WASM の出力。
 

@@ -21,7 +21,7 @@
 
 どちらも `Display.display` で文字列にします。デバッグ専用の別フォーマットはありません。`Display` を実装していない型は渡せません。
 
-表示そのものに失敗したとき、孤立サロゲートを UTF-8 にできないとき、書き込みが進まないときはトラップします。理由は `debug output failed` または `invalid Unicode encoding` です。`Display` の評価中に起きたトラップは、表示を省略しても消えません。
+表示そのものに失敗したとき、孤立サロゲートを UTF-8 にできないとき、書き込みが進まないときはトラップします。理由は `debug output failed` または `invalid Unicode encoding` です。`Display` の評価中に起きたトラップは、表示を省略しても消えません。Windows で標準エラーのハンドルが存在しないプロセス（`--subsystem windows` で起動された GUI プロセスなど）では、`Debug.print` と `Debug.trace` はトラップせずに `OutputDebugStringW` へ UTF-16 行を送ります。POSIX でファイル記述子 2 が閉じている場合は静かに破棄します。
 
 複数の tzroutine や `Parallel.*` のコールバックから同時に出した場合、行の順序と、1 行が割り込まれないことは保証されません。
 

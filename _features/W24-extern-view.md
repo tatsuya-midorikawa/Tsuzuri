@@ -161,7 +161,7 @@ extern_view := ["private"] "extern" "view" "def" name "::" "i64" "->" R         
 
 ## 前提とする他チケットのインターフェース
 
-- W15（[W15](_completed/W15-abi-nullable-handles.md)・[W13](W13-extern-ref-mut-and-mutable-buffers.md) と共有）: WASM の `E1008` の kind `abi_native_only` と、その共有の口（WASM の生成で native だけの形に出会った extern の関数の番号を `Globals` の集合に記録し、`emit_program` が関数の生成の後で最も小さい番号の extern の名前の位置に `E1008` を返す）。W24 の `extern_view` は、`self.globals.wasm` のとき view の関数の番号を同じ集合に記録する。W13・W15 のどちらも先に入っていなければ、このチケットが同じ名前の kind と口を作る（W13・W15 の設計にある「先に入ったチケットが作る」）。Phase 1 が W15 から使うのはこれだけ。
+- W15（[W15](_completed/W15-abi-nullable-handles.md)・[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) と共有）: WASM の `E1008` の kind `abi_native_only` と、その共有の口（WASM の生成で native だけの形に出会った extern の関数の番号を `Globals` の集合に記録し、`emit_program` が関数の生成の後で最も小さい番号の extern の名前の位置に `E1008` を返す）。W24 の `extern_view` は、`self.globals.wasm` のとき view の関数の番号を同じ集合に記録する。W13・W15 のどちらも先に入っていなければ、このチケットが同じ名前の kind と口を作る（W13・W15 の設計にある「先に入ったチケットが作る」）。Phase 1 が W15 から使うのはこれだけ。
 - W21（Phase 2。[W21](W21-c-layout-records.md)）: `abi::c_layout_record`、`@c_layout` に対応した `record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`Maybe<H>` の field は W15 の `nullable_from_c`・`nullable_to_c` で写す）。
 
 ## 他チケットへ提供するインターフェース
@@ -213,7 +213,7 @@ extern_view := ["private"] "extern" "view" "def" name "::" "i64" "->" R         
 
 - 早見の例が 42 で終わる（`-O0`・`-O3`）。`read_point 0` の版は `0xC000001D` で終わり、報告に呼び出しの位置が出る。
 - `NmHdr`・`MinMaxInfo`・`CreateStruct` の record を export でヘッダーに出し、`windows.h` の構造体と `sizeof`・`offsetof` を `_Static_assert` で比べる。
-- [W06](W06-windows-gui-test-harness.md) と [W12](W12-static-callback-lifetime.md) が done なら、ウィンドウプロシージャで `WM_GETMINMAXINFO` を書く形と `WM_NOTIFY` を読む形の段を足す（TZ05 の「TZ04 が done なら」と同じ扱い）。
+- [W06](_completed/W06-windows-gui-test-harness.md) と [W12](_completed/W12-static-callback-lifetime.md) が done なら、ウィンドウプロシージャで `WM_GETMINMAXINFO` を書く形と `WM_NOTIFY` を読む形の段を足す（TZ05 の「TZ04 が done なら」と同じ扱い）。
 
 ## ドキュメント
 
@@ -251,7 +251,7 @@ extern_view := ["private"] "extern" "view" "def" name "::" "i64" "->" R         
 - アドレスの範囲の検査（ホストの領域の大きさを知らない）、`IsBadReadPtr` のような検査、例外（SEH）で不正なアドレスから回復すること。
 - 原子的な読み書き・volatile。
 - WASM の線形メモリへの view（JS のホストには E13 の糊がある）。
-- `extern interface`（W25）、関数ポインターの読み出し（[W22](W22-fnptr-values.md) は外部の関数ポインターを受け取らない）。
+- `extern interface`（W25）、関数ポインターの読み出し（[W22](_completed/W22-fnptr-values.md) は外部の関数ポインターを受け取らない）。
 
 ## 決定事項
 

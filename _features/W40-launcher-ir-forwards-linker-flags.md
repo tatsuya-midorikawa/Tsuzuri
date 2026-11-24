@@ -137,7 +137,7 @@ pub fn compiles_ir(text: &str) -> bool {
 ## 他チケットへ提供するインターフェース
 
 - `scripts/toolchain/clang.rs` の `pub fn compiles_ir(text: &str) -> bool`。
-- [W09](W09-windows-gui-subsystem.md) の MinGW の `-Wl,--subsystem,windows`（W09 の D4）は、このチケットの後は同梱の launcher の IR のコンパイルに渡らず、警告を足さない。W09 はこのチケットに依存しない（警告が増えるだけで、ビルドは成功する）。
+- [W09](_completed/W09-windows-gui-subsystem.md) の MinGW の `-Wl,--subsystem,windows`（W09 の D4）は、このチケットの後は同梱の launcher の IR のコンパイルに渡らず、警告を足さない。W09 はこのチケットに依存しない（警告が増えるだけで、ビルドは成功する）。
 
 ## 実装手順
 

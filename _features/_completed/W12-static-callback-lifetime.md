@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | [W06](W06-windows-gui-test-harness.md)（GUI をヘッドレスに検査する基盤）、[W07](W07-windows-trap-fail-fast.md)（Windows のトラップを確実に終わらせる） |
 | 後続 | [W22](W22-fnptr-values.md)、[W23](W23-anchor-state.md)、[W29](W29-callback-latency.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（docs/language.md の置き換え）。D1・D2 は要承認、D3〜D7 は既定案。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 手本にする既存実装 | `src/llvm.rs` の `with_blocking_externs`（`tz.callback.*` の本体に `tsuzuri_tz_callback_enter`／`_exit` を差し込む）と `with_tzroutine_scopes`・`console_def_main`（境界の `tsuzuri_tz_scope_enter`／`tsuzuri_tz_boundary_leave`）、`src/runtime/tzroutine.c` の `tsuzuri_tz_scope_enter`・`tsuzuri_tz_boundary_leave`・`tzr_pseudo`・`tzr_pseudo_destroy`・`tzr_checkdead`、`tests/tzroutine.mjs` の TZ08 の段（`tests/fixtures/blocking/` の C のホストを `--link` する） |

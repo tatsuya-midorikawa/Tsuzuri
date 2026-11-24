@@ -31,7 +31,7 @@ clang host.c tag.lib -o host.exe && ./host.exe    # ABC（tz_make_tag の結果�
 
 E13 Phase 2 は、公開 C ABI だけを export する共有ライブラリ（`--emit shared`）と、それを呼ぶ C#・Python・C++ のバインディングを macOS と Linux に入れた。Windows は G10 の「DLL は含めない」（G10 D12）と E13 D11 の「G10 の Windows DLL 方針と揃える」の間で方針が決まらないまま `E2000` になっている。今の案内（object を DLL へつなぐ）は、`tsuzuri_alloc`・`tsuzuri_free` が弱い定義なので link.exe では export できず、LLD では使えない import library になる（W03 の R3）。このチケットは Windows の DLL の出力の形を決め、ほかの OS と同じ一覧を正しく export し、正しい import library を出す。
 
-関連: [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](_completed/G10-windows.md)（D8・D12、「後続の作業」）、[E13](_completed/E13-host-bindings.md)（D11、Phase 2 の判断 8・11）、[W03](W03-windows-interop-doc-fixes.md)（R3 の回避策）、[W07](W07-windows-trap-fail-fast.md)（`uwtable`）、[W10](W10-windows-resources.md)、[W17](W17-link-attribute-dllimport.md)、[W27](W27-win32-package-from-winmd.md)、[W30](W30-windows-hardening.md)。
+関連: [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](_completed/G10-windows.md)（D8・D12、「後続の作業」）、[E13](_completed/E13-host-bindings.md)（D11、Phase 2 の判断 8・11）、[W03](W03-windows-interop-doc-fixes.md)（R3 の回避策）、[W07](_completed/W07-windows-trap-fail-fast.md)（`uwtable`）、[W10](W10-windows-resources.md)、[W17](W17-link-attribute-dllimport.md)、[W27](W27-win32-package-from-winmd.md)、[W30](W30-windows-hardening.md)。
 
 ## 着手条件と停止条件
 

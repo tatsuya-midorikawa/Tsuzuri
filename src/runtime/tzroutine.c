@@ -1995,8 +1995,10 @@ TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
     int doomed = tzr_scope_wait(scope);
     tzr_g *g = tzr_current();
     g->spawn_scope = scope->outer;
-    if (!doomed) free(scope);
-    tzr_host_leave(g);
+    if (!doomed) {
+        free(scope);
+        tzr_host_leave(g);
+    }
     return doomed;
 }
 

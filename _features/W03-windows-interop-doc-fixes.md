@@ -190,10 +190,10 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 
 - `--emit shared` を Windows で実装すること（[W05](W05-windows-shared-library.md)）。
 - `--backend fast` を Windows で有効にすること（[PB05](../_perfs/_completed/PB05-fast-debug-backend.md) の WP14 の後続）。
-- 標準ハンドルのないときの `IO` の意味を決めること（[W08](W08-io-without-std-streams.md)）、トラップの報告を届けること（[W04](_completed/W04-windows-trap-report-lost.md)）。
+- 標準ハンドルのないときの `IO` の意味を決めること（[W08](_completed/W08-io-without-std-streams.md)）、トラップの報告を届けること（[W04](_completed/W04-windows-trap-report-lost.md)）。
 - `ref` のない `string` の `E1008` に `ref string` の修正案（D-51 の `fixes`）を足すこと。
 - C のソースをリンク入力として正式に受けること（コンパイルのオプションの決定とテストが要る機能。[E12](_completed/E12-ffi-extensions.md) D6 の拡張）。
-- docs/language.md の「コールバック」節の寿命の文（[W12](W12-static-callback-lifetime.md)）。
+- docs/language.md の「コールバック」節の寿命の文（[W12](_completed/W12-static-callback-lifetime.md)）。
 - システムライブラリを `extern` ごとに求めること（[W17](W17-link-attribute-dllimport.md)）。この hint はその前後で同じ。
 
 ## 決定事項

@@ -5,7 +5,7 @@
 | ID | W10 |
 | 優先度 | P2 |
 | 規模 | M |
-| 依存 | [W09](W09-windows-gui-subsystem.md) |
+| 依存 | [W09](_completed/W09-windows-gui-subsystem.md) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
@@ -258,8 +258,8 @@ pub fn write(resources: &[Resource]) -> Vec<u8>;
 
 ## 前提とする他チケットのインターフェース
 
-- [W09](W09-windows-gui-subsystem.md): `crate::package::WindowsSettings`、`Project::windows`、`windows_apply`、`[windows]` の節の解析、E0002 の kind `invalid_windows_setting`。
-- [W06](W06-windows-gui-test-harness.md) の仕様 4: `peResources`・`launchWithoutHandles`。未着手なら同じ形で足す（着手条件）。
+- [W09](_completed/W09-windows-gui-subsystem.md): `crate::package::WindowsSettings`、`Project::windows`、`windows_apply`、`[windows]` の節の解析、E0002 の kind `invalid_windows_setting`。
+- [W06](_completed/W06-windows-gui-test-harness.md) の仕様 4: `peResources`・`launchWithoutHandles`。未着手なら同じ形で足す（着手条件）。
 
 ## 他チケットへ提供するインターフェース
 

@@ -7,7 +7,7 @@
 | 規模 | M（`windows_abi` の後処理 4 つ、IR の補助関数 4 つ、ランタイム C の 1 マクロ、ドライバーの判定 1 つ、W06 の基盤の上の E2E） |
 | 依存 | W04, W06 |
 | 後続 | W12, W30, W35 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（終了コード、E14 D9 の拡張）。D1〜D3 が要承認、ほかは既定案 |
 | 手本にする既存実装 | `src/runtime/stack.c` の `tz_stack_fault`（E14 Phase 3。報告を書いてから終わる）、`src/llvm_traps.rs` の `with_frame_pointers`（すべての `define` に属性を足す後処理）、`src/llvm.rs` の `windows_abi`（`tz.console.write` の `entry:` に行を差す）、W04 の `TRAP_WRITE_WINDOWS` |

@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [W18](_completed/W18-copy-extern-type.md)（`HandleKind` と修飾の読み方） |
 | 後続 | [W25](W25-extern-interface-com.md)（`extern interface` の既定が `local`）、[W27](W27-win32-package-from-winmd.md)（スレッドに結び付くハンドルを `local` に生成） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（D-55、効果の語彙 D-53）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 改善する劣位 | リスク「スレッドへの固定」: M:N の tzroutine は、固定しなければ待つたびに（POSIX では横取りでも）別の OS スレッドで続く。HDC・STA の COM・OpenGL の文脈のように、受け取ったスレッドで使い続けなければならないホストの値を tzroutine で取り出し、使い、解放しても、今のコンパイラは何も言わない（`extern type` は Send で、`Routine.with_locked_thread` を使うかは利用者の注意だけ） |

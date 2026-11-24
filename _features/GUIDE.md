@@ -1753,10 +1753,10 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 不明なら純粋としない。`builtin_impure` は Task のプリミティブ単体を引き続き不純とする（単体には閉じた根の証明がない）。
 自動並列化やトラップを消す最適化には使わず、既存の明示した並行 API の失敗・待機の意味は変えない。
 
-- **効果の名前**（`effects` の値。小文字の ASCII。この 14 個で閉じている）: `io`（コンソール・`IO`・`Async`）、`os`（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`・`Os.__*`）、`net`、`task`（`Task`・`Parallel`、および失敗の領域を作る `Domain.run`（B10）。`Domain.run` は `alloc` も持つ）、`atomic`（`Atomic`・`Mutex`・`Channel`）、
-  `rc`（`Rc`・`Arc` の参照カウントの観測）、`extern`、`debug`（`Debug.print`・`Debug.trace`）、`user_drop`（利用者の `Drop` を持つ型の解放）、`gpu`、`alloc`（ヒープの確保をしうる）、`trap`（プログラムの論理によるトラップをしうる）、`copy`（長さに比例する暗黙の複製をしうる）、`diverge`（停止しないかもしれない）。
-  最初の 10 個は A19 の効果の源（`pure` が禁じる集合）と同じ分類を使い、`alloc`・`trap`・`copy`・`diverge` を A20 が足す。
-- **要約**: 関数ごとの `EffectSet`（上の 14 個のビット集合）を、型付き IR の効果の源の走査と、呼び出しグラフの強連結成分の不動点で求める。組み込み関数は表（`match` に wildcard を置かず、新しい組み込み関数に分類を強制する）、`extern` は `extern` を持つ。
+- **効果の名前**（`effects` の値。小文字の ASCII。この 15 個で閉じている）: `io`（コンソール・`IO`・`Async`）、`os`（`File`・`Dir`・`Env`・`Time`・`Random`・`Process`・`Os.__*`）、`net`、`task`（`Task`・`Parallel`、および失敗の領域を作る `Domain.run`（B10）。`Domain.run` は `alloc` も持つ）、`atomic`（`Atomic`・`Mutex`・`Channel`）、
+  `rc`（`Rc`・`Arc` の参照カウントの観測）、`extern`、`debug`（`Debug.print`・`Debug.trace`）、`user_drop`（利用者の `Drop` を持つ型の解放）、`gpu`、`alloc`（ヒープの確保をしうる）、`trap`（プログラムの論理によるトラップをしうる）、`copy`（長さに比例する暗黙の複製をしうる）、`diverge`（停止しないかもしれない）、`pinned`（W19: `extern type local` ハンドルを触る関数。`local` を宣言したプログラムでだけ数え、`pure` と `@no_*`・`@terminates` は禁じない）。
+  最初の 10 個は A19 の効果の源（`pure` が禁じる集合）と同じ分類を使い、`alloc`・`trap`・`copy`・`diverge` を A20 が、`pinned` を W19 が足す。
+- **要約**: 関数ごとの `EffectSet`（上の 15 個のビット集合）を、型付き IR の効果の源の走査と、呼び出しグラフの強連結成分の不動点で求める（`pinned` は `Routine.with_locked_thread`・`FnPtr.of`・コールバック `extern` の引数辺を除いた部分グラフで求める）。組み込み関数は表（`match` に wildcard を置かず、新しい組み込み関数に分類を強制する）、`extern` は `extern` を持つ。
   通常の関数値の呼び出しは、呼び先が分からなければ「未知の呼び出し」で、検査付き属性の違反になる（A20 の Phase 4 が関数型の引数を条件付きにする）。A19 の `pure` 関数型は、検証済みの純粋な呼び出し契約を持つ。
   **純粋性の問い合わせの窓口**（B10・F15 が使う。`check::pure_rules`、`pub(crate)`）: `what(ty, types) -> &'static str`、`Impurity { reason: String, chain: String, span: Span }` と `impurity_of_roots(module, roots: &[usize]) -> BTreeMap<usize, Impurity>`、`reachable_effect(module, root: usize) -> Result<Option<Effect>, LimitExceeded>`、`builtin_impure(builtin: Builtin) -> bool`（組み込み関数を関数値として渡したときの判定）、`reachable_effect_of_chunk_body(module, root)`（F15。`Parallel.for_each_chunk` の本体: 最後の引数の排他チャンクだけを引数の検査から外す）。A19 の有界な閉じた到達検査から作る（B10・F15 の手順が足りない分を足す）。**A20 の経路 A のあとも名前と形を変えず**、`pure_rules.rs` の薄い関数として残し、中身は `effects::summarize`（`Options::new(Scope::Reachable, PURE_FORBIDDEN)`）の `Witness` から作る（`Effect::Builtin` の名前は `Builtin::name()`）。B10・F15 は `builtin_effect`・`Category` を直接は呼ばない。
 - **属性**（`@cpu` と同じ位置の、トップレベル `def` の直前の属性。ユーザー定義の属性はない）: `@no_alloc` は `alloc` を、`@no_copy` は `copy` を、`@no_trap` は `trap` を、`@terminates` は `diverge` を要約に持たないことを表明する。`pure`（A19）は A19 の集合を禁じる。
@@ -1817,7 +1817,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 診断コード | `E1040` | TZ03・TZ12・TZ13・E17 | 削除・改名した機能（`DataChannel` へ改名した旧 `Channel` の `bounded`・`clone_sender`・`Sender`・`Receiver`、削除した `task { }`・`Task.*`・`Task<T>`・`Async`・`async { }`、E17 で `readln`・`writeln`・`write_err`・`write_errln` と `try_` 版へ改名した旧 `IO` の 8 関数）の使用。help に移行先、改名は `fixes` も（D-61） |
 | 診断コード | `E1041` | A24・A25・A26 | 匿名共用体の誤り（要素の規則: 型変数・区別できない要素・重複、注入の曖昧さ、利用者のインスタンス、型テスト `:?` の誤り）。借用の要素は `E1013`、要素数の上限は `E1017`、要素でない値は `E1003`、構文は `E0002` の kind で表す（D-62）。`Decode` を持てない匿名共用体（要素が読む JSON の種類の重なり）だけは、承認済みの A26 の D5 のとおり `E1025`（`anonymous_union_decode_overlap`） |
 | 予約（未割り当て） | `E1035`・`E1042`〜`E1049`・`E2012`〜`E2015`・`W1011`・`W1013`〜`W1015` | — | 実装中に必要になったら、この表に追記してから使う |
-| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default`・`extern type` の直後の `copy`（同じ行に識別子が続くとき） | TZ02・TZ04・W18 | 予約語ではない（識別子として使える） |
+| 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default`・`extern type` の直後の `copy`／`local`（同じ行に識別子が続くとき） | TZ02・TZ04・W18・W19 | 予約語ではない（識別子として使える） |
 | 環境変数 | `TSUZURI_MAXPROCS`（1〜256。既定はオンラインの CPU 数）・`TSUZURI_TZROUTINE_STACK_KIB`（64〜1048576。既定 1024） | TZ01 | 生成したプログラムが起動時に読む（コンパイラは読まない）。範囲外・数でない値は無視して既定値 |
 | std | `Routine`・`DataChannel`（旧 `Channel` の改名）・`WaitGroup`・`RwMutex`・`Once`・`OnceValue`・`Cond`・`Semaphore`・`SyncMap`・`Context`・`ErrGroup`・`Timer`・`Ticker`（新規）と、新しい中身の `Channel` | TZ02〜TZ07 | D-61。`Routine` は組み込みのモジュール、ほかは opt-in。`RESERVED_MODULES` は現在値から 13 増え（`Channel` は予約済み）、TZ13 で `Async` の 1 つが減る |
 | サブコマンド | `guide` | G21 | AI 向けの案内の出力 |
@@ -1844,6 +1844,9 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 属性 | `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` | A20 | D-53 |
 | 属性 | `@requires`・`@ensures`（本体の先頭の文） | A21 | 契約 |
 | 属性 | `@trusted` | E15 | `extern` の信頼の表明 |
+| 属性 | `@count` | W13 | リンク名付き `extern` のスライスバッファ長さ引数（`i32`・`i32u`・`i64`・`i64u`・`none`） |
+| CLI・manifest | `--subsystem console\|windows`・`[windows] subsystem` | W09 | Windows の実行ファイルの PE サブシステム |
+| std・型 | `FnPtr`・`Anchor`・`ZString`、`IO.Error.Unavailable` | W08・W20・W22・W23 | 静的 C ABI 関数ポインタ、コールバック状態アンカー、NUL 終端 UTF-16 文字列、欠落ストリームの IO エラー |
 | 予約語 | なし | — | 第3期は予約語を足さない（文脈キーワードと属性だけ） |
 
 **D-55 の追補（各チケットの確定。2026-10-18）**: 次は、チケットを書く間に決まった名前。**診断コードの kind・`E2000` の kind はチケットが G23 の登録簿へ足す**（コード自体は上の表だけ）。同じサブコマンドのフラグの名前が衝突しないように、ここに集める。

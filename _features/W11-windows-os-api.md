@@ -166,7 +166,7 @@ Windows のネイティブ（x64・Arm64、MSVC と MinGW、`--target native` �
 
 ## 前提とする他チケットのインターフェース
 
-- なし（独立）。[W08](W08-io-without-std-streams.md)・[W09](W09-windows-gui-subsystem.md) とは独立で、GUI サブシステムでもこのチケットの関数はコンソールを要らない。
+- なし（独立）。[W08](_completed/W08-io-without-std-streams.md)・[W09](_completed/W09-windows-gui-subsystem.md) とは独立で、GUI サブシステムでもこのチケットの関数はコンソールを要らない。
 
 ## 他チケットへ提供するインターフェース
 

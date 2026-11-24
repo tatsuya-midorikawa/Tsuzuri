@@ -5,7 +5,7 @@
 | ID | W32 |
 | 優先度 | P2（修正。標準出力が無い・閉じている・書けないときに、トップレベルの式の値が消えても終了コードは 0 になる。`--overflow-report` の報告も、標準エラーに書けなければどこにも残らない。GUI サブシステムの実行ファイル（W09）を Explorer から起動すると、必ずこの状態になる） |
 | 規模 | S（`console.ll` の書き直し、`windows_abi` の 2 か所、`tests/io.mjs`・`tests/windows.mjs`・`tests/windows.rs`・単体テスト、文書） |
-| 依存 | [W08](W08-io-without-std-streams.md) |
+| 依存 | [W08](_completed/W08-io-without-std-streams.md) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
@@ -208,7 +208,7 @@ entry:
 
 ## 前提とする他チケットのインターフェース
 
-- [W08](W08-io-without-std-streams.md):
+- [W08](_completed/W08-io-without-std-streams.md):
   - D1 の決定（仕様 3）。
   - 仕様 1 の「ストリームが無い」の判定。既定案以外の行でだけ使う。
   - `DEBUGGER_WRITE` が `windows_abi` で使えること。
@@ -218,13 +218,13 @@ entry:
   - `windows_abi` の置き換えの順序。
   - 仕様 4（shim の `_setmode` の −1）。
   - W04 が未着手なら、着手条件のとおり定数だけを同じ形で足す。
-- [W06](W06-windows-gui-test-harness.md): 仕様 4 の `windows_launch.exe --no-handles`・`--debug-strings <path>`・`launchWithoutHandles`。
-- [W07](W07-windows-trap-fail-fast.md): 先に入っていれば、その「`@tz.trap.write` が無いときだけ足す」補助を使う。
+- [W06](_completed/W06-windows-gui-test-harness.md): 仕様 4 の `windows_launch.exe --no-handles`・`--debug-strings <path>`・`launchWithoutHandles`。
+- [W07](_completed/W07-windows-trap-fail-fast.md): 先に入っていれば、その「`@tz.trap.write` が無いときだけ足す」補助を使う。
 
 ## 他チケットへ提供するインターフェース
 
 - 意味: トップレベルの表示を書けなければ終了コード 1。Windows の `--overflow-report` は、書けなければデバッガーの出力に送る。
-- [W09](W09-windows-gui-subsystem.md) の文書が引く文: 「GUI サブシステムの実行ファイルをハンドルなしで起動すると、トップレベルの式の表示は書けず終了コード 1 になる。GUI のアプリは `def main` を使う」。
+- [W09](_completed/W09-windows-gui-subsystem.md) の文書が引く文: 「GUI サブシステムの実行ファイルをハンドルなしで起動すると、トップレベルの式の表示は書けず終了コード 1 になる。GUI のアプリは `def main` を使う」。
 - `OVERFLOW_WRITE`（`src/llvm_overflow.rs`）と、Windows の報告の書き手を足す補助（W07 と共有）。
 
 ## 実装手順

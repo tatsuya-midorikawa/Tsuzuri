@@ -206,7 +206,7 @@ static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, 
 ## 他チケットへ提供するインターフェース
 
 - 「Windows の Tsuzuri のプログラムの引数 = UCRT の `argv[1..]`」という契約。[W11](W11-windows-os-api.md) の `Process.run` の引用（D9: MSVC の CRT と `CommandLineToArgvW` が元に戻せる形）は、子が Tsuzuri のプログラムでも引数を往復できる。W11 の `Env.args` は同じ関数を使う（D4）。
-- [W09](W09-windows-gui-subsystem.md) の GUI サブシステムの実行ファイルも、同じ `def main :: Array<string> -> i32` の経路でコマンドラインを受け取るので、同じ規則になる（W09 は `wWinMain` を生成しない）。
+- [W09](_completed/W09-windows-gui-subsystem.md) の GUI サブシステムの実行ファイルも、同じ `def main :: Array<string> -> i32` の経路でコマンドラインを受け取るので、同じ規則になる（W09 は `wWinMain` を生成しない）。
 
 ## 実装手順
 

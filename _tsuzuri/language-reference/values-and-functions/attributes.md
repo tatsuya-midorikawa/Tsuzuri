@@ -2,11 +2,11 @@
 
 `@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、10 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
+このページでは、11 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` の 10 個です。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@json`、`@alias` の 11 個です。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
@@ -38,6 +38,7 @@ flowchart TD
 | `@cpu` | `private` や `export` より前、トップレベル `def` の直前 | 命令セットごとの関数の版 | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
+| `@count` | リンク名付き `extern` 関数の宣言の直前（`@trusted` と任意の順序） | スライスバッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
 
@@ -282,6 +283,21 @@ def main :: unit -> i32 = \() -> distance 3 7
 - `trusted` と性質の名前は予約語ではありません。`@trusted` の直後の同じ行だけで性質として読みます。
 - `@trusted` は権限を変えません。`extern` の呼び出しは、印があってもなくても権限 `ffi` を使います（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。`tsuzuri api-diff` は `@trusted` を API の変更として扱いません。
 - `tsuzuri bindgen` は `@trusted` を付けません。生成したファイルの 5 行目は、宣言を確かめてから `@trusted` を足すように促す注意書きです（[ネイティブ相互運用](../compiler/native-interop.md)）。
+
+## @count (extern バッファの長さ引数)
+
+`@count(位置, 型)` は、リンク名付きの `extern` 関数の直前に置き、1 始まりの引数位置にあるスライスバッファ（`ref [T]`・`ref mut [T]`・`ref mut [T..]`）に添える C 側の長さ引数の整数型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`）を指定します。既定は `i64` です。
+
+```tsuzuri
+@trusted
+@count(1, i32)
+extern "GetWindowTextW" def get_window_text :: ref mut [i16u..] -> i32
+```
+
+- 位置は Tsuzuri の `extern` シグネチャの 1 始まりの番号で、対象がスライスバッファでないとき、範囲外のとき、同じ位置に 2 回付けたときは `E1008` です。
+- `i32`（上限 `2^31 - 1`）や `i32u`（上限 `2^32 - 1`）を指定したバッファの長さが上限を超えた場合は、呼び出し前に境界検査でトラップするため、`@no_trap` の検査では `trap` の源になります。
+- `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
+- リンク名のない `extern def`（WASM / 自動シンボル名）や `extern` 以外の宣言に付けるとエラーになります（`E1008` / `E0002`）。
 
 ## @json (JSON での名前)
 

@@ -30,7 +30,7 @@
 
 ### 着手条件
 
-- [W12](W12-static-callback-lifetime.md) が done（静的コールバックを、受け取った `extern` が戻った後も呼べる契約。構成 3 の、`RegisterClassExW` の後に `DispatchMessageW` から呼ばれる WndProc はこの契約の上で測る）。W12 の前でも、手順 1・2 の `extern` の呼び出しの中で呼ばれる構成（1・2 と、構成 3 の C だけの版）は測ってよい。
+- [W12](_completed/W12-static-callback-lifetime.md) が done（静的コールバックを、受け取った `extern` が戻った後も呼べる契約。構成 3 の、`RegisterClassExW` の後に `DispatchMessageW` から呼ばれる WndProc はこの契約の上で測る）。W12 の前でも、手順 1・2 の `extern` の呼び出しの中で呼ばれる構成（1・2 と、構成 3 の C だけの版）は測ってよい。
 - `node scripts/repo-kb.mjs brief W29`。GUIDE §14 の 1・2（before のコンパイラを `target/perf/W29/tsuzuri-before` に写し、環境を記録する）。
 - Windows の機械（構成 3 のモーダルループと、現状 6 の時計）と、macOS か Linux の機械（同じ経路の比較）。
 
@@ -100,9 +100,9 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [W12](W12-static-callback-lifetime.md): 静的コールバックを、受け取った `extern` が戻った後も、どのスレッドからでも呼べる契約。W12 は `tsuzuri_tz_callback_enter() -> i32`・`tsuzuri_tz_callback_exit(i32)` の名前と型を保ち、`tz.callback.*`（export でない方）に `tsuzuri_tz_callback_scope_enter()`／`_leave(ptr)` を足す（入るときは `callback_enter` → `callback_scope_enter`、出るときは `callback_scope_leave` → `callback_exit`。W12 の「他チケットへ提供するインターフェース」が「W29 はこの経路を含めて遅延を測る」と書く）。構成 1〜3 の Tsuzuri の版は、この 2 つを含めた W12 の最終の包みで測り、C の版も同じ順で呼ぶ。D2 はこの順序を変えない。
+- [W12](_completed/W12-static-callback-lifetime.md): 静的コールバックを、受け取った `extern` が戻った後も、どのスレッドからでも呼べる契約。W12 は `tsuzuri_tz_callback_enter() -> i32`・`tsuzuri_tz_callback_exit(i32)` の名前と型を保ち、`tz.callback.*`（export でない方）に `tsuzuri_tz_callback_scope_enter()`／`_leave(ptr)` を足す（入るときは `callback_enter` → `callback_scope_enter`、出るときは `callback_scope_leave` → `callback_exit`。W12 の「他チケットへ提供するインターフェース」が「W29 はこの経路を含めて遅延を測る」と書く）。構成 1〜3 の Tsuzuri の版は、この 2 つを含めた W12 の最終の包みで測り、C の版も同じ順で呼ぶ。D2 はこの順序を変えない。
 - [W34](W34-windows-sysmon-timer-resolution.md)（入っていれば）: Windows の sysmon の周期の待ちの `tzr_sysmon_wait`（高分解能の待機タイマー）と `tzr_sysmon_hires`。D2 の `tzr_sysmon_nudge` の Windows の起こし方は、W34 の「他チケットへ提供するインターフェース」の (a)・(b) から選ぶ。
-- [W06](W06-windows-gui-test-harness.md)（構成 3w だけ）: `tests/windows_gui_shim.c` の `tz_gui_window`・`tz_gui_wait`・`tz_gui_post`（別のスレッドからの `PostMessageW(WM_APP)`）と `buildGui`。名前が変わっていたら W06 に合わせる。
+- [W06](_completed/W06-windows-gui-test-harness.md)（構成 3w だけ）: `tests/windows_gui_shim.c` の `tz_gui_window`・`tz_gui_wait`・`tz_gui_post`（別のスレッドからの `PostMessageW(WM_APP)`）と `buildGui`。名前が変わっていたら W06 に合わせる。
 
 ## 他チケットへ提供するインターフェース
 

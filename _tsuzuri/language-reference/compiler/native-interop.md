@@ -213,7 +213,27 @@ flowchart LR
 
 ホストが所有権を渡さない識別子（Win32 の `HWND`・`HINSTANCE`・ストックオブジェクトなど）は `extern type copy Hwnd` と宣言します。`copy` は `extern type` の直後で同じ行に型名が続くときだけの文脈キーワードです。`copy` ハンドルは `Copy`・`Capture`・`Send`・`Sync` を満たし、値渡しで複製され、関数値や `tzroutine { }` に捕捉でき、`Routine.scope` や `Arc<H>` でも共有できます。解放関数があるハンドル（`CreateFontW` の `HFONT`、ファイルの `HANDLE` など）やスレッドに結び付くハンドル（`HDC` など）に `copy` を付けると二重解放やスレッド違反になるため、所有しない識別子にだけ使います。
 
-C ではどちらも `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
+C ではいずれも `typedef struct tz_handle_..._s *tz_handle_...` の 1 ポインタです。`ref` を付けても、ポインタのポインタにはならず、ハンドル値そのものを渡します。フィールドやバッファ要素には置けません。詳しくは [言語仕様の不透明ハンドル](../../../docs/language.md#不透明ハンドル) を見てください。
+
+#### スレッド拘束ハンドル（extern type local）
+
+Win32 GDI の `HDC`、OpenGL のコンテキスト、COM の STA ポインタのように、受け取った OS スレッドからしか触れてはならないハンドルは `extern type local Hdc` と宣言します。`local` も `copy` と同じく `extern type` 直後の文脈キーワードで、`copy` との併用は `E0002`（`extern_type_modifier_conflict`）です。
+
+- `local` ハンドルは `Copy`・`Capture`・`Send`・`Sync` のいずれも満たしません。別の tzroutine やスレッドへ値（またはそれを含む型）を送ると `E1013`、関数値に捕捉すると `E1005` になります。
+- さらにコンパイラは、`local` ハンドル（共有借用 `ref H` や `Maybe<H>` を含む）を直接または間接に触る関数に `pinned` 効果を推論します。`pinned` な関数を `tzroutine { ... }`・`Routine.go`・`WaitGroup.go`・`ErrGroup.go`・`Time.after_func`・`Context.after_func`・`Routine.scope`・`Parallel.*` で開始すると `E1013`（`pinned_code_spawned`）、一般の関数値や `Dyn.of` に包むと `E1013`（`pinned_function_value`）になります。
+- 直接呼び出しのほか、OS スレッドを固定する境界（`Routine.with_locked_thread`、`FnPtr.of`、コールバックを取る `extern`）と、呼び出し元の tzroutine で同期的に実行して保持しないヘルパー（`Mutex.with_lock`・`RwMutex.with_read`・`RwMutex.with_write`・`OnceValue.get`・`Cond.wait_with`・`Anchor.read`・`Anchor.update`）の関数引数には `pinned` な関数を渡せます。`local` を 1 つも宣言しないプログラムでは、この解析は一切走りません。
+
+### 可変参照（ref mut）と @count
+
+リンク名付きのネイティブ `extern "sym" def` の引数には、読み書き両用の `ref mut` とスライスバッファの長さ指定 `@count` を書けます（WebAssembly で到達すると `E1008` `abi_native_only`）。
+
+- **レコード・スカラー・`copy` ハンドルの `ref mut`**: `ref mut R`（C ABI 互換のスカラーレコード）、`ref mut T`（`i8`〜`i64`・`i8u`〜`i64u`・`f32`・`f64`・`bool`）、`ref mut CopyHandle` は、スタック上の一時領域へ値をコピーしてポインタを渡し、C 関数から戻った後に書き戻します（`bool` は非ゼロを `true` に正規化し、`copy` ハンドルが `NULL` に書き換えられていれば `null extern handle` でトラップします）。
+- **可変スライスバッファ**: `ref mut [T]` と `ref mut [T..]`（要素型 `T` は `i8`・`i8u`・`i16u`・`i32`・`i32u`・`i64`・`i64u`・`f32`・`f64`）は、排他借用によって一意性が保証されるためゼロコピーで要素ポインタと長さを渡します。長さ 0 のスライスは書き込み不可の `NULL` ではなく有効なダミーアドレスを渡します。
+- **`@count(pos, kind)`**: 1 始まりの引数番号 `pos` のスライスバッファに対し、直後に渡す長さ引数の型を `i32`・`i32u`・`i64`（既定）・`i64u` から選ぶか、`none` で長さ引数を省略できます（[属性](../values-and-functions/attributes.md#count-extern-バッファの長さ引数)）。
+
+### NUL 終端文字列（ZString）
+
+Win32 の `*W` 系 API のように NUL 終端 UTF-16 ポインタ（`const uint16_t *` / `LPCWSTR`）を取るネイティブ `extern` には、[ZString](../built-in-types-and-modules/zstring.md) の共有借用 `ref ZString` または省略可能な `Maybe<ref ZString>`（`None` が `NULL`）を渡せます。文字列リテラルからは `ZString.literal "..."` で静的データからヒープ確保なしに作れます。
 
 #### NULL を渡す・受ける（Maybe）
 
@@ -231,9 +251,11 @@ extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module
 
 ### 静的コールバック
 
-`extern` の引数に関数型を書けます。渡せるのは、型パラメーターを持たないトップレベルのユーザー関数だけです。ラムダ、部分適用、ローカル、標準ライブラリ、別の `extern` は `E1008` です。
+`extern` の引数に関数型を書けます。渡せるのは、型パラメーターを持たないトップレベルのユーザー関数だけです。ラムダ、部分適用、ローカル、標準ライブラリ、別の `extern` は `E1008` です。関数ポインタを構造体フィールドや変数として保持・受け渡ししたいときは [`FnPtr.of`](../built-in-types-and-modules/fnptr.md) で `FnPtr<F>` にします。コールバックの中からアプリケーションの状態を読む・更新するときは [`Anchor`](../built-in-types-and-modules/anchor.md) を使います。
 
-ホストが受け取るのは、その関数の C ABI ラッパーへの関数ポインタです。環境は捕捉しません。`extern` の呼び出しが返ったあとに、そのポインタを非同期で呼んではいけません。コールバックの引数はスカラーかハンドル（ネイティブでは `Maybe<H>`・`Maybe<ref H>` も可）、戻り値はスカラーか `unit` です。バッファやレコードは渡せません。この `extern` 自体は、部分適用できません。コールバック以外の共有借用引数には、ほかの `extern` と同じく一時値（文字列リテラル、`$"..."`、呼び出しの結果など）を渡せ、呼び出しの間だけ借用されて戻った後に解放されます。
+ホストが受け取るのは、その関数の C ABI ラッパーへの関数ポインタです。環境は捕捉しません。コールバックの引数はスカラーかハンドル（ネイティブでは `Maybe<H>`・`Maybe<ref H>` も可）、戻り値はスカラーか `unit` です。バッファやレコードは渡せません。この `extern` 自体は、部分適用できません。コールバック以外の共有借用引数には、ほかの `extern` と同じく一時値（文字列リテラル、`$"..."`、呼び出しの結果など）を渡せ、呼び出しの間だけ借用されて戻った後に解放されます。
+
+ネイティブ実行ファイルでは、`main` が実行されている間であれば、`extern` 呼び出しが返ったあと（たとえば `RegisterClassExW` に登録したウィンドウプロシージャを後の `DispatchMessageW` が呼ぶ場合や、OS のワーカースレッド・タイマーコールバックから呼ぶ場合）でも静的コールバックを安全に呼べます。ランタイム未参加のホストスレッドから呼ばれたときは、その呼び出しの間だけ一時的なコンテキストで実行します。一方、`main` が返ってランタイムの終了処理が始まった後にコールバックが呼ばれた場合は、未定義動作にはならず `callback invoked after main returned` で即座にトラップします（Windows では `RaiseFailFastException` で Windows Error Reporting や呼び出し元の SEH に捕まらず即終了します）。
 
 ### 信頼の印（@trusted）
 

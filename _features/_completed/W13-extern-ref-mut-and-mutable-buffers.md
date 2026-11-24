@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | [W20](W20-zstring.md)（`ZString`）、[W21](W21-c-layout-records.md)（`@c_layout` の record の `ref mut`）、[W27](W27-win32-package-from-winmd.md)（`[Out]` → `ref mut`、NativeArrayInfo → `@count`） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E05・E06 の除外の解除、D-53）。決定事項 D1・D2 が要承認、ほかは既定案。方針は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 手本にする既存実装 | `src/llvm_imports.rs` の `host_call`（record の引数を `host_result_slot` へ `write_host_record` で写す経路、compact 文字列の写しを全引数の評価後に作る `widen`）と `read_host_result`、`src/llvm_abi.rs` の `read_host_record`・`write_host_record`・`c_parameters`、`src/abi.rs` の `parameter`・`Buffer`、`src/parser.rs` の `attributes`・`trusted_attribute` と `Program.trusted`（名前と位置で宣言に結ぶ脇の表。D-53） |
