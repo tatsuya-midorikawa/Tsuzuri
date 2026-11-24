@@ -7639,51 +7639,16 @@ do! IO.writeln (to_string (run 1))
     const LAMBDA: &str =
         "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
     const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
-    let stops = |source: &str, edition: Edition, at: (usize, usize)| {
-        let error = analyze_with_edition(source, edition).expect_err(source);
-        assert_eq!(
-            (error.code, error.kind),
-            ("E1017", Some("loop_ownership_limit")),
-            "edition {edition}\n{source}\n{}",
-            error.message
-        );
-        assert_eq!(
-            position(source, error.span.start),
-            at,
-            "edition {edition}\n{source}"
-        );
-        assert!(
-            error
-                .help
-                .as_deref()
-                .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
-            "edition {edition}\n{source}\n{:?}",
-            error.help
-        );
-    };
-    for edition in [Edition::E2026, Edition::E2027] {
-        stops(OWN, edition, (7, 9));
-        let help = analyze_with_edition(OWN, edition)
-            .expect_err(OWN)
-            .help
-            .clone();
-        assert!(
-            help.as_deref().is_some_and(|help| help.contains(
-                "keep growing faster: each of the last 5 iterations made more borrows than the one \
-                 before it, and more of them than that one added (the last made 34)"
-            )),
-            "edition {edition}: {help:?}"
-        );
-        stops(FIELD, edition, (7, 9));
-        stops(LOCAL, edition, (9, 9));
-        stops(TWIN, edition, (12, 9));
-    }
-    // An edition 2026 value parameter owns the `Arc`; in edition 2027 it is a read parameter, and
-    // a lambda that captures it owns no cell.
+    // A34 (`loopplace`): `store_hidden_except` marks loans absorbed into reference parameters as
+    // `through`, and `Checker::place` skips `through` loans when direct pointer loans exist, so
+    // all safe `loopplace` shapes converge and are accepted in both editions while the unsafe twin
+    // is rejected with `E1013` (`assignment_extends_borrow`) at the block exit.
+    accepts_in_both_editions(&[("Main.tz", OWN)]);
+    accepts_in_both_editions(&[("Main.tz", FIELD)]);
+    accepts_in_both_editions(&[("Main.tz", LOCAL)]);
+    rejects_at(TWIN, "E1013", "assignment_extends_borrow", (18, 13));
     let value = OWN.replace("-> own Arc", "-> Arc");
-    stops(&value, Edition::E2026, (7, 9));
-    analyze_with_edition(&value, Edition::E2027)
-        .unwrap_or_else(|error| panic!("{value}\n{}: {}", error.code, error.message));
+    accepts_in_both_editions(&[("Main.tz", &value)]);
     assert!(OWN.contains(LAMBDA) && TWIN.contains(LAMBDA));
     accepts_in_both_editions(&[("Main.tz", &OWN.replace(LAMBDA, SETTLES))]);
     rejects_at(
@@ -7911,35 +7876,12 @@ do! IO.writeln (to_string (run 1))
         "    let w = \\g -> Mutex.with_lock (Arc.get (ref sink)) (\\o -> Array.write 0 g o)\n";
     const SETTLES: &str = "    let cell = Arc.get (ref sink)\n    let w = \\g -> Mutex.with_lock cell (\\o -> Array.write 0 g o)\n";
     let (two, three) = (late_hand_on(2), late_hand_on(3));
-    for (source, at) in [
-        (DYN, (7, 9)),
-        (DYN_TWIN, (7, 9)),
-        (&two, (9, 9)),
-        (&three, (10, 9)),
-    ] {
-        for edition in [Edition::E2026, Edition::E2027] {
-            let error = analyze_with_edition(source, edition).expect_err(source);
-            assert_eq!(
-                (error.code, error.kind),
-                ("E1017", Some("loop_ownership_limit")),
-                "edition {edition}\n{source}\n{}",
-                error.message
-            );
-            assert_eq!(
-                position(source, error.span.start),
-                at,
-                "edition {edition}\n{source}"
-            );
-            assert!(
-                error
-                    .help
-                    .as_deref()
-                    .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
-                "edition {edition}\n{source}\n{:?}",
-                error.help
-            );
-        }
-    }
+    // A34 (`loopplace`): `DYN`, `two`, and `three` now converge and are accepted in both editions,
+    // while `DYN_TWIN` is rejected with `E1013` (`assignment_extends_borrow`) rather than `E1017`.
+    accepts_in_both_editions(&[("Main.tz", DYN)]);
+    accepts_in_both_editions(&[("Main.tz", &two)]);
+    accepts_in_both_editions(&[("Main.tz", &three)]);
+    rejects_at(DYN_TWIN, "E1013", "assignment_extends_borrow", (14, 13));
     assert!(DYN.contains(LAMBDA) && DYN_TWIN.contains(LAMBDA) && two.contains(LAMBDA));
     accepts_in_both_editions(&[("Main.tz", &DYN.replace(LAMBDA, SETTLES))]);
     accepts_in_both_editions(&[("Main.tz", &two.replace(LAMBDA, SETTLES))]);
@@ -8101,35 +8043,8 @@ do! IO.writeln (to_string (run 1))
             "        let t = ref (deref (if i >= 0 then ref p else ref p)).s\n",
         );
     let late = late_hand_on(4);
-    for (source, at) in [
-        (COPY, (7, 9)),
-        (&local, (7, 9)),
-        (&choice, (7, 9)),
-        (&reborrow, (7, 9)),
-        (&late, (11, 9)),
-    ] {
-        for edition in [Edition::E2026, Edition::E2027] {
-            let error = analyze_with_edition(source, edition).expect_err(source);
-            assert_eq!(
-                (error.code, error.kind),
-                ("E1017", Some("loop_ownership_limit")),
-                "edition {edition}\n{source}\n{}",
-                error.message
-            );
-            assert_eq!(
-                position(source, error.span.start),
-                at,
-                "edition {edition}\n{source}"
-            );
-            assert!(
-                error
-                    .help
-                    .as_deref()
-                    .is_some_and(|help| help.contains("`let cell = Arc.get (ref sink)`")),
-                "edition {edition}\n{source}\n{:?}",
-                error.help
-            );
-        }
+    for source in [COPY, &local, &choice, &reborrow, &late] {
+        accepts_in_both_editions(&[("Main.tz", source)]);
     }
 
     accepts_in_both_editions(&[("Main.tz", &pipeline(16, 2, 4))]);
@@ -8299,17 +8214,10 @@ fn a_loop_that_grows_once_settles_and_one_that_keeps_growing_stops() {
     let late = late_hand_on(40);
     let long = copy_chain(25, 0);
     let large = copy_chain(9, 200);
+    // A34 (`loopplace`): `inner` and `late` now settle without hitting E1017.
+    accepts_in_both_editions(&[("Main.tz", &inner)]);
+    accepts_in_both_editions(&[("Main.tz", &late)]);
     for (source, at, help) in [
-        (
-            &inner,
-            (11, 9),
-            "keep growing faster: each of the last 5 iterations",
-        ),
-        (
-            &late,
-            (47, 9),
-            "keep growing: each of the last 24 iterations",
-        ),
         (
             &long,
             (33, 9),
@@ -8654,39 +8562,278 @@ fn masked_loopplace(stages: usize, places: usize, reads: usize, workaround: bool
 #[test]
 fn a_loop_whose_settling_locals_hide_its_loopplace_growth_stops_soon() {
     accepts_in_both_editions(&[("Main.tz", &masked_loopplace(10, 2, 32, true))]);
-    for (source, at, help) in [
-        (
-            masked_loopplace(10, 2, 32, false),
-            (21, 9),
-            "(now 2119), and the last iteration made 2503 borrows",
-        ),
-        (
-            masked_loopplace(6, 2, 16, false),
-            (17, 9),
-            "(now 2079), and the last iteration made 791 borrows",
-        ),
-    ] {
-        for edition in [Edition::E2026, Edition::E2027] {
-            let error = analyze_with_edition(&source, edition).expect_err(&source);
-            assert_eq!(
-                (error.code, error.kind),
-                ("E1017", Some("loop_ownership_limit")),
-                "edition {edition}\n{source}\n{}",
-                error.message
-            );
-            assert_eq!(
-                position(&source, error.span.start),
-                at,
-                "edition {edition}\n{source}"
-            );
-            assert!(
-                error.help.as_deref().is_some_and(|text| text.contains(
-                    "the borrows that the loop carries keep growing faster: after each of the last 8 iterations"
-                ) && text.contains(help)
-                    && text.contains("`let cell = Arc.get (ref sink)`")),
-                "edition {edition}\n{source}\n{:?}",
-                error.help
-            );
-        }
-    }
+    accepts_in_both_editions(&[("Main.tz", &masked_loopplace(10, 2, 32, false))]);
+    accepts_in_both_editions(&[("Main.tz", &masked_loopplace(6, 2, 16, false))]);
+}
+
+#[test]
+fn a34_and_a33_safe_shapes_are_accepted_while_unsafe_twins_stay_rejected() {
+    const PRELUDE: &str = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PairOk { h: Holder, s: string }
+def mkpo :: unit -> PairOk
+fn mkpo _u = PairOk { h: Holder { cell: Mutex.create [\() -> 0] }, s: String.repeat 4 (ref "123456789") }
+def cross :: ref PairOk -> ref PairOk -> unit
+fn cross a b = { let t = ref b.s; Mutex.with_lock (ref a.h.cell) (\c -> Array.write 0 (\() -> look t) c) }
+"#;
+
+    // 1. rcgetpart: safe + unsafe twin 1 (declaration order)
+    let rcgetpart_safe = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let rs = [Rc.new (mkpo ())]\n    let p2 = mkpo ()\n    let b = Rc.get (ref rs[0])\n    cross (ref p2) b\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &rcgetpart_safe)]);
+    let rcgetpart_twin = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let p2 = mkpo ()\n    let rs = [Rc.new (mkpo ())]\n    let b = Rc.get (ref rs[0])\n    cross (ref p2) b\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(
+        &rcgetpart_twin,
+        "E1013",
+        "assignment_extends_borrow",
+        (17, 5),
+    );
+
+    // 2. fvdrop: record literal + match pattern + annotated lambda + read-by-default (E2027), plus unsafe Stash twin
+    let fvdrop_lit = format!(
+        "{PRELUDE}record FR {{ f: ref PairOk -> unit, k: i64 }}\ndef keep :: (ref PairOk -> unit) -> unit\nfn keep f = {{ let _r = FR {{ f: f, k: 1 }}; () }}\ndef run :: i64 -> i64\nfn run n =\n    let p2 = mkpo ()\n    keep (cross (ref p2))\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &fvdrop_lit)]);
+    let fvdrop_match = format!(
+        "{PRELUDE}def keep :: (ref PairOk -> unit) -> unit\nfn keep f = match f with | _h -> ()\ndef run :: i64 -> i64\nfn run n =\n    let p2 = mkpo ()\n    keep (cross (ref p2))\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &fvdrop_match)]);
+    let fvdrop_read = format!(
+        "{PRELUDE}def keep :: (ref PairOk -> unit) -> unit\nfn keep f = {{ let _h = f; () }}\ndef run :: i64 -> i64\nfn run n =\n    let p2 = mkpo ()\n    keep (cross (ref p2))\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &fvdrop_read)]);
+    let fvdrop_twin = r#"record Stash { cell: Arc<Mutex<[unit -> i64]>>, f: unit -> i64 }
+instance Drop<Stash> {
+    fn drop s = { let g = s.f; Mutex.with_lock (Arc.get (ref s.cell)) (\slot -> Array.write 0 g slot) }
+}
+def keep :: own Arc<Mutex<[unit -> i64]>> -> own (unit -> i64) -> unit
+fn keep c f = { let _s = Stash { cell: c, f: f }; () }
+def run :: i64 -> i64
+fn run n =
+    let a = Arc.new (Mutex.create [\() -> 0])
+    { let text = to_string n; let t = ref text; keep (Arc.share (ref a)) (\() -> String.length t) }
+    let other = [to_string 777777, to_string 88888888]
+    Mutex.with_lock (Arc.get (ref a)) (\slot -> slot[0] ()) + other.length * 0
+do! IO.writeln (to_string (run 123456789))
+"#;
+    rejects_at(fvdrop_twin, "E1013", "assignment_extends_borrow", (10, 5));
+
+    // 3. refsrc: safe sibling move + unsafe borrowed-field move twin
+    let refsrc_safe = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let q1 = ref p1\n    cross (ref p2) q1\n    let _taken = p1.h\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &refsrc_safe)]);
+    let refsrc_twin = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let p1 = mkpo ()\n    let p2 = mkpo ()\n    let q1 = ref p1\n    cross (ref p2) q1\n    let _taken = p1.s\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(&refsrc_twin, "E1014", "borrow_conflict", (21, 18));
+
+    // 4. sharetype: fresh unrelated Rc.new accepted + unsafe shared-block twin rejected
+    let sharetype_safe = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    let q = Rc.new (mkpo ())\n    cross (Rc.get (ref q)) (ref p)\n    look (ref a.s) * 0 + n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &sharetype_safe)]);
+    let sharetype_twin = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross a (ref p)\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(
+        &sharetype_twin,
+        "E1013",
+        "assignment_extends_borrow",
+        (17, 5),
+    );
+
+    // 5. rcgetowner: safe (r2 declared before p) + unsafe twins 1 & 2
+    let rcgetowner_safe = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross (ref p) a\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &rcgetowner_safe)]);
+    let rcgetowner_twin1 = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let p = mkpo ()\n    let r2 = Rc.new (mkpo ())\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross (ref p) a\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(
+        &rcgetowner_twin1,
+        "E1013",
+        "assignment_extends_borrow",
+        (17, 5),
+    );
+    let rcgetowner_twin2 = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = Rc.share (ref r2)\n    let a = Rc.get (ref r)\n    cross (ref p) a\n    let k = {{ let _z = r2; 0 }}\n    n + k\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(
+        &rcgetowner_twin2,
+        "E1013",
+        "assignment_extends_borrow",
+        (17, 5),
+    );
+
+    // 6. shareparam: dup + sh2 + stashs safe, unsafe twins 1 & 2 rejected
+    let shareparam_safe = format!(
+        "{PRELUDE}def dup :: ref Rc<PairOk> -> Rc<PairOk>\nfn dup r = Rc.share r\ndef run :: i64 -> i64\nfn run n =\n    let p = mkpo ()\n    let r2 = Rc.new (mkpo ())\n    let r = dup (ref r2)\n    let a = Rc.get (ref r)\n    cross a (ref p)\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &shareparam_safe)]);
+    let shareparam_sh2 = format!(
+        "{PRELUDE}def sh2 :: ref Rc<PairOk> -> i64\nfn sh2 r = {{ let s = Rc.share r; look (ref (Rc.get (ref s)).s) }}\ndef run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    sh2 (ref r2) * 0 + n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &shareparam_sh2)]);
+    let shareparam_twin = format!(
+        "{PRELUDE}def dup :: ref Rc<PairOk> -> Rc<PairOk>\nfn dup r = Rc.share r\ndef run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = dup (ref r2)\n    let a = Rc.get (ref r)\n    cross a (ref p)\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    rejects_at(
+        &shareparam_twin,
+        "E1013",
+        "assignment_extends_borrow",
+        (19, 5),
+    );
+
+    // 7. replcopy: replace-then-copy safe in while/for/if, copy-then-replace unsafe twin rejected
+    let replcopy_safe = r#"record Holder { cell: Mutex<[unit -> i64]> }
+instance Drop<Holder> {
+    fn drop h = do! IO.writeln ("drop " + to_string (Mutex.with_lock (ref h.cell) (\b -> b[0] ())))
+}
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+record PA { h: Holder, a: [string] }
+def mkpa :: unit -> PA
+fn mkpa _u = PA { h: Holder { cell: Mutex.create [\() -> 0] }, a: [String.repeat 4 (ref "123456789")] }
+def copy_out :: ref [unit -> i64] -> ref Mutex<[unit -> i64]> -> unit
+fn copy_out b out = Mutex.with_lock out (\o -> Array.write 0 b[0] o)
+def renew :: ref mut PA -> ref Holder -> i64 -> i64
+fn renew p out n =
+    let t = ref p.a[0]
+    Mutex.with_lock (ref p.h.cell) (\b -> Array.write 0 (\() -> look t) b)
+    let mut i = 0
+    while i < n do
+        deref p = mkpa ()
+        Mutex.with_lock (ref p.h.cell) (\b -> copy_out b (ref out.cell))
+        i = i + 1
+    0
+def run :: i64 -> i64
+fn run n =
+    let mut p0 = mkpa ()
+    let out = Holder { cell: Mutex.create [\() -> 0] }
+    let k = renew (ref mut p0) (ref out) n
+    Mutex.with_lock (ref out.cell) (\b -> b[0] ()) + k
+do! IO.writeln (to_string (run 2))
+"#;
+    accepts_in_both_editions(&[("Main.tz", replcopy_safe)]);
+    let replcopy_twin = replcopy_safe.replace(
+        "        deref p = mkpa ()\n        Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell))\n",
+        "        Mutex.with_lock (ref p.h.cell) (\\b -> copy_out b (ref out.cell))\n        deref p = mkpa ()\n",
+    );
+    rejects_at(&replcopy_twin, "E1014", "borrow_conflict", (22, 9));
+
+    // 8. cellslots: safe region-free cell write preserves region slots + unsafe twin rejected
+    let cellslots_safe = r#"record Pair3 {r s} { a: ref {r} string, b: ref {s} string, c: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def eat :: own string -> i64
+fn eat s = String.length s
+def run :: i64 -> i64
+fn run n =
+    let s1 = String.repeat 4 (ref "123456789")
+    let s2 = String.repeat 4 (ref "abcdefgh9")
+    let x = Pair3 { a: ref s1, b: ref s2, c: Mutex.create [\() -> 0] }
+    let ra = x.a
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref x.c) (\b -> Array.write 0 (\() -> look ra) b)
+        i = i + 1
+    let t = x.b
+    let k = eat s1
+    look t * 100 + k
+do! IO.writeln (to_string (run 1))
+"#;
+    accepts_in_both_editions(&[("Main.tz", cellslots_safe)]);
+    let cellslots_twin = r#"record Pair3 {r s} { a: ref {r} string, b: ref {s} string, c: Mutex<[unit -> i64]> }
+def look :: ref string -> i64
+fn look t =
+    match String.find (ref "9") t with
+    | Maybe.Some i -> i
+    | Maybe.None -> -1
+def eat :: own string -> i64
+fn eat s = String.length s
+def run :: i64 -> i64
+fn run n =
+    let s1 = String.repeat 4 (ref "123456789")
+    let s2 = String.repeat 4 (ref "abcdefgh9")
+    let s3 = String.repeat 4 (ref "123456789")
+    let x = Pair3 { a: ref s1, b: ref s2, c: Mutex.create [\() -> 0] }
+    let r3 = ref s3
+    let mut i = 0
+    while i < n do
+        Mutex.with_lock (ref x.c) (\b -> Array.write 0 (\() -> look r3) b)
+        i = i + 1
+    let t = x.b
+    let k = eat s3
+    look t * 100 + k + Mutex.with_lock (ref x.c) (\b -> b[0] ())
+do! IO.writeln (to_string (run 1))
+"#;
+    rejects_at(cellslots_twin, "E1014", "borrow_conflict", (21, 17));
+
+    // 9. A33 g08: pipeline `ref rc |> Rc.share` recognized as same-block owner
+    let g08_safe = format!(
+        "{PRELUDE}def run :: i64 -> i64\nfn run n =\n    let r2 = Rc.new (mkpo ())\n    let p = mkpo ()\n    let r = ref r2 |> Rc.share\n    let a = Rc.get (ref r)\n    cross (ref p) a\n    n\ndo! IO.writeln (to_string (run 1))\n"
+    );
+    accepts_in_both_editions(&[("Main.tz", &g08_safe)]);
+
+    // 10. A33 v17: Display and Format interpolations both reject local borrow stored into caller cell
+    let v17_display = r#"record Cell {r} { m: ref {r} Mutex<[unit -> i64]>, name: string }
+instance Display<Cell> {
+    fn display c =
+        let t = ref c.name
+        Mutex.with_lock c.m (\b -> Array.write 0 (\() -> String.length t) b)
+        "ok"
+}
+def leak :: ref Mutex<[unit -> i64]> -> string
+fn leak m =
+    let c2 = Cell { m: m, name: String.repeat 4 (ref "123456789") }
+    $"{c2}"
+let m = Mutex.create [\() -> 0]
+let _s = leak (ref m)
+0
+"#;
+    rejects_at(
+        v17_display,
+        "E1013",
+        "store_local_borrow_through_reference",
+        (11, 5),
+    );
+    let v17_format = r#"record Cell {r} { m: ref {r} Mutex<[unit -> i64]>, name: string }
+instance Format<Cell> {
+    fn format c _spec =
+        let t = ref c.name
+        Mutex.with_lock c.m (\b -> Array.write 0 (\() -> String.length t) b)
+        "ok"
+}
+def leak :: ref Mutex<[unit -> i64]> -> string
+fn leak m =
+    let c2 = Cell { m: m, name: String.repeat 4 (ref "123456789") }
+    $"{c2:x}"
+let m = Mutex.create [\() -> 0]
+let _s = leak (ref m)
+0
+"#;
+    rejects_at(
+        v17_format,
+        "E1013",
+        "store_local_borrow_through_reference",
+        (11, 5),
+    );
 }
