@@ -208,6 +208,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "MatrixView.Mut"
             | "Tensor.Tensor"
             | "Tensor.View"
+            | "Tensor.Mut"
             | "DataChannel.Sender"
             | "DataChannel.Receiver"
             | "Channel.Channel"

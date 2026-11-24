@@ -142,7 +142,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("String", text(&["string", "[string]"], &["text", "parts"])),
     // A concurrent map is a resource that tzroutines share, like Mutex: the map comes first.
     ("SyncMap", Exempt(HANDLE)),
-    ("Tensor", subject(&["Tensor", "View"])),
+    ("Tensor", subject(&["Tensor", "View", "Mut"])),
     ("Test", Exempt(HARNESS)),
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
     ("Text", text(&["'s", "['s]"], &["text", "parts"])),

@@ -737,7 +737,7 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Tensor.Mut" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
     }
 
     /// The std `Atomic.Atomic`, `Mutex.Mutex` and, since TZ06, `RwMutex.RwMutex` and

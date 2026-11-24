@@ -172,6 +172,64 @@ export def errors :: i64 -> i64 = \_n ->
 export def tensors :: i64 -> i64 = \_n ->
     let tensor = Tensor.of_array [2, 2] [1, 2, 3, 4]
     let view = Tensor.view (ref tensor)
+    let cloned = Tensor.clone (ref tensor)
+    let _c = Tensor.clone_view (ref view)
+    let _ac = Tensor.as_contiguous (ref view)
+    let _af = Tensor.as_fortran (ref view)
+    let _fs = Tensor.fortran_strides [2, 2]
+    let _ast = Tensor.astype (\x -> x as f64) (ref view)
+    let _str = Tensor.strided 0 [2, 2] [2, 1] (Tensor.as_array (ref cloned))
+    let _fc = Tensor.is_c_contiguous (ref view) && Tensor.is_f_contiguous (ref view)
+    let mut buf = [1, 2, 3, 4]
+    let mut m = Tensor.borrow_mut [2, 2] (ref mut buf)
+    let _mc = Tensor.is_contiguous_mut (ref m)
+    let _ms = Tensor.as_slice_mut (ref mut m)
+    Tensor.write [0, 0] 9 (ref mut m)
+    Tensor.fill 1 (ref mut m)
+    Tensor.copy_from (ref view) (ref mut m)
+    Tensor.map_in_place (\x -> x + 1) (ref mut m)
+    let _p = Tensor.permute_mut [1, 0] (ref mut m)
+    let _ia = Tensor.index_axis_mut 0 0 (ref mut m)
+    let _nm = Tensor.narrow_mut 0 0 1 (ref mut m)
+    let _sm = Tensor.sub_mut [0, 0] [1, 1] (ref mut m)
+    let _st = Tensor.step_mut 0 1 (ref mut m)
+    let _fl = Tensor.flip_mut 0 (ref mut m)
+    let _fr = Tensor.freeze (ref m)
+    let upd = Tensor.update (\w -> Tensor.fill 2 w) cloned
+    let _bs = Tensor.broadcast_shape [1, 2] [2, 1]
+    let _bt = Tensor.broadcast_to [2, 2] (ref view)
+    let _bp = Tensor.broadcast_pair (ref view) (ref view)
+    let upd_views = [Tensor.view (ref upd)]
+    let _ba = Tensor.broadcast_arrays (ref upd_views)
+    let _z: Tensor<i64> = Tensor.zeros [2]
+    let _o: Tensor<i64> = Tensor.ones [2]
+    let _f = Tensor.full 1 [2]
+    let _zl: Tensor<i64> = Tensor.zeros_like (ref view)
+    let _ol: Tensor<i64> = Tensor.ones_like (ref view)
+    let _flk = Tensor.full_like 1 (ref view)
+    let _sc = Tensor.scalar 1
+    let _ai = Tensor.arange_i64 0 2 1
+    let _af6 = Tensor.arange_f64 0.0 1.0 0.5
+    let _af3 = Tensor.arange_f32 0.0f32 1.0f32 0.5f32
+    let _ls = Tensor.linspace 0.0 1.0 3
+    let _lso = Tensor.linspace_open 0.0 1.0 3
+    let _lgs = Tensor.logspace 0.0 1.0 3 10.0
+    let _gms = Tensor.geomspace 1.0 10.0 3
+    let _ey: Tensor<i64> = Tensor.eye 2 2 0
+    let _id: Tensor<i64> = Tensor.identity 2
+    let zv = Tensor.view (ref _z)
+    let ov = Tensor.view (ref _o)
+    let _dg = Tensor.diag 0 (ref zv)
+    let _dgn = Tensor.diagonal 0 (ref view)
+    let _dgf = Tensor.diag_flat 0 (ref view)
+    let _tr: Tensor<i64> = Tensor.tri 2 2 0
+    let _tl = Tensor.tril 0 (ref view)
+    let _tu = Tensor.triu 0 (ref view)
+    let _mij = Tensor.meshgrid_ij (ref zv) (ref ov)
+    let _mxy = Tensor.meshgrid (ref zv) (ref ov)
+    let _fv = Tensor.format_view (ref view)
+    let _disp = $"{upd} {view}"
+    let _eq = upd == tensor
     (Tensor.data (ref view)).length
 
 test "generators" =
