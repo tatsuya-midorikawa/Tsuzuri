@@ -192,30 +192,39 @@ pub fn windows_i128_helpers(aarch64: bool) -> String {
     output
 }
 
-fn replace_windows_debug_write(ir: &str) -> (String, bool) {
+fn replace_windows_debug_write(mut ir: String) -> (String, bool) {
+    if ir.contains("\r\n") {
+        ir = ir.replace("\r\n", "\n");
+    }
     let Some(start) = ir.find("define internal void @tz.debug.write(") else {
-        return (ir.to_owned(), false);
+        return (ir, false);
     };
     let rest = &ir[start..];
-    let Some(end_offset) = rest.find("\n}\n").map(|index| index + 3) else {
-        return (ir.to_owned(), false);
-    };
+    let end_offset = rest
+        .find("\n}\n")
+        .map(|index| index + 3)
+        .expect("unexpected @tz.debug.write definition in Windows IR");
     let original = &rest[..end_offset];
     let header_line = original.lines().next().unwrap_or_default();
     let has_context = header_line.contains(", i32 %tz.context)");
-    let mut replacement = include_str!("runtime/debug-windows.ll").to_owned();
+    let mut replacement = include_str!("runtime/debug-windows.ll").replace("\r\n", "\n");
     if has_context {
-        replacement = replacement.replacen(
+        let updated = replacement.replacen(
             "define internal void @tz.debug.write(%tz.utf8string %text) nounwind {",
             "define internal void @tz.debug.write(%tz.utf8string %text, i32 %tz.context) nounwind {",
             1,
         );
+        assert_ne!(
+            updated, replacement,
+            "unexpected @tz.debug.write header in debug-windows.ll"
+        );
+        replacement = updated;
         if let Some(bad_idx) = original.find("\nbad:\n") {
-            let orig_bad = &original[bad_idx + 1..];
-            if let Some(rep_bad_idx) = replacement.find("\nbad:\n") {
-                replacement.truncate(rep_bad_idx + 1);
-                replacement.push_str(orig_bad);
-            }
+            let rep_bad_idx = replacement
+                .find("\nbad:\n")
+                .expect("missing bad: block in debug-windows.ll");
+            replacement.truncate(rep_bad_idx + 1);
+            replacement.push_str(&original[bad_idx + 1..]);
         }
     }
     let mut out = String::with_capacity(ir.len() + replacement.len());
@@ -227,7 +236,7 @@ fn replace_windows_debug_write(ir: &str) -> (String, bool) {
 
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) -> String {
     let aarch64 = crate::target::current_platform().aarch64();
-    let (ir, has_debug_write) = replace_windows_debug_write(&ir);
+    let (ir, has_debug_write) = replace_windows_debug_write(ir);
     let has_trap_write = ir.contains("define internal void @tz.trap.write(");
     let ir = if has_trap_write {
         assert_eq!(
@@ -11238,6 +11247,7 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                     assert!(!base.contains("@tz.debugger.write("));
                     let win = windows_abi(base.clone(), &module, true);
                     assert_eq!(win, windows_abi(base.clone(), &module, true));
+                    assert_eq!(win, windows_abi(base.replace('\n', "\r\n"), &module, true));
                     let win_obj = windows_abi(base.clone(), &module, false);
                     assert_eq!(win_obj, windows_abi(base, &module, false));
                     assert!(win.contains("call void @tsuzuri_trap_install()"));
@@ -11274,10 +11284,9 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
 
     #[test]
     fn windows_write_shim_reports_a_failed_setmode() {
-        let module = analyze(
-            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }",
-        )
-        .unwrap();
+        let source =
+            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }";
+        let module = analyze(source).unwrap();
         let options = EmitOptions {
             entry: Entry::Library,
             wasm: false,
@@ -11291,5 +11300,24 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
         assert!(win.contains("define internal i64 @write("));
         assert!(win.contains("%bad_mode = icmp eq i32 %mode, -1"));
         assert!(win.contains("ret i64 -1"));
+        let posix = emit_with_options(&module, options).unwrap();
+        assert_eq!(
+            windows_abi(posix.replace('\n', "\r\n"), &module, false),
+            win
+        );
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let trap_posix =
+            emit_with_trap_info_numbered(&module, options, &sources, &|_| TrapNumbering::Dense)
+                .unwrap()
+                .ir;
+        let trap_win = windows_abi(trap_posix.clone(), &module, true);
+        assert!(trap_win.contains("call void @tz.debugger.write("));
+        assert_eq!(
+            windows_abi(trap_posix.replace('\n', "\r\n"), &module, true),
+            trap_win
+        );
     }
 }
