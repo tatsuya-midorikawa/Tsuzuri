@@ -494,6 +494,11 @@ const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
     ("Time", "after_func", "Timer"),
 ];
 
+/// Opt-in modules loaded only when a pair of other opt-in modules are both named (NC04):
+/// `Matrix` alone does not pull in `MatrixView`, while `Matrix` + `Slice` loads `MatrixView`
+/// for `instance Index<Matrix<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>>`.
+const PAIR_TRIGGERS: &[(&str, &str, &str)] = &[("Matrix", "Slice", "MatrixView")];
+
 /// The opt-in modules of `MEMBER_TRIGGERS` that `text` refers to: a word of the table, a dot and the
 /// member, as the lexer reads them. So they may stand apart (spaces, newlines and comments between
 /// them), they count in the holes of an interpolated string, and they never count in a string or a
@@ -586,8 +591,10 @@ pub fn sources_for<'a>(
             needed.push(module);
         }
     }
-    if needed.contains(&"Matrix") && needed.contains(&"Slice") && !needed.contains(&"MatrixView") {
-        needed.push("MatrixView");
+    for &(first, second, target) in PAIR_TRIGGERS {
+        if needed.contains(&first) && needed.contains(&second) && !needed.contains(&target) {
+            needed.push(target);
+        }
     }
     let mut next = 0;
     while next < needed.len() {
@@ -751,8 +758,18 @@ mod tests {
                             .iter()
                             .any(|alias| alias.name.text == head)
                 });
+                let pair_triggered = head.is_some_and(|head| {
+                    PAIR_TRIGGERS.iter().any(|&(first, second, target)| {
+                        target == module.module
+                            && head == first
+                            && instance
+                                .extra_args
+                                .iter()
+                                .any(|arg| format!("{arg:?}").contains(second))
+                    })
+                });
                 assert!(
-                    own || module.names.contains(&instance.class.text.as_str()),
+                    own || pair_triggered || module.names.contains(&instance.class.text.as_str()),
                     "{path}: instance {} is for a type it does not declare; add '{}' to its OptIn names",
                     instance.class.text,
                     instance.class.text
@@ -769,7 +786,8 @@ mod tests {
                         .unwrap();
                     let named = mentions(source, other.module)
                         || public_names(other_source).iter().any(|(_, name)| {
-                            mentions_as(source, name, true)
+                            !crate::check::is_builtin_class(name)
+                                && mentions_as(source, name, true)
                                 && !declared.iter().any(|(_, declared)| declared == name)
                         });
                     assert_eq!(
@@ -887,6 +905,15 @@ mod tests {
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
         assert!(is_reserved_module("Tensor"));
+        let names_of = |texts: &[&str]| -> Vec<&str> {
+            sources_for(texts.iter().copied())
+                .into_iter()
+                .filter_map(|(path, _)| module_name(path))
+                .collect()
+        };
+        assert!(!names_of(&["Matrix.rows (ref m)"]).contains(&"MatrixView"));
+        assert!(!names_of(&["Slice.all()"]).contains(&"MatrixView"));
+        assert!(names_of(&["Matrix.of_array 1 1 [1]", "Slice.all()"]).contains(&"MatrixView"));
         assert!(is_reserved_module("Text"));
         assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));

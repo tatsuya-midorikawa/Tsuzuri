@@ -944,7 +944,7 @@ fn borrowed_arithmetic_class(name: &str) -> bool {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 36] = [
+pub(crate) const BUILTIN_CLASSES: [&str; 36] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",

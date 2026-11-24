@@ -40,7 +40,7 @@ fn user_defined_index_and_index_mut_work_with_temporary_and_borrowed_keys() {
          g[1] + g[key] + g[\"abc\"] + key.length",
     );
 
-    // Phase 2: IndexMut with user container and `Tensor.Mut` / `MatrixView.Mut`.
+    // Phase 2: IndexMut with user container (temporary + reusable non-Copy keys) and `Tensor.Mut` / `MatrixView.Mut`.
     emits(
         "let mut buf = [1, 2, 3, 4]\n\
          let mut tm = Tensor.borrow_mut [2, 2] (ref mut buf)\n\
@@ -50,6 +50,90 @@ fn user_defined_index_and_index_mut_work_with_temporary_and_borrowed_keys() {
          let mut mm = MatrixView.of_array_mut 2 2 (ref mut mbuf)\n\
          mm[(0, 1)] = 5\n\
          t[[0, 1]] + buf[2] + mbuf[1]",
+    );
+
+    // Custom container IndexMut runtime dispatch & key borrowing (-O0 and -O3).
+    let custom_mut = "\
+record Grid { data: [i64] }
+instance Index<Grid, string, i64> {
+    fn index k self = self.data[k.length]
+}
+instance IndexMut<Grid, string, i64> {
+    fn index_mut k v self =
+        let mut arr = Array.copy (ref self.data)
+        Array.write k.length v (ref mut arr)
+        self.data = arr
+}
+def main :: unit -> i32 = \\() ->
+    let mut g = Grid { data: [10, 20, 30, 40] }
+    let key = \"a\"
+    g[key] = 42
+    g[\"abc\"] = 99
+    let a = g[key]
+    let b = g[\"abc\"]
+    let c = g[\"\"]
+    let d = g[\"ab\"]
+    do! IO.writeln ($\"{a}:{b}:{c}:{d}:{key.length}\")
+    0
+";
+    let dir = std::env::temp_dir().join(format!("tsuzuri-nc04-custom-mut-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(&main_tz, custom_mut).unwrap();
+    for opt in ["-O0", "-O3"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["run", "--no-cache", opt])
+            .arg(&main_tz)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "custom IndexMut {opt}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "42:99:10:30:1",
+            "custom IndexMut {opt}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Conflicting access to container while borrowed (shared or exclusive) is rejected with E1014.
+    let grid_defs = "\
+record Grid { data: [i64] }
+instance Index<Grid, string, i64> {
+    fn index k self = self.data[k.length]
+}
+instance IndexMut<Grid, string, i64> {
+    fn index_mut k v self =
+        let mut arr = Array.copy (ref self.data)
+        Array.write k.length v (ref mut arr)
+        deref self = Grid { data: arr }
+}
+";
+    rejects(
+        &format!(
+            "{grid_defs}\
+             let mut g = Grid {{ data: [1, 2, 3] }}\n\
+             let r = ref g\n\
+             g[\"a\"] = 5\n\
+             r.data[0]"
+        ),
+        "E1014",
+    );
+    rejects(
+        &format!(
+            "{grid_defs}\
+             let mut g = Grid {{ data: [1, 2, 3] }}\n\
+             let r = ref mut g\n\
+             let _ = g[\"a\"]\n\
+             deref r = Grid {{ data: [4, 5, 6] }}\n\
+             0"
+        ),
+        "E1014",
     );
 }
 

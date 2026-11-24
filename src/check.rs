@@ -11216,6 +11216,11 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
         .count()
 }
 
+#[cfg(test)]
+pub(crate) fn is_builtin_class(name: &str) -> bool {
+    polymorph::BUILTIN_CLASSES.contains(&name)
+}
+
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
 /// primitive and SIMD type names, `_`, the built-in `Array` and `Vec`,
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.

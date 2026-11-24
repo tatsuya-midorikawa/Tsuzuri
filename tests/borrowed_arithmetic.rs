@@ -153,14 +153,92 @@ fn string_concat_keeps_consuming_contract_and_scalars_keep_direct_ir() {
 
 #[test]
 fn drop_type_arithmetic_drops_locals_at_scope_end_and_temporaries_at_expression_end() {
-    // User Drop type compiles cleanly for locals and nested temporary arithmetic expressions.
-    emits(
-        "record Guard { id: i64 }\n\
-         instance Drop<Guard> { fn drop g = Debug.print (ref g.id) }\n\
-         instance Add<Guard> { fn add a b = Guard { id: a.id + b.id } }\n\
-         let a = Guard { id: 1 }\n\
-         let b = Guard { id: 2 }\n\
-         let c = (a + b) + (b + a)\n\
-         a.id + b.id + c.id",
-    );
+    // Observable Drop log: nested temporaries `(a + b)` (3) and `(b + c)` (6) are dropped once
+    // after the expression while `a`, `b`, `c`, `d` remain usable until scope exit (LIFO).
+    let source = "\
+record Guard { id: i64, log: Arc<Mutex<Vec<i64>>> }
+instance Drop<Guard> {
+    fn drop g =
+        let id = g.id
+        Mutex.with_lock (Arc.get (ref g.log)) (\\v -> Vec.push_mut id v)
+}
+instance Add<Guard> {
+    fn add a b = Guard { id: a.id + b.id, log: Arc.share (ref a.log) }
+}
+def run_inner :: ref Arc<Mutex<Vec<i64>>> -> i64
+fn run_inner log =
+    let a = Guard { id: 1, log: Arc.share log }
+    let b = Guard { id: 2, log: Arc.share log }
+    let c = Guard { id: 4, log: Arc.share log }
+    let d = (a + b) + (b + c)
+    // Temporaries (a+b)=3 and (b+c)=6 were dropped; a, b, c, d are still live.
+    let mid_len = Mutex.with_lock (Arc.get log) (\\v -> Vec.length (ref v))
+    assert (mid_len == 2)
+    a.id + b.id + c.id + d.id
+export def verify_drops :: i64
+fn verify_drops =
+    let log = Arc.new (Mutex.create (Vec.empty()))
+    let sum = run_inner (ref log)
+    assert (sum == 16)
+    let drops = Mutex.with_lock (Arc.get (ref log)) (\\v ->
+        let n = Vec.length (ref v)
+        assert (n == 6)
+        [v[0], v[1], v[2], v[3], v[4], v[5]])
+    assert (drops.length == 6)
+    // Temporaries dropped first (6, 3 or 3, 6), then d(9), c(4), b(2), a(1) in LIFO.
+    assert ((drops[0] == 6 && drops[1] == 3) || (drops[0] == 3 && drops[1] == 6))
+    assert (drops[2] == 9 && drops[3] == 4 && drops[4] == 2 && drops[5] == 1)
+    sum
+def main :: unit -> i32 = \\() ->
+    assert (verify_drops() == 16)
+    0
+";
+    emits(source);
+
+    let dir = std::env::temp_dir().join(format!("tsuzuri-nc03-drops-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(&main_tz, source).unwrap();
+    let bin = env!("CARGO_BIN_EXE_tsuzuri");
+    for opt in ["-O0", "-O3"] {
+        let native = std::process::Command::new(bin)
+            .args(["run", "--no-cache", opt])
+            .arg(&main_tz)
+            .output()
+            .unwrap();
+        assert!(
+            native.status.success(),
+            "native {opt}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&native.stdout),
+            String::from_utf8_lossy(&native.stderr)
+        );
+        let wasm = dir.join(format!("drops{opt}.wasm"));
+        let build = std::process::Command::new(bin)
+            .args(["build", "--target", "wasm32", "--no-cache", opt, "-o"])
+            .arg(&wasm)
+            .arg(&main_tz)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "wasm build {opt}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let run = std::process::Command::new("node")
+            .args([
+                "-e",
+                "const fs=require('node:fs'); const m=new WebAssembly.Module(fs.readFileSync(process.argv[1])); if(WebAssembly.Module.imports(m).length!==0) process.exit(2); const r=new WebAssembly.Instance(m).exports.tz_verify_drops(); if(r!==16n) process.exit(3);",
+            ])
+            .arg(&wasm)
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success(),
+            "wasm run {opt}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
