@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::graph::{Direction, Graph, Shape, fold};
 use super::input::{Input, Relation};
 
-const IO_EFFECTS: [&str; 10] = [
+const IO_EFFECTS: [&str; 11] = [
     "io",
     "os",
     "net",
@@ -17,6 +17,7 @@ const IO_EFFECTS: [&str; 10] = [
     "debug",
     "user_drop",
     "gpu",
+    "pinned",
 ];
 
 /// The class of a node by its effects: the first of `io`, `alloc`, `trap` and `pure` that holds;

@@ -726,13 +726,15 @@ pub struct LinkName {
     pub span: Span,
 }
 
-/// What an `extern type` declaration says about its values (E12 D3, W18).
+/// What an `extern type` declaration says about its values (E12 D3, W18, W19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HandleKind {
     /// `extern type H`: moved, not capturable, Send, not Sync (E12 D3).
     Owned,
     /// `extern type copy H`: an identifier that the host does not hand over (W18).
     Copy,
+    /// `extern type local H`: moved, bound to its OS thread, neither Send nor Sync (W19).
+    Local,
 }
 
 impl HandleKind {
@@ -740,6 +742,7 @@ impl HandleKind {
         match self {
             Self::Owned => None,
             Self::Copy => Some("copy"),
+            Self::Local => Some("local"),
         }
     }
 }

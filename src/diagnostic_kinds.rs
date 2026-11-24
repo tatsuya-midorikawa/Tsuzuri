@@ -388,6 +388,8 @@ diagnostic_kinds! {
         (ParallelCallbackBorrowsEnvironment, "parallel_callback_borrows_environment", "E1013"),
         (ParallelInputBorrowsEnvironment, "parallel_input_borrows_environment", "E1013"),
         (ParallelResultRetainsBorrow, "parallel_result_retains_borrow", "E1013"),
+        (PinnedCodeSpawned, "pinned_code_spawned", "E1013"),
+        (PinnedFunctionValue, "pinned_function_value", "E1013"),
         (ReferenceRegionCount, "reference_region_count", "E1013"),
         (ReferenceWithoutOwner, "reference_without_owner", "E1013"),
         (RegionAlreadyDeclared, "region_already_declared", "E1013"),

@@ -217,6 +217,21 @@ try {
       assert.equal(execute(out, []).stdout.trim(), "42");
     }
   }
+  // W19: thread-bound `extern type local` handles stay on their creating OS thread across yields and MAXPROCS=1/4.
+  const threadBoundFixture = resolve("tests/fixtures/thread_bound");
+  execute(compiler, ["check", threadBoundFixture]);
+  rejected(["build", threadBoundFixture, "--target", "wasm32", "-o", join(root, "tb.wasm")], "E1008");
+  for (const optimization of ["-O0", "-O3"]) {
+    const out = join(root, `w19-thread-bound${optimization}`);
+    execute(compiler, ["build", threadBoundFixture, "--no-cache", optimization, "--link", host, "-l", "pthread", "-o", out]);
+    for (const procs of ["1", "4"]) {
+      for (let round = 0; round < 5; round++) {
+        const run = spawnSync(out, [], { encoding: "utf8", env: { ...process.env, TSUZURI_MAXPROCS: procs } });
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.stdout.trim(), "8704", `W19 thread_bound ${optimization} P=${procs} round=${round}`);
+      }
+    }
+  }
   // NS01: non-Maybe extern handles trap with "null extern handle" on NULL across extern return, export param, and callback param.
   const nullTrap = join(root, "null-trap");
   mkdirSync(nullTrap);

@@ -189,6 +189,37 @@ int64_t w20_zlen(const uint16_t *s) {
     return n;
 }
 
+typedef struct {
+    pthread_t owner;
+    int64_t total;
+    uint64_t magic;
+} w19_thread_slot;
+
+void *w19_open_local(void) {
+    w19_thread_slot *slot = malloc(sizeof *slot);
+    assert(slot != NULL);
+    slot->owner = pthread_self();
+    slot->total = 0;
+    slot->magic = UINT64_C(0x571910ca1);
+    return slot;
+}
+
+int64_t w19_use_local(w19_thread_slot *slot, int64_t delta) {
+    assert(slot != NULL && slot->magic == UINT64_C(0x571910ca1));
+    assert(pthread_equal(slot->owner, pthread_self()) != 0);
+    slot->total += delta;
+    return slot->total;
+}
+
+int64_t w19_close_local(w19_thread_slot *slot) {
+    assert(slot != NULL && slot->magic == UINT64_C(0x571910ca1));
+    assert(pthread_equal(slot->owner, pthread_self()) != 0);
+    int64_t out = slot->total;
+    slot->magic = 0;
+    free(slot);
+    return out;
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

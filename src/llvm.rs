@@ -6840,7 +6840,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
             Type::Handle(_, HandleKind::Copy) => value.to_owned(),
-            Type::Handle(_, HandleKind::Owned) => unreachable!("extern handles cannot be cloned"),
+            Type::Handle(_, HandleKind::Owned | HandleKind::Local) => {
+                unreachable!("extern handles cannot be cloned")
+            }
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
                 assert!(dyn_type.copy, "dyn values without Copy cannot be cloned");

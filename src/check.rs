@@ -24,6 +24,8 @@ mod control;
 mod deriving;
 #[path = "domain_rules.rs"]
 mod domain_rules;
+#[path = "pinned_rules.rs"]
+mod pinned_rules;
 #[path = "select.rs"]
 mod select;
 pub(crate) use domain_rules::domain_calls;
@@ -688,7 +690,7 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local)
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
             | Self::Reference(_, true)
@@ -1094,7 +1096,7 @@ impl Type {
                         ty,
                         Type::Reference(_, true)
                             | Type::Once(_)
-                            | Type::Handle(_, HandleKind::Owned)
+                            | Type::Handle(_, HandleKind::Owned | HandleKind::Local)
                     ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
@@ -1106,7 +1108,9 @@ impl Type {
             );
         }
         match self {
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Reference(_, true)
+            | Self::Once(_)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
@@ -1149,7 +1153,7 @@ impl Type {
             return types.stored_all(self, |ty| {
                 !ty.is_unresolved()
                     && !ty.is_unsend_record(types)
-                    && !matches!(ty, Type::Reference(..))
+                    && !matches!(ty, Type::Reference(..) | Type::Handle(_, HandleKind::Local))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
@@ -1165,7 +1169,8 @@ impl Type {
             | Self::Infer(_)
             | Self::Partial(_)
             | Self::Application(..)
-            | Self::Reference(..) => false,
+            | Self::Reference(..)
+            | Self::Handle(_, HandleKind::Local) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it
@@ -1199,7 +1204,7 @@ impl Type {
             | Self::ArrayView(_)
             | Self::Length(_)
             | Self::Once(_)
-            | Self::Handle(..)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Copy)
             | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
@@ -1219,7 +1224,33 @@ impl Type {
         )
     }
 
-    /// W23 / W19: whether a value of this type owns a thread-bound value (`Anchor<T>` or `local` handle).
+    /// W19: whether a value of this type owns a thread-bound `extern type local` handle.
+    pub(crate) fn holds_local_handle(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !matches!(ty, Type::Handle(_, HandleKind::Local)))
+    }
+
+    /// W19: whether this type reaches a thread-bound `extern type local` handle (including borrows).
+    pub(crate) fn reaches_local_handle(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| matches!(ty, Type::Handle(_, HandleKind::Local)))
+    }
+
+    /// W19: the display name of the first `extern type local` handle this type reaches.
+    pub(crate) fn first_local_handle_name(&self, types: &TypeContext<'_>) -> Option<String> {
+        let found = std::cell::RefCell::new(None);
+        types.reaches(self, |ty| {
+            if matches!(ty, Type::Handle(_, HandleKind::Local)) {
+                let display = ty.display(types);
+                let shown = display.strip_prefix("Main.").unwrap_or(&display).to_owned();
+                *found.borrow_mut() = Some(shown);
+                true
+            } else {
+                false
+            }
+        });
+        found.into_inner()
+    }
+
+    /// W23: whether a value of this type owns an `Anchor<T>`.
     pub(crate) fn holds_thread_bound(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| !ty.is_unsend_record(types))
     }
@@ -1247,7 +1278,9 @@ impl Type {
             // function, which is checked again for every type that it is used at. Every kind of
             // type is named here, so that a new one has to be judged.
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Reference(_, true)
+            | Self::Once(_)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
             Self::Handle(_, HandleKind::Copy) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
@@ -1336,7 +1369,7 @@ impl Type {
     /// extern handle, a dyn value that is not Copy, or an `Owned.Function` (C10, W18).
     pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
         types.reaches(self, |ty| {
-            matches!(ty, Type::Handle(_, HandleKind::Owned))
+            matches!(ty, Type::Handle(_, HandleKind::Owned | HandleKind::Local))
                 || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                 || ty.is_owned_function(types)
         })
@@ -4838,6 +4871,8 @@ pub struct CheckedModule {
     pub dyn_layouts: BTreeMap<DynType, DynLayout>,
     /// A14: some module writes a `dyn` type, so the IR defines `%tz.dyn`.
     pub uses_dyn: bool,
+    /// W19: some module declares an `extern type local`, so `pinned` effect confinement runs.
+    pub thread_bound: bool,
     /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
     /// program builds a non-CPU `Gpu.Backend`.
     pub gpu: crate::gpu_devices::GpuProgram,
@@ -10094,6 +10129,13 @@ fn check_modules_collect(
         uses_dyn: modules
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
+        thread_bound: modules.iter().any(|input| {
+            input
+                .program
+                .extern_types
+                .iter()
+                .any(|decl| decl.kind == HandleKind::Local)
+        }),
         gpu: Default::default(),
         statics,
         effects: None,
@@ -10186,6 +10228,8 @@ fn check_modules_collect(
     }
     // B10: each call of `Domain.run` passes a pure closure of plain data.
     diagnostics.extend(domain_rules::validate(&module));
+    // W19: functions that touch `extern type local` handles stay confined to their OS thread.
+    diagnostics.extend(pinned_rules::validate(&module));
     // A20: the effect attributes are checked against the inferred summaries; a program without
     // them computes nothing.
     if !declared_attributes.is_empty() {
@@ -10684,6 +10728,7 @@ fn recovery_module(
         vtables: BTreeMap::new(),
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
+        thread_bound: false,
         gpu: Default::default(),
         statics: BTreeMap::new(),
         effects: None,

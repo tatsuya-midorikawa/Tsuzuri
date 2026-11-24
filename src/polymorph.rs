@@ -3277,6 +3277,27 @@ impl Classes {
                     )
                 });
             }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_local_handle(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureUnsendableInFunctionValue,
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tzroutines or threads, and a thread-bound extern handle ('extern type local') must stay on its OS thread; pass it as an argument",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
+                        format!(
+                            "values that move to another tzroutine or thread must be Send; {} holds a thread-bound extern handle ('extern type local'), which must stay on the OS thread that received it; use it there, or do the work inside 'Routine.with_locked_thread'",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if matches!(class, "Capture" | "Send") && constraint.ty.holds_thread_bound(types) {
                 return Err(if class == "Capture" {
                     Diagnostic::of(
@@ -5401,6 +5422,7 @@ pub(super) fn specialize(
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,
+        thread_bound: module.thread_bound,
         gpu: module.gpu,
         statics: module.statics,
         effects: None,

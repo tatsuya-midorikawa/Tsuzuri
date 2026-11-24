@@ -360,6 +360,64 @@ function runGuiStage(compiler, clang, directory) {
   }
 
   console.log(`Windows GUI: Tsuzuri object unwind entries (${toolchainLabel}): ${tzUnwind.size}`);
+
+  // W19: Win32 GDI `extern type local Hdc` (`GetDC` / `GetDeviceCaps` / `ReleaseDC`) stays confined
+  // to the pinned OS thread across yields on 32 concurrent tzroutines with `TSUZURI_MAXPROCS=4`.
+  const w19Dir = join(directory, "w19-thread-bound");
+  mkdirSync(w19Dir, { recursive: true });
+  writeFileSync(join(w19Dir, "Main.tz"), [
+    "extern type copy Hwnd",
+    "extern type local Hdc",
+    "@trusted",
+    'extern "GetDesktopWindow" def desktop :: unit -> Hwnd',
+    "@trusted",
+    'extern "GetDC" def get_dc :: Hwnd -> Maybe<Hdc>',
+    "@trusted",
+    'extern "GetDeviceCaps" def device_caps :: ref Hdc -> i32 -> i32',
+    "@trusted",
+    'extern "ReleaseDC" def release_dc :: Hwnd -> own Hdc -> i32',
+    "@trusted",
+    'extern "GetCurrentThreadId" def current_tid :: unit -> i32u',
+    "",
+    "def probe_dc :: Hwnd -> i64 = \\hwnd ->",
+    "    let tid0 = current_tid ()",
+    "    match get_dc hwnd with",
+    "    | Maybe.None -> -10",
+    "    | Maybe.Some dc ->",
+    "        let mut same_tid = true",
+    "        for _step = 1 to 8 do",
+    "            Routine.yield ()",
+    "            if current_tid () != tid0 then same_tid = false else ()",
+    "        let bpp = device_caps (ref dc) 12i32",
+    "        let rel = release_dc hwnd dc",
+    "        if same_tid && bpp >= 0i32 && rel == 1i32 then 1 else -1",
+    "",
+    "def main :: unit -> i32 = \\() ->",
+    "    let hwnd = desktop ()",
+    "    let ch: Channel<i64> = Channel.make 32",
+    "    for _w = 1 to 32 do",
+    "        let out = Channel.share (ref ch)",
+    "        tzroutine {",
+    "            let ok = Routine.with_locked_thread (\\() -> probe_dc hwnd)",
+    "            Channel.send (ref out) ok",
+    "        }",
+    "    let mut sum = 0",
+    "    for _w = 1 to 32 do",
+    "        let v = match Channel.recv (ref ch) with | Maybe.Some x -> x | Maybe.None -> 0",
+    "        sum = sum + v",
+    "    if sum == 32 then 42i32 else 91i32",
+    "",
+  ].join("\n"));
+  for (const optimization of ["-O0", "-O3"]) {
+    const w19Exe = join(directory, `w19-thread-bound${optimization}.exe`);
+    execute(compiler, ["build", w19Dir, "--no-cache", optimization, "--subsystem", "windows", "-l", "user32", "-l", "gdi32", "-o", w19Exe]);
+    for (const procs of ["1", "4"]) {
+      const res = execute(launcher, ["--no-handles", "--", w19Exe], true, { TSUZURI_MAXPROCS: procs });
+      assert.match(res.stdout.trim().split(/\r?\n/).pop(), /^exit=0x0000002A$/i, `w19 ${optimization} P=${procs}: ${res.stdout}`);
+    }
+  }
+  console.log("Windows GUI: W19 extern type local Hdc (GetDC / GetDeviceCaps / ReleaseDC) passed across P=1 and P=4");
+
   console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
 }
 

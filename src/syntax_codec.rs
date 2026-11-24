@@ -278,7 +278,7 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
-unit_enum!(HandleKind { Owned, Copy });
+unit_enum!(HandleKind { Owned, Copy, Local });
 unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(RangeOp { Bare, Closed, Open });
 unit_enum!(FixLevel {
@@ -2757,7 +2757,13 @@ mod tests {
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
-        seen.extend(round_trips("extern type H\nextern type copy Hc\n", 0).unwrap());
+        seen.extend(
+            round_trips(
+                "extern type H\nextern type copy Hc\nextern type local Hl\n",
+                0,
+            )
+            .unwrap(),
+        );
         // A24: anonymous union types and type test patterns.
         seen.extend(
             round_trips(
@@ -2841,7 +2847,7 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
-            ("HandleKind", 2),
+            ("HandleKind", 3),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),

@@ -4691,6 +4691,7 @@ impl Parser<'_> {
             }
             let modifier_kind = |word: &str| match word {
                 "copy" => Some(HandleKind::Copy),
+                "local" => Some(HandleKind::Local),
                 _ => None,
             };
             let first = self.ident()?;
