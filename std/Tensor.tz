@@ -1585,3 +1585,85 @@ instance Display<'a> => Display<View<'a>> {
     fn rec display view = format_strided view.data (ref view.shape) (ref view.strides) view.offset
 }
 
+private def slice_raw { r } :: own [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> View<'a> { r }
+fn slice_raw axes data offset shape strides =
+    let in_rank = shape.length
+    let mut new_offset = offset
+    let mut out_shape = Vec.empty()
+    let mut out_strides = Vec.empty()
+    let mut in_axis = 0
+    for i in 0i64 ..= (axes.length - 1) do
+        match axes[i] with
+        | Slice.Axis.NewAxis ->
+            Vec.push_mut 1 (ref mut out_shape)
+            Vec.push_mut 0 (ref mut out_strides)
+        | _ ->
+            assert (in_axis < in_rank)
+            let dim = shape[in_axis]
+            let stride = strides[in_axis]
+            match Slice.resolve dim (ref axes[i]) with
+            | Slice.Resolved.Index pos ->
+                new_offset = new_offset + pos * stride
+            | Slice.Resolved.Slice (start, len, step) ->
+                if len > 0 then
+                    new_offset = new_offset + start * stride
+                let new_stride =
+                    if len <= 1 then stride
+                    else
+                        match Int.checked_mul stride step with
+                        | Maybe.Some s -> s
+                        | Maybe.None ->
+                            assert false
+                            0
+                Vec.push_mut len (ref mut out_shape)
+                Vec.push_mut new_stride (ref mut out_strides)
+            | Slice.Resolved.InsertAxis ->
+                Vec.push_mut 1 (ref mut out_shape)
+                Vec.push_mut 0 (ref mut out_strides)
+            in_axis = in_axis + 1
+    while in_axis < in_rank do
+        Vec.push_mut shape[in_axis] (ref mut out_shape)
+        Vec.push_mut strides[in_axis] (ref mut out_strides)
+        in_axis = in_axis + 1
+    let shape_arr = Vec.to_array out_shape
+    let strides_arr = Vec.to_array out_strides
+    assert (shape_arr.length <= 64)
+    View { data: data, offset: new_offset, shape: shape_arr, strides: strides_arr }
+
+/// Applies per-axis `Slice.Axis` descriptors to `view` without copying, supporting `All`, `At`,
+/// `Range`, `From`, `To`, `Step` (including negative steps), `rev`, and `NewAxis`. Trailing
+/// unmentioned axes are kept in full.
+///
+/// ```tsuzuri run=[8,%207,%205,%204]
+/// let t = Tensor.init [3, 3] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let sub = Tensor.slice [Slice.step 2 0 (-1), Slice.step 2 0 (-1)] (ref v)
+/// Tensor.to_array (Tensor.to_tensor (ref sub))
+/// ```
+def slice { r } :: own [Slice.Axis] -> ref View<'a> { r } -> View<'a> { r }
+fn slice axes view = slice_raw axes view.data view.offset (ref view.shape) (ref view.strides)
+
+instance Copy<'a> => Index<Tensor<'a>, [i64], 'a> {
+    fn index coords self =
+        let v = view self
+        deref (at (Array.copy coords) (ref v))
+}
+
+instance Copy<'a> => Index<View<'a>, [i64], 'a> {
+    fn index coords self = deref (at (Array.copy coords) self)
+}
+
+instance Index<Tensor<'a>, [Slice.Axis], View<'a>> {
+    fn index axes self =
+        let strides = dense_strides (ref self.shape)
+        slice_raw (Array.copy axes) (ref self.data) 0 (ref self.shape) (ref strides)
+}
+
+instance Index<View<'a>, [Slice.Axis], View<'a>> {
+    fn index axes self = slice (Array.copy axes) self
+}
+
+instance IndexMut<Mut<'a>, [i64], 'a> {
+    fn index_mut coords value self = write (Array.copy coords) value self
+}
+

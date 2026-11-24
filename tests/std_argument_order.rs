@@ -139,6 +139,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("SendOnly", Exempt(BUILTIN_HANDLE)),
     ("Seq", subject(&["Seq"])),
     ("Set", subject(&["Set"])),
+    ("Slice", subject(&["Axis"])),
     ("String", text(&["string", "[string]"], &["text", "parts"])),
     // A concurrent map is a resource that tzroutines share, like Mutex: the map comes first.
     ("SyncMap", Exempt(HANDLE)),

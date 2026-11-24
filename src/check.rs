@@ -14745,23 +14745,91 @@ impl<'a> Checker<'a> {
                 if value.ty.contains_error() {
                     return Ok(TypedExpr::error(expression.span));
                 }
-                let ty = match &value.ty {
+                let built_in_ty = match &value.ty {
                     Type::Array(element)
                     | Type::List(element)
                     | Type::Vec(element)
-                    | Type::FixedArray(element, _) => (**element).clone(),
-                    Type::String => Type::Integer(16, false),
-                    Type::Utf8String => Type::Integer(8, false),
-                    _ => {
+                    | Type::FixedArray(element, _) => Some((**element).clone()),
+                    Type::String => Some(Type::Integer(16, false)),
+                    Type::Utf8String => Some(Type::Integer(8, false)),
+                    _ => None,
+                };
+                if let Some(ty) = built_in_ty {
+                    let index = self.index_operand(index)?;
+                    (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
+                } else {
+                    let self_ty = self.inference.resolve(&value.ty);
+                    let hint =
+                        self.classes
+                            .index_key_hint(&self_ty, false, &self.inference, &self.types);
+                    let key = self.expression(index, hint.as_ref())?;
+                    if key.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let Some(resolved) = self.classes.resolve_index(
+                        &self_ty,
+                        &key.ty,
+                        false,
+                        &mut self.inference,
+                        &self.constraints,
+                        &self.types,
+                        expression.span,
+                    )?
+                    else {
+                        let key_ty = self.inference.resolve(&key.ty);
+                        if self.classes.has_index_instances(
+                            &self_ty,
+                            false,
+                            &self.inference,
+                            &self.types,
+                        ) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::NoInstance,
+                                format!(
+                                    "no instance for Index<{}, {}>; define an instance or use a supported key type",
+                                    self_ty.display_with(self.names),
+                                    key_ty.display_with(self.names)
+                                ),
+                                expression.span,
+                            ));
+                        }
                         return Err(Diagnostic::of(
                             DiagnosticKind::IndexNonIndexable,
-                            "indexing requires an array, list, string, or utf8string",
+                            "indexing requires an array, list, string, utf8string, or a type implementing Index",
                             value.span,
                         ));
-                    }
-                };
-                let index = self.index_operand(index)?;
-                (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
+                    };
+                    self.constraints.extend(resolved.constraints);
+                    let callee_kind = if resolved.type_args.is_empty() {
+                        TypedExprKind::Function(FunctionRef::User(resolved.function))
+                    } else {
+                        TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+                    };
+                    let key_span = key.span;
+                    let key_ty = self.inference.resolve(&key.ty);
+                    let val_span = value.span;
+                    let val_ty = self.inference.resolve(&value.ty);
+                    let call = TypedExprKind::Call(
+                        Box::new(TypedExpr {
+                            kind: callee_kind,
+                            ty: resolved.call_signature,
+                            span: expression.span,
+                        }),
+                        vec![
+                            TypedExpr {
+                                kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                                ty: Type::Reference(Box::new(key_ty), false),
+                                span: key_span,
+                            },
+                            TypedExpr {
+                                kind: TypedExprKind::BorrowOperand(Box::new(value)),
+                                ty: Type::Reference(Box::new(val_ty), false),
+                                span: val_span,
+                            },
+                        ],
+                    );
+                    (call, resolved.output_ty)
+                }
             }
             ExprKind::Borrow(value, mutable, notation) => {
                 let value = match notation {
@@ -14820,6 +14888,100 @@ impl<'a> Checker<'a> {
                 (TypedExprKind::Dereference(Box::new(value)), ty)
             }
             ExprKind::Assign(place, value) => {
+                // NC04 Phase 2: `target[key] = rhs` dispatches to `IndexMut` for non-builtin
+                // containers while leaving built-in array/list/Vec/FixedArray assignment unchanged.
+                if let ExprKind::Index(target, key_expr) = &place.kind {
+                    let raw_target = self.expression(target, None)?;
+                    if raw_target.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let inner_ty = self.inference.resolve(
+                        &raw_target
+                            .ty
+                            .dereferenced()
+                            .unwrap_or_else(|| raw_target.ty.clone()),
+                    );
+                    let built_in_index = matches!(
+                        inner_ty,
+                        Type::Array(_)
+                            | Type::List(_)
+                            | Type::Vec(_)
+                            | Type::FixedArray(..)
+                            | Type::String
+                            | Type::Utf8String
+                    );
+                    if !built_in_index {
+                        let target_arg = if matches!(raw_target.ty, Type::Reference(_, true)) {
+                            raw_target
+                        } else {
+                            Self::require_mutable_reference(&raw_target)?;
+                            let target_span = raw_target.span;
+                            let target_ty = self.inference.resolve(&raw_target.ty);
+                            TypedExpr {
+                                kind: TypedExprKind::Borrow(Box::new(raw_target), true),
+                                ty: Type::Reference(Box::new(target_ty), true),
+                                span: target_span,
+                            }
+                        };
+                        let hint = self.classes.index_key_hint(
+                            &inner_ty,
+                            true,
+                            &self.inference,
+                            &self.types,
+                        );
+                        let key = self.expression(key_expr, hint.as_ref())?;
+                        if key.ty.contains_error() {
+                            return Ok(TypedExpr::error(expression.span));
+                        }
+                        let Some(resolved) = self.classes.resolve_index(
+                            &inner_ty,
+                            &key.ty,
+                            true,
+                            &mut self.inference,
+                            &self.constraints,
+                            &self.types,
+                            expression.span,
+                        )?
+                        else {
+                            let key_ty = self.inference.resolve(&key.ty);
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::NoInstance,
+                                format!(
+                                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
+                                    inner_ty.display_with(self.names),
+                                    key_ty.display_with(self.names)
+                                ),
+                                expression.span,
+                            ));
+                        };
+                        self.constraints.extend(resolved.constraints);
+                        let rhs = self.expression(value, Some(&resolved.output_ty))?;
+                        let callee_kind = if resolved.type_args.is_empty() {
+                            TypedExprKind::Function(FunctionRef::User(resolved.function))
+                        } else {
+                            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+                        };
+                        let key_span = key.span;
+                        let key_ty = self.inference.resolve(&key.ty);
+                        let call = TypedExprKind::Call(
+                            Box::new(TypedExpr {
+                                kind: callee_kind,
+                                ty: resolved.call_signature,
+                                span: expression.span,
+                            }),
+                            vec![
+                                TypedExpr {
+                                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                                    ty: Type::Reference(Box::new(key_ty), false),
+                                    span: key_span,
+                                },
+                                rhs,
+                                target_arg,
+                            ],
+                        );
+                        return self.finish_expression(call, Type::Unit, expected, expression.span);
+                    }
+                }
                 let place = self.expression(place, None)?;
                 if place.ty.contains_error() {
                     return Ok(TypedExpr::error(expression.span));

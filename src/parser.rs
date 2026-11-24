@@ -911,14 +911,38 @@ impl Parser<'_> {
             } else if self.eat(&TokenKind::Instance) {
                 let constraints = self.constraints()?;
                 let class = self.qualified_ident()?;
-                let ty = self.single_type_argument()?;
+                let mut arguments = self.angle_list(Self::type_expr)?;
+                let (ty, extra_args) = if matches!(class.text.as_str(), "Index" | "IndexMut") {
+                    if arguments.len() != 3 {
+                        return Err(self.error_of(
+                            DiagnosticKind::ExpectedSingleTypeArgument,
+                            "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
+                        ));
+                    }
+                    let ty = arguments.remove(0);
+                    (ty, arguments)
+                } else {
+                    if arguments.len() != 1 {
+                        return Err(self.error_of(
+                            DiagnosticKind::ExpectedSingleTypeArgument,
+                            "expected exactly one type argument",
+                        ));
+                    }
+                    (arguments.remove(0), Vec::new())
+                };
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();
                 while !self.eat(&TokenKind::RightBrace) {
                     methods.push(self.instance_method()?);
                     self.eat(&TokenKind::Semicolon);
                 }
-                program.instances.push(InstanceDecl { class, ty, constraints, methods });
+                program.instances.push(InstanceDecl {
+                    class,
+                    ty,
+                    extra_args,
+                    constraints,
+                    methods,
+                });
             } else if self.at(&TokenKind::Let)
                 && self.tokens.get(self.position + if self.tokens.get(self.position + 1).is_some_and(|token| token.kind == TokenKind::Rec) { 2 } else { 1 }).is_some_and(|token|
                     matches!(&token.kind, TokenKind::Ident(name) if signatures.contains_key(name) && !defined_names.contains(name)))

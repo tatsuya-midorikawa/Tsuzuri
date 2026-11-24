@@ -273,3 +273,16 @@ fn mul_fma_parallel left right =
             let shared_right = Arc.new (Array.copy (ref right.data))
             Parallel.for_each_chunk (rows_per_chunk inner cols * cols) (\start chunk -> fma_rows (Arc.get (ref shared_left)) (Arc.get (ref shared_right)) inner cols (start / cols) chunk) (ref mut out)
     Matrix { rows: left.rows, cols: cols, data: out }
+
+instance Copy<'a> => Index<Matrix<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (row, col) -> deref (at row col self)
+}
+
+instance Index<Matrix<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>> {
+    fn index axes self =
+        let mv = MatrixView.of_matrix self
+        match axes with
+        | (r_axis, c_axis) -> MatrixView.slice (ref r_axis) (ref c_axis) mv
+}

@@ -1366,11 +1366,13 @@ impl Wire for InstanceDecl {
         let InstanceDecl {
             class,
             ty,
+            extra_args,
             constraints,
             methods,
         } = self;
         class.put(out)?;
         ty.put(out)?;
+        extra_args.put(out)?;
         constraints.put(out)?;
         if out.full() {
             return methods.put(out);
@@ -1397,6 +1399,7 @@ impl Wire for InstanceDecl {
         Ok(InstanceDecl {
             class: Ident::get(input)?,
             ty: TypeExpr::get(input)?,
+            extra_args: Vec::get(input)?,
             constraints: Vec::get(input)?,
             methods: Vec::get(input)?,
         })

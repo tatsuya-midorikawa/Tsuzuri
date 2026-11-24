@@ -228,6 +228,12 @@ export def tensors :: i64 -> i64 = \_n ->
     let _mij = Tensor.meshgrid_ij (ref zv) (ref ov)
     let _mxy = Tensor.meshgrid (ref zv) (ref ov)
     let _fv = Tensor.format_view (ref view)
+    let all_ax = Slice.all()
+    let _sl = Tensor.slice [Slice.all(), Slice.at 0, Slice.range 0 1, Slice.from 0, Slice.until 1, Slice.step 0 1 1, Slice.every 1, Slice.rev(), Slice.new_axis()] (ref view)
+    let _sr = Slice.resolve 4 (ref all_ax)
+    let mat = Matrix.of_array 2 2 [1, 2, 3, 4]
+    let mv = MatrixView.of_matrix (ref mat)
+    let _msl = MatrixView.slice (ref all_ax) (ref all_ax) mv
     let _disp = $"{upd} {view}"
     let _eq = upd == tensor
     (Tensor.data (ref view)).length

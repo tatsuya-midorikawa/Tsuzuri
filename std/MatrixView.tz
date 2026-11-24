@@ -402,3 +402,50 @@ fn map_in_place transform view =
                 let index = base + j * view.col_stride
                 let value = transform view.data[index]
                 Array.write index value view.data
+
+private def resolve_2d_axis :: own i64 -> own i64 -> ref Slice.Axis -> (i64 * i64 * i64)
+fn resolve_2d_axis len stride axis =
+    match Slice.resolve len axis with
+    | Slice.Resolved.Index pos -> (pos * stride, 1, stride)
+    | Slice.Resolved.Slice (start, count, step) ->
+        assert (step > 0)
+        if count == 0 then (0, 0, stride)
+        else
+            let new_stride = if count == 1 then stride else stride * step
+            (start * stride, count, new_stride)
+    | Slice.Resolved.InsertAxis ->
+        assert false
+        (0, 0, 0)
+
+/// Slices a 2D `MatrixView` with positive-step `Slice.Axis` descriptors without copying.
+/// Traps on negative steps or `Slice.NewAxis` (use `Tensor.slice` for negative strides or rank changes).
+///
+/// ```tsuzuri run=[4,%206]
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// let v = MatrixView.of_matrix m
+/// let sub = MatrixView.slice (Slice.at 1) (Slice.every 2) v
+/// Matrix.to_array (MatrixView.to_matrix sub)
+/// ```
+def slice { r } :: ref Slice.Axis -> ref Slice.Axis -> MatrixView<'a> { r } -> MatrixView<'a> { r }
+fn slice row_axis col_axis view =
+    let (r_off, new_rows, new_row_stride) = resolve_2d_axis view.rows view.row_stride row_axis
+    let (c_off, new_cols, new_col_stride) = resolve_2d_axis view.cols view.col_stride col_axis
+    strided (view.offset + r_off + c_off) new_rows new_cols new_row_stride new_col_stride view.data
+
+instance Copy<'a> => Index<MatrixView<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (row, col) -> deref (at row col (deref self))
+}
+
+instance Index<MatrixView<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>> {
+    fn index axes self =
+        match axes with
+        | (r_axis, c_axis) -> slice (ref r_axis) (ref c_axis) (deref self)
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (row, col) -> write row col value self
+}

@@ -874,6 +874,9 @@ impl Kind {
 pub struct InstanceDecl {
     pub class: Ident,
     pub ty: TypeExpr,
+    /// Extra type arguments for builtin 3-argument indexing classes (`Index<Self, Key, Output>`
+    /// and `IndexMut<Self, Key, Value>`); empty for all single-parameter classes.
+    pub extra_args: Vec<TypeExpr>,
     pub constraints: Vec<ConstraintExpr>,
     pub methods: Vec<Definition>,
 }

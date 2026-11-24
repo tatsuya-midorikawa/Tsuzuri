@@ -874,6 +874,10 @@ pub(super) struct Classes {
     declarations: Vec<Class>,
     names: BTreeMap<String, usize>,
     instances: Vec<InstanceTemplate>,
+    /// NC04: built-in 3-argument indexing instances (`Index<Self, Key, Output>` and
+    /// `IndexMut<Self, Key, Value>`), keyed uniquely by `(Self, Key)`.
+    index_instances: Vec<IndexInstanceTemplate>,
+    index_mut_instances: Vec<IndexInstanceTemplate>,
     /// The instances by class and the outermost constructor of their head (`head_constructor`), in
     /// declaration order (PB08 O3(b)). A head that has no such constructor (a variable, an
     /// application, a reference, a function...) or that holds an erroneous type, which unifies
@@ -883,6 +887,25 @@ pub(super) struct Classes {
     /// The synthesized declarations behind anonymous unions (A24): a union of one of them has the
     /// structural instances of `structural` (A26).
     anonymous: BTreeSet<usize>,
+}
+
+pub(super) struct IndexInstanceTemplate {
+    self_ty: Type,
+    key_ty: Type,
+    output_ty: Type,
+    /// Variable order of the generated instance `FunctionDecl` (`polymorph::variables(&sig)`).
+    variables: Vec<String>,
+    constraints: Vec<Constraint>,
+    function: usize,
+    span: Span,
+}
+
+pub(super) struct ResolvedIndex {
+    pub(super) function: usize,
+    pub(super) type_args: Vec<Type>,
+    pub(super) output_ty: Type,
+    pub(super) constraints: Vec<Constraint>,
+    pub(super) call_signature: Type,
 }
 
 struct InstanceTemplate {
@@ -921,7 +944,7 @@ fn borrowed_arithmetic_class(name: &str) -> bool {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(super) const BUILTIN_CLASSES: [&str; 34] = [
+pub(super) const BUILTIN_CLASSES: [&str; 36] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -956,6 +979,8 @@ pub(super) const BUILTIN_CLASSES: [&str; 34] = [
     "Arbitrary",
     "Sync",
     "AtomicValue",
+    "Index",
+    "IndexMut",
 ];
 
 /// The qualified name of std's `Monoid` class (F15); a program cannot declare a module `Monoid`.
@@ -1048,6 +1073,8 @@ impl Classes {
             declarations: Vec::new(),
             names: BTreeMap::new(),
             instances: Vec::new(),
+            index_instances: Vec::new(),
+            index_mut_instances: Vec::new(),
             lookup: BTreeMap::new(),
             function_reads: BTreeMap::new(),
             anonymous: names.anonymous_unions.iter().copied().collect(),
@@ -2089,6 +2116,16 @@ impl Classes {
                 let collected = (|| {
                     let id = self.resolve(names, module, &instance.class)?;
                     let class = &self.declarations[id];
+                    if class.builtin && matches!(class.name.as_str(), "Index" | "IndexMut") {
+                        return self.register_index_instance(
+                            module,
+                            instance,
+                            class.name == "IndexMut",
+                            names,
+                            types,
+                            functions,
+                        );
+                    }
                     let ty = higher_kinds::resolve_constructor(
                         &instance.ty,
                         class.arity,
@@ -2414,6 +2451,7 @@ impl Classes {
                     InstanceDecl {
                         class: generated(key_path(&class.name)),
                         ty: head.clone(),
+                        extra_args: Vec::new(),
                         constraints: Vec::new(),
                         methods,
                     },
@@ -2421,6 +2459,383 @@ impl Classes {
             }
         }
         instances
+    }
+
+    /// Registers a 3-argument built-in `Index<Self, Key, Output>` or `IndexMut<Self, Key, Value>`
+    /// instance (NC04). `(Self, Key)` uniquely determines `Output`/`Value`; overlapping `(Self, Key)`
+    /// heads and overrides of the 6 built-in indexable types are rejected with `E1016`.
+    fn register_index_instance(
+        &mut self,
+        module: &str,
+        instance: &InstanceDecl,
+        mutable: bool,
+        names: &Names,
+        types: &TypeContext<'_>,
+        functions: &mut Vec<(String, FunctionDecl)>,
+    ) -> Result<(), Diagnostic> {
+        let class_name = if mutable { "IndexMut" } else { "Index" };
+        let method_name = if mutable { "index_mut" } else { "index" };
+        let self_ty = resolve_type(&instance.ty, module, names)?;
+        bounded_type(&self_ty, instance.ty.span)?;
+        if instance.extra_args.len() != 2 {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedSingleTypeArgument,
+                format!("{class_name} instances require three type arguments"),
+                instance.class.span,
+            ));
+        }
+        let key_ty = resolve_type(&instance.extra_args[0], module, names)?;
+        bounded_type(&key_ty, instance.extra_args[0].span)?;
+        let output_ty = resolve_type(&instance.extra_args[1], module, names)?;
+        bounded_type(&output_ty, instance.extra_args[1].span)?;
+
+        if matches!(
+            self_ty,
+            Type::Variable(_)
+                | Type::Array(_)
+                | Type::List(_)
+                | Type::Vec(_)
+                | Type::FixedArray(..)
+                | Type::String
+                | Type::Utf8String
+        ) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinInstanceOverride,
+                "built-in instances and marker classes cannot be overridden",
+                instance.class.span,
+            ));
+        }
+        if let Type::Union(union, _) = &self_ty
+            && names.is_anonymous_union(*union)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AnonymousUnionInstance,
+                format!(
+                    "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                    self_ty.display_with(names)
+                ),
+                instance.class.span,
+            ));
+        }
+
+        let mut head_vars = variables(&self_ty);
+        for v in variables(&key_ty) {
+            if !head_vars.contains(&v) {
+                head_vars.push(v);
+            }
+        }
+        if variables(&output_ty).iter().any(|v| !head_vars.contains(v)) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                format!(
+                    "{class_name} output type may only mention type variables from its container and key types"
+                ),
+                instance.extra_args[1].span,
+            ));
+        }
+        let context = self.resolve_constraints(&instance.constraints, module, names)?;
+        if context.iter().any(|constraint| {
+            variables(&constraint.ty)
+                .iter()
+                .any(|variable| !head_vars.contains(variable))
+        }) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                "instance context mentions a type variable absent from its head",
+                instance.class.span,
+            ));
+        }
+
+        let existing = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        for previous in existing {
+            let mut inference = Inference::default();
+            let instantiate_pair = |inf: &mut Inference, s: &Type, k: &Type, vars: &[String]| {
+                let subs: BTreeMap<String, Type> = vars
+                    .iter()
+                    .map(|name| (name.clone(), inf.fresh()))
+                    .collect();
+                (substitute(s, &subs), substitute(k, &subs))
+            };
+            let (s1, k1) = instantiate_pair(
+                &mut inference,
+                &previous.self_ty,
+                &previous.key_ty,
+                &previous.variables,
+            );
+            let (s2, k2) = instantiate_pair(&mut inference, &self_ty, &key_ty, &head_vars);
+            if inference
+                .unify(&s1, &s2, types, instance.class.span)
+                .is_ok()
+                && inference
+                    .unify(&k1, &k2, types, instance.class.span)
+                    .is_ok()
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OverlappingInstance,
+                    format!(
+                        "overlapping instance for {class_name}<{}, {}>",
+                        self_ty.display(types),
+                        key_ty.display(types)
+                    ),
+                    instance.class.span,
+                ));
+            }
+        }
+
+        let mut method_def = None;
+        for definition in &instance.methods {
+            if definition.name.text != method_name {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceUnknownMethod,
+                    format!("unknown method '{}' for {class_name}", definition.name.text),
+                    definition.name.span,
+                ));
+            }
+            if method_def.replace(definition).is_some() {
+                return Err(duplicate(&definition.name));
+            }
+        }
+        let Some(definition) = method_def else {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceMissingMethod,
+                format!("missing method '{class_name}.{method_name}'"),
+                instance.class.span,
+            ));
+        };
+
+        let function_id = functions.len();
+        let fn_decl = index_instance_function(
+            mutable,
+            &self_ty,
+            &key_ty,
+            &output_ty,
+            definition,
+            format!("$instance.{function_id}.{method_name}"),
+            instance.constraints.clone(),
+            types,
+        )?;
+        let sig_for_vars = if mutable {
+            Signature {
+                parameters: vec![
+                    Type::Reference(Box::new(key_ty.clone()), false),
+                    output_ty.clone(),
+                    Type::Reference(Box::new(self_ty.clone()), true),
+                ],
+                result: Type::Unit,
+            }
+        } else {
+            Signature {
+                parameters: vec![
+                    Type::Reference(Box::new(key_ty.clone()), false),
+                    Type::Reference(Box::new(self_ty.clone()), false),
+                ],
+                result: output_ty.clone(),
+            }
+        };
+        let sig_vars = variables(&sig_for_vars.as_type());
+        functions.push((module.into(), fn_decl));
+
+        let template = IndexInstanceTemplate {
+            self_ty,
+            key_ty,
+            output_ty,
+            variables: sig_vars,
+            constraints: context,
+            function: function_id,
+            span: instance.class.span,
+        };
+        if mutable {
+            self.index_mut_instances.push(template);
+        } else {
+            self.index_instances.push(template);
+        }
+        Ok(())
+    }
+
+    pub(super) fn has_index_instances(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        inference: &Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        if is_unknown(self_ty) {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        list.iter().any(|cand| {
+            let mut inf = inference.clone();
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inf.fresh()))
+                .collect();
+            let head = substitute(&cand.self_ty, &subs);
+            inf.unify(self_ty, &head, types, cand.span).is_ok()
+        })
+    }
+
+    /// Returns a key type hint when every `Index`/`IndexMut` candidate matching `self_ty` yields
+    /// the same key shape (so untyped literals like `m[(1, 2)]` or `grid[0]` unify cleanly without
+    /// breaking multi-key types like `Tensor`).
+    pub(super) fn index_key_hint(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        inference: &Inference,
+        types: &TypeContext<'_>,
+    ) -> Option<Type> {
+        if is_unknown(self_ty) {
+            return None;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let mut matched: Option<Type> = None;
+        for cand in list {
+            let mut inf = inference.clone();
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inf.fresh()))
+                .collect();
+            let head = substitute(&cand.self_ty, &subs);
+            if inf.unify(self_ty, &head, types, cand.span).is_ok() {
+                let key = inf.resolve(&substitute(&cand.key_ty, &subs));
+                if matched.is_some() {
+                    return None;
+                }
+                if !is_unknown(&key) {
+                    matched = Some(key);
+                } else {
+                    return None;
+                }
+            }
+        }
+        matched
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_index(
+        &self,
+        self_ty: &Type,
+        key_ty: &Type,
+        mutable: bool,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        span: Span,
+    ) -> Result<Option<ResolvedIndex>, Diagnostic> {
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let self_resolved = inference.resolve(self_ty);
+        let key_resolved = inference.resolve(key_ty);
+        let mut candidates = Vec::new();
+        for (idx, cand) in list.iter().enumerate() {
+            let mut trial = inference.clone();
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), trial.fresh()))
+                .collect();
+            let cand_self = substitute(&cand.self_ty, &subs);
+            let cand_key = substitute(&cand.key_ty, &subs);
+            if trial
+                .unify(&self_resolved, &cand_self, types, span)
+                .is_err()
+                || trial.unify(&key_resolved, &cand_key, types, span).is_err()
+            {
+                continue;
+            }
+            // Reject candidates that bind a constrained inference variable (e.g. an unsuffixed
+            // integer literal in `t[[1, 2]]`) to an incompatible concrete type (e.g. `Slice.Axis`).
+            let compatible = pending_constraints.iter().all(|c| {
+                let bound = trial.resolve(&c.ty);
+                if is_unknown(&bound) || bound.contains_error() {
+                    return true;
+                }
+                self.validate(
+                    &Constraint {
+                        class: c.class,
+                        ty: bound,
+                        span: c.span,
+                    },
+                    types,
+                )
+                .is_ok()
+            });
+            if compatible {
+                candidates.push(idx);
+            }
+        }
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let cand = &list[candidates[0]];
+        let subs: BTreeMap<String, Type> = cand
+            .variables
+            .iter()
+            .map(|name| (name.clone(), inference.fresh()))
+            .collect();
+        let cand_self = substitute(&cand.self_ty, &subs);
+        let cand_key = substitute(&cand.key_ty, &subs);
+        inference.unify(self_ty, &cand_self, types, span)?;
+        inference.unify(key_ty, &cand_key, types, span)?;
+        let type_args: Vec<Type> = cand
+            .variables
+            .iter()
+            .map(|name| inference.resolve(&subs[name]))
+            .collect();
+        let output_ty = inference.resolve(&substitute(&cand.output_ty, &subs));
+        let constraints: Vec<Constraint> = cand
+            .constraints
+            .iter()
+            .map(|c| Constraint {
+                class: c.class,
+                ty: inference.resolve(&substitute(&c.ty, &subs)),
+                span,
+            })
+            .collect();
+        let final_self = inference.resolve(&cand_self);
+        let final_key = inference.resolve(&cand_key);
+        let call_signature = if mutable {
+            Type::function(
+                vec![
+                    Type::Reference(Box::new(final_key), false),
+                    output_ty.clone(),
+                    Type::Reference(Box::new(final_self), true),
+                ],
+                Type::Unit,
+            )
+        } else {
+            Type::function(
+                vec![
+                    Type::Reference(Box::new(final_key), false),
+                    Type::Reference(Box::new(final_self), false),
+                ],
+                output_ty.clone(),
+            )
+        };
+        Ok(Some(ResolvedIndex {
+            function: cand.function,
+            type_args,
+            output_ty,
+            constraints,
+            call_signature,
+        }))
     }
 
     /// Heads of the `Drop` instances: the records and unions with a user drop (B07).
@@ -3527,6 +3942,178 @@ fn validate_format_instance(
             span,
         ))
     }
+}
+
+fn type_has_single_region(ty: &Type, types: &TypeContext<'_>) -> bool {
+    match ty {
+        Type::Record(id, _) => types.records[*id].region_count == 1,
+        _ => false,
+    }
+}
+
+fn output_needs_region(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(ty, Type::Reference(_, false)) || type_has_single_region(ty, types)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn index_instance_function(
+    mutable: bool,
+    self_ty: &Type,
+    key_ty: &Type,
+    output_ty: &Type,
+    definition: &Definition,
+    name: String,
+    constraints: Vec<ConstraintExpr>,
+    types: &TypeContext<'_>,
+) -> Result<FunctionDecl, Diagnostic> {
+    let expected_arity = if mutable { 3 } else { 2 };
+    let pure = definition.pure;
+    let definition = crate::parser::normalize_definition(definition.clone(), pure, expected_arity)?;
+    if definition.parameters.len() != expected_arity {
+        return Err(Diagnostic::of(
+            DiagnosticKind::InstanceMethodParameterCount,
+            format!(
+                "method '{}' expects {} parameters",
+                definition.name.text, expected_arity
+            ),
+            definition.name.span,
+        ));
+    }
+    let span = definition.name.span;
+    let region_ident = Ident {
+        text: "r".into(),
+        span,
+        provenance: Provenance::Generated,
+    };
+    let with_region = |inner: TypeExpr, r: &Ident| TypeExpr {
+        span: inner.span,
+        kind: TypeExprKind::Regions(Box::new(inner), vec![r.clone()].into_boxed_slice()),
+    };
+    let self_has_region = type_has_single_region(self_ty, types);
+    let needs_region = if mutable {
+        self_has_region
+    } else {
+        output_needs_region(output_ty, types)
+    };
+    let regions = if needs_region {
+        vec![region_ident.clone()]
+    } else {
+        Vec::new()
+    };
+
+    let key_param = {
+        let (pname, pmut) = &definition.parameters[0];
+        let inner = type_expression(key_ty, types, pname.span);
+        Parameter {
+            name: pname.clone(),
+            mutable: *pmut,
+            ty: TypeExpr {
+                span: pname.span,
+                kind: TypeExprKind::Reference(Box::new(inner), false),
+            },
+            json: None,
+        }
+    };
+
+    let (parameters, result) = if mutable {
+        let (vname, vmut) = &definition.parameters[1];
+        let mut val_ty = type_expression(output_ty, types, vname.span);
+        if pure
+            && !matches!(
+                val_ty.kind,
+                TypeExprKind::Reference(..) | TypeExprKind::Mut(_)
+            )
+        {
+            val_ty = TypeExpr {
+                span: val_ty.span,
+                kind: TypeExprKind::Own(Box::new(val_ty)),
+            };
+        }
+        let val_param = Parameter {
+            name: vname.clone(),
+            mutable: *vmut,
+            ty: val_ty,
+            json: None,
+        };
+        let (sname, smut) = &definition.parameters[2];
+        let mut self_inner = type_expression(self_ty, types, sname.span);
+        if self_has_region {
+            self_inner = with_region(self_inner, &region_ident);
+        }
+        let self_param = Parameter {
+            name: sname.clone(),
+            mutable: *smut,
+            ty: TypeExpr {
+                span: sname.span,
+                kind: TypeExprKind::Reference(Box::new(self_inner), true),
+            },
+            json: None,
+        };
+        (
+            vec![key_param, val_param, self_param],
+            TypeExpr {
+                span,
+                kind: TypeExprKind::Named("unit".into()),
+            },
+        )
+    } else {
+        let (sname, smut) = &definition.parameters[1];
+        let self_param_ty = if needs_region {
+            if self_has_region {
+                let inner = with_region(type_expression(self_ty, types, sname.span), &region_ident);
+                TypeExpr {
+                    span: sname.span,
+                    kind: TypeExprKind::Reference(Box::new(inner), false),
+                }
+            } else {
+                let inner = type_expression(self_ty, types, sname.span);
+                with_region(
+                    TypeExpr {
+                        span: sname.span,
+                        kind: TypeExprKind::Reference(Box::new(inner), false),
+                    },
+                    &region_ident,
+                )
+            }
+        } else {
+            let inner = type_expression(self_ty, types, sname.span);
+            TypeExpr {
+                span: sname.span,
+                kind: TypeExprKind::Reference(Box::new(inner), false),
+            }
+        };
+        let self_param = Parameter {
+            name: sname.clone(),
+            mutable: *smut,
+            ty: self_param_ty,
+            json: None,
+        };
+        let mut res_ty = type_expression(output_ty, types, span);
+        if needs_region {
+            res_ty = with_region(res_ty, &region_ident);
+        }
+        (vec![key_param, self_param], res_ty)
+    };
+
+    Ok(FunctionDecl {
+        doc: None,
+        regions,
+        recursion: definition.recursion,
+        name: Ident {
+            text: name,
+            span,
+            provenance: Provenance::Generated,
+        },
+        visibility: Visibility::Public,
+        exported: false,
+        constant: false,
+        pure,
+        parameters,
+        result,
+        constraints,
+        contracts: Default::default(),
+        body: definition.body,
+    })
 }
 
 fn instance_function(

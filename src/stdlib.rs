@@ -66,6 +66,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
+    ("std/Slice.tz", include_str!("../std/Slice.tz")),
     ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
     ("std/MatrixView.tz", include_str!("../std/MatrixView.tz")),
     ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
@@ -131,6 +132,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Mutex",
     "MatrixView",
     "Tensor",
+    "Slice",
     "Channel",
     "DataChannel",
     // TZ03 Phase 2: the direction handles of Channel.
@@ -308,10 +310,16 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &[],
     },
     OptIn {
+        module: "Slice",
+        names: &["Slice"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
         module: "Matrix",
         names: &["Matrix"],
         aliases: &[],
-        uses: &[],
+        uses: &["MatrixView", "Slice"],
     },
     OptIn {
         module: "Net",
@@ -335,13 +343,13 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "MatrixView",
         names: &["MatrixView"],
         aliases: &[],
-        uses: &["Matrix"],
+        uses: &["Matrix", "Slice"],
     },
     OptIn {
         module: "Tensor",
         names: &["Tensor"],
         aliases: &[],
-        uses: &["Matrix", "MatrixView"],
+        uses: &["Matrix", "MatrixView", "Slice"],
     },
     // The old names of DataChannel are `Channel.bounded` and the like (TZ03): they resolve as their
     // replacements while they are reported (E1040), so a program that names Channel loads it too.
@@ -871,7 +879,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 77);
+        assert_eq!(RESERVED_MODULES.len(), 78);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
