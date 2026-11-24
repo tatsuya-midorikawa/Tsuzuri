@@ -24,7 +24,7 @@ flags = ["--target=x86_64-unknown-linux-gnu", "-std=c11", "-O1", "-ffreestanding
 flags += [f"-D{source}={target}" for source, target in renames.items()]
 with tempfile.TemporaryDirectory(prefix="tsuzuri-math-") as temporary:
     objects = []
-    for source in [directory / "math.c"] + [directory / "musl" / f"{name}.c" for name in sources]:
+    for source in [directory / "math.c", directory / "math_ext.c"] + [directory / "musl" / f"{name}.c" for name in sources]:
         output = Path(temporary) / (source.stem + ".bc")
         subprocess.run([clang, *flags, "-emit-llvm", "-c", str(source), "-o", str(output)], check=True)
         objects.append(str(output))

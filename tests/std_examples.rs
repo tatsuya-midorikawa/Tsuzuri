@@ -25,6 +25,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Cbor", 4),
     ("Channel", 0),
     ("Char", 6),
+    ("Complex", 32),
     ("Cond", 0),
     ("Context", 12),
     ("DataChannel", 0),

@@ -1606,6 +1606,29 @@ pub enum Builtin {
     MathPow,
     MathCbrt,
     MathHypot,
+    MathSinh,
+    MathCosh,
+    MathTanh,
+    MathAsinh,
+    MathAcosh,
+    MathAtanh,
+    MathExpm1,
+    MathLog1p,
+    MathLogaddexp,
+    MathLogaddexp2,
+    MathSinc,
+    MathDegrees,
+    MathRadians,
+    MathFmod,
+    MathFloorDiv,
+    MathFloorMod,
+    MathIeeeRemainder,
+    MathModf,
+    MathFrexp,
+    MathLdexp,
+    MathNextafter,
+    MathSign,
+    MathSignbit,
     ToFloat,
     ToInt,
     Assert,
@@ -1816,6 +1839,12 @@ pub enum Builtin {
     IntWrappingNeg,
     IntCheckedPow,
     IntWideningMul,
+    IntGcd,
+    IntLcm,
+    IntCheckedGcd,
+    IntCheckedLcm,
+    IntDivFloor,
+    IntRemFloor,
     /// `Owned.drop :: 'a -> unit` drops its argument now (B07).
     OwnedDrop,
     /// `Owned.function :: ('a -> 'b) -> Owned.Function<'a, 'b>` (B07).
@@ -2251,6 +2280,29 @@ impl Builtin {
         Self::MathPow,
         Self::MathCbrt,
         Self::MathHypot,
+        Self::MathSinh,
+        Self::MathCosh,
+        Self::MathTanh,
+        Self::MathAsinh,
+        Self::MathAcosh,
+        Self::MathAtanh,
+        Self::MathExpm1,
+        Self::MathLog1p,
+        Self::MathLogaddexp,
+        Self::MathLogaddexp2,
+        Self::MathSinc,
+        Self::MathDegrees,
+        Self::MathRadians,
+        Self::MathFmod,
+        Self::MathFloorDiv,
+        Self::MathFloorMod,
+        Self::MathIeeeRemainder,
+        Self::MathModf,
+        Self::MathFrexp,
+        Self::MathLdexp,
+        Self::MathNextafter,
+        Self::MathSign,
+        Self::MathSignbit,
         Self::ToFloat,
         Self::ToInt,
         Self::Assert,
@@ -2406,6 +2458,12 @@ impl Builtin {
         Self::IntWrappingNeg,
         Self::IntCheckedPow,
         Self::IntWideningMul,
+        Self::IntGcd,
+        Self::IntLcm,
+        Self::IntCheckedGcd,
+        Self::IntCheckedLcm,
+        Self::IntDivFloor,
+        Self::IntRemFloor,
         Self::OwnedDrop,
         Self::OwnedFunction,
         Self::OwnedCall,
@@ -2606,6 +2664,29 @@ impl Builtin {
             Self::MathPow => "Math.pow",
             Self::MathCbrt => "Math.cbrt",
             Self::MathHypot => "Math.hypot",
+            Self::MathSinh => "Math.sinh",
+            Self::MathCosh => "Math.cosh",
+            Self::MathTanh => "Math.tanh",
+            Self::MathAsinh => "Math.asinh",
+            Self::MathAcosh => "Math.acosh",
+            Self::MathAtanh => "Math.atanh",
+            Self::MathExpm1 => "Math.expm1",
+            Self::MathLog1p => "Math.log1p",
+            Self::MathLogaddexp => "Math.logaddexp",
+            Self::MathLogaddexp2 => "Math.logaddexp2",
+            Self::MathSinc => "Math.sinc",
+            Self::MathDegrees => "Math.degrees",
+            Self::MathRadians => "Math.radians",
+            Self::MathFmod => "Math.fmod",
+            Self::MathFloorDiv => "Math.floor_div",
+            Self::MathFloorMod => "Math.floor_mod",
+            Self::MathIeeeRemainder => "Math.ieee_remainder",
+            Self::MathModf => "Math.modf",
+            Self::MathFrexp => "Math.frexp",
+            Self::MathLdexp => "Math.ldexp",
+            Self::MathNextafter => "Math.nextafter",
+            Self::MathSign => "Math.sign",
+            Self::MathSignbit => "Math.signbit",
             Self::ToFloat => "to_float",
             Self::ToInt => "to_int",
             Self::Assert => "assert",
@@ -2761,6 +2842,12 @@ impl Builtin {
             Self::IntWrappingNeg => "Int.wrapping_neg",
             Self::IntCheckedPow => "Int.checked_pow",
             Self::IntWideningMul => "Int.widening_mul",
+            Self::IntGcd => "Int.gcd",
+            Self::IntLcm => "Int.lcm",
+            Self::IntCheckedGcd => "Int.checked_gcd",
+            Self::IntCheckedLcm => "Int.checked_lcm",
+            Self::IntDivFloor => "Int.div_floor",
+            Self::IntRemFloor => "Int.rem_floor",
             Self::OwnedDrop => "Owned.drop",
             Self::OwnedFunction => "Owned.function",
             Self::OwnedCall => "Owned.call",
@@ -3493,7 +3580,13 @@ impl Builtin {
             | Self::IntWrappingMul
             | Self::IntWrappingNeg
             | Self::IntCheckedPow
-            | Self::IntWideningMul => {
+            | Self::IntWideningMul
+            | Self::IntGcd
+            | Self::IntLcm
+            | Self::IntCheckedGcd
+            | Self::IntCheckedLcm
+            | Self::IntDivFloor
+            | Self::IntRemFloor => {
                 let parameters = match self {
                     Self::IntAbs
                     | Self::IntUnsignedAbs
@@ -3527,7 +3620,9 @@ impl Builtin {
                     | Self::IntCheckedDiv
                     | Self::IntCheckedRem
                     | Self::IntCheckedNeg
-                    | Self::IntCheckedPow => BuiltinType::Std {
+                    | Self::IntCheckedPow
+                    | Self::IntCheckedGcd
+                    | Self::IntCheckedLcm => BuiltinType::Std {
                         module: "Maybe",
                         name: "Maybe",
                         args: vec![a()],
@@ -3563,6 +3658,8 @@ impl Builtin {
             | Self::MathIsNan
             | Self::MathIsInfinite
             | Self::MathIsFinite
+            | Self::MathSign
+            | Self::MathSignbit
             | Self::MathPi
             | Self::MathE => {
                 let count = match self {
@@ -3573,7 +3670,7 @@ impl Builtin {
                 };
                 let result = if matches!(
                     self,
-                    Self::MathIsNan | Self::MathIsInfinite | Self::MathIsFinite
+                    Self::MathIsNan | Self::MathIsInfinite | Self::MathIsFinite | Self::MathSignbit
                 ) {
                     Concrete(Type::Bool)
                 } else {
@@ -3602,15 +3699,52 @@ impl Builtin {
             | Self::MathLog10
             | Self::MathPow
             | Self::MathCbrt
-            | Self::MathHypot => {
-                let count = if matches!(self, Self::MathAtan2 | Self::MathPow | Self::MathHypot) {
-                    2
-                } else {
-                    1
+            | Self::MathHypot
+            | Self::MathSinh
+            | Self::MathCosh
+            | Self::MathTanh
+            | Self::MathAsinh
+            | Self::MathAcosh
+            | Self::MathAtanh
+            | Self::MathExpm1
+            | Self::MathLog1p
+            | Self::MathLogaddexp
+            | Self::MathLogaddexp2
+            | Self::MathSinc
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::MathFmod
+            | Self::MathFloorDiv
+            | Self::MathFloorMod
+            | Self::MathIeeeRemainder
+            | Self::MathModf
+            | Self::MathFrexp
+            | Self::MathLdexp
+            | Self::MathNextafter => {
+                let parameters = match self {
+                    Self::MathLdexp => vec![a(), Concrete(Type::Integer(32, true))],
+                    Self::MathAtan2
+                    | Self::MathPow
+                    | Self::MathHypot
+                    | Self::MathLogaddexp
+                    | Self::MathLogaddexp2
+                    | Self::MathFmod
+                    | Self::MathFloorDiv
+                    | Self::MathFloorMod
+                    | Self::MathIeeeRemainder
+                    | Self::MathNextafter => vec![a(), a()],
+                    _ => vec![a()],
+                };
+                let result = match self {
+                    Self::MathModf => BuiltinType::Tuple(vec![a(), a()]),
+                    Self::MathFrexp => {
+                        BuiltinType::Tuple(vec![a(), Concrete(Type::Integer(32, true))])
+                    }
+                    _ => a(),
                 };
                 (
-                    vec![a(); count],
-                    a(),
+                    parameters,
+                    result,
                     vec![BuiltinConstraint {
                         class: "Elementary",
                         ty: a(),

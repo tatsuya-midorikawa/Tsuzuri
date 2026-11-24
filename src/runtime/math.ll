@@ -5651,3 +5651,2532 @@ attributes #29 = { nobuiltin "no-builtins" }
 !289 = distinct !{!289, !229, !230}
 !290 = distinct !{!290, !229, !230}
 !291 = distinct !{!291, !229, !230}
+
+; --- NC01 extended math (generated from math_ext.c) ---
+; Function Attrs: nofree norecurse nosync nounwind memory(none)
+define internal double @tz_math_fmod_f64(double noundef %0, double noundef %1) local_unnamed_addr #30 {
+  %3 = bitcast double %0 to i64
+  %4 = bitcast double %1 to i64
+  %5 = lshr i64 %3, 52
+  %6 = trunc i64 %5 to i32
+  %7 = and i32 %6, 2047
+  %8 = lshr i64 %4, 52
+  %9 = trunc i64 %8 to i32
+  %10 = and i32 %9, 2047
+  %11 = and i64 %3, -9223372036854775808
+  %12 = shl i64 %4, 1
+  %13 = icmp eq i64 %12, 0
+  br i1 %13, label %20, label %14
+
+14:                                               ; preds = %2
+  %15 = tail call double @llvm.fabs.f64(double %1)
+  %16 = bitcast double %15 to i64
+  %17 = icmp samesign ugt i64 %16, 9218868437227405312
+  %18 = icmp eq i32 %7, 2047
+  %19 = select i1 %17, i1 true, i1 %18
+  br i1 %19, label %20, label %23
+
+20:                                               ; preds = %14, %2
+  %21 = fmul double %0, %1
+  %22 = fdiv double %21, %21
+  br label %123
+
+23:                                               ; preds = %14
+  %24 = shl i64 %3, 1
+  %25 = icmp ugt i64 %24, %12
+  br i1 %25, label %30, label %26
+
+26:                                               ; preds = %23
+  %27 = icmp eq i64 %24, %12
+  br i1 %27, label %28, label %123
+
+28:                                               ; preds = %26
+  %29 = fmul double %0, 0.000000e+00
+  br label %123
+
+30:                                               ; preds = %23
+  %31 = icmp eq i32 %7, 0
+  br i1 %31, label %32, label %46
+
+32:                                               ; preds = %30
+  %33 = shl i64 %3, 12
+  %34 = icmp sgt i64 %33, -1
+  br i1 %34, label %35, label %41
+
+35:                                               ; preds = %32, %35
+  %36 = phi i64 [ %39, %35 ], [ %33, %32 ]
+  %37 = phi i32 [ %38, %35 ], [ 0, %32 ]
+  %38 = add nsw i32 %37, -1
+  %39 = shl nuw i64 %36, 1
+  %40 = icmp sgt i64 %39, -1
+  br i1 %40, label %35, label %41, !llvm.loop !300
+
+41:                                               ; preds = %35, %32
+  %42 = phi i32 [ 0, %32 ], [ %38, %35 ]
+  %43 = sub i32 1, %42
+  %44 = zext i32 %43 to i64
+  %45 = shl i64 %3, %44
+  br label %49
+
+46:                                               ; preds = %30
+  %47 = and i64 %3, 4503599627370495
+  %48 = or i64 %47, 4503599627370496
+  br label %49
+
+49:                                               ; preds = %46, %41
+  %50 = phi i64 [ %48, %46 ], [ %45, %41 ]
+  %51 = phi i32 [ %7, %46 ], [ %42, %41 ]
+  %52 = icmp eq i32 %10, 0
+  br i1 %52, label %53, label %67
+
+53:                                               ; preds = %49
+  %54 = shl i64 %4, 12
+  %55 = icmp sgt i64 %54, -1
+  br i1 %55, label %56, label %62
+
+56:                                               ; preds = %53, %56
+  %57 = phi i64 [ %60, %56 ], [ %54, %53 ]
+  %58 = phi i32 [ %59, %56 ], [ 0, %53 ]
+  %59 = add nsw i32 %58, -1
+  %60 = shl nuw i64 %57, 1
+  %61 = icmp sgt i64 %60, -1
+  br i1 %61, label %56, label %62, !llvm.loop !303
+
+62:                                               ; preds = %56, %53
+  %63 = phi i32 [ 0, %53 ], [ %59, %56 ]
+  %64 = sub i32 1, %63
+  %65 = zext i32 %64 to i64
+  %66 = shl i64 %4, %65
+  br label %70
+
+67:                                               ; preds = %49
+  %68 = and i64 %4, 4503599627370495
+  %69 = or i64 %68, 4503599627370496
+  br label %70
+
+70:                                               ; preds = %67, %62
+  %71 = phi i64 [ %69, %67 ], [ %66, %62 ]
+  %72 = phi i32 [ %10, %67 ], [ %63, %62 ]
+  %73 = icmp sgt i32 %51, %72
+  br i1 %73, label %74, label %88
+
+74:                                               ; preds = %70, %83
+  %75 = phi i32 [ %86, %83 ], [ %51, %70 ]
+  %76 = phi i64 [ %85, %83 ], [ %50, %70 ]
+  %77 = sub i64 %76, %71
+  %78 = icmp sgt i64 %77, -1
+  br i1 %78, label %79, label %83
+
+79:                                               ; preds = %74
+  %80 = icmp eq i64 %77, 0
+  br i1 %80, label %81, label %83
+
+81:                                               ; preds = %79
+  %82 = fmul double %0, 0.000000e+00
+  br label %123
+
+83:                                               ; preds = %79, %74
+  %84 = phi i64 [ %76, %74 ], [ %77, %79 ]
+  %85 = shl i64 %84, 1
+  %86 = add nsw i32 %75, -1
+  %87 = icmp sgt i32 %86, %72
+  br i1 %87, label %74, label %88, !llvm.loop !304
+
+88:                                               ; preds = %83, %70
+  %89 = phi i64 [ %50, %70 ], [ %85, %83 ]
+  %90 = phi i32 [ %51, %70 ], [ %72, %83 ]
+  %91 = sub i64 %89, %71
+  %92 = icmp sgt i64 %91, -1
+  br i1 %92, label %93, label %97
+
+93:                                               ; preds = %88
+  %94 = icmp eq i64 %91, 0
+  br i1 %94, label %95, label %97
+
+95:                                               ; preds = %93
+  %96 = fmul double %0, 0.000000e+00
+  br label %123
+
+97:                                               ; preds = %93, %88
+  %98 = phi i64 [ %89, %88 ], [ %91, %93 ]
+  %99 = icmp ult i64 %98, 4503599627370496
+  br i1 %99, label %100, label %106
+
+100:                                              ; preds = %97, %100
+  %101 = phi i32 [ %104, %100 ], [ %90, %97 ]
+  %102 = phi i64 [ %103, %100 ], [ %98, %97 ]
+  %103 = shl nuw nsw i64 %102, 1
+  %104 = add nsw i32 %101, -1
+  %105 = icmp samesign ult i64 %102, 2251799813685248
+  br i1 %105, label %100, label %106, !llvm.loop !305
+
+106:                                              ; preds = %100, %97
+  %107 = phi i64 [ %98, %97 ], [ %103, %100 ]
+  %108 = phi i32 [ %90, %97 ], [ %104, %100 ]
+  %109 = icmp sgt i32 %108, 0
+  br i1 %109, label %110, label %115
+
+110:                                              ; preds = %106
+  %111 = add i64 %107, -4503599627370496
+  %112 = zext i32 %108 to i64
+  %113 = shl i64 %112, 52
+  %114 = or i64 %113, %111
+  br label %119
+
+115:                                              ; preds = %106
+  %116 = sub i32 1, %108
+  %117 = zext i32 %116 to i64
+  %118 = lshr i64 %107, %117
+  br label %119
+
+119:                                              ; preds = %115, %110
+  %120 = phi i64 [ %114, %110 ], [ %118, %115 ]
+  %121 = or i64 %120, %11
+  %122 = bitcast i64 %121 to double
+  br label %123
+
+123:                                              ; preds = %26, %119, %95, %81, %28, %20
+  %124 = phi double [ %22, %20 ], [ %29, %28 ], [ %122, %119 ], [ %82, %81 ], [ %96, %95 ], [ %0, %26 ]
+  ret double %124
+}
+
+; Function Attrs: nofree norecurse nosync nounwind memory(none)
+define internal float @tz_math_fmod_f32(float noundef %0, float noundef %1) local_unnamed_addr #30 {
+  %3 = bitcast float %0 to i32
+  %4 = bitcast float %1 to i32
+  %5 = lshr i32 %3, 23
+  %6 = and i32 %5, 255
+  %7 = lshr i32 %4, 23
+  %8 = and i32 %7, 255
+  %9 = and i32 %3, -2147483648
+  %10 = shl i32 %4, 1
+  %11 = icmp eq i32 %10, 0
+  br i1 %11, label %18, label %12
+
+12:                                               ; preds = %2
+  %13 = tail call float @llvm.fabs.f32(float %1)
+  %14 = bitcast float %13 to i32
+  %15 = icmp samesign ugt i32 %14, 2139095040
+  %16 = icmp eq i32 %6, 255
+  %17 = or i1 %15, %16
+  br i1 %17, label %18, label %21
+
+18:                                               ; preds = %12, %2
+  %19 = fmul float %0, %1
+  %20 = fdiv float %19, %19
+  br label %117
+
+21:                                               ; preds = %12
+  %22 = shl i32 %3, 1
+  %23 = icmp ugt i32 %22, %10
+  br i1 %23, label %28, label %24
+
+24:                                               ; preds = %21
+  %25 = icmp eq i32 %22, %10
+  br i1 %25, label %26, label %117
+
+26:                                               ; preds = %24
+  %27 = fmul float %0, 0.000000e+00
+  br label %117
+
+28:                                               ; preds = %21
+  %29 = icmp eq i32 %6, 0
+  br i1 %29, label %30, label %43
+
+30:                                               ; preds = %28
+  %31 = shl i32 %3, 9
+  %32 = icmp sgt i32 %31, -1
+  br i1 %32, label %33, label %39
+
+33:                                               ; preds = %30, %33
+  %34 = phi i32 [ %37, %33 ], [ %31, %30 ]
+  %35 = phi i32 [ %36, %33 ], [ 0, %30 ]
+  %36 = add nsw i32 %35, -1
+  %37 = shl nuw i32 %34, 1
+  %38 = icmp sgt i32 %37, -1
+  br i1 %38, label %33, label %39, !llvm.loop !306
+
+39:                                               ; preds = %33, %30
+  %40 = phi i32 [ 0, %30 ], [ %36, %33 ]
+  %41 = sub i32 1, %40
+  %42 = shl i32 %3, %41
+  br label %46
+
+43:                                               ; preds = %28
+  %44 = and i32 %3, 8388607
+  %45 = or i32 %44, 8388608
+  br label %46
+
+46:                                               ; preds = %43, %39
+  %47 = phi i32 [ %45, %43 ], [ %42, %39 ]
+  %48 = phi i32 [ %6, %43 ], [ %40, %39 ]
+  %49 = icmp eq i32 %8, 0
+  br i1 %49, label %50, label %63
+
+50:                                               ; preds = %46
+  %51 = shl i32 %4, 9
+  %52 = icmp sgt i32 %51, -1
+  br i1 %52, label %53, label %59
+
+53:                                               ; preds = %50, %53
+  %54 = phi i32 [ %57, %53 ], [ %51, %50 ]
+  %55 = phi i32 [ %56, %53 ], [ 0, %50 ]
+  %56 = add nsw i32 %55, -1
+  %57 = shl nuw i32 %54, 1
+  %58 = icmp sgt i32 %57, -1
+  br i1 %58, label %53, label %59, !llvm.loop !307
+
+59:                                               ; preds = %53, %50
+  %60 = phi i32 [ 0, %50 ], [ %56, %53 ]
+  %61 = sub i32 1, %60
+  %62 = shl i32 %4, %61
+  br label %66
+
+63:                                               ; preds = %46
+  %64 = and i32 %4, 8388607
+  %65 = or i32 %64, 8388608
+  br label %66
+
+66:                                               ; preds = %63, %59
+  %67 = phi i32 [ %65, %63 ], [ %62, %59 ]
+  %68 = phi i32 [ %8, %63 ], [ %60, %59 ]
+  %69 = icmp sgt i32 %48, %68
+  br i1 %69, label %70, label %84
+
+70:                                               ; preds = %66, %79
+  %71 = phi i32 [ %82, %79 ], [ %48, %66 ]
+  %72 = phi i32 [ %81, %79 ], [ %47, %66 ]
+  %73 = sub i32 %72, %67
+  %74 = icmp sgt i32 %73, -1
+  br i1 %74, label %75, label %79
+
+75:                                               ; preds = %70
+  %76 = icmp eq i32 %73, 0
+  br i1 %76, label %77, label %79
+
+77:                                               ; preds = %75
+  %78 = fmul float %0, 0.000000e+00
+  br label %117
+
+79:                                               ; preds = %75, %70
+  %80 = phi i32 [ %72, %70 ], [ %73, %75 ]
+  %81 = shl i32 %80, 1
+  %82 = add nsw i32 %71, -1
+  %83 = icmp sgt i32 %82, %68
+  br i1 %83, label %70, label %84, !llvm.loop !308
+
+84:                                               ; preds = %79, %66
+  %85 = phi i32 [ %47, %66 ], [ %81, %79 ]
+  %86 = phi i32 [ %48, %66 ], [ %68, %79 ]
+  %87 = sub i32 %85, %67
+  %88 = icmp sgt i32 %87, -1
+  br i1 %88, label %89, label %93
+
+89:                                               ; preds = %84
+  %90 = icmp eq i32 %87, 0
+  br i1 %90, label %91, label %93
+
+91:                                               ; preds = %89
+  %92 = fmul float %0, 0.000000e+00
+  br label %117
+
+93:                                               ; preds = %89, %84
+  %94 = phi i32 [ %85, %84 ], [ %87, %89 ]
+  %95 = icmp ult i32 %94, 8388608
+  br i1 %95, label %96, label %102
+
+96:                                               ; preds = %93, %96
+  %97 = phi i32 [ %100, %96 ], [ %86, %93 ]
+  %98 = phi i32 [ %99, %96 ], [ %94, %93 ]
+  %99 = shl nuw nsw i32 %98, 1
+  %100 = add nsw i32 %97, -1
+  %101 = icmp samesign ult i32 %98, 4194304
+  br i1 %101, label %96, label %102, !llvm.loop !309
+
+102:                                              ; preds = %96, %93
+  %103 = phi i32 [ %94, %93 ], [ %99, %96 ]
+  %104 = phi i32 [ %86, %93 ], [ %100, %96 ]
+  %105 = icmp sgt i32 %104, 0
+  br i1 %105, label %106, label %110
+
+106:                                              ; preds = %102
+  %107 = add i32 %103, -8388608
+  %108 = shl i32 %104, 23
+  %109 = or i32 %108, %107
+  br label %113
+
+110:                                              ; preds = %102
+  %111 = sub i32 1, %104
+  %112 = lshr i32 %103, %111
+  br label %113
+
+113:                                              ; preds = %110, %106
+  %114 = phi i32 [ %109, %106 ], [ %112, %110 ]
+  %115 = or i32 %114, %9
+  %116 = bitcast i32 %115 to float
+  br label %117
+
+117:                                              ; preds = %24, %113, %91, %77, %26, %18
+  %118 = phi float [ %20, %18 ], [ %27, %26 ], [ %116, %113 ], [ %78, %77 ], [ %92, %91 ], [ %0, %24 ]
+  ret float %118
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_ieee_remainder_f64(double noundef %0, double noundef %1) local_unnamed_addr #31 {
+  %3 = bitcast double %0 to i64
+  %4 = bitcast double %1 to i64
+  %5 = lshr i64 %3, 52
+  %6 = trunc i64 %5 to i32
+  %7 = and i32 %6, 2047
+  %8 = lshr i64 %4, 52
+  %9 = trunc i64 %8 to i32
+  %10 = and i32 %9, 2047
+  %11 = fcmp oeq double %1, 0.000000e+00
+  br i1 %11, label %18, label %12
+
+12:                                               ; preds = %2
+  %13 = tail call double @llvm.fabs.f64(double %1)
+  %14 = bitcast double %13 to i64
+  %15 = icmp samesign ugt i64 %14, 9218868437227405312
+  %16 = icmp eq i32 %7, 2047
+  %17 = select i1 %15, i1 true, i1 %16
+  br i1 %17, label %18, label %21
+
+18:                                               ; preds = %12, %2
+  %19 = fmul double %0, %1
+  %20 = fdiv double %19, %19
+  br label %139
+
+21:                                               ; preds = %12
+  %22 = fcmp oeq double %0, 0.000000e+00
+  br i1 %22, label %139, label %23
+
+23:                                               ; preds = %21
+  %24 = icmp eq i32 %7, 0
+  br i1 %24, label %25, label %39
+
+25:                                               ; preds = %23
+  %26 = shl i64 %3, 12
+  %27 = icmp sgt i64 %26, -1
+  br i1 %27, label %28, label %34
+
+28:                                               ; preds = %25, %28
+  %29 = phi i64 [ %32, %28 ], [ %26, %25 ]
+  %30 = phi i32 [ %31, %28 ], [ 0, %25 ]
+  %31 = add nsw i32 %30, -1
+  %32 = shl nuw i64 %29, 1
+  %33 = icmp sgt i64 %32, -1
+  br i1 %33, label %28, label %34, !llvm.loop !310
+
+34:                                               ; preds = %28, %25
+  %35 = phi i32 [ 0, %25 ], [ %31, %28 ]
+  %36 = sub i32 1, %35
+  %37 = zext i32 %36 to i64
+  %38 = shl i64 %3, %37
+  br label %42
+
+39:                                               ; preds = %23
+  %40 = and i64 %3, 4503599627370495
+  %41 = or i64 %40, 4503599627370496
+  br label %42
+
+42:                                               ; preds = %39, %34
+  %43 = phi i64 [ %41, %39 ], [ %38, %34 ]
+  %44 = phi i32 [ %7, %39 ], [ %35, %34 ]
+  %45 = icmp eq i32 %10, 0
+  br i1 %45, label %46, label %60
+
+46:                                               ; preds = %42
+  %47 = shl i64 %4, 12
+  %48 = icmp sgt i64 %47, -1
+  br i1 %48, label %49, label %55
+
+49:                                               ; preds = %46, %49
+  %50 = phi i64 [ %53, %49 ], [ %47, %46 ]
+  %51 = phi i32 [ %52, %49 ], [ 0, %46 ]
+  %52 = add nsw i32 %51, -1
+  %53 = shl nuw i64 %50, 1
+  %54 = icmp sgt i64 %53, -1
+  br i1 %54, label %49, label %55, !llvm.loop !311
+
+55:                                               ; preds = %49, %46
+  %56 = phi i32 [ 0, %46 ], [ %52, %49 ]
+  %57 = sub i32 1, %56
+  %58 = zext i32 %57 to i64
+  %59 = shl i64 %4, %58
+  br label %63
+
+60:                                               ; preds = %42
+  %61 = and i64 %4, 4503599627370495
+  %62 = or i64 %61, 4503599627370496
+  br label %63
+
+63:                                               ; preds = %60, %55
+  %64 = phi i64 [ %62, %60 ], [ %59, %55 ]
+  %65 = phi i32 [ %10, %60 ], [ %56, %55 ]
+  %66 = icmp slt i32 %44, %65
+  br i1 %66, label %69, label %67
+
+67:                                               ; preds = %63
+  %68 = icmp sgt i32 %44, %65
+  br i1 %68, label %85, label %94
+
+69:                                               ; preds = %63
+  %70 = add nsw i32 %44, 1
+  %71 = icmp eq i32 %70, %65
+  br i1 %71, label %72, label %84
+
+72:                                               ; preds = %69
+  %73 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %74 = tail call double @tz_math_fabs_f64(double noundef %1) #35
+  %75 = fmul double %74, 5.000000e-01
+  %76 = fcmp ule double %73, %75
+  br i1 %76, label %82, label %77
+
+77:                                               ; preds = %72
+  %78 = fsub double %73, %74
+  %79 = fneg double %78
+  %80 = icmp slt i64 %3, 0
+  %81 = select i1 %80, double %79, double %78
+  br label %82
+
+82:                                               ; preds = %72, %77
+  %83 = phi double [ %81, %77 ], [ undef, %72 ]
+  br i1 %76, label %84, label %139
+
+84:                                               ; preds = %82, %69
+  br label %139
+
+85:                                               ; preds = %67, %85
+  %86 = phi i32 [ %92, %85 ], [ %44, %67 ]
+  %87 = phi i64 [ %91, %85 ], [ %43, %67 ]
+  %88 = sub i64 %87, %64
+  %89 = icmp slt i64 %88, 0
+  %90 = select i1 %89, i64 %87, i64 %88
+  %91 = shl i64 %90, 1
+  %92 = add nsw i32 %86, -1
+  %93 = icmp sgt i32 %92, %65
+  br i1 %93, label %85, label %94, !llvm.loop !312
+
+94:                                               ; preds = %85, %67
+  %95 = phi i64 [ %43, %67 ], [ %91, %85 ]
+  %96 = phi i32 [ %44, %67 ], [ %65, %85 ]
+  %97 = sub i64 %95, %64
+  %98 = icmp slt i64 %97, 0
+  %99 = select i1 %98, i64 %95, i64 %97
+  %100 = icmp eq i64 %99, 0
+  br i1 %100, label %101, label %104
+
+101:                                              ; preds = %94
+  %102 = and i64 %3, -9223372036854775808
+  %103 = bitcast i64 %102 to double
+  br label %139
+
+104:                                              ; preds = %94
+  %105 = shl i64 %99, 1
+  %106 = icmp ule i64 %105, %64
+  %107 = icmp ne i64 %105, %64
+  %108 = or i1 %98, %107
+  %109 = and i1 %106, %108
+  %110 = sub i64 %64, %99
+  %111 = select i1 %109, i64 %99, i64 %110
+  %112 = icmp ult i64 %111, 4503599627370496
+  br i1 %112, label %113, label %119
+
+113:                                              ; preds = %104, %113
+  %114 = phi i32 [ %117, %113 ], [ %96, %104 ]
+  %115 = phi i64 [ %116, %113 ], [ %111, %104 ]
+  %116 = shl nuw nsw i64 %115, 1
+  %117 = add nsw i32 %114, -1
+  %118 = icmp samesign ult i64 %115, 2251799813685248
+  br i1 %118, label %113, label %119, !llvm.loop !313
+
+119:                                              ; preds = %113, %104
+  %120 = phi i64 [ %111, %104 ], [ %116, %113 ]
+  %121 = phi i32 [ %96, %104 ], [ %117, %113 ]
+  %122 = icmp sgt i32 %121, 0
+  br i1 %122, label %123, label %128
+
+123:                                              ; preds = %119
+  %124 = add i64 %120, -4503599627370496
+  %125 = zext i32 %121 to i64
+  %126 = shl i64 %125, 52
+  %127 = or i64 %126, %124
+  br label %132
+
+128:                                              ; preds = %119
+  %129 = sub i32 1, %121
+  %130 = zext i32 %129 to i64
+  %131 = lshr i64 %120, %130
+  br label %132
+
+132:                                              ; preds = %128, %123
+  %133 = phi i64 [ %127, %123 ], [ %131, %128 ]
+  %134 = select i1 %109, i64 0, i64 -9223372036854775808
+  %135 = and i64 %3, -9223372036854775808
+  %136 = xor i64 %134, %135
+  %137 = or i64 %133, %136
+  %138 = bitcast i64 %137 to double
+  br label %139
+
+139:                                              ; preds = %21, %82, %132, %101, %84, %18
+  %140 = phi double [ %20, %18 ], [ %138, %132 ], [ %0, %84 ], [ %83, %82 ], [ %103, %101 ], [ %0, %21 ]
+  ret double %140
+}
+
+
+; Function Attrs: nofree norecurse nosync nounwind memory(none)
+define internal float @tz_math_ieee_remainder_f32(float noundef %0, float noundef %1) local_unnamed_addr #30 {
+  %3 = bitcast float %0 to i32
+  %4 = bitcast float %1 to i32
+  %5 = lshr i32 %3, 23
+  %6 = and i32 %5, 255
+  %7 = lshr i32 %4, 23
+  %8 = and i32 %7, 255
+  %9 = tail call float @llvm.fabs.f32(float %1)
+  %10 = bitcast float %9 to i32
+  %11 = icmp eq i32 %10, 0
+  br i1 %11, label %16, label %12
+
+12:                                               ; preds = %2
+  %13 = icmp samesign ugt i32 %10, 2139095040
+  %14 = icmp eq i32 %6, 255
+  %15 = or i1 %13, %14
+  br i1 %15, label %16, label %19
+
+16:                                               ; preds = %12, %2
+  %17 = fmul float %0, %1
+  %18 = fdiv float %17, %17
+  br label %137
+
+19:                                               ; preds = %12
+  %20 = fcmp oeq float %0, 0.000000e+00
+  br i1 %20, label %137, label %21
+
+21:                                               ; preds = %19
+  %22 = icmp eq i32 %6, 0
+  br i1 %22, label %23, label %36
+
+23:                                               ; preds = %21
+  %24 = shl i32 %3, 9
+  %25 = icmp sgt i32 %24, -1
+  br i1 %25, label %26, label %32
+
+26:                                               ; preds = %23, %26
+  %27 = phi i32 [ %30, %26 ], [ %24, %23 ]
+  %28 = phi i32 [ %29, %26 ], [ 0, %23 ]
+  %29 = add nsw i32 %28, -1
+  %30 = shl nuw i32 %27, 1
+  %31 = icmp sgt i32 %30, -1
+  br i1 %31, label %26, label %32, !llvm.loop !314
+
+32:                                               ; preds = %26, %23
+  %33 = phi i32 [ 0, %23 ], [ %29, %26 ]
+  %34 = sub i32 1, %33
+  %35 = shl i32 %3, %34
+  br label %39
+
+36:                                               ; preds = %21
+  %37 = and i32 %3, 8388607
+  %38 = or i32 %37, 8388608
+  br label %39
+
+39:                                               ; preds = %36, %32
+  %40 = phi i32 [ %38, %36 ], [ %35, %32 ]
+  %41 = phi i32 [ %6, %36 ], [ %33, %32 ]
+  %42 = icmp eq i32 %8, 0
+  br i1 %42, label %43, label %56
+
+43:                                               ; preds = %39
+  %44 = shl i32 %4, 9
+  %45 = icmp sgt i32 %44, -1
+  br i1 %45, label %46, label %52
+
+46:                                               ; preds = %43, %46
+  %47 = phi i32 [ %50, %46 ], [ %44, %43 ]
+  %48 = phi i32 [ %49, %46 ], [ 0, %43 ]
+  %49 = add nsw i32 %48, -1
+  %50 = shl nuw i32 %47, 1
+  %51 = icmp sgt i32 %50, -1
+  br i1 %51, label %46, label %52, !llvm.loop !315
+
+52:                                               ; preds = %46, %43
+  %53 = phi i32 [ 0, %43 ], [ %49, %46 ]
+  %54 = sub i32 1, %53
+  %55 = shl i32 %4, %54
+  br label %59
+
+56:                                               ; preds = %39
+  %57 = and i32 %4, 8388607
+  %58 = or i32 %57, 8388608
+  br label %59
+
+59:                                               ; preds = %56, %52
+  %60 = phi i32 [ %58, %56 ], [ %55, %52 ]
+  %61 = phi i32 [ %8, %56 ], [ %53, %52 ]
+  %62 = icmp slt i32 %41, %61
+  br i1 %62, label %65, label %63
+
+63:                                               ; preds = %59
+  %64 = icmp sgt i32 %41, %61
+  br i1 %64, label %85, label %94
+
+65:                                               ; preds = %59
+  %66 = add nsw i32 %41, 1
+  %67 = icmp eq i32 %66, %61
+  br i1 %67, label %68, label %84
+
+68:                                               ; preds = %65
+  %69 = fcmp olt float %0, 0.000000e+00
+  %70 = fneg float %0
+  %71 = select i1 %69, float %70, float %0
+  %72 = fcmp olt float %1, 0.000000e+00
+  %73 = fneg float %1
+  %74 = select i1 %72, float %73, float %1
+  %75 = fmul float %74, 5.000000e-01
+  %76 = fcmp ule float %71, %75
+  br i1 %76, label %82, label %77
+
+77:                                               ; preds = %68
+  %78 = fsub float %71, %74
+  %79 = fneg float %78
+  %80 = icmp slt i32 %3, 0
+  %81 = select i1 %80, float %79, float %78
+  br label %82
+
+82:                                               ; preds = %68, %77
+  %83 = phi float [ %81, %77 ], [ undef, %68 ]
+  br i1 %76, label %84, label %137
+
+84:                                               ; preds = %82, %65
+  br label %137
+
+85:                                               ; preds = %63, %85
+  %86 = phi i32 [ %92, %85 ], [ %41, %63 ]
+  %87 = phi i32 [ %91, %85 ], [ %40, %63 ]
+  %88 = sub i32 %87, %60
+  %89 = icmp slt i32 %88, 0
+  %90 = select i1 %89, i32 %87, i32 %88
+  %91 = shl i32 %90, 1
+  %92 = add nsw i32 %86, -1
+  %93 = icmp sgt i32 %92, %61
+  br i1 %93, label %85, label %94, !llvm.loop !316
+
+94:                                               ; preds = %85, %63
+  %95 = phi i32 [ %40, %63 ], [ %91, %85 ]
+  %96 = phi i32 [ %41, %63 ], [ %61, %85 ]
+  %97 = sub i32 %95, %60
+  %98 = icmp slt i32 %97, 0
+  %99 = select i1 %98, i32 %95, i32 %97
+  %100 = icmp eq i32 %99, 0
+  br i1 %100, label %101, label %104
+
+101:                                              ; preds = %94
+  %102 = and i32 %3, -2147483648
+  %103 = bitcast i32 %102 to float
+  br label %137
+
+104:                                              ; preds = %94
+  %105 = shl i32 %99, 1
+  %106 = icmp ule i32 %105, %60
+  %107 = icmp ne i32 %105, %60
+  %108 = or i1 %98, %107
+  %109 = and i1 %106, %108
+  %110 = sub i32 %60, %99
+  %111 = select i1 %109, i32 %99, i32 %110
+  %112 = icmp ult i32 %111, 8388608
+  br i1 %112, label %113, label %119
+
+113:                                              ; preds = %104, %113
+  %114 = phi i32 [ %117, %113 ], [ %96, %104 ]
+  %115 = phi i32 [ %116, %113 ], [ %111, %104 ]
+  %116 = shl nuw nsw i32 %115, 1
+  %117 = add nsw i32 %114, -1
+  %118 = icmp samesign ult i32 %115, 4194304
+  br i1 %118, label %113, label %119, !llvm.loop !317
+
+119:                                              ; preds = %113, %104
+  %120 = phi i32 [ %111, %104 ], [ %116, %113 ]
+  %121 = phi i32 [ %96, %104 ], [ %117, %113 ]
+  %122 = icmp sgt i32 %121, 0
+  br i1 %122, label %123, label %127
+
+123:                                              ; preds = %119
+  %124 = add i32 %120, -8388608
+  %125 = shl i32 %121, 23
+  %126 = or i32 %125, %124
+  br label %130
+
+127:                                              ; preds = %119
+  %128 = sub i32 1, %121
+  %129 = lshr i32 %120, %128
+  br label %130
+
+130:                                              ; preds = %127, %123
+  %131 = phi i32 [ %126, %123 ], [ %129, %127 ]
+  %132 = select i1 %109, i32 0, i32 -2147483648
+  %133 = and i32 %3, -2147483648
+  %134 = xor i32 %132, %133
+  %135 = or i32 %131, %134
+  %136 = bitcast i32 %135 to float
+  br label %137
+
+137:                                              ; preds = %19, %82, %130, %101, %84, %16
+  %138 = phi float [ %18, %16 ], [ %136, %130 ], [ %0, %84 ], [ %83, %82 ], [ %103, %101 ], [ %0, %19 ]
+  ret float %138
+}
+
+; Function Attrs: nofree norecurse nosync nounwind memory(none)
+define internal double @tz_math_floor_mod_f64(double noundef %0, double noundef %1) local_unnamed_addr #30 {
+  %3 = tail call double @llvm.fabs.f64(double %0)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %14
+
+6:                                                ; preds = %2
+  %7 = tail call double @llvm.fabs.f64(double %1)
+  %8 = bitcast double %7 to i64
+  %9 = icmp samesign ult i64 %8, 9218868437227405313
+  %10 = fcmp une double %1, 0.000000e+00
+  %11 = and i1 %10, %9
+  %12 = fcmp une double %3, 0x7FF0000000000000
+  %13 = and i1 %12, %11
+  br i1 %13, label %17, label %14
+
+14:                                               ; preds = %6, %2
+  %15 = fmul double %0, %1
+  %16 = fdiv double %15, %15
+  br label %28
+
+17:                                               ; preds = %6
+  %18 = tail call double @tz_math_fmod_f64(double noundef %0, double noundef %1) #36
+  %19 = fcmp une double %18, 0.000000e+00
+  br i1 %19, label %20, label %26
+
+20:                                               ; preds = %17
+  %21 = fcmp olt double %18, 0.000000e+00
+  %22 = fcmp uge double %1, 0.000000e+00
+  %23 = xor i1 %22, %21
+  br i1 %23, label %28, label %24
+
+24:                                               ; preds = %20
+  %25 = fadd double %1, %18
+  br label %28
+
+26:                                               ; preds = %17
+  %27 = tail call noundef double @llvm.copysign.f64(double 0.000000e+00, double %1)
+  br label %28
+
+28:                                               ; preds = %26, %24, %20, %14
+  %29 = phi double [ %16, %14 ], [ %25, %24 ], [ %18, %20 ], [ %27, %26 ]
+  ret double %29
+}
+
+; Function Attrs: nofree norecurse nosync nounwind memory(none)
+define internal float @tz_math_floor_mod_f32(float noundef %0, float noundef %1) local_unnamed_addr #30 {
+  %3 = bitcast float %1 to i32
+  %4 = tail call float @llvm.fabs.f32(float %1)
+  %5 = bitcast float %4 to i32
+  %6 = tail call float @llvm.fabs.f32(float %0)
+  %7 = fcmp ueq float %6, 0x7FF0000000000000
+  %8 = add nsw i32 %5, -2139095041
+  %9 = icmp ult i32 %8, -2139095040
+  %10 = select i1 %7, i1 true, i1 %9
+  br i1 %10, label %11, label %14
+
+11:                                               ; preds = %2
+  %12 = fmul float %0, %1
+  %13 = fdiv float %12, %12
+  br label %26
+
+14:                                               ; preds = %2
+  %15 = tail call float @tz_math_fmod_f32(float noundef %0, float noundef %1) #36
+  %16 = fcmp une float %15, 0.000000e+00
+  br i1 %16, label %17, label %23
+
+17:                                               ; preds = %14
+  %18 = fcmp olt float %15, 0.000000e+00
+  %19 = fcmp uge float %1, 0.000000e+00
+  %20 = xor i1 %19, %18
+  br i1 %20, label %26, label %21
+
+21:                                               ; preds = %17
+  %22 = fadd float %1, %15
+  br label %26
+
+23:                                               ; preds = %14
+  %24 = and i32 %3, -2147483648
+  %25 = bitcast i32 %24 to float
+  br label %26
+
+26:                                               ; preds = %23, %21, %17, %11
+  %27 = phi float [ %13, %11 ], [ %22, %21 ], [ %15, %17 ], [ %25, %23 ]
+  ret float %27
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_floor_div_f64(double noundef %0, double noundef %1) local_unnamed_addr #31 {
+  %3 = tail call double @llvm.fabs.f64(double %0)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %10
+
+6:                                                ; preds = %2
+  %7 = tail call double @llvm.fabs.f64(double %1)
+  %8 = bitcast double %7 to i64
+  %9 = icmp samesign ult i64 %8, 9218868437227405313
+  br i1 %9, label %12, label %10
+
+10:                                               ; preds = %6, %2
+  %11 = fadd double %0, %1
+  br label %48
+
+12:                                               ; preds = %6
+  %13 = fcmp une double %1, 0.000000e+00
+  %14 = fcmp une double %3, 0x7FF0000000000000
+  %15 = and i1 %13, %14
+  br i1 %15, label %18, label %16
+
+16:                                               ; preds = %12
+  %17 = fdiv double %0, %1
+  br label %48
+
+18:                                               ; preds = %12
+  %19 = fcmp une double %7, 0x7FF0000000000000
+  br i1 %19, label %29, label %20
+
+20:                                               ; preds = %18
+  %21 = fcmp oeq double %0, 0.000000e+00
+  br i1 %21, label %22, label %24
+
+22:                                               ; preds = %20
+  %23 = fdiv double %0, %1
+  br label %48
+
+24:                                               ; preds = %20
+  %25 = fcmp olt double %0, 0.000000e+00
+  %26 = fcmp uge double %1, 0.000000e+00
+  %27 = xor i1 %25, %26
+  %28 = select i1 %27, double 0.000000e+00, double -1.000000e+00
+  br label %48
+
+29:                                               ; preds = %18
+  %30 = tail call double @tz_math_fmod_f64(double noundef %0, double noundef %1) #36
+  %31 = fsub double %0, %30
+  %32 = fdiv double %31, %1
+  %33 = fcmp une double %30, 0.000000e+00
+  %34 = fcmp uge double %1, 0.000000e+00
+  br i1 %33, label %35, label %40
+
+35:                                               ; preds = %29
+  %36 = fcmp olt double %30, 0.000000e+00
+  %37 = xor i1 %34, %36
+  br i1 %37, label %45, label %38
+
+38:                                               ; preds = %35
+  %39 = fadd double %32, -1.000000e+00
+  br label %45
+
+40:                                               ; preds = %29
+  %41 = fcmp olt double %0, 0.000000e+00
+  %42 = xor i1 %41, %34
+  %43 = select i1 %42, double 1.000000e+00, double -1.000000e+00
+  %44 = tail call noundef double @llvm.copysign.f64(double %32, double %43)
+  br label %45
+
+45:                                               ; preds = %35, %38, %40
+  %46 = phi double [ %39, %38 ], [ %32, %35 ], [ %44, %40 ]
+  %47 = tail call double @tz_math_floor_f64(double noundef %46) #35
+  br label %48
+
+48:                                               ; preds = %45, %24, %22, %16, %10
+  %49 = phi double [ %11, %10 ], [ %17, %16 ], [ %23, %22 ], [ %28, %24 ], [ %47, %45 ]
+  ret double %49
+}
+
+
+; Function Attrs: nounwind
+define internal float @tz_math_floor_div_f32(float noundef %0, float noundef %1) local_unnamed_addr #31 {
+  %3 = tail call float @llvm.fabs.f32(float %0)
+  %4 = bitcast float %3 to i32
+  %5 = tail call float @llvm.fabs.f32(float %1)
+  %6 = bitcast float %5 to i32
+  %7 = icmp samesign ugt i32 %4, 2139095040
+  %8 = icmp samesign ugt i32 %6, 2139095040
+  %9 = select i1 %7, i1 true, i1 %8
+  br i1 %9, label %10, label %12
+
+10:                                               ; preds = %2
+  %11 = fadd float %0, %1
+  br label %80
+
+12:                                               ; preds = %2
+  %13 = icmp eq i32 %6, 0
+  %14 = icmp eq i32 %4, 2139095040
+  %15 = or i1 %14, %13
+  br i1 %15, label %16, label %18
+
+16:                                               ; preds = %12
+  %17 = fdiv float %0, %1
+  br label %80
+
+18:                                               ; preds = %12
+  %19 = icmp eq i32 %6, 2139095040
+  br i1 %19, label %20, label %29
+
+20:                                               ; preds = %18
+  %21 = fcmp oeq float %0, 0.000000e+00
+  br i1 %21, label %22, label %24
+
+22:                                               ; preds = %20
+  %23 = fdiv float %0, %1
+  br label %80
+
+24:                                               ; preds = %20
+  %25 = fcmp olt float %0, 0.000000e+00
+  %26 = fcmp uge float %1, 0.000000e+00
+  %27 = xor i1 %25, %26
+  %28 = select i1 %27, float 0.000000e+00, float -1.000000e+00
+  br label %80
+
+29:                                               ; preds = %18
+  %30 = fpext float %0 to double
+  %31 = fpext float %1 to double
+  %32 = tail call double @llvm.fabs.f64(double %30)
+  %33 = bitcast double %32 to i64
+  %34 = icmp samesign ult i64 %33, 9218868437227405313
+  br i1 %34, label %35, label %39
+
+35:                                               ; preds = %29
+  %36 = tail call double @llvm.fabs.f64(double %31)
+  %37 = bitcast double %36 to i64
+  %38 = icmp samesign ult i64 %37, 9218868437227405313
+  br i1 %38, label %41, label %39
+
+39:                                               ; preds = %35, %29
+  %40 = fadd double %30, %31
+  br label %77
+
+41:                                               ; preds = %35
+  %42 = fcmp une float %1, 0.000000e+00
+  %43 = fcmp une double %32, 0x7FF0000000000000
+  %44 = and i1 %42, %43
+  br i1 %44, label %47, label %45
+
+45:                                               ; preds = %41
+  %46 = fdiv double %30, %31
+  br label %77
+
+47:                                               ; preds = %41
+  %48 = fcmp une double %36, 0x7FF0000000000000
+  br i1 %48, label %58, label %49
+
+49:                                               ; preds = %47
+  %50 = fcmp oeq float %0, 0.000000e+00
+  br i1 %50, label %51, label %53
+
+51:                                               ; preds = %49
+  %52 = fdiv double %30, %31
+  br label %77
+
+53:                                               ; preds = %49
+  %54 = fcmp olt float %0, 0.000000e+00
+  %55 = fcmp uge float %1, 0.000000e+00
+  %56 = xor i1 %54, %55
+  %57 = select i1 %56, double 0.000000e+00, double -1.000000e+00
+  br label %77
+
+58:                                               ; preds = %47
+  %59 = tail call double @tz_math_fmod_f64(double noundef %30, double noundef %31) #36
+  %60 = fsub double %30, %59
+  %61 = fdiv double %60, %31
+  %62 = fcmp une double %59, 0.000000e+00
+  %63 = fcmp uge float %1, 0.000000e+00
+  br i1 %62, label %64, label %69
+
+64:                                               ; preds = %58
+  %65 = fcmp olt double %59, 0.000000e+00
+  %66 = xor i1 %63, %65
+  br i1 %66, label %74, label %67
+
+67:                                               ; preds = %64
+  %68 = fadd double %61, -1.000000e+00
+  br label %74
+
+69:                                               ; preds = %58
+  %70 = fcmp olt float %0, 0.000000e+00
+  %71 = xor i1 %70, %63
+  %72 = select i1 %71, double 1.000000e+00, double -1.000000e+00
+  %73 = tail call noundef double @llvm.copysign.f64(double %61, double %72)
+  br label %74
+
+74:                                               ; preds = %69, %67, %64
+  %75 = phi double [ %68, %67 ], [ %61, %64 ], [ %73, %69 ]
+  %76 = tail call double @tz_math_floor_f64(double noundef %75) #35
+  br label %77
+
+77:                                               ; preds = %39, %45, %51, %53, %74
+  %78 = phi double [ %40, %39 ], [ %46, %45 ], [ %52, %51 ], [ %57, %53 ], [ %76, %74 ]
+  %79 = fptrunc double %78 to float
+  br label %80
+
+80:                                               ; preds = %77, %24, %22, %16, %10
+  %81 = phi float [ %11, %10 ], [ %17, %16 ], [ %23, %22 ], [ %28, %24 ], [ %79, %77 ]
+  ret float %81
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_expm1_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = bitcast double %0 to i64
+  %3 = lshr i64 %2, 32
+  %4 = trunc i64 %3 to i32
+  %5 = and i32 %4, 2147483647
+  %6 = icmp samesign ugt i32 %5, 1078159481
+  br i1 %6, label %7, label %19
+
+7:                                                ; preds = %1
+  %8 = icmp samesign ugt i32 %5, 2146435071
+  br i1 %8, label %9, label %15
+
+9:                                                ; preds = %7
+  %10 = and i64 %2, 4503599627370495
+  %11 = icmp eq i64 %10, 0
+  br i1 %11, label %12, label %121
+
+12:                                               ; preds = %9
+  %13 = icmp sgt i64 %2, -1
+  %14 = select i1 %13, double %0, double -1.000000e+00
+  br label %121
+
+15:                                               ; preds = %7
+  %16 = icmp sgt i64 %2, -1
+  br i1 %16, label %17, label %121
+
+17:                                               ; preds = %15
+  %18 = fcmp ogt double %0, 0x40862E42FEFA39EF
+  br i1 %18, label %121, label %19
+
+19:                                               ; preds = %17, %1
+  %20 = icmp samesign ugt i32 %5, 1071001154
+  br i1 %20, label %21, label %45
+
+21:                                               ; preds = %19
+  %22 = icmp samesign ult i32 %5, 1072734898
+  br i1 %22, label %23, label %29
+
+23:                                               ; preds = %21
+  %24 = icmp sgt i64 %2, -1
+  br i1 %24, label %25, label %27
+
+25:                                               ; preds = %23
+  %26 = fadd double %0, 0xBFE62E42FEE00000
+  br label %38
+
+27:                                               ; preds = %23
+  %28 = fadd double %0, 0x3FE62E42FEE00000
+  br label %38
+
+29:                                               ; preds = %21
+  %30 = fmul double %0, 0x3FF71547652B82FE
+  %31 = tail call double @llvm.copysign.f64(double 5.000000e-01, double %0)
+  %32 = fadd double %30, %31
+  %33 = fptosi double %32 to i32
+  %34 = sitofp i32 %33 to double
+  %35 = fmul double %34, 0x3FE62E42FEE00000
+  %36 = fsub double %0, %35
+  %37 = fmul double %34, 0x3DEA39EF35793C76
+  br label %38
+
+38:                                               ; preds = %25, %27, %29
+  %39 = phi double [ 0xBDEA39EF35793C76, %27 ], [ 0x3DEA39EF35793C76, %25 ], [ %37, %29 ]
+  %40 = phi double [ %28, %27 ], [ %26, %25 ], [ %36, %29 ]
+  %41 = phi i32 [ -1, %27 ], [ 1, %25 ], [ %33, %29 ]
+  %42 = fsub double %40, %39
+  %43 = fsub double %40, %42
+  %44 = fsub double %43, %39
+  br label %47
+
+45:                                               ; preds = %19
+  %46 = icmp samesign ult i32 %5, 1016070144
+  br i1 %46, label %121, label %47
+
+47:                                               ; preds = %45, %38
+  %48 = phi double [ %44, %38 ], [ 0.000000e+00, %45 ]
+  %49 = phi i32 [ %41, %38 ], [ 0, %45 ]
+  %50 = phi double [ %42, %38 ], [ %0, %45 ]
+  %51 = fmul double %50, 5.000000e-01
+  %52 = fmul double %50, %51
+  %53 = fmul double %52, 0x3E8AFDB76E09C32D
+  %54 = fsub double 0x3ED0CFCA86E65239, %53
+  %55 = fmul double %52, %54
+  %56 = fadd double %55, 0xBF14CE199EAADBB7
+  %57 = fmul double %52, %56
+  %58 = fadd double %57, 0x3F5A01A019FE5585
+  %59 = fmul double %52, %58
+  %60 = fadd double %59, 0xBFA11111111110F4
+  %61 = fmul double %52, %60
+  %62 = fadd double %61, 1.000000e+00
+  %63 = fmul double %51, %62
+  %64 = fsub double 3.000000e+00, %63
+  %65 = fsub double %62, %64
+  %66 = fmul double %50, %64
+  %67 = fsub double 6.000000e+00, %66
+  %68 = fdiv double %65, %67
+  %69 = fmul double %52, %68
+  %70 = icmp eq i32 %49, 0
+  br i1 %70, label %71, label %75
+
+71:                                               ; preds = %47
+  %72 = fmul double %50, %69
+  %73 = fsub double %72, %52
+  %74 = fsub double %50, %73
+  br label %121
+
+75:                                               ; preds = %47
+  %76 = fsub double %69, %48
+  %77 = fmul double %50, %76
+  %78 = fsub double %77, %48
+  %79 = fsub double %78, %52
+  switch i32 %49, label %94 [
+    i32 -1, label %80
+    i32 1, label %84
+  ]
+
+80:                                               ; preds = %75
+  %81 = fsub double %50, %79
+  %82 = fmul double %81, 5.000000e-01
+  %83 = fadd double %82, -5.000000e-01
+  br label %121
+
+84:                                               ; preds = %75
+  %85 = fcmp olt double %50, -2.500000e-01
+  br i1 %85, label %86, label %90
+
+86:                                               ; preds = %84
+  %87 = fadd double %50, 5.000000e-01
+  %88 = fsub double %79, %87
+  %89 = fmul double %88, -2.000000e+00
+  br label %121
+
+90:                                               ; preds = %84
+  %91 = fsub double %50, %79
+  %92 = fmul double %91, 2.000000e+00
+  %93 = fadd double %92, 1.000000e+00
+  br label %121
+
+94:                                               ; preds = %75
+  %95 = add i32 %49, -57
+  %96 = icmp ult i32 %95, -58
+  br i1 %96, label %97, label %102
+
+97:                                               ; preds = %94
+  %98 = fsub double %50, %79
+  %99 = fadd double %98, 1.000000e+00
+  %100 = tail call double @tz_math_scalbn_f64(double noundef %99, i32 noundef %49) #35
+  %101 = fadd double %100, -1.000000e+00
+  br label %121
+
+102:                                              ; preds = %94
+  %103 = icmp slt i32 %49, 20
+  br i1 %103, label %104, label %112
+
+104:                                              ; preds = %102
+  %105 = zext i32 %49 to i64
+  %106 = lshr i64 9007199254740992, %105
+  %107 = sub nuw nsw i64 4607182418800017408, %106
+  %108 = bitcast i64 %107 to double
+  %109 = fsub double %50, %79
+  %110 = fadd double %109, %108
+  %111 = tail call double @tz_math_scalbn_f64(double noundef %110, i32 noundef %49) #35
+  br label %121
+
+112:                                              ; preds = %102
+  %113 = sub nuw nsw i32 1023, %49
+  %114 = zext i32 %113 to i64
+  %115 = shl nuw nsw i64 %114, 52
+  %116 = bitcast i64 %115 to double
+  %117 = fadd double %79, %116
+  %118 = fsub double %50, %117
+  %119 = fadd double %118, 1.000000e+00
+  %120 = tail call double @tz_math_scalbn_f64(double noundef %119, i32 noundef %49) #35
+  br label %121
+
+121:                                              ; preds = %17, %45, %112, %104, %97, %90, %86, %80, %71, %15, %9, %12
+  %122 = phi double [ -1.000000e+00, %15 ], [ %14, %12 ], [ %0, %9 ], [ %120, %112 ], [ %0, %45 ], [ %74, %71 ], [ %83, %80 ], [ %89, %86 ], [ %93, %90 ], [ %101, %97 ], [ %111, %104 ], [ 0x7FF0000000000000, %17 ]
+  ret double %122
+}
+
+
+; Function Attrs: nounwind
+define internal float @tz_math_expm1_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @tz_math_expm1_f64(double noundef %2) #36
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_log1p_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = bitcast double %0 to i64
+  %3 = lshr i64 %2, 32
+  %4 = trunc i64 %3 to i32
+  %5 = and i32 %4, 2147483647
+  %6 = tail call double @llvm.fabs.f64(double %0)
+  %7 = bitcast double %6 to i64
+  %8 = icmp samesign ugt i64 %7, 9218868437227405312
+  %9 = fcmp oeq double %0, 0.000000e+00
+  %10 = or i1 %9, %8
+  br i1 %10, label %103, label %11
+
+11:                                               ; preds = %1
+  %12 = fcmp olt double %0, -1.000000e+00
+  br i1 %12, label %13, label %16
+
+13:                                               ; preds = %11
+  %14 = fsub double %0, %0
+  %15 = fdiv double %14, %14
+  br label %103
+
+16:                                               ; preds = %11
+  %17 = fcmp oeq double %0, -1.000000e+00
+  br i1 %17, label %103, label %18
+
+18:                                               ; preds = %16
+  %19 = fcmp oeq double %6, 0x7FF0000000000000
+  %20 = icmp samesign ult i32 %5, 1016070144
+  %21 = select i1 %19, i1 true, i1 %20
+  br i1 %21, label %103, label %22
+
+22:                                               ; preds = %18
+  %23 = icmp sgt i64 %2, 4601133429810003967
+  br i1 %23, label %28, label %24
+
+24:                                               ; preds = %22
+  %25 = fcmp oge double %0, 0xBFD2BEC333018867
+  %26 = fcmp ole double %0, 0x3FDA827999FCEF32
+  %27 = and i1 %25, %26
+  br i1 %27, label %63, label %28
+
+28:                                               ; preds = %22, %24
+  %29 = icmp samesign ult i32 %5, 1129316352
+  br i1 %29, label %32, label %30
+
+30:                                               ; preds = %28
+  %31 = tail call double @tz_math_log_f64(double noundef %0) #35
+  br label %58
+
+32:                                               ; preds = %28
+  %33 = fadd double %0, 1.000000e+00
+  %34 = bitcast double %33 to i64
+  %35 = lshr i64 %34, 32
+  %36 = trunc i64 %35 to i32
+  %37 = ashr i32 %36, 20
+  %38 = icmp sgt i32 %37, 1023
+  %39 = fsub double %0, %33
+  %40 = fadd double %39, 1.000000e+00
+  %41 = fadd double %33, -1.000000e+00
+  %42 = fsub double %0, %41
+  %43 = select i1 %38, double %40, double %42
+  %44 = fdiv double %43, %33
+  %45 = and i32 %36, 1048575
+  %46 = or i32 %45, 1072693248
+  %47 = icmp samesign ugt i32 %46, 1073127582
+  %48 = or i32 %45, 1071644672
+  %49 = select i1 %47, i32 %48, i32 %46
+  %50 = select i1 %47, i32 -1022, i32 -1023
+  %51 = add nsw i32 %50, %37
+  %52 = zext i32 %49 to i64
+  %53 = shl nuw nsw i64 %52, 32
+  %54 = and i64 %34, 4294967295
+  %55 = or i64 %53, %54
+  %56 = bitcast i64 %55 to double
+  %57 = fadd double %56, -1.000000e+00
+  br label %58
+
+58:                                               ; preds = %32, %30
+  %59 = phi double [ %0, %30 ], [ %57, %32 ]
+  %60 = phi double [ 0.000000e+00, %30 ], [ %44, %32 ]
+  %61 = phi i32 [ 1, %30 ], [ %51, %32 ]
+  %62 = phi double [ %31, %30 ], [ undef, %32 ]
+  br i1 %29, label %63, label %103
+
+63:                                               ; preds = %58, %24
+  %64 = phi double [ %59, %58 ], [ %0, %24 ]
+  %65 = phi double [ %60, %58 ], [ 0.000000e+00, %24 ]
+  %66 = phi i32 [ %61, %58 ], [ 0, %24 ]
+  %67 = fmul double %64, 5.000000e-01
+  %68 = fmul double %64, %67
+  %69 = fadd double %64, 2.000000e+00
+  %70 = fdiv double %64, %69
+  %71 = fmul double %70, %70
+  %72 = fmul double %71, %71
+  %73 = fmul double %72, 0x3FC39A09D078C69F
+  %74 = fadd double %73, 0x3FCC71C51D8E78AF
+  %75 = fmul double %72, %74
+  %76 = fadd double %75, 0x3FD999999997FA04
+  %77 = fmul double %72, %76
+  %78 = fmul double %72, 0x3FC2F112DF3E5244
+  %79 = fadd double %78, 0x3FC7466496CB03DE
+  %80 = fmul double %72, %79
+  %81 = fadd double %80, 0x3FD2492494229359
+  %82 = fmul double %72, %81
+  %83 = fadd double %82, 0x3FE5555555555593
+  %84 = fmul double %71, %83
+  %85 = fadd double %77, %84
+  %86 = icmp eq i32 %66, 0
+  br i1 %86, label %87, label %92
+
+87:                                               ; preds = %63
+  %88 = fadd double %68, %85
+  %89 = fmul double %70, %88
+  %90 = fsub double %68, %89
+  %91 = fsub double %64, %90
+  br label %103
+
+92:                                               ; preds = %63
+  %93 = sitofp i32 %66 to double
+  %94 = fmul double %93, 0x3FE62E42FEE00000
+  %95 = fadd double %68, %85
+  %96 = fmul double %70, %95
+  %97 = fmul double %93, 0x3DEA39EF35793C76
+  %98 = fadd double %65, %97
+  %99 = fadd double %98, %96
+  %100 = fsub double %68, %99
+  %101 = fsub double %100, %64
+  %102 = fsub double %94, %101
+  br label %103
+
+103:                                              ; preds = %16, %58, %92, %87, %18, %1, %13
+  %104 = phi double [ %91, %87 ], [ %0, %1 ], [ %15, %13 ], [ %62, %58 ], [ %102, %92 ], [ %0, %18 ], [ 0xFFF0000000000000, %16 ]
+  ret double %104
+}
+
+
+; Function Attrs: nounwind
+define internal float @tz_math_log1p_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @tz_math_log1p_f64(double noundef %2) #36
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: nounwind
+define internal noundef double @tz_math_sinh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ult i64 %3, 9218868437227405313
+  br i1 %4, label %5, label %29
+
+5:                                                ; preds = %1
+  %6 = tail call i1 @llvm.is.fpclass.f64(double %0, i32 612)
+  br i1 %6, label %29, label %7
+
+7:                                                ; preds = %5
+  %8 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %9 = fcmp olt double %8, 2.200000e+01
+  br i1 %9, label %10, label %16
+
+10:                                               ; preds = %7
+  %11 = tail call double @tz_math_expm1_f64(double noundef %8) #36
+  %12 = fadd double %11, 1.000000e+00
+  %13 = fdiv double %11, %12
+  %14 = fadd double %11, %13
+  %15 = fmul double %14, 5.000000e-01
+  br label %26
+
+16:                                               ; preds = %7
+  %17 = fcmp olt double %8, 0x40862E42FEFA39EF
+  br i1 %17, label %18, label %21
+
+18:                                               ; preds = %16
+  %19 = tail call double @tz_math_exp_f64(double noundef %8) #35
+  %20 = fmul double %19, 5.000000e-01
+  br label %26
+
+21:                                               ; preds = %16
+  %22 = fmul double %8, 5.000000e-01
+  %23 = tail call double @tz_math_exp_f64(double noundef %22) #35
+  %24 = fmul double %23, 5.000000e-01
+  %25 = fmul double %23, %24
+  br label %26
+
+26:                                               ; preds = %18, %21, %10
+  %27 = phi double [ %15, %10 ], [ %20, %18 ], [ %25, %21 ]
+  %28 = tail call noundef double @llvm.copysign.f64(double %27, double %0)
+  br label %29
+
+29:                                               ; preds = %1, %5, %26
+  %30 = phi double [ %28, %26 ], [ %0, %5 ], [ %0, %1 ]
+  ret double %30
+}
+
+
+; Function Attrs: nounwind
+define internal noundef float @tz_math_sinh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @llvm.fabs.f64(double %2)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %31
+
+6:                                                ; preds = %1
+  %7 = tail call i1 @llvm.is.fpclass.f64(double %2, i32 612)
+  br i1 %7, label %31, label %8
+
+8:                                                ; preds = %6
+  %9 = tail call double @tz_math_fabs_f64(double noundef %2) #35
+  %10 = fcmp olt double %9, 2.200000e+01
+  br i1 %10, label %11, label %17
+
+11:                                               ; preds = %8
+  %12 = tail call double @tz_math_expm1_f64(double noundef %9) #36
+  %13 = fadd double %12, 1.000000e+00
+  %14 = fdiv double %12, %13
+  %15 = fadd double %12, %14
+  %16 = fmul double %15, 5.000000e-01
+  br label %27
+
+17:                                               ; preds = %8
+  %18 = fcmp olt double %9, 0x40862E42FEFA39EF
+  br i1 %18, label %19, label %22
+
+19:                                               ; preds = %17
+  %20 = tail call double @tz_math_exp_f64(double noundef %9) #35
+  %21 = fmul double %20, 5.000000e-01
+  br label %27
+
+22:                                               ; preds = %17
+  %23 = fmul double %9, 5.000000e-01
+  %24 = tail call double @tz_math_exp_f64(double noundef %23) #35
+  %25 = fmul double %24, 5.000000e-01
+  %26 = fmul double %24, %25
+  br label %27
+
+27:                                               ; preds = %22, %19, %11
+  %28 = phi double [ %16, %11 ], [ %21, %19 ], [ %26, %22 ]
+  %29 = tail call noundef double @llvm.copysign.f64(double %28, double %2)
+  %30 = fptrunc double %29 to float
+  br label %31
+
+31:                                               ; preds = %1, %6, %27
+  %32 = phi float [ %30, %27 ], [ %0, %6 ], [ %0, %1 ]
+  ret float %32
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_cosh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ult i64 %3, 9218868437227405313
+  br i1 %4, label %5, label %29
+
+5:                                                ; preds = %1
+  %6 = fcmp une double %2, 0x7FF0000000000000
+  br i1 %6, label %7, label %29
+
+7:                                                ; preds = %5
+  %8 = fcmp oeq double %0, 0.000000e+00
+  br i1 %8, label %29, label %9
+
+9:                                                ; preds = %7
+  %10 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %11 = fcmp olt double %10, 2.200000e+01
+  br i1 %11, label %12, label %19
+
+12:                                               ; preds = %9
+  %13 = tail call double @tz_math_expm1_f64(double noundef %10) #36
+  %14 = fadd double %13, 1.000000e+00
+  %15 = fmul double %13, %13
+  %16 = fmul double %14, 2.000000e+00
+  %17 = fdiv double %15, %16
+  %18 = fadd double %17, 1.000000e+00
+  br label %29
+
+19:                                               ; preds = %9
+  %20 = fcmp olt double %10, 0x40862E42FEFA39EF
+  br i1 %20, label %21, label %24
+
+21:                                               ; preds = %19
+  %22 = tail call double @tz_math_exp_f64(double noundef %10) #35
+  %23 = fmul double %22, 5.000000e-01
+  br label %29
+
+24:                                               ; preds = %19
+  %25 = fmul double %10, 5.000000e-01
+  %26 = tail call double @tz_math_exp_f64(double noundef %25) #35
+  %27 = fmul double %26, 5.000000e-01
+  %28 = fmul double %26, %27
+  br label %29
+
+29:                                               ; preds = %5, %12, %21, %24, %7, %1
+  %30 = phi double [ 1.000000e+00, %7 ], [ %28, %24 ], [ %0, %1 ], [ %18, %12 ], [ %23, %21 ], [ 0x7FF0000000000000, %5 ]
+  ret double %30
+}
+
+; Function Attrs: nounwind
+define internal float @tz_math_cosh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @llvm.fabs.f64(double %2)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %30
+
+6:                                                ; preds = %1
+  %7 = fcmp une double %3, 0x7FF0000000000000
+  br i1 %7, label %8, label %30
+
+8:                                                ; preds = %6
+  %9 = fcmp oeq float %0, 0.000000e+00
+  br i1 %9, label %30, label %10
+
+10:                                               ; preds = %8
+  %11 = tail call double @tz_math_fabs_f64(double noundef %2) #35
+  %12 = fcmp olt double %11, 2.200000e+01
+  br i1 %12, label %13, label %20
+
+13:                                               ; preds = %10
+  %14 = tail call double @tz_math_expm1_f64(double noundef %11) #36
+  %15 = fadd double %14, 1.000000e+00
+  %16 = fmul double %14, %14
+  %17 = fmul double %15, 2.000000e+00
+  %18 = fdiv double %16, %17
+  %19 = fadd double %18, 1.000000e+00
+  br label %30
+
+20:                                               ; preds = %10
+  %21 = fcmp olt double %11, 0x40862E42FEFA39EF
+  br i1 %21, label %22, label %25
+
+22:                                               ; preds = %20
+  %23 = tail call double @tz_math_exp_f64(double noundef %11) #35
+  %24 = fmul double %23, 5.000000e-01
+  br label %30
+
+25:                                               ; preds = %20
+  %26 = fmul double %11, 5.000000e-01
+  %27 = tail call double @tz_math_exp_f64(double noundef %26) #35
+  %28 = fmul double %27, 5.000000e-01
+  %29 = fmul double %27, %28
+  br label %30
+
+30:                                               ; preds = %1, %6, %8, %13, %22, %25
+  %31 = phi double [ 1.000000e+00, %8 ], [ %29, %25 ], [ %2, %1 ], [ %19, %13 ], [ %24, %22 ], [ 0x7FF0000000000000, %6 ]
+  %32 = fptrunc double %31 to float
+  ret float %32
+}
+
+; Function Attrs: nounwind
+define internal noundef double @tz_math_tanh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ugt i64 %3, 9218868437227405312
+  %5 = fcmp oeq double %0, 0.000000e+00
+  %6 = or i1 %5, %4
+  br i1 %6, label %26, label %7
+
+7:                                                ; preds = %1
+  %8 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %9 = fcmp ult double %8, 2.200000e+01
+  br i1 %9, label %10, label %23
+
+10:                                               ; preds = %7
+  %11 = fcmp ult double %8, 5.000000e-01
+  br i1 %11, label %17, label %12
+
+12:                                               ; preds = %10
+  %13 = fmul double %8, 2.000000e+00
+  %14 = tail call double @tz_math_expm1_f64(double noundef %13) #36
+  %15 = fadd double %14, 2.000000e+00
+  %16 = fdiv double %14, %15
+  br label %23
+
+17:                                               ; preds = %10
+  %18 = fmul double %8, -2.000000e+00
+  %19 = tail call double @tz_math_expm1_f64(double noundef %18) #36
+  %20 = fneg double %19
+  %21 = fadd double %19, 2.000000e+00
+  %22 = fdiv double %20, %21
+  br label %23
+
+23:                                               ; preds = %7, %12, %17
+  %24 = phi double [ %22, %17 ], [ %16, %12 ], [ 1.000000e+00, %7 ]
+  %25 = tail call noundef double @llvm.copysign.f64(double %24, double %0)
+  br label %26
+
+26:                                               ; preds = %1, %23
+  %27 = phi double [ %25, %23 ], [ %0, %1 ]
+  ret double %27
+}
+
+; Function Attrs: nounwind
+define internal noundef float @tz_math_tanh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @llvm.fabs.f64(double %2)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ugt i64 %4, 9218868437227405312
+  %6 = fcmp oeq float %0, 0.000000e+00
+  %7 = or i1 %6, %5
+  br i1 %7, label %28, label %8
+
+8:                                                ; preds = %1
+  %9 = tail call double @tz_math_fabs_f64(double noundef %2) #35
+  %10 = fcmp ult double %9, 2.200000e+01
+  br i1 %10, label %11, label %24
+
+11:                                               ; preds = %8
+  %12 = fcmp ult double %9, 5.000000e-01
+  br i1 %12, label %18, label %13
+
+13:                                               ; preds = %11
+  %14 = fmul double %9, 2.000000e+00
+  %15 = tail call double @tz_math_expm1_f64(double noundef %14) #36
+  %16 = fadd double %15, 2.000000e+00
+  %17 = fdiv double %15, %16
+  br label %24
+
+18:                                               ; preds = %11
+  %19 = fmul double %9, -2.000000e+00
+  %20 = tail call double @tz_math_expm1_f64(double noundef %19) #36
+  %21 = fneg double %20
+  %22 = fadd double %20, 2.000000e+00
+  %23 = fdiv double %21, %22
+  br label %24
+
+24:                                               ; preds = %18, %13, %8
+  %25 = phi double [ %23, %18 ], [ %17, %13 ], [ 1.000000e+00, %8 ]
+  %26 = tail call noundef double @llvm.copysign.f64(double %25, double %2)
+  %27 = fptrunc double %26 to float
+  br label %28
+
+28:                                               ; preds = %1, %24
+  %29 = phi float [ %27, %24 ], [ %0, %1 ]
+  ret float %29
+}
+
+; Function Attrs: nounwind
+define internal noundef double @tz_math_asinh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ult i64 %3, 9218868437227405313
+  br i1 %4, label %5, label %37
+
+5:                                                ; preds = %1
+  %6 = tail call i1 @llvm.is.fpclass.f64(double %0, i32 612)
+  br i1 %6, label %37, label %7
+
+7:                                                ; preds = %5
+  %8 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %9 = fcmp olt double %8, 0x3E30000000000000
+  br i1 %9, label %34, label %10
+
+10:                                               ; preds = %7
+  %11 = fcmp olt double %8, 2.000000e+00
+  br i1 %11, label %12, label %20
+
+12:                                               ; preds = %10
+  %13 = fmul double %8, %8
+  %14 = fadd double %13, 1.000000e+00
+  %15 = tail call double @tz_math_sqrt_f64(double noundef %14) #35
+  %16 = fadd double %15, 1.000000e+00
+  %17 = fdiv double %13, %16
+  %18 = fadd double %8, %17
+  %19 = tail call double @tz_math_log1p_f64(double noundef %18) #36
+  br label %34
+
+20:                                               ; preds = %10
+  %21 = fcmp olt double %8, 0x41B0000000000000
+  br i1 %21, label %22, label %31
+
+22:                                               ; preds = %20
+  %23 = fmul double %8, 2.000000e+00
+  %24 = fmul double %8, %8
+  %25 = fadd double %24, 1.000000e+00
+  %26 = tail call double @tz_math_sqrt_f64(double noundef %25) #35
+  %27 = fadd double %8, %26
+  %28 = fdiv double 1.000000e+00, %27
+  %29 = fadd double %23, %28
+  %30 = tail call double @tz_math_log_f64(double noundef %29) #35
+  br label %34
+
+31:                                               ; preds = %20
+  %32 = tail call double @tz_math_log_f64(double noundef %8) #35
+  %33 = fadd double %32, 0x3FE62E42FEFA39EF
+  br label %34
+
+34:                                               ; preds = %7, %12, %31, %22
+  %35 = phi double [ %33, %31 ], [ %19, %12 ], [ %30, %22 ], [ %8, %7 ]
+  %36 = tail call noundef double @llvm.copysign.f64(double %35, double %0)
+  br label %37
+
+37:                                               ; preds = %1, %5, %34
+  %38 = phi double [ %36, %34 ], [ %0, %5 ], [ %0, %1 ]
+  ret double %38
+}
+
+
+; Function Attrs: nounwind
+define internal noundef float @tz_math_asinh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @tz_math_asinh_f64(double noundef %2) #36
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_acosh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ult i64 %3, 9218868437227405313
+  br i1 %4, label %5, label %38
+
+5:                                                ; preds = %1
+  %6 = fcmp olt double %0, 1.000000e+00
+  br i1 %6, label %7, label %10
+
+7:                                                ; preds = %5
+  %8 = fsub double %0, %0
+  %9 = fdiv double %8, %8
+  br label %38
+
+10:                                               ; preds = %5
+  %11 = fcmp oeq double %0, 1.000000e+00
+  br i1 %11, label %38, label %12
+
+12:                                               ; preds = %10
+  %13 = fcmp une double %2, 0x7FF0000000000000
+  br i1 %13, label %14, label %38
+
+14:                                               ; preds = %12
+  %15 = fcmp olt double %0, 2.000000e+00
+  br i1 %15, label %16, label %24
+
+16:                                               ; preds = %14
+  %17 = fadd double %0, -1.000000e+00
+  %18 = fmul double %17, 2.000000e+00
+  %19 = fmul double %17, %17
+  %20 = fadd double %18, %19
+  %21 = tail call double @tz_math_sqrt_f64(double noundef %20) #35
+  %22 = fadd double %17, %21
+  %23 = tail call double @tz_math_log1p_f64(double noundef %22) #36
+  br label %38
+
+24:                                               ; preds = %14
+  %25 = fcmp olt double %0, 0x41B0000000000000
+  br i1 %25, label %26, label %35
+
+26:                                               ; preds = %24
+  %27 = fmul double %0, 2.000000e+00
+  %28 = fmul double %0, %0
+  %29 = fadd double %28, -1.000000e+00
+  %30 = tail call double @tz_math_sqrt_f64(double noundef %29) #35
+  %31 = fadd double %0, %30
+  %32 = fdiv double 1.000000e+00, %31
+  %33 = fsub double %27, %32
+  %34 = tail call double @tz_math_log_f64(double noundef %33) #35
+  br label %38
+
+35:                                               ; preds = %24
+  %36 = tail call double @tz_math_log_f64(double noundef %0) #35
+  %37 = fadd double %36, 0x3FE62E42FEFA39EF
+  br label %38
+
+38:                                               ; preds = %12, %10, %1, %35, %26, %16, %7
+  %39 = phi double [ %37, %35 ], [ %9, %7 ], [ %0, %1 ], [ 0.000000e+00, %10 ], [ %23, %16 ], [ %34, %26 ], [ %0, %12 ]
+  ret double %39
+}
+
+; Function Attrs: nounwind
+define internal float @tz_math_acosh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @tz_math_acosh_f64(double noundef %2) #36
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: nounwind
+define internal noundef double @tz_math_atanh_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ugt i64 %3, 9218868437227405312
+  %5 = fcmp oeq double %0, 0.000000e+00
+  %6 = or i1 %5, %4
+  br i1 %6, label %33, label %7
+
+7:                                                ; preds = %1
+  %8 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %9 = fcmp ogt double %8, 1.000000e+00
+  br i1 %9, label %10, label %13
+
+10:                                               ; preds = %7
+  %11 = fsub double %0, %0
+  %12 = fdiv double %11, %11
+  br label %33
+
+13:                                               ; preds = %7
+  %14 = fcmp oeq double %8, 1.000000e+00
+  br i1 %14, label %15, label %17
+
+15:                                               ; preds = %13
+  %16 = tail call noundef double @llvm.copysign.f64(double 0x7FF0000000000000, double %0)
+  br label %33
+
+17:                                               ; preds = %13
+  %18 = fcmp olt double %8, 5.000000e-01
+  %19 = fmul double %8, 2.000000e+00
+  br i1 %18, label %20, label %25
+
+20:                                               ; preds = %17
+  %21 = fmul double %8, %19
+  %22 = fsub double 1.000000e+00, %8
+  %23 = fdiv double %21, %22
+  %24 = fadd double %19, %23
+  br label %28
+
+25:                                               ; preds = %17
+  %26 = fsub double 1.000000e+00, %8
+  %27 = fdiv double %19, %26
+  br label %28
+
+28:                                               ; preds = %25, %20
+  %29 = phi double [ %27, %25 ], [ %24, %20 ]
+  %30 = tail call double @tz_math_log1p_f64(double noundef %29) #36
+  %31 = fmul double %30, 5.000000e-01
+  %32 = tail call noundef double @llvm.copysign.f64(double %31, double %0)
+  br label %33
+
+33:                                               ; preds = %10, %15, %28, %1
+  %34 = phi double [ %0, %1 ], [ %12, %10 ], [ %16, %15 ], [ %32, %28 ]
+  ret double %34
+}
+
+; Function Attrs: nounwind
+define internal noundef float @tz_math_atanh_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @llvm.fabs.f64(double %2)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ugt i64 %4, 9218868437227405312
+  %6 = fcmp oeq float %0, 0.000000e+00
+  %7 = or i1 %6, %5
+  br i1 %7, label %34, label %8
+
+8:                                                ; preds = %1
+  %9 = tail call double @tz_math_fabs_f64(double noundef %2) #35
+  %10 = fcmp ogt double %9, 1.000000e+00
+  br i1 %10, label %11, label %14
+
+11:                                               ; preds = %8
+  %12 = fsub double %2, %2
+  %13 = fdiv double %12, %12
+  br label %34
+
+14:                                               ; preds = %8
+  %15 = fcmp oeq double %9, 1.000000e+00
+  br i1 %15, label %16, label %18
+
+16:                                               ; preds = %14
+  %17 = tail call noundef double @llvm.copysign.f64(double 0x7FF0000000000000, double %2)
+  br label %34
+
+18:                                               ; preds = %14
+  %19 = fcmp olt double %9, 5.000000e-01
+  %20 = fmul double %9, 2.000000e+00
+  br i1 %19, label %21, label %26
+
+21:                                               ; preds = %18
+  %22 = fmul double %9, %20
+  %23 = fsub double 1.000000e+00, %9
+  %24 = fdiv double %22, %23
+  %25 = fadd double %20, %24
+  br label %29
+
+26:                                               ; preds = %18
+  %27 = fsub double 1.000000e+00, %9
+  %28 = fdiv double %20, %27
+  br label %29
+
+29:                                               ; preds = %26, %21
+  %30 = phi double [ %28, %26 ], [ %25, %21 ]
+  %31 = tail call double @tz_math_log1p_f64(double noundef %30) #36
+  %32 = fmul double %31, 5.000000e-01
+  %33 = tail call noundef double @llvm.copysign.f64(double %32, double %2)
+  br label %34
+
+34:                                               ; preds = %1, %11, %16, %29
+  %35 = phi double [ %2, %1 ], [ %13, %11 ], [ %17, %16 ], [ %33, %29 ]
+  %36 = fptrunc double %35 to float
+  ret float %36
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_logaddexp_f64(double noundef %0, double noundef %1) local_unnamed_addr #31 {
+  %3 = tail call double @llvm.fabs.f64(double %0)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %10
+
+6:                                                ; preds = %2
+  %7 = tail call double @llvm.fabs.f64(double %1)
+  %8 = bitcast double %7 to i64
+  %9 = icmp samesign ult i64 %8, 9218868437227405313
+  br i1 %9, label %12, label %10
+
+10:                                               ; preds = %6, %2
+  %11 = fadd double %0, %1
+  br label %29
+
+12:                                               ; preds = %6
+  %13 = fcmp oeq double %0, %1
+  br i1 %13, label %14, label %18
+
+14:                                               ; preds = %12
+  %15 = fcmp une double %3, 0x7FF0000000000000
+  br i1 %15, label %16, label %29
+
+16:                                               ; preds = %14
+  %17 = fadd double %0, 0x3FE62E42FEFA39EF
+  br label %29
+
+18:                                               ; preds = %12
+  %19 = fcmp ogt double %0, %1
+  %20 = select i1 %19, double %0, double %1
+  %21 = tail call double @llvm.fabs.f64(double %20)
+  %22 = fcmp une double %21, 0x7FF0000000000000
+  br i1 %22, label %23, label %29
+
+23:                                               ; preds = %18
+  %24 = select i1 %19, double %1, double %0
+  %25 = fsub double %24, %20
+  %26 = tail call double @tz_math_exp_f64(double noundef %25) #35
+  %27 = tail call double @tz_math_log1p_f64(double noundef %26) #36
+  %28 = fadd double %20, %27
+  br label %29
+
+29:                                               ; preds = %23, %18, %14, %16, %10
+  %30 = phi double [ %11, %10 ], [ %0, %14 ], [ %17, %16 ], [ %28, %23 ], [ %20, %18 ]
+  ret double %30
+}
+
+; Function Attrs: nounwind
+define internal float @tz_math_logaddexp_f32(float noundef %0, float noundef %1) local_unnamed_addr #31 {
+  %3 = fpext float %0 to double
+  %4 = fpext float %1 to double
+  %5 = tail call double @llvm.fabs.f64(double %3)
+  %6 = bitcast double %5 to i64
+  %7 = icmp samesign ult i64 %6, 9218868437227405313
+  br i1 %7, label %8, label %12
+
+8:                                                ; preds = %2
+  %9 = tail call double @llvm.fabs.f64(double %4)
+  %10 = bitcast double %9 to i64
+  %11 = icmp samesign ult i64 %10, 9218868437227405313
+  br i1 %11, label %14, label %12
+
+12:                                               ; preds = %8, %2
+  %13 = fadd double %3, %4
+  br label %31
+
+14:                                               ; preds = %8
+  %15 = fcmp oeq float %0, %1
+  br i1 %15, label %16, label %20
+
+16:                                               ; preds = %14
+  %17 = fcmp une double %5, 0x7FF0000000000000
+  br i1 %17, label %18, label %31
+
+18:                                               ; preds = %16
+  %19 = fadd double %3, 0x3FE62E42FEFA39EF
+  br label %31
+
+20:                                               ; preds = %14
+  %21 = fcmp ogt float %0, %1
+  %22 = select i1 %21, double %3, double %4
+  %23 = tail call double @llvm.fabs.f64(double %22)
+  %24 = fcmp une double %23, 0x7FF0000000000000
+  br i1 %24, label %25, label %31
+
+25:                                               ; preds = %20
+  %26 = select i1 %21, double %4, double %3
+  %27 = fsub double %26, %22
+  %28 = tail call double @tz_math_exp_f64(double noundef %27) #35
+  %29 = tail call double @tz_math_log1p_f64(double noundef %28) #36
+  %30 = fadd double %22, %29
+  br label %31
+
+31:                                               ; preds = %12, %16, %18, %20, %25
+  %32 = phi double [ %13, %12 ], [ %3, %16 ], [ %19, %18 ], [ %30, %25 ], [ %22, %20 ]
+  %33 = fptrunc double %32 to float
+  ret float %33
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_logaddexp2_f64(double noundef %0, double noundef %1) local_unnamed_addr #31 {
+  %3 = tail call double @llvm.fabs.f64(double %0)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %10
+
+6:                                                ; preds = %2
+  %7 = tail call double @llvm.fabs.f64(double %1)
+  %8 = bitcast double %7 to i64
+  %9 = icmp samesign ult i64 %8, 9218868437227405313
+  br i1 %9, label %12, label %10
+
+10:                                               ; preds = %6, %2
+  %11 = fadd double %0, %1
+  br label %30
+
+12:                                               ; preds = %6
+  %13 = fcmp oeq double %0, %1
+  br i1 %13, label %14, label %18
+
+14:                                               ; preds = %12
+  %15 = fcmp une double %3, 0x7FF0000000000000
+  br i1 %15, label %16, label %30
+
+16:                                               ; preds = %14
+  %17 = fadd double %0, 1.000000e+00
+  br label %30
+
+18:                                               ; preds = %12
+  %19 = fcmp ogt double %0, %1
+  %20 = select i1 %19, double %0, double %1
+  %21 = tail call double @llvm.fabs.f64(double %20)
+  %22 = fcmp une double %21, 0x7FF0000000000000
+  br i1 %22, label %23, label %30
+
+23:                                               ; preds = %18
+  %24 = select i1 %19, double %1, double %0
+  %25 = fsub double %24, %20
+  %26 = tail call double @tz_math_exp2_f64(double noundef %25) #35
+  %27 = tail call double @tz_math_log1p_f64(double noundef %26) #36
+  %28 = fmul double %27, 0x3FF71547652B82FE
+  %29 = fadd double %20, %28
+  br label %30
+
+30:                                               ; preds = %23, %18, %14, %16, %10
+  %31 = phi double [ %11, %10 ], [ %0, %14 ], [ %17, %16 ], [ %29, %23 ], [ %20, %18 ]
+  ret double %31
+}
+
+
+; Function Attrs: nounwind
+define internal float @tz_math_logaddexp2_f32(float noundef %0, float noundef %1) local_unnamed_addr #31 {
+  %3 = fpext float %0 to double
+  %4 = fpext float %1 to double
+  %5 = tail call double @llvm.fabs.f64(double %3)
+  %6 = bitcast double %5 to i64
+  %7 = icmp samesign ult i64 %6, 9218868437227405313
+  br i1 %7, label %8, label %12
+
+8:                                                ; preds = %2
+  %9 = tail call double @llvm.fabs.f64(double %4)
+  %10 = bitcast double %9 to i64
+  %11 = icmp samesign ult i64 %10, 9218868437227405313
+  br i1 %11, label %14, label %12
+
+12:                                               ; preds = %8, %2
+  %13 = fadd double %3, %4
+  br label %32
+
+14:                                               ; preds = %8
+  %15 = fcmp oeq float %0, %1
+  br i1 %15, label %16, label %20
+
+16:                                               ; preds = %14
+  %17 = fcmp une double %5, 0x7FF0000000000000
+  br i1 %17, label %18, label %32
+
+18:                                               ; preds = %16
+  %19 = fadd double %3, 1.000000e+00
+  br label %32
+
+20:                                               ; preds = %14
+  %21 = fcmp ogt float %0, %1
+  %22 = select i1 %21, double %3, double %4
+  %23 = tail call double @llvm.fabs.f64(double %22)
+  %24 = fcmp une double %23, 0x7FF0000000000000
+  br i1 %24, label %25, label %32
+
+25:                                               ; preds = %20
+  %26 = select i1 %21, double %4, double %3
+  %27 = fsub double %26, %22
+  %28 = tail call double @tz_math_exp2_f64(double noundef %27) #35
+  %29 = tail call double @tz_math_log1p_f64(double noundef %28) #36
+  %30 = fmul double %29, 0x3FF71547652B82FE
+  %31 = fadd double %22, %30
+  br label %32
+
+32:                                               ; preds = %12, %16, %18, %20, %25
+  %33 = phi double [ %13, %12 ], [ %3, %16 ], [ %19, %18 ], [ %31, %25 ], [ %22, %20 ]
+  %34 = fptrunc double %33 to float
+  ret float %34
+}
+
+; Function Attrs: nounwind
+define internal double @tz_math_sinc_f64(double noundef %0) local_unnamed_addr #31 {
+  %2 = tail call double @llvm.fabs.f64(double %0)
+  %3 = bitcast double %2 to i64
+  %4 = icmp samesign ult i64 %3, 9218868437227405313
+  br i1 %4, label %5, label %37
+
+5:                                                ; preds = %1
+  %6 = fcmp oeq double %0, 0.000000e+00
+  br i1 %6, label %37, label %7
+
+7:                                                ; preds = %5
+  %8 = fcmp une double %2, 0x7FF0000000000000
+  br i1 %8, label %9, label %37
+
+9:                                                ; preds = %7
+  %10 = tail call double @tz_math_fabs_f64(double noundef %0) #35
+  %11 = fcmp ult double %10, 0x4340000000000000
+  br i1 %11, label %12, label %37
+
+12:                                               ; preds = %9
+  %13 = tail call double @tz_math_fmod_f64(double noundef %10, double noundef 2.000000e+00) #36
+  %14 = fcmp oeq double %13, 0.000000e+00
+  %15 = fcmp oeq double %13, 1.000000e+00
+  %16 = or i1 %14, %15
+  br i1 %16, label %37, label %17
+
+17:                                               ; preds = %12
+  %18 = fcmp olt double %13, 5.000000e-01
+  br i1 %18, label %19, label %22
+
+19:                                               ; preds = %17
+  %20 = fmul double %13, 0x400921FB54442D18
+  %21 = tail call double @tz_math_sin_f64(double noundef %20) #35
+  br label %33
+
+22:                                               ; preds = %17
+  %23 = fcmp olt double %13, 1.500000e+00
+  br i1 %23, label %24, label %28
+
+24:                                               ; preds = %22
+  %25 = fsub double 1.000000e+00, %13
+  %26 = fmul double %25, 0x400921FB54442D18
+  %27 = tail call double @tz_math_sin_f64(double noundef %26) #35
+  br label %33
+
+28:                                               ; preds = %22
+  %29 = fsub double 2.000000e+00, %13
+  %30 = fmul double %29, 0x400921FB54442D18
+  %31 = tail call double @tz_math_sin_f64(double noundef %30) #35
+  %32 = fneg double %31
+  br label %33
+
+33:                                               ; preds = %19, %28, %24
+  %34 = phi double [ %21, %19 ], [ %27, %24 ], [ %32, %28 ]
+  %35 = fmul double %10, 0x400921FB54442D18
+  %36 = fdiv double %34, %35
+  br label %37
+
+37:                                               ; preds = %9, %12, %33, %7, %5, %1
+  %38 = phi double [ 0.000000e+00, %7 ], [ %0, %1 ], [ 1.000000e+00, %5 ], [ 0.000000e+00, %9 ], [ %36, %33 ], [ 0.000000e+00, %12 ]
+  ret double %38
+}
+
+
+; Function Attrs: nounwind
+define internal float @tz_math_sinc_f32(float noundef %0) local_unnamed_addr #31 {
+  %2 = fpext float %0 to double
+  %3 = tail call double @tz_math_sinc_f64(double noundef %2) #36
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal noundef double @tz_math_degrees_f64(double noundef %0) local_unnamed_addr #33 {
+  %2 = fmul double %0, 0x404CA5DC1A63C1F8
+  ret double %2
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal noundef float @tz_math_degrees_f32(float noundef %0) local_unnamed_addr #33 {
+  %2 = fpext float %0 to double
+  %3 = fmul double %2, 0x404CA5DC1A63C1F8
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal noundef double @tz_math_radians_f64(double noundef %0) local_unnamed_addr #33 {
+  %2 = fmul double %0, 0x3F91DF46A2529D39
+  ret double %2
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal noundef float @tz_math_radians_f32(float noundef %0) local_unnamed_addr #33 {
+  %2 = fpext float %0 to double
+  %3 = fmul double %2, 0x3F91DF46A2529D39
+  %4 = fptrunc double %3 to float
+  ret float %4
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal double @tz_math_frexp_mant_f64(double noundef %0) local_unnamed_addr #33 {
+  %2 = bitcast double %0 to i64
+  %3 = lshr i64 %2, 52
+  %4 = trunc i64 %3 to i32
+  %5 = and i32 %4, 2047
+  switch i32 %5, label %11 [
+    i32 0, label %6
+    i32 2047, label %16
+  ]
+
+6:                                                ; preds = %1
+  %7 = fcmp oeq double %0, 0.000000e+00
+  br i1 %7, label %16, label %8
+
+8:                                                ; preds = %6
+  %9 = fmul double %0, 0x43F0000000000000
+  %10 = bitcast double %9 to i64
+  br label %11
+
+11:                                               ; preds = %1, %8
+  %12 = phi i64 [ %10, %8 ], [ %2, %1 ]
+  %13 = and i64 %12, -9218868437227405313
+  %14 = or i64 %13, 4602678819172646912
+  %15 = bitcast i64 %14 to double
+  br label %16
+
+16:                                               ; preds = %1, %6, %11
+  %17 = phi double [ %0, %6 ], [ %15, %11 ], [ %0, %1 ]
+  ret double %17
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal i32 @tz_math_frexp_exp_f64(double noundef %0) local_unnamed_addr #33 {
+  %2 = bitcast double %0 to i64
+  %3 = lshr i64 %2, 52
+  %4 = trunc i64 %3 to i32
+  %5 = and i32 %4, 2047
+  switch i32 %5, label %15 [
+    i32 0, label %6
+    i32 2047, label %17
+  ]
+
+6:                                                ; preds = %1
+  %7 = fcmp oeq double %0, 0.000000e+00
+  br i1 %7, label %17, label %8
+
+8:                                                ; preds = %6
+  %9 = fmul double %0, 0x43F0000000000000
+  %10 = bitcast double %9 to i64
+  %11 = lshr i64 %10, 52
+  %12 = trunc i64 %11 to i32
+  %13 = and i32 %12, 2047
+  %14 = add nsw i32 %13, -1086
+  br label %17
+
+15:                                               ; preds = %1
+  %16 = add nsw i32 %5, -1022
+  br label %17
+
+17:                                               ; preds = %1, %6, %15, %8
+  %18 = phi i32 [ %16, %15 ], [ %14, %8 ], [ 0, %6 ], [ 0, %1 ]
+  ret i32 %18
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal float @tz_math_frexp_mant_f32(float noundef %0) local_unnamed_addr #33 {
+  %2 = bitcast float %0 to i32
+  %3 = lshr i32 %2, 23
+  %4 = trunc i32 %3 to i8
+  switch i8 %4, label %10 [
+    i8 0, label %5
+    i8 -1, label %15
+  ]
+
+5:                                                ; preds = %1
+  %6 = fcmp oeq float %0, 0.000000e+00
+  br i1 %6, label %15, label %7
+
+7:                                                ; preds = %5
+  %8 = fmul float %0, 0x41F0000000000000
+  %9 = bitcast float %8 to i32
+  br label %10
+
+10:                                               ; preds = %1, %7
+  %11 = phi i32 [ %9, %7 ], [ %2, %1 ]
+  %12 = and i32 %11, -2139095041
+  %13 = or i32 %12, 1056964608
+  %14 = bitcast i32 %13 to float
+  br label %15
+
+15:                                               ; preds = %1, %5, %10
+  %16 = phi float [ %0, %5 ], [ %14, %10 ], [ %0, %1 ]
+  ret float %16
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal i32 @tz_math_frexp_exp_f32(float noundef %0) local_unnamed_addr #33 {
+  %2 = bitcast float %0 to i32
+  %3 = lshr i32 %2, 23
+  %4 = trunc i32 %3 to i8
+  switch i8 %4, label %13 [
+    i8 0, label %5
+    i8 -1, label %16
+  ]
+
+5:                                                ; preds = %1
+  %6 = fcmp oeq float %0, 0.000000e+00
+  br i1 %6, label %16, label %7
+
+7:                                                ; preds = %5
+  %8 = fmul float %0, 0x41F0000000000000
+  %9 = bitcast float %8 to i32
+  %10 = lshr i32 %9, 23
+  %11 = and i32 %10, 255
+  %12 = add nsw i32 %11, -158
+  br label %16
+
+13:                                               ; preds = %1
+  %14 = and i32 %3, 255
+  %15 = add nsw i32 %14, -126
+  br label %16
+
+16:                                               ; preds = %1, %5, %13, %7
+  %17 = phi i32 [ %15, %13 ], [ %12, %7 ], [ 0, %5 ], [ 0, %1 ]
+  ret i32 %17
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal double @tz_math_nextafter_f64(double noundef %0, double noundef %1) local_unnamed_addr #33 {
+  %3 = tail call double @llvm.fabs.f64(double %0)
+  %4 = bitcast double %3 to i64
+  %5 = icmp samesign ult i64 %4, 9218868437227405313
+  br i1 %5, label %6, label %10
+
+6:                                                ; preds = %2
+  %7 = tail call double @llvm.fabs.f64(double %1)
+  %8 = bitcast double %7 to i64
+  %9 = icmp samesign ult i64 %8, 9218868437227405313
+  br i1 %9, label %12, label %10
+
+10:                                               ; preds = %6, %2
+  %11 = fadd double %0, %1
+  br label %32
+
+12:                                               ; preds = %6
+  %13 = fcmp oeq double %0, %1
+  br i1 %13, label %32, label %14
+
+14:                                               ; preds = %12
+  %15 = tail call double @llvm.fabs.f64(double %0)
+  %16 = bitcast double %15 to i64
+  %17 = icmp eq i64 %16, 0
+  br i1 %17, label %18, label %20
+
+18:                                               ; preds = %14
+  %19 = tail call double @llvm.copysign.f64(double 4.940660e-324, double %1)
+  br label %32
+
+20:                                               ; preds = %14
+  %21 = bitcast double %0 to i64
+  %22 = bitcast double %1 to i64
+  %23 = xor i64 %22, %21
+  %24 = icmp slt i64 %23, 0
+  %25 = tail call double @llvm.fabs.f64(double %1)
+  %26 = bitcast double %25 to i64
+  %27 = icmp samesign ugt i64 %16, %26
+  %28 = select i1 %24, i1 true, i1 %27
+  %29 = select i1 %28, i64 -1, i64 1
+  %30 = add i64 %29, %21
+  %31 = bitcast i64 %30 to double
+  br label %32
+
+32:                                               ; preds = %18, %20, %12, %10
+  %33 = phi double [ %11, %10 ], [ %1, %12 ], [ %19, %18 ], [ %31, %20 ]
+  ret double %33
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none)
+define internal float @tz_math_nextafter_f32(float noundef %0, float noundef %1) local_unnamed_addr #33 {
+  %3 = bitcast float %0 to i32
+  %4 = bitcast float %1 to i32
+  %5 = tail call float @llvm.fabs.f32(float %0)
+  %6 = bitcast float %5 to i32
+  %7 = tail call float @llvm.fabs.f32(float %1)
+  %8 = bitcast float %7 to i32
+  %9 = icmp samesign ugt i32 %6, 2139095040
+  %10 = icmp samesign ugt i32 %8, 2139095040
+  %11 = select i1 %9, i1 true, i1 %10
+  br i1 %11, label %12, label %14
+
+12:                                               ; preds = %2
+  %13 = fadd float %0, %1
+  br label %28
+
+14:                                               ; preds = %2
+  %15 = fcmp oeq float %0, %1
+  br i1 %15, label %28, label %16
+
+16:                                               ; preds = %14
+  %17 = icmp eq i32 %6, 0
+  br i1 %17, label %18, label %20
+
+18:                                               ; preds = %16
+  %19 = tail call float @llvm.copysign.f32(float 0x36A0000000000000, float %1)
+  br label %28
+
+20:                                               ; preds = %16
+  %21 = xor i32 %4, %3
+  %22 = icmp slt i32 %21, 0
+  %23 = icmp samesign ugt i32 %6, %8
+  %24 = select i1 %22, i1 true, i1 %23
+  %25 = select i1 %24, i32 -1, i32 1
+  %26 = add i32 %25, %3
+  %27 = bitcast i32 %26 to float
+  br label %28
+
+28:                                               ; preds = %14, %20, %18, %12
+  %29 = phi float [ %13, %12 ], [ %27, %20 ], [ %19, %18 ], [ %1, %14 ]
+  ret float %29
+}
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+
+; Function Attrs: nocallback nofree nosync nounwind speculatable willreturn memory(none)
+
+attributes #30 = { nofree norecurse nosync nounwind memory(none) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #31 = { nounwind "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #32 = { "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #33 = { mustprogress nofree norecurse nosync nounwind willreturn memory(none) "min-legal-vector-width"="0" "no-builtins" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "tune-cpu"="generic" }
+attributes #34 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
+attributes #35 = { nobuiltin nounwind "no-builtins" }
+attributes #36 = { nobuiltin "no-builtins" }
+
+
+!292 = !{i32 1, !"wchar_size", i32 4}
+!293 = !{i32 8, !"PIC Level", i32 2}
+!294 = !{i32 7, !"PIE Level", i32 2}
+!295 = !{!"clang version 22.1.8 (https://github.com/llvm/llvm-project ca7933e47d3a3451d81e72ac174dcb5aa28b59d1)"}
+!296 = !{!297, !297, i64 0}
+!297 = !{!"int", !298, i64 0}
+!298 = !{!"omnipotent char", !299, i64 0}
+!299 = !{!"Simple C/C++ TBAA"}
+!300 = distinct !{!300, !301, !302}
+!301 = !{!"llvm.loop.mustprogress"}
+!302 = !{!"llvm.loop.unroll.disable"}
+!303 = distinct !{!303, !301, !302}
+!304 = distinct !{!304, !301, !302}
+!305 = distinct !{!305, !301, !302}
+!306 = distinct !{!306, !301, !302}
+!307 = distinct !{!307, !301, !302}
+!308 = distinct !{!308, !301, !302}
+!309 = distinct !{!309, !301, !302}
+!310 = distinct !{!310, !301, !302}
+!311 = distinct !{!311, !301, !302}
+!312 = distinct !{!312, !301, !302}
+!313 = distinct !{!313, !301, !302}
+!314 = distinct !{!314, !301, !302}
+!315 = distinct !{!315, !301, !302}
+!316 = distinct !{!316, !301, !302}
+!317 = distinct !{!317, !301, !302}

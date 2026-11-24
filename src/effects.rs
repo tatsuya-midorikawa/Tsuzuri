@@ -387,20 +387,24 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | MathRoundEven | MathAbs | MathMin | MathMax | MathClamp | MathFma | MathCopysign
         | MathIsNan | MathIsInfinite | MathIsFinite | MathPi | MathE | MathSin | MathCos
         | MathTan | MathAsin | MathAcos | MathAtan | MathAtan2 | MathExp | MathExp2 | MathLog
-        | MathLog2 | MathLog10 | MathPow | MathCbrt | MathHypot | ToFloat | ToInt
-        | StringIsWellFormed | UnicodeTableLength | Default | Hash | HashMix | VecEmpty
-        | SimdSplat | SimdOfLanes2 | SimdOfLanes4 | SimdOfLanes8 | SimdOfLanes16
-        | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt | SimdLe | SimdGt | SimdGe
-        | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity | VecIsEmpty | VecPop
-        | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16 | Utf8CharToU32
-        | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes | StringCompare
-        | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs | IntAbsDiff
-        | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft | IntRotateRight
-        | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd | IntCheckedSub
-        | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg | IntSaturatingAdd
-        | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd | IntWrappingSub
-        | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul | OwnedDrop
-        | OwnedFunction | Not | Ignore => facts(None, false, false, false, false, false, None),
+        | MathLog2 | MathLog10 | MathPow | MathCbrt | MathHypot | MathSinh | MathCosh
+        | MathTanh | MathAsinh | MathAcosh | MathAtanh | MathExpm1 | MathLog1p | MathLogaddexp
+        | MathLogaddexp2 | MathSinc | MathDegrees | MathRadians | MathFmod | MathFloorDiv
+        | MathFloorMod | MathIeeeRemainder | MathModf | MathFrexp | MathLdexp | MathNextafter
+        | MathSign | MathSignbit | ToFloat | ToInt | StringIsWellFormed | UnicodeTableLength
+        | Default | Hash | HashMix | VecEmpty | SimdSplat | SimdOfLanes2 | SimdOfLanes4
+        | SimdOfLanes8 | SimdOfLanes16 | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt
+        | SimdLe | SimdGt | SimdGe | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity
+        | VecIsEmpty | VecPop | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16
+        | Utf8CharToU32 | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes
+        | StringCompare | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs
+        | IntAbsDiff | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft
+        | IntRotateRight | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd
+        | IntCheckedSub | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg
+        | IntSaturatingAdd | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd
+        | IntWrappingSub | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul
+        | IntGcd | IntLcm | IntCheckedGcd | IntCheckedLcm | OwnedDrop | OwnedFunction | Not
+        | Ignore => facts(None, false, false, false, false, false, None),
         #[cfg(test)]
         TestAdd | TestUnsigned | TestWiden => facts(None, false, false, false, false, false, None),
         // B2: the index is checked before the bounds guard, which never fails.
@@ -432,7 +436,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | Utf8CharOfU32Unchecked
         | Utf8StringDecodeAt
         | IntClamp
-        | IntWrappingPow => facts(None, false, true, false, false, false, None),
+        | IntWrappingPow
+        | IntDivFloor
+        | IntRemFloor => facts(None, false, true, false, false, false, None),
         // B5
         ArrayUpdate => facts(None, false, true, false, true, false, None),
         // B6. `String.to_code_units` and `String.from_code_units` widen or narrow the units into a

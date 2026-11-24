@@ -9289,6 +9289,131 @@ impl FunctionEmitter<'_, '_> {
                 &signature.after_arguments(2),
                 instance.builtin == IntCheckedPow,
             ),
+            IntDivFloor | IntRemFloor => {
+                let nonzero = self.value(format!("icmp ne {ty} %arg1, 0"));
+                self.guard(&nonzero, TrapKind::IntegerDivisionByZero);
+                if !signed {
+                    let op = if instance.builtin == IntDivFloor {
+                        "udiv"
+                    } else {
+                        "urem"
+                    };
+                    self.value(format!("{op} {ty} %arg0, %arg1"))
+                } else {
+                    let min_val = 1u128 << (bits - 1);
+                    let is_min = self.value(format!("icmp eq {ty} %arg0, {min_val}"));
+                    let is_m1 = self.value(format!("icmp eq {ty} %arg1, -1"));
+                    let ovf = self.value(format!("and i1 {is_min}, {is_m1}"));
+                    let safe = self.value(format!("xor i1 {ovf}, true"));
+                    self.guard(&safe, TrapKind::IntegerDivisionOverflow);
+                    let q = self.value(format!("sdiv {ty} %arg0, %arg1"));
+                    let r = self.value(format!("srem {ty} %arg0, %arg1"));
+                    let r_nz = self.value(format!("icmp ne {ty} {r}, 0"));
+                    let xored = self.value(format!("xor {ty} {r}, %arg1"));
+                    let diff_sign = self.value(format!("icmp slt {ty} {xored}, 0"));
+                    let adjust = self.value(format!("and i1 {r_nz}, {diff_sign}"));
+                    if instance.builtin == IntDivFloor {
+                        let q_adj = self.value(format!("sub {ty} {q}, 1"));
+                        self.value(format!("select i1 {adjust}, {ty} {q_adj}, {ty} {q}"))
+                    } else {
+                        let r_adj = self.value(format!("add {ty} {r}, %arg1"));
+                        self.value(format!("select i1 {adjust}, {ty} {r_adj}, {ty} {r}"))
+                    }
+                }
+            }
+            IntGcd | IntCheckedGcd | IntLcm | IntCheckedLcm => {
+                let mag = |emitter: &mut Self, arg: &str| -> String {
+                    if !signed {
+                        arg.to_owned()
+                    } else {
+                        let neg = emitter.value(format!("icmp slt {ty} {arg}, 0"));
+                        let flipped = emitter.value(format!("sub {ty} 0, {arg}"));
+                        emitter.value(format!("select i1 {neg}, {ty} {flipped}, {ty} {arg}"))
+                    }
+                };
+                let ua = mag(self, "%arg0");
+                let ub = mag(self, "%arg1");
+                let entry_blk = self.block.clone();
+                let loop_blk = self.label();
+                let step_blk = self.label();
+                let done_blk = self.label();
+                self.jump(&loop_blk);
+                self.begin(&loop_blk);
+                let ga = self.fresh();
+                let gb = self.fresh();
+                let gr = self.fresh();
+                self.instruction(format!(
+                    "{ga} = phi {ty} [ {ua}, %{entry_blk} ], [ {gb}, %{step_blk} ]"
+                ));
+                self.instruction(format!(
+                    "{gb} = phi {ty} [ {ub}, %{entry_blk} ], [ {gr}, %{step_blk} ]"
+                ));
+                let gdone = self.value(format!("icmp eq {ty} {gb}, 0"));
+                self.branch(&gdone, &done_blk, &step_blk);
+                self.begin(&step_blk);
+                self.instruction(format!("{gr} = urem {ty} {ga}, {gb}"));
+                self.jump(&loop_blk);
+                self.begin(&done_blk);
+
+                match instance.builtin {
+                    IntGcd => ga,
+                    IntCheckedGcd => {
+                        let result = signature.after_arguments(2);
+                        if signed {
+                            let invalid = self.value(format!("icmp slt {ty} {ga}, 0"));
+                            self.integer_none_on(&result, &invalid);
+                        }
+                        self.integer_some(&result, &instance.types[0], &ga)
+                    }
+                    IntLcm => {
+                        let a_zero = self.value(format!("icmp eq {ty} {ua}, 0"));
+                        let b_zero = self.value(format!("icmp eq {ty} {ub}, 0"));
+                        let any_zero = self.value(format!("or i1 {a_zero}, {b_zero}"));
+                        let z_blk = self.label();
+                        let nz_blk = self.label();
+                        let end_blk = self.label();
+                        self.branch(&any_zero, &z_blk, &nz_blk);
+                        self.begin(&z_blk);
+                        self.jump(&end_blk);
+                        self.begin(&nz_blk);
+                        let q = self.value(format!("udiv {ty} {ua}, {ga}"));
+                        let prod = self.value(format!("mul {ty} {q}, {ub}"));
+                        self.jump(&end_blk);
+                        self.begin(&end_blk);
+                        self.value(format!("phi {ty} [ 0, %{z_blk} ], [ {prod}, %{nz_blk} ]"))
+                    }
+                    IntCheckedLcm => {
+                        let result = signature.after_arguments(2);
+                        let a_zero = self.value(format!("icmp eq {ty} {ua}, 0"));
+                        let b_zero = self.value(format!("icmp eq {ty} {ub}, 0"));
+                        let any_zero = self.value(format!("or i1 {a_zero}, {b_zero}"));
+                        let z_blk = self.label();
+                        let nz_blk = self.label();
+                        self.branch(&any_zero, &z_blk, &nz_blk);
+                        self.begin(&z_blk);
+                        let some_zero = self.integer_some(&result, &instance.types[0], "0");
+                        self.instruction(format!("ret {} {some_zero}", self.ty(&result)));
+                        self.begin(&nz_blk);
+                        let q = self.value(format!("udiv {ty} {ua}, {ga}"));
+                        self.intrinsics.insert(format!(
+                            "declare {{ {ty}, i1 }} @llvm.umul.with.overflow.{ty}({ty}, {ty})"
+                        ));
+                        let pair = self.value(format!(
+                            "call {{ {ty}, i1 }} @llvm.umul.with.overflow.{ty}({ty} {q}, {ty} {ub})"
+                        ));
+                        let prod = self.value(format!("extractvalue {{ {ty}, i1 }} {pair}, 0"));
+                        let mut invalid =
+                            self.value(format!("extractvalue {{ {ty}, i1 }} {pair}, 1"));
+                        if signed {
+                            let neg = self.value(format!("icmp slt {ty} {prod}, 0"));
+                            invalid = self.value(format!("or i1 {invalid}, {neg}"));
+                        }
+                        self.integer_none_on(&result, &invalid);
+                        self.integer_some(&result, &instance.types[0], &prod)
+                    }
+                    _ => unreachable!(),
+                }
+            }
             _ => unreachable!("integer builtins only"),
         }
     }

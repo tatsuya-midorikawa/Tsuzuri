@@ -315,6 +315,29 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | MathPow
         | MathCbrt
         | MathHypot
+        | MathSinh
+        | MathCosh
+        | MathTanh
+        | MathAsinh
+        | MathAcosh
+        | MathAtanh
+        | MathExpm1
+        | MathLog1p
+        | MathLogaddexp
+        | MathLogaddexp2
+        | MathSinc
+        | MathDegrees
+        | MathRadians
+        | MathFmod
+        | MathFloorDiv
+        | MathFloorMod
+        | MathIeeeRemainder
+        | MathModf
+        | MathFrexp
+        | MathLdexp
+        | MathNextafter
+        | MathSign
+        | MathSignbit
         | ToFloat
         | ToInt
         | Assert
@@ -438,6 +461,12 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | IntWrappingNeg
         | IntCheckedPow
         | IntWideningMul
+        | IntGcd
+        | IntLcm
+        | IntCheckedGcd
+        | IntCheckedLcm
+        | IntDivFloor
+        | IntRemFloor
         | OwnedDrop
         | OwnedFunction
         | OwnedCall

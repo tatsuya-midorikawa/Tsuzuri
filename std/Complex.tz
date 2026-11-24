@@ -1,0 +1,361 @@
+/// A complex number `re + im * i` stored as two contiguous floating-point fields (`Copy`, no heap allocation).
+record Complex<'a> { re: 'a, im: 'a }
+
+/// Constructs a complex number from real and imaginary parts.
+///
+/// ```tsuzuri run=3+4i
+/// let z = Complex.of 3.0 4.0
+/// $"{z}"
+/// ```
+pure def of :: Copy<'a> => own 'a -> own 'a -> Complex<'a>
+fn of re im = Complex { re: re, im: im }
+
+/// Constructs a complex number on the real axis (`re + 0i`).
+///
+/// ```tsuzuri run=2+0i
+/// $"{Complex.from_real 2.0}"
+/// ```
+pure def from_real :: (Float<'a>, Numeric<'a>, Copy<'a>) => own 'a -> Complex<'a>
+fn from_real re = Complex { re: re, im: 0.0 as 'a }
+
+/// Constructs a purely imaginary number (`0 + im * i`).
+///
+/// ```tsuzuri run=0+3i
+/// $"{Complex.from_imag 3.0}"
+/// ```
+pure def from_imag :: (Float<'a>, Numeric<'a>, Copy<'a>) => own 'a -> Complex<'a>
+fn from_imag im = Complex { re: 0.0 as 'a, im: im }
+
+/// Constructs a complex number from polar coordinates `(r, theta)` as `r * (cos theta + i * sin theta)`.
+///
+/// ```tsuzuri run=true
+/// let z = Complex.polar 2.0 0.0
+/// z.re == 2.0 && z.im == 0.0
+/// ```
+pure def polar :: (Elementary<'a>, Mul<'a>, Copy<'a>) => own 'a -> own 'a -> Complex<'a>
+fn polar r theta = Complex { re: r * Math.cos theta, im: r * Math.sin theta }
+
+/// The additive identity `0 + 0i`.
+///
+/// ```tsuzuri run=0+0i
+/// let z: Complex<f64> = Complex.zero ()
+/// $"{z}"
+/// ```
+pure def zero :: (Float<'a>, Numeric<'a>, Copy<'a>) => unit -> Complex<'a>
+fn zero _ = Complex { re: 0.0 as 'a, im: 0.0 as 'a }
+
+/// The multiplicative identity `1 + 0i`.
+///
+/// ```tsuzuri run=1+0i
+/// let z: Complex<f64> = Complex.one ()
+/// $"{z}"
+/// ```
+pure def one :: (Float<'a>, Numeric<'a>, Copy<'a>) => unit -> Complex<'a>
+fn one _ = Complex { re: 1.0 as 'a, im: 0.0 as 'a }
+
+/// The imaginary unit `0 + 1i`.
+///
+/// ```tsuzuri run=0+1i
+/// let z: Complex<f64> = Complex.i ()
+/// $"{z}"
+/// ```
+pure def i :: (Float<'a>, Numeric<'a>, Copy<'a>) => unit -> Complex<'a>
+fn i _ = Complex { re: 0.0 as 'a, im: 1.0 as 'a }
+
+/// Returns the real part of `z`.
+///
+/// ```tsuzuri run=3
+/// Complex.of 3.0 4.0 |> Complex.real
+/// ```
+pure def real :: Copy<'a> => Complex<'a> -> 'a
+fn real z = z.re
+
+/// Returns the imaginary part of `z`.
+///
+/// ```tsuzuri run=4
+/// Complex.of 3.0 4.0 |> Complex.imag
+/// ```
+pure def imag :: Copy<'a> => Complex<'a> -> 'a
+fn imag z = z.im
+
+/// Adds two complex numbers.
+///
+/// ```tsuzuri run=4+6i
+/// $"{Complex.add (Complex.of 1.0 2.0) (Complex.of 3.0 4.0)}"
+/// ```
+pure def add :: (Float<'a>, Add<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn add left right = Complex { re: left.re + right.re, im: left.im + right.im }
+
+/// Subtracts `right` from `left`.
+///
+/// ```tsuzuri run=2+2i
+/// $"{Complex.sub (Complex.of 3.0 4.0) (Complex.of 1.0 2.0)}"
+/// ```
+pure def sub :: (Float<'a>, Sub<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn sub left right = Complex { re: left.re - right.re, im: left.im - right.im }
+
+/// Multiplies two complex numbers.
+///
+/// ```tsuzuri run=-5+10i
+/// $"{Complex.mul (Complex.of 1.0 2.0) (Complex.of 3.0 4.0)}"
+/// ```
+pure def mul :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn mul left right =
+    Complex {
+        re: left.re * right.re - left.im * right.im,
+        im: left.re * right.im + left.im * right.re
+    }
+
+/// Divides `left` by `right` using Smith's scaled algorithm to avoid intermediate overflow and underflow.
+///
+/// ```tsuzuri run=true
+/// let q = Complex.div (Complex.of 1.0e200 2.0e200) (Complex.of 1.0e200 0.0)
+/// q.re == 1.0 && q.im == 2.0
+/// ```
+pure def div :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn div left right =
+    if Math.abs right.im <= Math.abs right.re then
+        let r = right.im / right.re
+        let d = right.re + right.im * r
+        Complex {
+            re: (left.re + left.im * r) / d,
+            im: (left.im - left.re * r) / d
+        }
+    else
+        let r = right.re / right.im
+        let d = right.im + right.re * r
+        Complex {
+            re: (left.im + left.re * r) / d,
+            im: (left.im * r - left.re) / d
+        }
+
+/// Negates both components of `z`.
+///
+/// ```tsuzuri run=-3-4i
+/// $"{Complex.neg (Complex.of 3.0 4.0)}"
+/// ```
+pure def neg :: (Float<'a>, Neg<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn neg z = Complex { re: -z.re, im: -z.im }
+
+/// Scales `z` by a real factor.
+///
+/// ```tsuzuri run=6+8i
+/// $"{Complex.of 3.0 4.0 |> Complex.scale 2.0}"
+/// ```
+pure def scale :: (Float<'a>, Mul<'a>, Copy<'a>) => own 'a -> Complex<'a> -> Complex<'a>
+fn scale factor z = Complex { re: factor * z.re, im: factor * z.im }
+
+/// Returns the complex conjugate `re - im * i`.
+///
+/// ```tsuzuri run=3-4i
+/// $"{Complex.of 3.0 4.0 |> Complex.conj}"
+/// ```
+pure def conj :: (Float<'a>, Neg<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn conj z = Complex { re: z.re, im: -z.im }
+
+/// Returns the squared magnitude `re^2 + im^2`.
+///
+/// ```tsuzuri run=25
+/// Complex.of 3.0 4.0 |> Complex.norm_sq
+/// ```
+pure def norm_sq :: (Float<'a>, Add<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> 'a
+fn norm_sq z = z.re * z.re + z.im * z.im
+
+/// Returns the Euclidean magnitude `hypot(re, im)`.
+///
+/// ```tsuzuri run=5
+/// Complex.of 3.0 4.0 |> Complex.abs
+/// ```
+pure def abs :: (Elementary<'a>, Copy<'a>) => Complex<'a> -> 'a
+fn abs z = Math.hypot z.re z.im
+
+/// Returns the principal phase angle `atan2(im, re)` in `[-pi, pi]`.
+///
+/// ```tsuzuri run=0
+/// Complex.of 2.0 0.0 |> Complex.arg
+/// ```
+pure def arg :: (Elementary<'a>, Copy<'a>) => Complex<'a> -> 'a
+fn arg z = Math.atan2 z.im z.re
+
+/// Principal complex square root.
+///
+/// ```tsuzuri run=0+2i
+/// $"{Complex.of (-4.0) 0.0 |> Complex.sqrt}"
+/// ```
+pure def sqrt :: (Elementary<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Neg<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn sqrt z =
+    let zero_v = 0.0 as 'a
+    let half = 0.5 as 'a
+    let r = Math.hypot z.re z.im
+    if r == zero_v then
+        Complex { re: zero_v, im: z.im }
+    elif z.re >= zero_v then
+        let u = Math.sqrt ((r + z.re) * half)
+        let v = z.im / (u + u)
+        Complex { re: u, im: v }
+    else
+        let v_mag = Math.sqrt ((r - z.re) * half)
+        let v = if Math.signbit z.im then -v_mag else v_mag
+        let u = z.im / (v + v)
+        Complex { re: Math.abs u, im: v }
+
+/// Complex exponential `exp(re) * (cos(im) + i * sin(im))`.
+///
+/// ```tsuzuri run=1+0i
+/// $"{Complex.of 0.0 0.0 |> Complex.exp}"
+/// ```
+pure def exp :: (Elementary<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn exp z =
+    let r = Math.exp z.re
+    Complex { re: r * Math.cos z.im, im: r * Math.sin z.im }
+
+/// Principal complex natural logarithm `ln(|z|) + i * arg(z)`.
+///
+/// ```tsuzuri run=0+0i
+/// $"{Complex.of 1.0 0.0 |> Complex.log}"
+/// ```
+pure def log :: (Elementary<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn log z = Complex { re: Math.log (Math.hypot z.re z.im), im: Math.atan2 z.im z.re }
+
+/// Complex power `base ^ exponent = exp(exponent * log(base))`.
+///
+/// ```tsuzuri run=1+0i
+/// $"{Complex.pow (Complex.of 0.0 0.0) (Complex.of 0.0 0.0)}"
+/// ```
+pure def pow :: (Elementary<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Eq<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn pow base exponent =
+    let zero_v = 0.0 as 'a
+    if base.re == zero_v && base.im == zero_v && exponent.re == zero_v && exponent.im == zero_v then
+        Complex { re: 1.0 as 'a, im: zero_v }
+    else
+        exp (mul exponent (log base))
+
+/// Complex sine `sin(a + bi) = sin(a) cosh(b) + i * cos(a) sinh(b)`.
+///
+/// ```tsuzuri run=0+0i
+/// $"{Complex.of 0.0 0.0 |> Complex.sin}"
+/// ```
+pure def sin :: (Elementary<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn sin z = Complex { re: Math.sin z.re * Math.cosh z.im, im: Math.cos z.re * Math.sinh z.im }
+
+/// Complex cosine `cos(a + bi) = cos(a) cosh(b) - i * sin(a) sinh(b)`.
+///
+/// ```tsuzuri run=true
+/// let z = Complex.of 0.0 0.0 |> Complex.cos
+/// z.re == 1.0 && z.im == 0.0
+/// ```
+pure def cos :: (Elementary<'a>, Mul<'a>, Neg<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn cos z = Complex { re: Math.cos z.re * Math.cosh z.im, im: -(Math.sin z.re * Math.sinh z.im) }
+
+/// Complex tangent `sin(z) / cos(z)`.
+///
+/// ```tsuzuri run=true
+/// let z = Complex.of 0.0 0.0 |> Complex.tan
+/// z.re == 0.0 && z.im == 0.0
+/// ```
+pure def tan :: (Elementary<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Neg<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn tan z = div (sin z) (cos z)
+
+/// Complex hyperbolic sine `sinh(a + bi) = sinh(a) cos(b) + i * cosh(a) sin(b)`.
+///
+/// ```tsuzuri run=0+0i
+/// $"{Complex.of 0.0 0.0 |> Complex.sinh}"
+/// ```
+pure def sinh :: (Elementary<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn sinh z = Complex { re: Math.sinh z.re * Math.cos z.im, im: Math.cosh z.re * Math.sin z.im }
+
+/// Complex hyperbolic cosine `cosh(a + bi) = cosh(a) cos(b) + i * sinh(a) sin(b)`.
+///
+/// ```tsuzuri run=1+0i
+/// $"{Complex.of 0.0 0.0 |> Complex.cosh}"
+/// ```
+pure def cosh :: (Elementary<'a>, Mul<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn cosh z = Complex { re: Math.cosh z.re * Math.cos z.im, im: Math.sinh z.re * Math.sin z.im }
+
+/// Complex hyperbolic tangent `sinh(z) / cosh(z)`.
+///
+/// ```tsuzuri run=0+0i
+/// $"{Complex.of 0.0 0.0 |> Complex.tanh}"
+/// ```
+pure def tanh :: (Elementary<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
+fn tanh z = div (sinh z) (cosh z)
+
+/// Whether either component of `z` is NaN.
+///
+/// ```tsuzuri run=false
+/// Complex.of 1.0 2.0 |> Complex.is_nan
+/// ```
+pure def is_nan :: (Float<'a>, Copy<'a>) => Complex<'a> -> bool
+fn is_nan z = Math.is_nan z.re || Math.is_nan z.im
+
+/// Whether either component of `z` is infinite.
+///
+/// ```tsuzuri run=false
+/// Complex.of 1.0 2.0 |> Complex.is_infinite
+/// ```
+pure def is_infinite :: (Float<'a>, Copy<'a>) => Complex<'a> -> bool
+fn is_infinite z = Math.is_infinite z.re || Math.is_infinite z.im
+
+/// Whether both components of `z` are finite.
+///
+/// ```tsuzuri run=true
+/// Complex.of 1.0 2.0 |> Complex.is_finite
+/// ```
+pure def is_finite :: (Float<'a>, Copy<'a>) => Complex<'a> -> bool
+fn is_finite z = Math.is_finite z.re && Math.is_finite z.im
+
+instance (Eq<'a>, Copy<'a>) => Eq<Complex<'a>> {
+    fn eq left right = left.re == right.re && left.im == right.im
+    fn ne left right = left.re != right.re || left.im != right.im
+}
+
+instance (Float<'a>, Numeric<'a>, Copy<'a>) => Default<Complex<'a>> {
+    fn default = Complex { re: 0.0 as 'a, im: 0.0 as 'a }
+}
+
+instance (Float<'a>, Display<'a>, Copy<'a>) => Display<Complex<'a>> {
+    fn display z =
+        if Math.signbit z.im then
+            let neg_im = Math.abs z.im
+            $"{z.re}-{neg_im}i"
+        else
+            $"{z.re}+{z.im}i"
+}
+
+instance (Float<'a>, Add<'a>, Copy<'a>) => Add<Complex<'a>> {
+    fn add left right = Complex { re: left.re + right.re, im: left.im + right.im }
+}
+
+instance (Float<'a>, Sub<'a>, Copy<'a>) => Sub<Complex<'a>> {
+    fn sub left right = Complex { re: left.re - right.re, im: left.im - right.im }
+}
+
+instance (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Copy<'a>) => Mul<Complex<'a>> {
+    fn mul left right =
+        Complex {
+            re: left.re * right.re - left.im * right.im,
+            im: left.re * right.im + left.im * right.re
+        }
+}
+
+instance (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Div<Complex<'a>> {
+    fn div left right =
+        if Math.abs right.im <= Math.abs right.re then
+            let r = right.im / right.re
+            let d = right.re + right.im * r
+            Complex {
+                re: (left.re + left.im * r) / d,
+                im: (left.im - left.re * r) / d
+            }
+        else
+            let r = right.re / right.im
+            let d = right.im + right.re * r
+            Complex {
+                re: (left.im + left.re * r) / d,
+                im: (left.im * r - left.re) / d
+            }
+}
+
+instance (Float<'a>, Neg<'a>, Copy<'a>) => Neg<Complex<'a>> {
+    fn neg z = Complex { re: -z.re, im: -z.im }
+}

@@ -71,6 +71,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Cbor", SingleArgument),
     ("Channel", Exempt(BUILTIN_HANDLE)),
     ("Char", SingleArgument),
+    ("Complex", subject(&["Complex"])),
     ("Cond", Exempt(BUILTIN_HANDLE)),
     ("Context", Exempt(BUILTIN_HANDLE)),
     ("DataChannel", Exempt(BUILTIN_HANDLE)),
