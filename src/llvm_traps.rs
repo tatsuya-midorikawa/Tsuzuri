@@ -523,11 +523,13 @@ pub(super) fn instrument_with(
         } else if let (Some(function), Some(call)) = (&current, callable(line, false)) {
             let entry = functions.get_mut(function).unwrap();
             if call.name == "@llvm.trap" {
-                entry.kinds.insert(
-                    marker
-                        .and_then(|(_, kind)| kind)
-                        .unwrap_or_else(|| runtime_kind(function)),
-                );
+                if function != "@tz.callback.after_main" {
+                    entry.kinds.insert(
+                        marker
+                            .and_then(|(_, kind)| kind)
+                            .unwrap_or_else(|| runtime_kind(function)),
+                    );
+                }
             } else if call.name.starts_with('%') {
                 entry.indirect = true;
             } else {
@@ -657,7 +659,7 @@ pub(super) fn instrument_with(
                     .map(|(span, _)| span)
                     .or_else(|| source.map(|(span, _)| *span))
                     .unwrap_or(fallback);
-                if call.name == "@llvm.trap" {
+                if call.name == "@llvm.trap" && function != "@tz.callback.after_main" {
                     let kind = marker
                         .and_then(|(_, kind)| kind)
                         .unwrap_or_else(|| runtime_kind(&function));
@@ -796,7 +798,9 @@ pub(super) fn instrument_with(
             );
         }
         output.push_str(report_done(backtrace));
-        output.push_str(TRAP_WRITE);
+        if !output.contains("define internal void @tz.trap.write(") {
+            output.push_str(TRAP_WRITE);
+        }
     } else {
         if !output.contains("declare i64 @write(") {
             output.push_str("\ndeclare i64 @write(i32, ptr, i64)\n");
@@ -846,7 +850,9 @@ pub(super) fn instrument_with(
             );
         }
         output.push_str(report_done(backtrace));
-        output.push_str(TRAP_WRITE);
+        if !output.contains("define internal void @tz.trap.write(") {
+            output.push_str(TRAP_WRITE);
+        }
     }
     // B10: `Domain.__message` reads the text of a site from a table that only a program that asks for it has.
     if output.contains("call ptr @tz.trap.text(") {

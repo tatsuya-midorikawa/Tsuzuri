@@ -1835,12 +1835,15 @@ pub(crate) fn with_blocking_externs(
     let mut output = String::with_capacity(ir.len() + 256);
     let mut calls = false;
     let mut callbacks = false;
+    let mut callback_scopes = false;
     let mut lines = ir.split_inclusive('\n');
     while let Some(line) = lines.next() {
         let header = line.trim_end();
+        let is_callback =
+            header.contains(" @tz.callback.") && !header.contains(" @tz.callback.after_main(");
         if header.starts_with("define ")
             && header.ends_with('{')
-            && (header.contains(" @tz.callback.")
+            && (is_callback
                 || header
                     .split_once(" @")
                     .and_then(|(_, name)| name.split_once('('))
@@ -1851,9 +1854,18 @@ pub(crate) fn with_blocking_externs(
             let Some(label) = lines.next() else { break };
             output.push_str(label);
             output.push_str("  %tz.callback = call i32 @tsuzuri_tz_callback_enter()\n");
+            if is_callback {
+                callback_scopes = true;
+                output.push_str("  %tz.host = call ptr @tsuzuri_tz_callback_scope_enter()\n");
+            }
             for line in lines.by_ref() {
                 let body = line.trim_start();
                 if body.starts_with("ret ") || body.trim_end() == "ret void" {
+                    if is_callback {
+                        output.push_str(
+                            "  call void @tsuzuri_tz_callback_scope_leave(ptr %tz.host)\n",
+                        );
+                    }
                     output.push_str("  call void @tsuzuri_tz_callback_exit(i32 %tz.callback)\n");
                 }
                 output.push_str(line);
@@ -1882,6 +1894,9 @@ pub(crate) fn with_blocking_externs(
     }
     if callbacks {
         output.push_str("declare i32 @tsuzuri_tz_callback_enter()\ndeclare void @tsuzuri_tz_callback_exit(i32)\n");
+    }
+    if callback_scopes {
+        output.push_str("declare ptr @tsuzuri_tz_callback_scope_enter()\ndeclare void @tsuzuri_tz_callback_scope_leave(ptr)\n");
     }
     output
 }
@@ -2102,6 +2117,7 @@ fn emit_program_in(
         strings: string_form,
         overflow: crate::overflow::active().map(overflow_emit::Report::new),
         user_drops: std::rc::Rc::new(identity_drops(module, &emitted)),
+        guard_callbacks_after_main: !wasm && entry == Entry::Console,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -2205,7 +2221,32 @@ fn emit_program_in(
     );
     *exhausted = specializations.exhausted();
     // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
-    for id in std::mem::take(&mut globals.callbacks) {
+    let callback_ids = std::mem::take(&mut globals.callbacks);
+    let mark_main_done = !callback_ids.is_empty() && globals.guard_callbacks_after_main;
+    if mark_main_done {
+        const AFTER_MAIN_MSG: &str = "Tsuzuri runtime: a callback was called after main returned; stop the timers, threads and windows that call it before main returns\n";
+        let bytes: String = AFTER_MAIN_MSG
+            .bytes()
+            .map(|byte| format!("\\{byte:02X}"))
+            .collect();
+        let len = AFTER_MAIN_MSG.len();
+        let _ = write!(
+            output,
+            "@tz.main.done = internal global i32 0, align 4\n\
+@tz.callback.after_main.msg = private unnamed_addr constant [{len} x i8] c\"{bytes}\"\n\
+define internal void @tz.callback.after_main() cold noreturn nounwind {{\n\
+entry:\n\
+  call void @tz.trap.write(ptr @tz.callback.after_main.msg, i64 {len})\n\
+  call void @llvm.trap()\n\
+  unreachable\n\
+}}\n"
+        );
+        if !instrumentation.traps {
+            output.push_str(traps::TRAP_WRITE);
+            intrinsics.insert("declare i64 @write(i32, ptr, i64)".into());
+        }
+    }
+    for id in callback_ids {
         let function = &module.functions[id];
         let wrapper = host_abi::wrapper(
             module,
@@ -2289,7 +2330,7 @@ fn emit_program_in(
     }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
-            console_main(module, uses_args, spawns(module)),
+            console_main(module, uses_args, spawns(module), mark_main_done),
             module,
             &module.functions[module.entry.unwrap()],
             "@main",
@@ -2910,6 +2951,8 @@ struct Globals {
     user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
+    guard_callbacks_after_main: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
     coverage: Option<crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
@@ -2971,6 +3014,7 @@ impl Default for Globals {
             shared_types: BTreeSet::new(),
             user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
+            guard_callbacks_after_main: false,
             coverage: None,
             seed: None,
             #[cfg(debug_assertions)]
@@ -9623,7 +9667,12 @@ fn test_builtin(
 /// `Array<string> -> i32` receives the arguments that `src/runtime/arguments.c` reads.
 /// `@main` for a `def main`. When the program spawns (TZ02), it waits for the tzroutines spawned
 /// during `main` before it returns the exit code.
-fn console_def_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
+fn console_def_main(
+    module: &CheckedModule,
+    uses_args: bool,
+    spawns: bool,
+    mark_main_done: bool,
+) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut body = String::new();
     if uses_args {
@@ -9649,9 +9698,14 @@ fn console_def_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> St
     } else {
         ("", "")
     };
+    let done = if mark_main_done {
+        "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
+    } else {
+        ""
+    };
     let _ = write!(
         output,
-        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}  ret i32 %code\n}}\n",
+        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}{done}  ret i32 %code\n}}\n",
         main.qualified_name()
     );
     if spawns {
@@ -9700,15 +9754,29 @@ fn library_def_main(module: &CheckedModule, wasm: bool) -> String {
     output
 }
 
-fn console_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
+fn console_main(
+    module: &CheckedModule,
+    uses_args: bool,
+    spawns: bool,
+    mark_main_done: bool,
+) -> String {
+    let done = if mark_main_done {
+        "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
+    } else {
+        ""
+    };
     if main_entry(module) {
-        return console_def_main(module, uses_args, spawns);
+        return console_def_main(module, uses_args, spawns, mark_main_done);
     }
     if io_entry(module) {
         if uses_args {
-            return "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+            return format!(
+                "define i32 @main(i32 %argc, ptr %argv) {{\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+            );
         }
-        return "define i32 @main() {\nentry:\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+        return format!(
+            "define i32 @main() {{\nentry:\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+        );
     }
     let main = &module.functions[module.entry.unwrap()];
     let ty = &main.signature.result;
@@ -9737,6 +9805,7 @@ fn console_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String
     if spawns {
         output.push_str(TZROUTINE_SCOPE_LEAVE);
     }
+    output.push_str(done);
     match ty {
         Type::Char | Type::Utf8Char => {
             output.push_str("  %buffer = alloca [4 x i8], align 4\n");

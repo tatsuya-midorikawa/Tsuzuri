@@ -1,0 +1,8 @@
+@trusted
+extern "w12_gui_call_after_main" def call_after_main :: (i64 -> i64) -> unit
+
+def late_cb :: i64 -> i64 = \x -> x + 1
+
+def main :: unit -> i32 = \() ->
+    call_after_main late_cb
+    0

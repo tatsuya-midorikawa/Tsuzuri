@@ -375,10 +375,15 @@ TZR_API void tzr_jspi_run(tzr_g *g) {
 /* ---------------------------------------------------------------- the calls of other parts */
 
 /* One thread: a blocking call holds no P, a callback needs no M, and every G is on the thread. */
+static inline void tzr_host_enter(tzr_g *g) { (void)g; }
+static inline void tzr_host_leave(tzr_g *g) { (void)g; }
+
 TZR_API void tsuzuri_tz_blocking_enter(void) {}
 TZR_API void tsuzuri_tz_blocking_exit(void) {}
 TZR_API int32_t tsuzuri_tz_callback_enter(void) { return 0; }
 TZR_API void tsuzuri_tz_callback_exit(int32_t depth) { (void)depth; }
+TZR_API void *tsuzuri_tz_callback_scope_enter(void) { return NULL; }
+TZR_API void tsuzuri_tz_callback_scope_leave(void *scope) { (void)scope; }
 TZR_API void tsuzuri_tz_lock_thread(void) {}
 TZR_API void tsuzuri_tz_unlock_thread(void) {}
 

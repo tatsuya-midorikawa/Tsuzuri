@@ -244,3 +244,116 @@ int64_t w07_gui_timer_proc(int64_t (*on_tick)(uint64_t id), int64_t expected) {
     return timed_out ? -1 : g_timer_proc_count;
 }
 
+/* W12 / W22 / W23: direct WNDPROC registration in WNDCLASSEXW, Windows thread-pool callback, and atexit. */
+typedef int64_t (*w12_wndproc_t)(int64_t hwnd, uint32_t msg, uint64_t wparam, int64_t lparam);
+static int g_w12_class_seq = 0;
+static WCHAR g_w12_class_name[64];
+
+int64_t w12_gui_register_class(w12_wndproc_t proc) {
+    int id = ++g_w12_class_seq;
+    wsprintfW(g_w12_class_name, L"tz-w12-%d-%lu", id, (unsigned long)GetCurrentProcessId());
+    WNDCLASSEXW wc;
+    ZeroMemory(&wc, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = (WNDPROC)proc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = g_w12_class_name;
+    return RegisterClassExW(&wc) ? 1 : 0;
+}
+
+int64_t w12_gui_create_registered(void) {
+    HWND hwnd = CreateWindowExW(0, g_w12_class_name, L"w12", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+    return (int64_t)(intptr_t)hwnd;
+}
+
+int64_t w12_gui_def_proc(int64_t hwnd, uint32_t msg, uint64_t wparam, int64_t lparam) {
+    return (int64_t)DefWindowProcW((HWND)(intptr_t)hwnd, (UINT)msg, (WPARAM)wparam, (LPARAM)lparam);
+}
+
+int64_t w12_gui_destroy(int64_t hwnd) {
+    return DestroyWindow((HWND)(intptr_t)hwnd) ? 1 : 0;
+}
+
+int64_t w12_gui_pump_pending(void) {
+    int64_t count = 0;
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) break;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+        count++;
+    }
+    return count;
+}
+
+int64_t w12_gui_set_userdata(int64_t hwnd, int64_t value) {
+    return (int64_t)SetWindowLongPtrW((HWND)(intptr_t)hwnd, GWLP_USERDATA, (LONG_PTR)value);
+}
+
+int64_t w12_gui_get_userdata(int64_t hwnd) {
+    return (int64_t)GetWindowLongPtrW((HWND)(intptr_t)hwnd, GWLP_USERDATA);
+}
+
+static LONG volatile g_w12_mark = 0;
+void w12_gui_set_mark(int64_t value) {
+    InterlockedExchange(&g_w12_mark, (LONG)value);
+}
+int64_t w12_gui_get_mark(void) {
+    return (int64_t)InterlockedCompareExchange(&g_w12_mark, 0, 0);
+}
+
+typedef struct {
+    int64_t (*cb)(int64_t);
+    int64_t arg;
+    int64_t out;
+    HANDLE done;
+} w12_tp_ctx;
+
+static VOID NTAPI w12_tp_callback(PTP_CALLBACK_INSTANCE instance, PVOID context) {
+    (void)instance;
+    w12_tp_ctx *ctx = (w12_tp_ctx *)context;
+    int64_t r = ctx->cb(ctx->arg);
+    int64_t m = w12_gui_get_mark();
+    ctx->out = r + m;
+    SetEvent(ctx->done);
+}
+
+int64_t w12_gui_pool_submit_wait(int64_t (*cb)(int64_t), int64_t arg) {
+    w12_gui_set_mark(0);
+    HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!ev) return -1;
+    w12_tp_ctx ctx = { cb, arg, 0, ev };
+    if (!TrySubmitThreadpoolCallback(w12_tp_callback, &ctx, NULL)) {
+        CloseHandle(ev);
+        return -2;
+    }
+    DWORD waited = WaitForSingleObject(ev, 5000);
+    CloseHandle(ev);
+    return waited == WAIT_OBJECT_0 ? ctx.out : -3;
+}
+
+static int64_t (*g_w12_after_main_cb)(int64_t) = NULL;
+static void w12_atexit_runner(void) {
+    if (g_w12_after_main_cb) (void)g_w12_after_main_cb(9);
+}
+void w12_gui_call_after_main(int64_t (*cb)(int64_t)) {
+    g_w12_after_main_cb = cb;
+    atexit(w12_atexit_runner);
+}
+
+static volatile LONG g_w12_idle_ready = 0;
+static unsigned __stdcall w12_idle_worker(void *param) {
+    int64_t (*cb)(int64_t) = (int64_t (*)(int64_t))param;
+    (void)cb(1);
+    InterlockedExchange(&g_w12_idle_ready, 1);
+    Sleep(5000);
+    return 0;
+}
+void w12_gui_start_idle_thread(int64_t (*cb)(int64_t)) {
+    InterlockedExchange(&g_w12_idle_ready, 0);
+    HANDLE th = (HANDLE)_beginthreadex(NULL, 0, w12_idle_worker, (void *)cb, 0, NULL);
+    if (th) CloseHandle(th);
+    while (InterlockedCompareExchange(&g_w12_idle_ready, 0, 0) == 0) SwitchToThread();
+}
+
+

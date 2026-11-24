@@ -653,6 +653,8 @@ struct tzr_g {
     const char *wait_reason;
     tzr_note note;      /* a pseudo-G's, or a locked G's (note_ready) */
     int note_ready;     /* a G's note has been initialized (the first lock, TZ08) */
+    int host_depth;     /* pseudo-G only: active boundaries and callbacks on this thread (W12) */
+    int outside;        /* pseudo-G only: 1 while outside every entry and not counted in npseudo_running */
     int doomed;        /* pseudo-G only: woken by the deadlock detector */
     uint64_t rand;
     tzr_sudog *param;   /* the sudog that completed this G's wait */
@@ -1452,8 +1454,10 @@ static void tzr_pseudo_destroy(void *arg) {
     }
     tzr_lock_release(&tzr_pseudo_lock);
     tzr_mutex_lock(&tzr_sched.lock);
-    tzr_sched.npseudo_running--;
-    tzr_checkdead(); /* the last running thread may leave only parked participants */
+    if (!g->outside) {
+        tzr_sched.npseudo_running--;
+        tzr_checkdead(); /* the last running thread may leave only parked participants */
+    }
     tzr_mutex_unlock(&tzr_sched.lock);
     tzr_note_destroy(&g->note);
     free(g->held);
@@ -1484,7 +1488,15 @@ static void tzr_pseudo_key_set(tzr_g *g) { pthread_setspecific(tzr_pseudo_key, g
 
 static tzr_g *tzr_pseudo(void) {
     tzr_g *g = tzr_tls_pseudo;
-    if (g) return g;
+    if (g) {
+        if (g->outside) {
+            tzr_mutex_lock(&tzr_sched.lock);
+            g->outside = 0;
+            tzr_sched.npseudo_running++;
+            tzr_mutex_unlock(&tzr_sched.lock);
+        }
+        return g;
+    }
     tzr_start();
     tzr_run_once(&tzr_pseudo_key_once, tzr_pseudo_key_init);
     g = calloc(1, sizeof *g);
@@ -1905,6 +1917,28 @@ TZR_API void tsuzuri_tz_go(void (*code)(void *), void *env) {
     tzr_start();
     tzr_spawn(tzr_spawn_scope(tzr_current()), code, env, 0);
 }
+
+static void tzr_host_enter(tzr_g *g) {
+    if (g->kind != TZR_KIND_THREAD) return;
+    if (g->outside) {
+        tzr_mutex_lock(&tzr_sched.lock);
+        g->outside = 0;
+        tzr_sched.npseudo_running++;
+        tzr_mutex_unlock(&tzr_sched.lock);
+    }
+    g->host_depth++;
+}
+
+static void tzr_host_leave(tzr_g *g) {
+    if (g->kind != TZR_KIND_THREAD) return;
+    if (--g->host_depth == 0 && !g->outside) {
+        tzr_mutex_lock(&tzr_sched.lock);
+        g->outside = 1;
+        tzr_sched.npseudo_running--;
+        tzr_checkdead();
+        tzr_mutex_unlock(&tzr_sched.lock);
+    }
+}
 #endif /* !TZR_JSPI */
 
 /* ---------------------------------------------------------------- scopes */
@@ -1916,6 +1950,7 @@ TZR_API void *tsuzuri_tz_scope_enter(void) {
     if (scope == NULL) tzr_fatal("out of memory");
     scope->boundary = scope;
     tzr_g *g = tzr_current();
+    tzr_host_enter(g);
     scope->outer = g->spawn_scope;
     g->spawn_scope = scope;
     return scope;
@@ -1949,8 +1984,10 @@ static int tzr_scope_wait(tzr_scope *scope) {
 TZR_API int32_t tsuzuri_tz_scope_leave(void *opaque) {
     tzr_scope *scope = opaque;
     int doomed = tzr_scope_wait(scope);
-    tzr_current()->spawn_scope = scope->outer;
+    tzr_g *g = tzr_current();
+    g->spawn_scope = scope->outer;
     if (!doomed) free(scope);
+    tzr_host_leave(g);
     return doomed;
 }
 
@@ -1965,8 +2002,10 @@ TZR_API void tsuzuri_tz_boundary_leave(void *opaque) {
     do {
         if (tzr_scope_wait(scope)) TZR_TRAP();
     } while (tzr_boundary_settle(scope));
-    tzr_current()->spawn_scope = scope->outer;
+    tzr_g *g = tzr_current();
+    g->spawn_scope = scope->outer;
     free(scope);
+    tzr_host_leave(g);
 }
 
 #if !defined(TZR_JSPI) /* tzroutine-jspi.h has its own of these, to tsuzuri_tz_cpu_count */
@@ -2114,6 +2153,27 @@ TZR_API void tsuzuri_tz_callback_exit(int32_t depth) {
     tzr_unlockm(m->curg);
     tzr_entersyscall(m);
     m->syscall_depth = depth;
+}
+
+/* W12: a static callback invoked on a thread that is outside every boundary becomes a boundary of
+ * its own so any tzroutines or timers it starts settle before the callback returns; on a thread
+ * already inside a boundary (or on a scheduler M), children belong to that enclosing boundary. */
+TZR_API void *tsuzuri_tz_callback_scope_enter(void) {
+    tzr_g *g = tzr_current();
+    if (g->spawn_scope == NULL && g->scope == NULL) {
+        return tsuzuri_tz_scope_enter();
+    }
+    tzr_host_enter(g);
+    return NULL;
+}
+
+TZR_API void tsuzuri_tz_callback_scope_leave(void *scope) {
+    if (scope != NULL) {
+        tsuzuri_tz_boundary_leave(scope);
+        return;
+    }
+    tzr_g *g = tzr_tls_pseudo;
+    if (g != NULL) tzr_host_leave(g);
 }
 
 /* Routine.with_locked_thread (TZ08 Phase 3): the calling G stays on its M's thread from the lock to

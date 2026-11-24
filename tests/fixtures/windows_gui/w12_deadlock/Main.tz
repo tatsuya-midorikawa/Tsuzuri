@@ -1,0 +1,10 @@
+@trusted
+extern "w12_gui_start_idle_thread" def start_idle_thread :: (i64 -> i64) -> unit
+
+def noop_cb :: i64 -> i64 = \x -> x + 1
+
+def main :: unit -> i32 = \() ->
+    start_idle_thread noop_cb
+    let ch: Channel<i64> = Channel.make 0
+    let _r = Channel.recv ch
+    0

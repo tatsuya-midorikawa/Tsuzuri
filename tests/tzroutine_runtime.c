@@ -3124,6 +3124,188 @@ static void test_preempt_async_edges(void) { printf("preempt async edges: not bu
 static void urgent_kick_pause(void) {}
 #endif
 
+/* ---------------------------------------------------------------- W12 callback scopes & pseudo-Gs */
+
+static _Atomic int w12_child_done;
+static void w12_slow_child(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_sleep(15000000) == 0);
+    atomic_store(&w12_child_done, 1);
+}
+static void w12_host_thread_body(void) {
+    void *scope = tsuzuri_tz_callback_scope_enter();
+    CHECK(scope != NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(scope);
+    CHECK(atomic_load(&w12_child_done) == 1);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_host_thread_win(LPVOID p) { (void)p; w12_host_thread_body(); return 0; }
+#else
+static void *w12_host_thread_posix(void *p) { (void)p; w12_host_thread_body(); return NULL; }
+#endif
+static void test_callback_scope_host_thread(void) {
+    atomic_store(&w12_child_done, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_host_thread_win, NULL, 0, NULL);
+    CHECK(th != NULL && WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_host_thread_posix, NULL) == 0 && pthread_join(th, NULL) == 0);
+#endif
+    CHECK(atomic_load(&w12_child_done) == 1);
+    printf("callback scope host thread: ok\n");
+}
+
+static _Atomic int w12_m_nested_ok;
+static void w12_on_m_check(void *env) {
+    (void)env;
+    void *inner = tsuzuri_tz_callback_scope_enter();
+    CHECK(inner == NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(inner);
+    atomic_store(&w12_m_nested_ok, 1);
+}
+static void test_callback_scope_nested(void) {
+    atomic_store(&w12_child_done, 0);
+    atomic_store(&w12_m_nested_ok, 0);
+    void *outer = tsuzuri_tz_scope_enter();
+    void *nested = tsuzuri_tz_callback_scope_enter();
+    CHECK(nested == NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(nested);
+    tsuzuri_tz_boundary_leave(outer);
+    CHECK(atomic_load(&w12_child_done) == 1);
+
+    atomic_store(&w12_child_done, 0);
+    outer = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(w12_on_m_check, NULL);
+    tsuzuri_tz_boundary_leave(outer);
+    CHECK(atomic_load(&w12_m_nested_ok) == 1 && atomic_load(&w12_child_done) == 1);
+    printf("callback scope nested: ok\n");
+}
+
+static _Atomic int w12_outside_ready, w12_outside_exit;
+static void w12_outside_idler(void) {
+    void *scope = tsuzuri_tz_callback_scope_enter();
+    CHECK(scope != NULL);
+    tsuzuri_tz_callback_scope_leave(scope);
+    atomic_store(&w12_outside_ready, 1);
+    while (!atomic_load(&w12_outside_exit)) block_ms(5);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_outside_win(LPVOID p) { (void)p; w12_outside_idler(); return 0; }
+#else
+static void *w12_outside_posix(void *p) { (void)p; w12_outside_idler(); return NULL; }
+#endif
+static void pseudo_outside_body(void) {
+    start_watchdog();
+    atomic_store(&w12_outside_ready, 0);
+    atomic_store(&w12_outside_exit, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_outside_win, NULL, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_outside_posix, NULL) == 0);
+#endif
+    while (!atomic_load(&w12_outside_ready)) tzr_os_yield();
+    void *scope = tsuzuri_tz_scope_enter();
+    tzr_chan *c = chan_make(8, 0);
+    int64_t v = 0;
+    int status = tsuzuri_tz_chan_recv(c, &v, 1);
+    atomic_store(&w12_outside_exit, 1);
+    (void)scope;
+    _exit(status == TZR_DEADLOCK ? 55 : 4);
+}
+static void test_pseudo_outside_detector(void) {
+    CHECK(exited_with(run_child("child-pseudo-outside"), 55));
+    printf("pseudo outside detector: ok\n");
+}
+
+static _Atomic int w12_unentered_ready;
+static void w12_unentered_sender(tzr_chan *c) {
+    (void)tsuzuri_tz_count();
+    (void)tzr_current(); /* registers a pseudo-G without entering a boundary */
+    atomic_store(&w12_unentered_ready, 1);
+    block_ms(15);
+    int64_t v = 99;
+    CHECK(tsuzuri_tz_chan_send(c, &v, 1) == TZR_OK);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_unentered_win(LPVOID p) { w12_unentered_sender(p); return 0; }
+#else
+static void *w12_unentered_posix(void *p) { w12_unentered_sender(p); return NULL; }
+#endif
+static void test_pseudo_without_entry(void) {
+    atomic_store(&w12_unentered_ready, 0);
+    tzr_chan *c = chan_make(8, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_unentered_win, c, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_unentered_posix, c) == 0);
+#endif
+    while (!atomic_load(&w12_unentered_ready)) tzr_os_yield();
+    void *scope = tsuzuri_tz_scope_enter();
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK && v == 99);
+    tsuzuri_tz_boundary_leave(scope);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
+    free(c);
+    printf("pseudo without entry: ok\n");
+}
+
+static _Atomic int w12_reenter_ready;
+static void w12_reenter_sender(tzr_chan *c) {
+    (void)tzr_current();
+    atomic_store(&w12_reenter_ready, 1);
+    for (int64_t i = 1; i <= 1000; i++) {
+        CHECK(tsuzuri_tz_chan_send(c, &i, 1) == TZR_OK);
+    }
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_reenter_win(LPVOID p) { w12_reenter_sender(p); return 0; }
+#else
+static void *w12_reenter_posix(void *p) { w12_reenter_sender(p); return NULL; }
+#endif
+static void test_pseudo_reenters_runtime(void) {
+    atomic_store(&w12_reenter_ready, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_boundary_leave(scope); /* main pseudo-G is now outside == 1 */
+    tzr_chan *c = chan_make(8, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_reenter_win, c, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_reenter_posix, c) == 0);
+#endif
+    while (!atomic_load(&w12_reenter_ready)) tzr_os_yield();
+    int64_t sum = 0;
+    for (int i = 0; i < 1000; i++) {
+        int64_t v = 0;
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+        sum += v;
+    }
+    CHECK(sum == 500500);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
+    tzr_mutex_lock(&tzr_sched.lock);
+    CHECK(tzr_sched.npseudo_running >= 0 && tzr_sched.npseudo_parked == 0);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    free(c);
+    printf("pseudo reenters runtime: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -3134,6 +3316,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-report") == 0) report_body();
+    if (only && strcmp(only, "child-pseudo-outside") == 0) pseudo_outside_body();
 #if defined(TZR_ASYNC)
     if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
     if (only && strcmp(only, "child-urgent-forward") == 0) urgent_forward_body();
@@ -3234,6 +3417,11 @@ int main(int argc, char **argv) {
     RUN("preempt_async_forward", test_preempt_async_forward());
     RUN("preempt_async_edges", test_preempt_async_edges());
     RUN("preempt_idle", test_preempt_idle());
+    RUN("callback_scope_host_thread", test_callback_scope_host_thread());
+    RUN("callback_scope_nested", test_callback_scope_nested());
+    RUN("pseudo_outside_detector", test_pseudo_outside_detector());
+    RUN("pseudo_without_entry", test_pseudo_without_entry());
+    RUN("pseudo_reenters_runtime", test_pseudo_reenters_runtime());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

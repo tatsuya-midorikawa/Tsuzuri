@@ -1027,3 +1027,42 @@ const NAME: string = \"abcd\"
         );
     }
 }
+
+#[test]
+fn console_callbacks_guard_against_calls_after_main_while_libraries_stay_process_wide() {
+    let source = "extern \"w_reg\" def register :: (i64 -> i64) -> unit\n\
+                  extern \"w_reg2\" def register2 :: (i64 -> i64) -> unit\n\
+                  def cb1 :: i64 -> i64 = \\x -> x + 1\n\
+                  def cb2 :: i64 -> i64 = \\x -> x + 2\n\
+                  def main :: unit -> i32 = \\() -> { register cb1; register2 cb2; 0 }\n";
+    let module = analyze_with_edition(source, Edition::E2027).unwrap();
+    let console = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    assert_eq!(console, llvm::emit(&module, llvm::Entry::Console).unwrap());
+    assert!(console.contains("@tz.main.done = internal global i32 0, align 4"));
+    assert_eq!(
+        console
+            .matches("define internal void @tz.callback.after_main()")
+            .count(),
+        1
+    );
+    assert!(console.contains("store atomic i32 1, ptr @tz.main.done release, align 4"));
+    assert_eq!(
+        console
+            .matches("load atomic i32, ptr @tz.main.done acquire, align 4")
+            .count(),
+        2
+    );
+
+    let library = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(!library.contains("@tz.main.done"));
+    assert!(!library.contains("@tz.callback.after_main"));
+
+    let wasm = ir(&module, true);
+    assert!(!wasm.contains("@tz.main.done"));
+    assert!(!wasm.contains("@tz.callback.after_main"));
+
+    let no_cb =
+        analyze_with_edition("def main :: unit -> i32 = \\() -> 0\n", Edition::E2027).unwrap();
+    let plain_console = llvm::emit(&no_cb, llvm::Entry::Console).unwrap();
+    assert!(!plain_console.contains("@tz.main.done"));
+}

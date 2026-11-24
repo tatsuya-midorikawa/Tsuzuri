@@ -185,6 +185,21 @@ function runGuiStage(compiler, clang, directory) {
     assert.equal(launchWithoutHandles(trapTimerProcExe, [timerProcMarker], { launcher }), 0xc000001d, `trap_timer_proc ${optimization}`);
     assert.ok(!existsSync(timerProcMarker), `trap_timer_proc marker should not exist (${optimization})`);
 
+    // W12: RegisterClassExW static WNDPROC (WM_CREATE, SendMessageW, PostMessageW, WM_CLOSE -> DestroyWindow -> WM_DESTROY reentry),
+    // SetTimer TIMERPROC, TrySubmitThreadpoolCallback boundary wait, outside pseudo-G deadlock, and post-main callback trap.
+    const w12WndExe = buildGui("w12_wndclass", [optimization], { compiler, clang, directory });
+    assert.equal(launchWithoutHandles(w12WndExe, [], { launcher }), 42, `w12_wndclass ${optimization}`);
+
+    const w12DeadExe = buildGui("w12_deadlock", [optimization], { compiler, clang, directory });
+    const w12DeadOds = join(directory, `w12-dead${optimization}.txt`);
+    assert.equal(launchWithoutHandles(w12DeadExe, [], { launcher, debugStrings: w12DeadOds }), 0xc000001d, `w12_deadlock ${optimization}`);
+    assert.match(readFileSync(w12DeadOds, "utf8"), /all tzroutines are asleep - deadlock!/);
+
+    const w12AfterExe = buildGui("w12_after_main", [optimization], { compiler, clang, directory });
+    const w12AfterOds = join(directory, `w12-after${optimization}.txt`);
+    assert.equal(launchWithoutHandles(w12AfterExe, [], { launcher, debugStrings: w12AfterOds }), 0xc000001d, `w12_after_main ${optimization}`);
+    assert.match(readFileSync(w12AfterOds, "utf8"), /a callback was called after main returned/);
+
     // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
     const tickDir = join(directory, `tick-obj${optimization}`);
     mkdirSync(tickDir, { recursive: true });
@@ -679,6 +694,6 @@ if (isMain) {
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
     }
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 }

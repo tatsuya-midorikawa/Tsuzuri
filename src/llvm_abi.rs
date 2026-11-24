@@ -534,6 +534,17 @@ pub(super) fn wrapper(
         specializations,
     );
     emitter.current_span = function.span;
+    if kind == WrapperKind::Callback && emitter.globals.guard_callbacks_after_main {
+        let done = emitter.value("load atomic i32, ptr @tz.main.done acquire, align 4");
+        let after = emitter.value(format!("icmp ne i32 {done}, 0"));
+        let trap_label = emitter.label();
+        let ready_label = emitter.label();
+        emitter.branch(&after, &trap_label, &ready_label);
+        emitter.begin(&trap_label);
+        emitter.instruction("call void @tz.callback.after_main()");
+        emitter.instruction("unreachable");
+        emitter.begin(&ready_label);
+    }
     let result = &function.signature.result;
     let mut parameters = Vec::new();
     if out_result(result) {

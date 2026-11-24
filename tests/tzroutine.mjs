@@ -593,6 +593,31 @@ bump ()
         runs++;
       }
     }
+
+    // W12: static callbacks on native stay valid after the registering extern returns, become
+    // boundaries on unattached host threads, do not block deadlock detection once outside, and trap
+    // if invoked after `main` returns.
+    const cbLife = join(temporary, "callback-lifetime");
+    mkdirSync(cbLife);
+    writeFileSync(join(cbLife, "Main.tz"), readFileSync(join(root, "tests/fixtures/callback_lifetime/Main.tz"), "utf8"));
+    const cbHost = join(temporary, "callback-lifetime-host.o");
+    execute(process.env.TSUZURI_CLANG ?? "clang", ["-c", "-O2", "-pthread", join(root, "tests/fixtures/callback_lifetime/host.c"), "-o", cbHost]);
+    for (const optimization of ["-O0", "-O3"]) {
+      const exe = join(temporary, `cb-life${optimization}`);
+      cli(["build", cbLife, optimization, "--link", cbHost, "-l", "pthread", "-o", exe]);
+      for (const procs of ["1", "4"]) {
+        const normal = spawnSync(exe, ["normal"], { encoding: "utf8", timeout: 60_000, env: { ...process.env, TSUZURI_MAXPROCS: procs } });
+        assert.equal(normal.status, 42, `callback_lifetime normal ${optimization} P${procs}\n${normal.stderr}`);
+        runs++;
+      }
+      const dead = spawnSync(exe, ["deadlock"], { encoding: "utf8", timeout: 30_000 });
+      assert.notEqual(dead.status, 0);
+      assert.match(dead.stderr, /all tzroutines are asleep - deadlock!/);
+      const after = spawnSync(exe, ["after_main"], { encoding: "utf8", timeout: 30_000 });
+      assert.notEqual(after.status, 0);
+      assert.match(after.stderr, /a callback was called after main returned/);
+      runs += 2;
+    }
   }
 
   // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): a watcher sees

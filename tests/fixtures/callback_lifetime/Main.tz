@@ -1,0 +1,46 @@
+@trusted
+extern "w12_register" def register :: (i64 -> i64) -> unit
+
+@trusted
+extern "w12_fire" def fire :: i64 -> i64
+
+@trusted
+extern "w12_run_thread_sum" def run_thread_sum :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_pool_submit_wait" def pool_submit_wait :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_host_mark" def host_mark :: i64 -> unit
+
+@trusted
+extern "w12_start_idle_host_thread" def start_idle_host_thread :: (i64 -> i64) -> unit
+
+@trusted
+extern "w12_register_atexit" def register_atexit :: (i64 -> i64) -> unit
+
+def triple :: i64 -> i64 = \x -> x * 3
+
+def on_pool :: i64 -> i64 = \x ->
+    tzroutine {
+        Time.sleep (15 * Time.millisecond())
+        host_mark (x * 10)
+    }
+    x + 1
+
+def main :: Array<string> -> i32 = \args ->
+    let has_arg = Array.length args > 1
+    if has_arg && args[1] == "deadlock" then
+        start_idle_host_thread triple
+        let ch: Channel<i64> = Channel.make 0
+        let _r = Channel.recv ch
+        0
+    elif has_arg && args[1] == "after_main" then
+        register_atexit triple
+        42
+    else
+        register triple
+        let stored = fire 14
+        let threaded = run_thread_sum triple 1000
+        let marked = pool_submit_wait on_pool 7
+        if stored == 42 && threaded == 1501500 && marked == 78 then 42 else 1
