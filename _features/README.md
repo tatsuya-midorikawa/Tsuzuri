@@ -389,6 +389,25 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NS07 | [非ゼロ外部アドレス型 `ExternAddr` と `extern view` の静的非 Null 化](NS07-extern-addr-nonnull-view.md) | P2 | S | W24 | todo |
 | NS08 | [`Owned.call` の部分適用が `Capture` 検査をすり抜けて解放後読み出しになる不具合の修正](_completed/NS08-owned-call-partial-capture-check.md) | P0 | S | – | done（`Owned.call` の結果が関数型のとき、直接呼び出し・パイプライン・関数値・ジェネリック単相化のすべてで第 2 引数に `Capture` を要求し、`owned2` の二重解放・解放後読み出しを `E1005` で拒否） |
 
+### NC. 数値計算基盤と NumPy 互換機能（案 C: ハイブリッド。D-65）
+
+| ID | チケット | 優先 | 規模 | 依存 | 状態 |
+|---|---|---|---|---|---|
+| NC01 | [複素数型 `Complex<'a>` と組み込み `Math` の不足関数群](NC01-complex-and-extended-math.md) | P1 | M | – | todo |
+| NC02 | [`Tensor` コア基盤の拡張（`Tensor.Mut`・負/0 ストライド・ブロードキャスト・生成 API・`Eq`/`Display`）](NC02-tensor-core-views-and-broadcasting.md) | P0 | L | – | todo |
+| NC03 | [算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`）の借用対応（案 C・言語拡張 ①）](NC03-borrowed-arithmetic-operators.md) | P1 | L | – | todo |
+| NC04 | [汎用 `Index` 型クラスとスライス記述子モジュール `Slice`（案 C・言語拡張 ②）](NC04-generic-index-class-and-slice.md) | P1 | L | (NC02) | todo |
+| NC05 | [`Tensor` の形状操作・結合/分割・ファンシーインデキシング・ブールマスク](NC05-tensor-shape-indexing-and-masking.md) | P1 | M | NC02, (NC04) | todo |
+| NC06 | [ブロードキャスト対応の要素ごと演算（ufunc）・比較・インプレース出力・演算子インスタンス](NC06-tensor-ufuncs-and-elementwise.md) | P1 | L | NC01, NC02, (NC03) | todo |
+| NC07 | [軸指定の還元・統計・累積・ソート・探索・集合演算](NC07-tensor-reductions-stats-and-sorting.md) | P1 | L | NC02, NC05, NC06 | todo |
+| NC08 | [線形代数モジュール `Linalg` とテンソル縮約（`matmul`/`tensordot`/`einsum`/分解/求解）](NC08-linalg-core-and-einsum.md) | P1 | XL | NC01, NC02, NC05, NC06 | todo |
+| NC09 | [高速フーリエ変換 `Fft` と多項式 `Polynomial`](NC09-fft-and-polynomial.md) | P2 | L | NC01, NC02, NC08 | todo |
+| NC10 | [`Random` の数値計算向け拡張（PCG64・`SeedSequence`・確率分布）と opt-in `RandomTensor`](NC10-random-distributions-and-generators.md) | P2 | M | NC01, NC02, (NC08) | todo |
+| NC11 | [テンソル永続化モジュール `TensorCodec`（`.npy`/`.npz`/Safetensors/CSV）と `TensorIO`（ファイル/`mmap`）](NC11-tensor-codec-and-io.md) | P2 | L | NC01, NC02, (W11) | todo |
+| NC12 | [C FFI 数値可変バッファ拡張と外部 BLAS / LAPACK 明示バックエンド](NC12-ffi-numeric-buffers-and-blas-lapack.md) | P2 | L | W13, NC01, NC08 | todo |
+| NC13 | [テンソル向けハードウェア高速化（x86-64 FMA・`f16` 拡充・SIMD/Parallel/タイリング GEMM・GPU カーネル）](NC13-tensor-simd-parallel-and-gpu-kernels.md) | P2 | XL | NC02, NC06, NC07, NC08 | todo |
+| NC14 | [Python / NumPy ゼロコピー相互運用（`--emit bindings-py` Buffer Protocol・`__array_interface__`・DLPack）](NC14-python-buffer-protocol-and-dlpack-bindings.md) | P3 | M | NC02, NC12 | todo |
+
 ## 推奨フェーズ
 
 依存関係と価値の順に並べています。同じフェーズ内でも、上に書いたものから着手してください。
@@ -409,6 +428,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 11. 追加（2026-10-18） | AI と人間が少ない暗黙ルールで堅牢かつ高速に書けるようにする（引く: 知識を決定的に渡す／縛る: 性質を署名と検査で固定する／直す: 診断から機械的に直す） | ① G32・D13・C12・F14・G31 → ② G22 → G23・G24・G21 → ③ G26 → G27 → G28 → G30・G29 → ④ A19（既存）→ A20 → A21・E15、A22、A23 → ⑤ G25・G33〜G36・D14・B10・F15。詳細は [追加チケット（2026-10-18）](#追加チケット2026-10-18) |
 | 12. 第4期（2026-11-01） | Task・Async を廃止し、Go の goroutine に相当する tzroutine と、チャンネル・`select`・同期・時間・取り消しを揃える | ① TZ01 → TZ02 → TZ03 → TZ04 → ② TZ05・TZ06 → TZ07、TZ11 → ③ TZ08 → ④ TZ12 → TZ13 → ⑤ TZ09・TZ10。詳細は [第4期](#第4期-tzroutinego-の-goroutine-に相当する並行処理) |
 | 13. 追加（2026-11-02） | F# の Anonymous Type-tagged Unions（FS-1092）に相当する匿名共用体 `(A \| B)` を入れる | A24 → A25・A26。詳細は [追加チケット（2026-11-02。匿名共用体）](#追加チケット2026-11-02匿名共用体) |
+| 14. 追加（2026-11-24） | 案 C（ハイブリッド）で NumPy 互換の数値計算基盤と最小の汎用言語拡張 2 点（借用演算子・汎用 `Index`）を整備する | ① NC01・NC02・NC03・NC04 → ② NC05・NC06 → NC07 → ③ NC08 → NC09・NC10 → ④ NC11・NC12（W13 後）・NC13・NC14。詳細は [追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) |
 
 ## 依存関係図
 
@@ -1030,4 +1050,68 @@ graph LR
   NS04 -.-> NS06
   W24 --> NS07
 ```
+
+## 追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）
+
+Tsuzuri で NumPy 互換の数値計算機能を提供するためのギャップ調査（HEAD `27069465`）と設計方針決定（**案 C: ハイブリッド** — 全機能は純 Tsuzuri 数値ライブラリ基盤で完結させつつ、言語側には他ドメインにも広く役立つ汎用拡張 2 点「借用算術演算子」「汎用 `Index` クラス＋`Slice`」だけを厳選導入。永続化モジュールは特定エコシステム名を避け中立な `TensorCodec` / `TensorIO` とする）から、NC01〜NC14 を起票した。共通の記録は [GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14) にある。
+
+| 種別 | チケット | 概要 | 承認 |
+| --- | --- | --- | --- |
+| 機能 | [NC01](NC01-complex-and-extended-math.md) | opt-in 複素数型 `Complex<'a>` と組み込み `Math`/`Int` の不足関数群（双曲線・`expm1`/`log1p`/`logaddexp`/`fmod`/`floor_div`/`floor_mod`/`ieee_remainder`/`frexp`/`nextafter`・`Int.gcd`/`lcm`/`div_floor`/`rem_floor`）を追加 | D1・D2 |
+| 機能 | [NC02](NC02-tensor-core-views-and-broadcasting.md) | `Tensor` 基盤を拡張（N 次元可変ビュー `Tensor.Mut`・`borrow_mut`/`update`・負/0 ストライド・64 軸・C/F 順・ブロードキャスト機構・`zeros`〜`meshgrid` 生成・`Eq`/`Display`） | D1・D2 |
+| 言語 | [NC03](NC03-borrowed-arithmetic-operators.md) | **案 C 言語拡張 ①**: 算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Pow`/`Neg`）を非消費の借用契約へ統一し、`Tensor`/`BigInt`/`Complex`/ユーザー型で `a + b` が値を消費しないようにする | D1・D2 |
+| 言語 | [NC04](NC04-generic-index-class-and-slice.md) | **案 C 言語拡張 ②**: 既存の `x[k]` 構文をユーザー型へ開放する汎用 `Index`（Phase 2 で `IndexMut`）クラスと標準スライス記述子モジュール `Slice` を追加 | D1・D2 |
+| 機能 | [NC05](NC05-tensor-shape-indexing-and-masking.md) | `Tensor` の形状操作（`-1` 推論 `reshape`/`squeeze`/`expand_dims`/`flip`/`pad`/`tile`）、結合・分割（`concatenate`/`stack`/`split`）、ファンシーインデキシング・ブールマスク（`mask`/`where_select`/`take`/`nonzero`/`clip`） | 不要 |
+| 機能 | [NC06](NC06-tensor-ufuncs-and-elementwise.md) | ブロードキャスト対応の要素ごと演算（四則・`floor_divide`/`floor_mod`/`ieee_remainder`・スカラー・ビット・論理・比較 `allclose`・全数学 ufunc）、ゼロ確保 `_into` 版、`NC03` 後の `Tensor` 演算子インスタンス | 不要 |
+| 機能 | [NC07](NC07-tensor-reductions-stats-and-sorting.md) | 軸指定・`keepdims` 対応の還元・統計（`sum`〜`std`・`nan*` 版・`median`/`percentile`/`histogram`/`cov`/`corrcoef`）、累積・差分・補間・畳み込み、軸指定 `sort`/`argsort`/`partition`/`searchsorted`/`unique`/集合演算、NumPy 対応・差分表（`numpy-migration.md`） | 不要 |
+| 機能 | [NC08](NC08-linalg-core-and-einsum.md) | opt-in 線形代数モジュール `Linalg`（Phase 1: バッチ `matmul`/`tensordot`/`einsum`、Phase 2: LU/Cholesky/QR/`solve`/`lstsq`/`inv`/`det`/`norm`、Phase 3: SVD/`eigh`/`eig`）。純 Tsuzuri 決定論基準実装 | D1・D2 |
+| 機能 | [NC09](NC09-fft-and-polynomial.md) | opt-in `Fft`（任意長 Cooley-Tukey＋Bluestein による 1D/ND 実数・複素数 FFT）と `Polynomial`（べき基底・Chebyshev/Legendre の評価・最小二乗フィット・求根） | D1 |
+| 機能 | [NC10](NC10-random-distributions-and-generators.md) | Phase 1 で常時ロード `Random` に `Pcg64`・`SeedSequence`・全スカラー確率分布（純粋状態引き回し `pcg64_*`）を追加し、Phase 2 で opt-in `RandomTensor` に分離して `Tensor` 一括生成・多変量分布・軸シャッフルを提供 | D1（Phase 2） |
+| 機能 | [NC11](NC11-tensor-codec-and-io.md) | 中立な永続化モジュール `TensorCodec`（純粋 `[ubyte]` 変換: `.npy`/`.npz`/Safetensors/CSV、WASM 動作）と `TensorIO`（ファイル I/O＋非ジェネリック `MappedTensor` と専用借用スライス合成による読み取り専用 `mmap`） | D1・D2 |
+| 性能 | [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) | [W13](W13-extern-ref-mut-and-mutable-buffers.md) の C FFI 可変バッファを `f32`/`i8`/`i16`/`i64u`/`Complex` へ拡張し、外部 BLAS/LAPACK/FFTW へゼロコピー接続する明示バックエンドを整備 | D1・D2 |
+| 性能 | [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) | x86-64 FMA3 lowering・`f16` SIMD 拡充・テンソル SIMD/軸並列カーネル・加算順序保存タイリング GEMM・GPU `map2`/`reduce`/`matmul` 拡張 | D1・D2（Phase 4） |
+| 連携 | [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) | `export def` のストライドテンソル ABI と、`--emit bindings-py` の `__array_interface__` / Buffer Protocol / DLPack ゼロコピー相互運用 | D1・D2 |
+
+### 進め方
+
+- **Phase 1（基盤・並行着手可）**: `NC01`・`NC02`・`NC03` は並行着手可能（ただし `NC01` の `Complex` 算術インスタンス署名は `NC03` D1 の契約と連動するため、`NC01` 先行時は `NC03` で `std/Complex.tz` も同時更新する）。`NC04` も `Index` クラスと `Slice` 本体は先行でき、`Tensor` インスタンス接続のみ `NC02` 完了後に合流する。
+- **Phase 2（コア配列操作・ufunc・統計）**: `NC02` 完了後に `NC05`、さらに `NC01`・`NC02` 完了後に `NC06`（`NC03` 完了後に演算子インスタンスを接続）。`NC05`・`NC06` の上に `NC07`。
+- **Phase 3（科学計算モジュール）**: `NC08`（Phase 1→2→3）を中心に、Phase 1 完了後または `NC01`/`NC02` の上に `NC09`（Phase 1 FFT は `NC01`・`NC02` のみで着手可、Phase 2 多項式は `NC08` 後）と `NC10`（`multivariate_normal` のみ `NC08` 後）。
+- **Phase 4（永続化・高速化・Python 連携）**: `NC11` は `NC01`・`NC02` 完了後ならいつでも着手可。`NC12` は `W13`・`NC01`・`NC08` 後、`NC14` は `NC02`・`NC12` 後、`NC13` は Phase 1（x86-64 FMA）を独立先行しつつ Phase 2〜4 を `NC06`〜`NC08` 後へ積む。
+
+```mermaid
+graph LR
+  NC02 -.-> NC04
+  NC02 --> NC05
+  NC04 -.-> NC05
+  NC01 --> NC06
+  NC02 --> NC06
+  NC03 -.-> NC06
+  NC02 --> NC07
+  NC05 --> NC07
+  NC06 --> NC07
+  NC01 --> NC08
+  NC02 --> NC08
+  NC05 --> NC08
+  NC06 --> NC08
+  NC01 --> NC09
+  NC02 --> NC09
+  NC08 --> NC09
+  NC01 --> NC10
+  NC02 --> NC10
+  NC08 -.-> NC10
+  NC01 --> NC11
+  NC02 --> NC11
+  W11 -.-> NC11
+  W13 --> NC12
+  NC01 --> NC12
+  NC08 --> NC12
+  NC02 --> NC13
+  NC06 --> NC13
+  NC07 --> NC13
+  NC08 --> NC13
+  NC02 --> NC14
+  NC12 --> NC14
+```
+
 
