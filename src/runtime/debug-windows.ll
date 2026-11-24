@@ -1,5 +1,3 @@
-@tz.debug.empty_wide = private unnamed_addr constant [1 x i16] zeroinitializer
-
 define internal void @tz.debug.quiet(ptr %expr, ptr %func, ptr %file, i32 %line, i64 %reserved) nounwind {
 entry:
   ret void
@@ -7,6 +5,7 @@ entry:
 
 define internal void @tz.debug.write(%tz.utf8string %text) nounwind {
 entry:
+  %line_buf = alloca [255 x i8], align 1
   %data = extractvalue %tz.utf8string %text, 0
   %length = extractvalue %tz.utf8string %text, 1
   %prev = call ptr @_set_thread_local_invalid_parameter_handler(ptr @tz.debug.quiet)
@@ -45,12 +44,34 @@ check_absent:
 fallback:
   %restored_ok = call ptr @_set_thread_local_invalid_parameter_handler(ptr %prev)
   %empty_msg = icmp eq i64 %length, 0
-  br i1 %empty_msg, label %fallback_empty, label %fallback_nonempty
-fallback_empty:
-  call void @OutputDebugStringW(ptr @tz.debug.empty_wide)
+  br i1 %empty_msg, label %fallback_nl_only, label %fallback_check_short
+fallback_check_short:
+  %short = icmp ule i64 %length, 254
+  br i1 %short, label %fallback_short_copy, label %fallback_long
+fallback_short_copy:
+  br label %copy_loop
+copy_loop:
+  %idx = phi i64 [ 0, %fallback_short_copy ], [ %idx_next, %copy_body ]
+  %copy_done = icmp eq i64 %idx, %length
+  br i1 %copy_done, label %copy_finish, label %copy_body
+copy_body:
+  %src_p = getelementptr inbounds i8, ptr %data, i64 %idx
+  %dst_p = getelementptr inbounds i8, ptr %line_buf, i64 %idx
+  %ch = load i8, ptr %src_p, align 1
+  store i8 %ch, ptr %dst_p, align 1
+  %idx_next = add i64 %idx, 1
+  br label %copy_loop
+copy_finish:
+  %nl_p = getelementptr inbounds i8, ptr %line_buf, i64 %length
+  store i8 10, ptr %nl_p, align 1
+  %total_len = add i64 %length, 1
+  call void @tz.debugger.write(ptr %line_buf, i64 %total_len)
   br label %free_only
-fallback_nonempty:
+fallback_long:
   call void @tz.debugger.write(ptr %data, i64 %length)
+  br label %fallback_nl_only
+fallback_nl_only:
+  call void @tz.debugger.write(ptr @tz.debug.newline, i64 1)
   br label %free_only
 finish:
   %restored_done = call ptr @_set_thread_local_invalid_parameter_handler(ptr %prev)

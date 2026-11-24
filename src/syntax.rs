@@ -455,6 +455,16 @@ impl CountLength {
         }
     }
 
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::I32 => "i32",
+            Self::I32U => "i32u",
+            Self::I64 => "i64",
+            Self::I64U => "i64u",
+            Self::None => "none",
+        }
+    }
+
     pub fn c_type(self) -> Option<&'static str> {
         match self {
             Self::I32 => Some("int32_t"),

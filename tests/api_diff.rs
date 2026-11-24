@@ -821,6 +821,40 @@ fn copy_extern_type_addition_is_compatible_and_removal_is_breaking() {
 }
 
 #[test]
+fn extern_count_changes_are_breaking_except_default_i64() {
+    let implicit = "extern \"c_buf\" def take_buf :: ref [i32] -> i64\n";
+    let explicit_i64 = "@count(1, i64)\nextern \"c_buf\" def take_buf :: ref [i32] -> i64\n";
+    let count_i32 = "@count(1, i32)\nextern \"c_buf\" def take_buf :: ref [i32] -> i64\n";
+    let count_none = "@count(1, none)\nextern \"c_buf\" def take_buf :: ref [i32] -> i64\n";
+    for effective in [false, true] {
+        assert!(
+            compare_mode(implicit, explicit_i64, &[], effective).is_empty(),
+            "explicit i64 count must normalize to default"
+        );
+        for (a, b) in [
+            (implicit, count_i32),
+            (count_i32, implicit),
+            (implicit, count_none),
+            (count_i32, count_none),
+        ] {
+            assert_eq!(
+                compare_mode(a, b, &[], effective),
+                ["breaking changed extern def Main.take_buf"]
+            );
+        }
+    }
+    let old = root("count-old", &[("Main.tz", implicit)]);
+    let new = root("count-new", &[("Main.tz", count_i32)]);
+    let diff = report(&old, &new);
+    assert_eq!(
+        diff.changes[0].note,
+        "lowered C buffer count signature changes"
+    );
+    std::fs::remove_dir_all(old).unwrap();
+    std::fs::remove_dir_all(new).unwrap();
+}
+
+#[test]
 fn effective_command_is_opt_in_validates_flags_and_reports_analysis_errors() {
     let old_source = "type Word = i64\ndef f :: Word -> Word = \\n -> n\n";
     let new_source = "type Word = i64\ndef f :: i64 -> i64 = \\n -> n\n";

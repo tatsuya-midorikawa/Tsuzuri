@@ -139,7 +139,7 @@ function runGuiStage(compiler, clang, directory) {
     execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/debug_out"), "--no-cache", optimization, "-o", debugGuiExe]);
     const debugGuiOds = join(directory, `gui-debug-ods${optimization}.txt`);
     assert.equal(launchWithoutHandles(debugGuiExe, [], { launcher, debugStrings: debugGuiOds }), 5, `debug without handles ${optimization}`);
-    assert.deepEqual(readFileSync(debugGuiOds, "utf8").trimEnd().split("\n"), ["note"]);
+    assert.deepEqual(readFileSync(debugGuiOds, "utf8").trimEnd().split("\n"), ["note", "", "tail"]);
 
     const ioTrapExe = join(directory, `gui-io-trap${optimization}.exe`);
     execute(compiler, ["build", join(repository, "tests/fixtures/windows_gui/io_trap"), "--no-cache", optimization, "-o", ioTrapExe]);

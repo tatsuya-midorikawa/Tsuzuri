@@ -1,4 +1,8 @@
 def main :: unit -> i32 = \() ->
     let s = "note"
+    let empty = ""
+    let tail = "tail"
     Debug.print (ref s)
+    Debug.print (ref empty)
+    let _ = Debug.trace tail
     5
