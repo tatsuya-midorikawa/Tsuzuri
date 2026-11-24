@@ -2742,6 +2742,9 @@ impl Classes {
             &self.index_instances
         };
         let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return Ok(None);
+        }
         let key_resolved = inference.resolve(key_ty);
         let mut candidates = Vec::new();
         for (idx, cand) in list.iter().enumerate() {
@@ -2760,11 +2763,23 @@ impl Classes {
             {
                 continue;
             }
-            // Reject candidates that bind a constrained inference variable (e.g. an unsuffixed
-            // integer literal in `t[[1, 2]]`) to an incompatible concrete type (e.g. `Slice.Axis`).
+            // Reject candidates that newly bind a constrained inference variable (e.g. an
+            // unsuffixed integer literal in `t[[1, 2]]`) to an incompatible concrete type
+            // (e.g. `Slice.Axis`), while ignoring unrelated or still-partial constraints.
             let compatible = pending_constraints.iter().all(|c| {
+                let before = inference.resolve(&c.ty);
                 let bound = trial.resolve(&c.ty);
-                if is_unknown(&bound) || bound.contains_error() {
+                if before == bound || bound.contains_error() {
+                    return true;
+                }
+                let mut has_unknown = false;
+                map_type(&bound, &mut |part| {
+                    if is_unknown(part) {
+                        has_unknown = true;
+                    }
+                    part.clone()
+                });
+                if has_unknown {
                     return true;
                 }
                 self.validate(
