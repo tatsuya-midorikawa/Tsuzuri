@@ -3215,6 +3215,11 @@ static void pseudo_outside_body(void) {
     int64_t v = 0;
     int status = tsuzuri_tz_chan_recv(c, &v, 1);
     atomic_store(&w12_outside_exit, 1);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
     (void)scope;
     _exit(status == TZR_DEADLOCK ? 55 : 4);
 }
@@ -3290,7 +3295,7 @@ static void test_pseudo_reenters_runtime(void) {
     CHECK(pthread_create(&th, NULL, w12_reenter_posix, c) == 0);
 #endif
     while (!atomic_load(&w12_reenter_ready)) tzr_os_yield();
-    tsuzuri_tz_yield(); /* re-enters runtime from outside == 1 before sender parks */
+    (void)tzr_current(); /* re-enters runtime from outside == 1 before sender parks */
     atomic_store(&w12_reenter_go, 1);
     int64_t sum = 0;
     for (int i = 0; i < 1000; i++) {
