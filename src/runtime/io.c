@@ -139,6 +139,8 @@ static int32_t tz_io_write_inner(int32_t destination, const unsigned char *data,
     if ((destination != 1 && destination != 2) || length < 0) return 1;
 #if defined(_WIN32)
     if (_setmode(destination, _O_BINARY) == -1) return tz_io_absent(destination) ? 2 : 1;
+#else
+    if (length == 0 && tz_io_absent(destination)) return 2;
 #endif
     FILE *stream = destination == 1 ? stdout : stderr;
     int64_t offset = 0;

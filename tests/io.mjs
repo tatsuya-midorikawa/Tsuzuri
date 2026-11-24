@@ -276,12 +276,21 @@ IO {
       assert.equal(closedIn.stderr, reports("unavailable", "written"));
 
       const errProbeSrc = join(root, "err_probe.tz");
-      writeFileSync(errProbeSrc, `let! r = IO.try_write_errln "x"
-do! IO.writeln (match r with | Result.Error IO.Unavailable -> "unavailable" | _ -> "other")
+      writeFileSync(errProbeSrc, `let! r1 = IO.try_write_errln "x"
+let! r2 = IO.try_write_err ""
+do! IO.writeln (match (r1, r2) with | (Result.Error IO.Unavailable, Result.Error IO.Unavailable) -> "unavailable" | _ -> "other")
 `);
       const errProbeExe = join(root, `err-probe${optimization}`);
       execute(compiler, ["build", errProbeSrc, optimization, "-o", errProbeExe]);
       assert.equal(execute("sh", ["-c", 'exec "$1" 2>&-', "sh", errProbeExe]).stdout, "unavailable\n");
+
+      const emptyOutSrc = join(root, "empty_out.tz");
+      writeFileSync(emptyOutSrc, `let! r = IO.try_write ""
+do! IO.write_errln (match r with | Result.Error IO.Unavailable -> "unavailable" | _ -> "other")
+`);
+      const emptyOutExe = join(root, `empty-out${optimization}`);
+      execute(compiler, ["build", emptyOutSrc, optimization, "-o", emptyOutExe]);
+      assert.equal(execute("sh", ["-c", 'exec "$1" >&-', "sh", emptyOutExe]).stderr, "unavailable\n");
 
       const trapClosedSrc = join(root, "trap_closed.tz");
       writeFileSync(trapClosedSrc, 'IO {\n    do! IO.writeln "x"\n    do! IO.write_err "after"\n}\n');
