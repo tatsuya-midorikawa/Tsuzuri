@@ -9,5 +9,5 @@ def on_tick :: i64u -> i64 = \id ->
 
 def main :: Array<string> -> i32 = \args ->
     let _r = run_timer_proc on_tick 1
-    if Array.length args > 1 then mark (ref args[1]) else ()
+    if Array.length args > 0 then mark (ref args[0]) else ()
     77
