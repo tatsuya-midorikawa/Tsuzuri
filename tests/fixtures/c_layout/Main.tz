@@ -1,0 +1,114 @@
+extern type copy TagHandle
+
+@c_layout
+record SmallFont {
+    height: i32,
+    italic: i8,
+    flags: i8u,
+    weight: i16,
+    code_page: i16u,
+    scale: f32,
+    dpi: f64,
+    face: [i16u; 4]
+}
+
+@c_layout
+record InnerAligned {
+    x: i32,
+    y: i64
+}
+
+@c_layout(pack = 1)
+record PackedOuter {
+    tag: i8,
+    inner: InnerAligned
+}
+
+@c_layout(pack = 2)
+record DlgMini {
+    style: i32u,
+    cdit: i16u,
+    x: i16,
+    y: i16
+}
+
+@c_layout
+record WithHandles {
+    primary: TagHandle,
+    secondary: Maybe<TagHandle>,
+    tag: i32
+}
+
+@c_layout
+record Phase2Input {
+    cb: FnPtr<(i32 -> i32)>,
+    title: ref ZString,
+    opt_menu: Maybe<ref ZString>,
+    code: i16u
+}
+
+@trusted
+extern "cl_make_handle" def make_handle :: i64 -> TagHandle
+@trusted
+extern "cl_inspect_font" def inspect_font :: ref SmallFont -> i64
+@trusted
+extern "cl_mutate_font" def mutate_font :: ref mut SmallFont -> i32
+@trusted
+extern "cl_make_dlg" def make_dlg :: i32u -> i16u -> i16 -> i16 -> DlgMini
+@trusted
+extern "cl_check_packed" def check_packed :: ref PackedOuter -> i64
+@trusted
+extern "cl_check_handles" def check_handles :: ref mut WithHandles -> i64
+@trusted
+extern "cl_invoke_phase2" def invoke_phase2 :: ref Phase2Input -> i64
+
+def double_i32 :: i32 -> i32 = \x -> x * 2i32
+
+export def sum_font :: ref SmallFont -> i64 = \f ->
+    (f.height as i64) + (f.italic as i64) + (f.flags as i64) +
+        (f.weight as i64) + (f.code_page as i64) +
+        (f.face[0] as i64) + (f.face[3] as i64)
+
+export def run_all :: i64
+fn run_all =
+    let mut font = SmallFont {
+        height: -12i32,
+        italic: -128i8,
+        flags: 255i8u,
+        weight: -32768i16,
+        code_page: 65535i16u,
+        scale: 1.5f32,
+        dpi: 96.25,
+        face: [65i16u, 66i16u, 67i16u, 68i16u]
+    }
+    let r1 = inspect_font (ref font)
+    let m1 = mutate_font (ref mut font)
+    let dlg = make_dlg 0x100i32u 7i16u (-10i16) 20i16
+    let packed = PackedOuter { tag: 5i8, inner: InnerAligned { x: 100i32, y: 200000i64 } }
+    let r2 = check_packed (ref packed)
+    let h1 = make_handle 111
+    let mut wh = WithHandles { primary: h1, secondary: Maybe.None, tag: 9i32 }
+    let r3 = check_handles (ref mut wh)
+    let sec_ok = match wh.secondary with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0
+    let p2_some = Phase2Input {
+        cb: FnPtr.of double_i32,
+        title: ZString.literal "Hello",
+        opt_menu: Maybe.Some (ZString.literal "Menu"),
+        code: 42i16u
+    }
+    let r4 = invoke_phase2 (ref p2_some)
+    let p2_none = Phase2Input {
+        cb: FnPtr.of double_i32,
+        title: ZString.literal "Hi",
+        opt_menu: Maybe.None,
+        code: 7i16u
+    }
+    let r5 = invoke_phase2 (ref p2_none)
+    if r1 == 1 && m1 == 1 && font.italic == 12i8 && font.code_page == 1234i16u && font.face[2] == 99i16u &&
+        dlg.style == 0x100i32u && dlg.cdit == 7i16u && dlg.x == -10i16 && dlg.y == 20i16 &&
+        r2 == 200105 && r3 == 120 && wh.tag == 42i32 && sec_ok == 1 &&
+        r4 == 84 + 5 + 4 + 42 && r5 == 14 + 2 + 0 + 7
+    then 1
+    else 0

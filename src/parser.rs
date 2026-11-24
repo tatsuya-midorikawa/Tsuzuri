@@ -21,12 +21,19 @@ struct Attributes {
     effects: Vec<EffectMark>,
     trusted: Option<TrustedMark>,
     counts: Vec<CountMark>,
+    c_layout: Option<CLayoutMark>,
 }
 
 struct CountMark {
     position: u32,
     length: CountLength,
     span: Span,
+}
+
+struct CLayoutMark {
+    pack: Option<u8>,
+    span: Span,
+    at: Span,
 }
 
 /// A `@trusted` attribute as read: its properties, its whole span, the span of its `@` and the
@@ -574,6 +581,7 @@ impl Parser<'_> {
             effect_attributes: Vec::new(),
             trusted: Vec::new(),
             extern_counts: Vec::new(),
+            c_layouts: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -639,9 +647,19 @@ impl Parser<'_> {
                     effects,
                     trusted,
                     counts,
+                    c_layout,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
+                if let Some(mark) = &c_layout
+                    && !self.at(&TokenKind::Record)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedCLayoutAttribute,
+                        "'@c_layout' applies to a record declaration",
+                        mark.span,
+                    ));
+                }
                 if let Some(mark) = &trusted
                     && !self.at(&TokenKind::Extern)
                 {
@@ -813,6 +831,13 @@ impl Parser<'_> {
                 self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
                 let fields = self.record_fields()?;
                 let derives = self.derives()?;
+                if let Some(mark) = c_layout {
+                    program.c_layouts.push(CLayoutAttribute {
+                        target: name.clone(),
+                        pack: mark.pack,
+                        span: mark.span,
+                    });
+                }
                 program.records.push(RecordDecl {
                     doc,
                     visibility,
@@ -1363,6 +1388,15 @@ impl Parser<'_> {
                 attributes.trusted = Some(trusted);
             } else if let Some(count) = self.count_attribute()? {
                 attributes.counts.push(count);
+            } else if let Some(c_layout) = self.c_layout_attribute()? {
+                if attributes.c_layout.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CLayoutRepeated,
+                        "'@c_layout' is written twice; remove one",
+                        c_layout.at,
+                    ));
+                }
+                attributes.c_layout = Some(c_layout);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1419,6 +1453,61 @@ impl Parser<'_> {
             at,
             first,
         }))
+    }
+
+    /// `@c_layout` or `@c_layout(pack = 1 | 2 | 4 | 8 | 16)` before a record declaration (W21).
+    fn c_layout_attribute(&mut self) -> Result<Option<CLayoutMark>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "c_layout"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        let arg_err = |span: Span| {
+            Diagnostic::of(
+                DiagnosticKind::CLayoutArgument,
+                "'@c_layout' takes 'pack = 1', 'pack = 2', 'pack = 4', 'pack = 8' or 'pack = 16'",
+                span,
+            )
+        };
+        let pack = if self.eat(&TokenKind::LeftParen) {
+            let key_span = self.current().span;
+            match &self.current().kind {
+                TokenKind::Ident(name) if name == "pack" => {
+                    self.take();
+                }
+                _ => return Err(arg_err(key_span)),
+            }
+            if !self.eat(&TokenKind::Equal) {
+                return Err(arg_err(self.current().span));
+            }
+            let val_span = self.current().span;
+            let value = match &self.current().kind {
+                TokenKind::Integer(text) => match text.as_str() {
+                    "1" => 1u8,
+                    "2" => 2u8,
+                    "4" => 4u8,
+                    "8" => 8u8,
+                    "16" => 16u8,
+                    _ => return Err(arg_err(val_span)),
+                },
+                _ => return Err(arg_err(val_span)),
+            };
+            self.take();
+            if !self.at(&TokenKind::RightParen) {
+                return Err(arg_err(self.current().span));
+            }
+            span = span.through(self.take().span);
+            Some(value)
+        } else {
+            None
+        };
+        Ok(Some(CLayoutMark { pack, span, at }))
     }
 
     /// `@count(position, length)` before an `extern` function declaration (W13).

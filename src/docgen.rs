@@ -441,6 +441,15 @@ fn render_declarations(program: &Program) -> String {
         if declaration.visibility == Visibility::Private {
             continue;
         }
+        let layout_prefix = program
+            .c_layouts
+            .iter()
+            .find(|attribute| attribute.target.text == declaration.name.text)
+            .map(|attribute| match attribute.pack {
+                Some(pack) => format!("@c_layout(pack = {pack})\n"),
+                None => "@c_layout\n".to_owned(),
+            })
+            .unwrap_or_default();
         let fields = declaration
             .fields
             .iter()
@@ -455,7 +464,7 @@ fn render_declarations(program: &Program) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         let code = format!(
-            "record {}{}{} {{\n{fields}\n}}{}",
+            "{layout_prefix}record {}{}{} {{\n{fields}\n}}{}",
             declaration.name.text,
             parameters_text(&declaration.parameters),
             region_text(&declaration.regions),

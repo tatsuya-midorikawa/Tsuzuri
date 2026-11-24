@@ -393,6 +393,7 @@ fn declare_module(
         effect_attributes: _,
         trusted: _,
         extern_counts: _,
+        c_layouts: _,
         noncanonical: _,
         aliases: _,
         declaration_starts: _,

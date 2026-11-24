@@ -573,6 +573,7 @@ impl Wire for Program {
             effect_attributes,
             trusted,
             extern_counts,
+            c_layouts,
             noncanonical,
             aliases,
             declaration_starts,
@@ -603,6 +604,7 @@ impl Wire for Program {
         effect_attributes.put(out)?;
         trusted.put(out)?;
         extern_counts.put(out)?;
+        c_layouts.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -636,6 +638,7 @@ impl Wire for Program {
             effect_attributes: Vec::get(input)?,
             trusted: Vec::get(input)?,
             extern_counts: Vec::get(input)?,
+            c_layouts: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -761,6 +764,25 @@ impl Wire for CountAttribute {
             target,
             position,
             length,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for CLayoutAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let CLayoutAttribute { target, pack, span } = self;
+        target.put(out)?;
+        pack.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        let target = Ident::get(input)?;
+        let pack = Option::<u8>::get(input)?;
+        Ok(CLayoutAttribute {
+            target,
+            pack,
             span: Span::get(input)?,
         })
     }
@@ -3102,6 +3124,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000000000300224500",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000000000300224500",
     );
 }

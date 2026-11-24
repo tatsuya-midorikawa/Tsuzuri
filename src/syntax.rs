@@ -317,6 +317,8 @@ pub struct Program {
     pub trusted: Vec<TrustedAttribute>,
     /// The `@count(pos, len)` attributes of this module's extern function declarations (W13).
     pub extern_counts: Vec<CountAttribute>,
+    /// The `@c_layout` attributes of this module's record declarations (W21).
+    pub c_layouts: Vec<CLayoutAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -498,6 +500,20 @@ pub struct CountAttribute {
     pub target: Ident,
     pub position: u32,
     pub length: CountLength,
+    pub span: Span,
+}
+
+/// C struct layout parameters of `@c_layout` / `@c_layout(pack = N)` (W21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CLayout {
+    pub pack: Option<u8>,
+}
+
+/// `@c_layout` / `@c_layout(pack = N)` before a record declaration (W21).
+#[derive(Clone, Debug)]
+pub struct CLayoutAttribute {
+    pub target: Ident,
+    pub pack: Option<u8>,
     pub span: Span,
 }
 

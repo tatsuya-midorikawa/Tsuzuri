@@ -4961,6 +4961,8 @@ pub struct CheckedRecord {
     pub span: Span,
     /// Every instance of the record has a user `Drop` instance (B07).
     pub user_drop: bool,
+    /// Explicit C struct layout from `@c_layout` / `@c_layout(pack = N)` (W21).
+    pub c_layout: Option<crate::syntax::CLayout>,
     /// Declared region count. 0 and 1 both mean one shared region (A09).
     pub(crate) region_count: usize,
     /// Only when `region_count >= 2`: per field in declaration order, the record-region mask of
@@ -8868,6 +8870,15 @@ fn check_modules_collect(
         }
     }
     names.flush_renamed(diagnostics).check()?;
+    let mut c_layout_by_name: BTreeMap<String, crate::syntax::CLayout> = BTreeMap::new();
+    for module in modules {
+        for attr in &module.program.c_layouts {
+            c_layout_by_name.insert(
+                format!("{}.{}", module.name, attr.target.text),
+                crate::syntax::CLayout { pack: attr.pack },
+            );
+        }
+    }
     let mut records = Vec::new();
     for (module, record) in &record_declarations {
         if diagnostics.is_full() {
@@ -8952,6 +8963,7 @@ fn check_modules_collect(
                 ));
             }
             Ok(CheckedRecord {
+                c_layout: c_layout_by_name.get(&qualified).copied(),
                 name: qualified,
                 visibility: record.visibility,
                 origin: names.origin(module),
@@ -9101,6 +9113,8 @@ fn check_modules_collect(
         records: &records,
         unions: &unions,
     };
+    validate_c_layout_records(&record_declarations, &records, &types, diagnostics);
+    diagnostics.check()?;
     classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
     names.declared = vec![DeclaredFunction::default(); function_declarations.len()];
@@ -9284,6 +9298,38 @@ fn check_modules_collect(
                     function.name.span,
                 ));
             }
+            if function.exported {
+                for ty in public_parameters
+                    .iter()
+                    .chain(std::iter::once(public_result.as_ref()))
+                {
+                    if let Some((outer, fname, inner)) =
+                        crate::abi::plain_record_contains_c_layout(ty, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::CLayoutInPlainRecord,
+                            format!(
+                                "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
+                            ),
+                            function.name.span,
+                        ));
+                    }
+                    let rec = match ty {
+                        Type::Reference(inner, _) => inner.as_ref(),
+                        _ => ty,
+                    };
+                    if crate::abi::c_layout_has_zstring_field(rec, &types) {
+                        let rname = rec.display(&types);
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::CLayoutInputOnly,
+                            format!(
+                                "'@c_layout' record '{rname}' holds a borrowed ZString, which the host can only read; pass it as an extern argument '{rname}' or 'ref {rname}'"
+                            ),
+                            function.name.span,
+                        ));
+                    }
+                }
+            }
             if function.exported
                 && (public_parameters
                     .iter()
@@ -9339,6 +9385,23 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
+                for ty in signature
+                    .parameters
+                    .iter()
+                    .chain(std::iter::once(&signature.result))
+                {
+                    if let Some((outer, fname, inner)) =
+                        crate::abi::plain_record_contains_c_layout(ty, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::CLayoutInPlainRecord,
+                            format!(
+                                "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
+                            ),
+                            function.name.span,
+                        ));
+                    }
+                }
                 if crate::abi::reaches_fnptr(&signature.result, &types)
                     || signature.parameters.iter().any(|ty| match ty {
                         Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
@@ -9349,6 +9412,36 @@ fn check_modules_collect(
                     return Err(Diagnostic::of(
                         DiagnosticKind::FnptrFromHost,
                         "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
+                        function.name.span,
+                    ));
+                }
+                if crate::abi::c_layout_has_zstring_field(&signature.result, &types)
+                    || signature.parameters.iter().any(|ty| {
+                        matches!(ty, Type::Reference(inner, true) if crate::abi::c_layout_has_zstring_field(inner, &types))
+                    })
+                {
+                    let bad_rec = if crate::abi::c_layout_has_zstring_field(&signature.result, &types) {
+                        &signature.result
+                    } else {
+                        signature
+                            .parameters
+                            .iter()
+                            .find_map(|ty| match ty {
+                                Type::Reference(inner, true)
+                                    if crate::abi::c_layout_has_zstring_field(inner, &types) =>
+                                {
+                                    Some(inner.as_ref())
+                                }
+                                _ => None,
+                            })
+                            .unwrap()
+                    };
+                    let rname = bad_rec.display(&types);
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CLayoutInputOnly,
+                        format!(
+                            "'@c_layout' record '{rname}' holds a borrowed ZString, which the host can only read; pass it as an extern argument '{rname}' or 'ref {rname}'"
+                        ),
                         function.name.span,
                     ));
                 }
@@ -12166,6 +12259,160 @@ fn validate_size(ty: &Type, types: &TypeContext<'_>, span: Span) -> Result<usize
 struct Validation<'a> {
     layouts: Layouts<'a>,
     instances: BTreeSet<Type>,
+}
+
+/// W21: validates every `@c_layout` record declaration (even when unused at an ABI boundary).
+fn validate_c_layout_records(
+    declarations: &[(&str, &RecordDecl)],
+    records: &[CheckedRecord],
+    types: &TypeContext<'_>,
+    diagnostics: &mut Diagnostics,
+) {
+    let decl_by_name: BTreeMap<String, &RecordDecl> = declarations
+        .iter()
+        .map(|(module, decl)| (format!("{module}.{}", decl.name.text), *decl))
+        .collect();
+    for record in records {
+        if diagnostics.is_full() {
+            break;
+        }
+        if record.c_layout.is_none() {
+            continue;
+        }
+        let short = record.name.rsplit('.').next().unwrap_or(&record.name);
+        if !record.parameters.is_empty() || record.region_count > 0 {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutGeneric,
+                format!(
+                    "'@c_layout' record '{short}' cannot declare type parameters or regions; remove them to give it a fixed C layout"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        if record.fields.is_empty() {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutEmpty,
+                format!(
+                    "'@c_layout' record '{short}' must declare at least one field; ISO C does not allow empty structs"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        if record.user_drop {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutDrop,
+                format!(
+                    "'@c_layout' record '{short}' cannot implement 'Drop'; remove the Drop instance or '@c_layout'"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        let decl = decl_by_name.get(&record.name).copied();
+        let mut seen_c_names = BTreeSet::new();
+        for (index, (field_name, field_ty)) in record.fields.iter().enumerate() {
+            let field_span = decl
+                .and_then(|d| d.fields.get(index))
+                .map_or(record.span, |f| f.ty.span);
+            let c_name = crate::abi::field_name(field_name);
+            if !seen_c_names.insert(c_name) {
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::CLayoutFieldType,
+                    format!(
+                        "field '{field_name}' of '@c_layout' record '{short}' collides with another field's C name"
+                    ),
+                    field_span,
+                ));
+                continue;
+            }
+            match field_ty {
+                Type::Bool => {
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutBoolField,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' is bool, whose C width is 4 bytes as BOOL and 1 byte as _Bool; declare it i32 or i8u"
+                        ),
+                        field_span,
+                    ));
+                }
+                _ if crate::abi::c_layout_number(field_ty) => {}
+                Type::FixedArray(element, _)
+                    if field_ty.fixed_length().is_some_and(|length| length > 0) =>
+                {
+                    if **element == Type::Bool {
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutBoolField,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' contains bool, whose C width is 4 bytes as BOOL and 1 byte as _Bool; declare it i32 or i8u"
+                            ),
+                            field_span,
+                        ));
+                    } else if !crate::abi::c_layout_number(element) {
+                        let shown = field_ty.display(types);
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutFieldType,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' has type '{shown}', which has no C layout; fixed-length arrays in '@c_layout' records hold exact-width numbers"
+                            ),
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Record(nested_id, nested_args) => {
+                    let nested = &records[*nested_id];
+                    if nested.c_layout.is_none() || !nested_args.is_empty() {
+                        let nested_short = nested.name.rsplit('.').next().unwrap_or(&nested.name);
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutNestedRecord,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' is the record '{nested_short}', which has no '@c_layout'; add '@c_layout' to '{nested_short}'"
+                            ),
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Handle(_, crate::syntax::HandleKind::Copy) => {}
+                Type::Handle(hname, _) => {
+                    let hshort = hname.rsplit('.').next().unwrap_or(hname);
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutOwnedHandleField,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' holds the owning handle '{hshort}'; declare the handle 'extern type copy' if it does not own a resource, or keep the owning handle outside the C struct"
+                        ),
+                        field_span,
+                    ));
+                }
+                Type::FnPtr(_) => {
+                    if !crate::abi::fnptr(field_ty, types) {
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::FnptrSignature,
+                            "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Reference(inner, false) if crate::abi::zstring(inner, types) => {}
+                _ if matches!(
+                    crate::abi::nullable(field_ty, types),
+                    Some(
+                        crate::abi::Nullable::Handle(_) | crate::abi::Nullable::BorrowedZString(_)
+                    )
+                ) => {}
+                _ => {
+                    let shown = field_ty.display(types);
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutFieldType,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' has type '{shown}', which has no C layout; use an exact-width number, a fixed-length array of numbers, another '@c_layout' record, an 'extern type copy' handle, 'Maybe' of an extern type, 'FnPtr', or 'ref ZString'"
+                        ),
+                        field_span,
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// A13: the regions of each record that hold an exclusive borrow and the regions of the borrows

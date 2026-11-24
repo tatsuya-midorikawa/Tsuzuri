@@ -216,7 +216,8 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
             return false;
         }
         // A Drop record carries a hidden live flag and owns a resource, not plain data.
-        if types.records[*id].user_drop {
+        // A `@c_layout` record uses exact C layout and cannot sit inside an unmarked normalized record (W21).
+        if types.records[*id].user_drop || types.records[*id].c_layout.is_some() {
             return false;
         }
         let names: BTreeSet<_> = types.records[*id]
@@ -233,10 +234,153 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
     matches!(ty, Type::Record(..)) && valid(ty, types, 0)
 }
 
+/// W21: exact-width scalar number types allowed as `@c_layout` fields (not `bool`).
+pub fn c_layout_number(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Integer(8 | 16 | 32 | 64, _) | Type::Binary(32 | 64)
+    )
+}
+
+/// W21: whether `ty` is a validated `@c_layout` record.
+pub fn c_layout_record(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let Type::Record(id, arguments) = ty else {
+        return false;
+    };
+    let record = &types.records[*id];
+    arguments.is_empty()
+        && record.c_layout.is_some()
+        && !record.user_drop
+        && !record.fields.is_empty()
+}
+
+/// W21: whether `ty` is either a normalized scalar record or a `@c_layout` record.
+pub fn host_record(ty: &Type, types: &TypeContext<'_>) -> bool {
+    scalar_record(ty, types) || c_layout_record(ty, types)
+}
+
+/// W21: whether a `@c_layout` record contains any pointer-width field (`Handle`, `Maybe<H>`,
+/// `FnPtr`, `ref ZString`, or `Maybe<ref ZString>`) that is native-only on WASM.
+pub fn c_layout_has_pointer_field(ty: &Type, types: &TypeContext<'_>) -> bool {
+    fn visit(ty: &Type, types: &TypeContext<'_>, depth: usize) -> bool {
+        if depth >= crate::syntax::MAX_NESTING {
+            return false;
+        }
+        let Type::Record(id, arguments) = ty else {
+            return false;
+        };
+        if types.records[*id].c_layout.is_none() {
+            return false;
+        }
+        types
+            .record_fields(*id, arguments)
+            .iter()
+            .any(|field| match field {
+                Type::Handle(..) | Type::FnPtr(_) => true,
+                Type::Reference(inner, false) if zstring(inner, types) => true,
+                Type::Record(..) => visit(field, types, depth + 1),
+                _ => matches!(
+                    nullable(field, types),
+                    Some(Nullable::Handle(_) | Nullable::BorrowedZString(_))
+                ),
+            })
+    }
+    visit(ty, types, 0)
+}
+
+/// W21 Phase 2: whether a `@c_layout` record contains a `ref ZString` or `Maybe<ref ZString>` field.
+pub fn c_layout_has_zstring_field(ty: &Type, types: &TypeContext<'_>) -> bool {
+    fn visit(ty: &Type, types: &TypeContext<'_>, depth: usize) -> bool {
+        if depth >= crate::syntax::MAX_NESTING {
+            return false;
+        }
+        let Type::Record(id, arguments) = ty else {
+            return false;
+        };
+        if types.records[*id].c_layout.is_none() {
+            return false;
+        }
+        types
+            .record_fields(*id, arguments)
+            .iter()
+            .any(|field| match field {
+                Type::Reference(inner, false) if zstring(inner, types) => true,
+                Type::Record(..) => visit(field, types, depth + 1),
+                _ => matches!(nullable(field, types), Some(Nullable::BorrowedZString(_))),
+            })
+    }
+    visit(ty, types, 0)
+}
+
+/// W21 Phase 2: whether a `@c_layout` record holds any input-only field (`FnPtr` or borrowed `ZString`).
+pub fn c_layout_input_only(ty: &Type, types: &TypeContext<'_>) -> bool {
+    c_layout_has_zstring_field(ty, types) || reaches_fnptr(ty, types)
+}
+
+/// W21: whether a record can appear in bidirectional ABI positions (export, extern result, extern `ref mut`).
+pub fn host_record_bidirectional(ty: &Type, types: &TypeContext<'_>) -> bool {
+    scalar_record(ty, types) || (c_layout_record(ty, types) && !c_layout_input_only(ty, types))
+}
+
+/// W21: if `ty` (or the inner record of `ref R` / `ref mut R` / `Maybe<ref R>`) is an unmarked record
+/// containing a `@c_layout` record field, returns `(outer_name, field_name, inner_name)`.
+pub fn plain_record_contains_c_layout(
+    ty: &Type,
+    types: &TypeContext<'_>,
+) -> Option<(String, String, String)> {
+    fn find(ty: &Type, types: &TypeContext<'_>, depth: usize) -> Option<(String, String, String)> {
+        if depth >= crate::syntax::MAX_NESTING {
+            return None;
+        }
+        let Type::Record(id, arguments) = ty else {
+            return None;
+        };
+        let record = &types.records[*id];
+        if record.c_layout.is_some() {
+            return None;
+        }
+        for ((fname, _), fty) in record
+            .fields
+            .iter()
+            .zip(types.record_fields(*id, arguments))
+        {
+            if let Type::Record(inner_id, _) = &fty {
+                if types.records[*inner_id].c_layout.is_some() {
+                    let outer = record
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&record.name)
+                        .to_owned();
+                    let inner = types.records[*inner_id]
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(&types.records[*inner_id].name)
+                        .to_owned();
+                    return Some((outer, fname.clone(), inner));
+                }
+                if let Some(found) = find(&fty, types, depth + 1) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    let candidate = match ty {
+        Type::Reference(inner, _) => inner.as_ref(),
+        _ => match std_maybe_payload(ty, types) {
+            Some(Type::Reference(inner, _)) => inner.as_ref(),
+            _ => ty,
+        },
+    };
+    find(candidate, types, 0)
+}
+
 pub fn parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     abi_scalar(ty)
-        || scalar_record(ty, types)
-        || matches!(ty, Type::Reference(inner, false) if Buffer::of(inner).is_some() || scalar_record(inner, types))
+        || host_record_bidirectional(ty, types)
+        || matches!(ty, Type::Reference(inner, false) if Buffer::of(inner).is_some() || host_record_bidirectional(inner, types))
 }
 
 pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -244,7 +388,7 @@ pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
         || is_handle(ty)
         || *ty == Type::Unit
         || Buffer::of(ty).is_some()
-        || scalar_record(ty, types)
+        || host_record_bidirectional(ty, types)
 }
 
 /// Whether `ty` is an `extern type` handle.
@@ -299,7 +443,7 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
         Type::Reference(inner, false) if zstring(inner, types) => {
             Some(Nullable::BorrowedZString(inner))
         }
-        Type::Reference(inner, false) if scalar_record(inner, types) => {
+        Type::Reference(inner, false) if host_record(inner, types) => {
             Some(Nullable::BorrowedRecord(inner))
         }
         _ => None,
@@ -379,6 +523,8 @@ pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     parameter(ty, types)
         || extern_scalar(ty, types)
         || fnptr(ty, types)
+        || c_layout_record(ty, types)
+        || matches!(ty, Type::Reference(inner, false) if c_layout_record(inner, types))
         || matches!(
             nullable(ty, types),
             Some(Nullable::BorrowedRecord(_) | Nullable::BorrowedZString(_))
@@ -388,7 +534,7 @@ pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
         || matches!(
             ty,
             Type::Reference(inner, true)
-                if scalar_record(inner, types) || mutable_extern_scalar(inner)
+                if host_record_bidirectional(inner, types) || mutable_extern_scalar(inner)
         )
 }
 

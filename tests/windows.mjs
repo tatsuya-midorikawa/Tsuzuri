@@ -770,6 +770,86 @@ if (isMain) {
     assert.equal(execute(nullExe, [], false).status, 3, `nullable-win ${optimization}`);
   }
   console.log("Windows MSVC: Maybe<H> NULL ABI passed");
+
+  // W21: @c_layout structs match real Win32 headers (LOGFONTW, DLGTEMPLATE, GUID, MSG, WNDCLASSEXW)
+  // and CreateFontIndirectW succeeds with ref LogFont.
+  const winCLayoutDir = join(directory, "win-c-layout");
+  mkdirSync(winCLayoutDir);
+  writeFileSync(join(winCLayoutDir, "Main.tz"), [
+    "extern type copy Hwnd",
+    "extern type copy Hinstance",
+    "extern type copy Hicon",
+    "extern type copy Hcursor",
+    "extern type copy Hbrush",
+    "extern type Hfont",
+    "@c_layout",
+    "record Point { x: i32, y: i32 }",
+    "@c_layout",
+    "record LogFont {",
+    "    height: i32, width: i32, escapement: i32, orientation: i32, weight: i32,",
+    "    italic: i8u, underline: i8u, strike_out: i8u, char_set: i8u,",
+    "    out_precision: i8u, clip_precision: i8u, quality: i8u, pitch_and_family: i8u,",
+    "    face_name: [i16u; 32]",
+    "}",
+    "@c_layout(pack = 2)",
+    "record DlgTemplate { style: i32u, extended_style: i32u, cdit: i16u, x: i16, y: i16, cx: i16, cy: i16 }",
+    "@c_layout",
+    "record Guid { data1: i32u, data2: i16u, data3: i16u, data4: [i8u; 8] }",
+    "@c_layout",
+    "record Msg { hwnd: Maybe<Hwnd>, message: i32u, w_param: i64u, l_param: i64, time: i32u, pt: Point }",
+    "@c_layout",
+    "record WndClassEx {",
+    "    cb_size: i32u, style: i32u, lpfn_wnd_proc: FnPtr<(Hwnd -> i32u -> i64u -> i64 -> i64)>,",
+    "    cb_cls_extra: i32, cb_wnd_extra: i32, h_instance: Maybe<Hinstance>,",
+    "    h_icon: Maybe<Hicon>, h_cursor: Maybe<Hcursor>, hbr_background: Maybe<Hbrush>,",
+    "    lpsz_menu_name: Maybe<ref ZString>, lpsz_class_name: ref ZString, h_icon_sm: Maybe<Hicon>",
+    "}",
+    "@trusted",
+    'extern "CreateFontIndirectW" def create_font :: ref LogFont -> Maybe<Hfont>',
+    "@trusted",
+    'extern "DeleteObject" def delete_object :: Hfont -> i32',
+    "@trusted",
+    'extern "RegisterClassExW" def register_class :: ref WndClassEx -> i16u',
+    "export def dlg_items :: ref DlgTemplate -> i16u = \\d -> d.cdit",
+    "export def guid_d1 :: ref Guid -> i32u = \\g -> g.data1",
+    "export def msg_code :: ref Msg -> i32u = \\m -> m.message",
+    "def main :: unit -> i32 = \\() ->",
+    "    let lf = LogFont {",
+    "        height: -12i32, width: 0i32, escapement: 0i32, orientation: 0i32, weight: 400i32,",
+    "        italic: 0i8u, underline: 0i8u, strike_out: 0i8u, char_set: 1i8u,",
+    "        out_precision: 0i8u, clip_precision: 0i8u, quality: 0i8u, pitch_and_family: 0i8u,",
+    "        face_name: FixedArray.init (\\_ -> 0i16u)",
+    "    }",
+    "    match create_font (ref lf) with",
+    "    | Maybe.Some f -> if delete_object f != 0i32 then 7i32 else 1i32",
+    "    | Maybe.None -> 2i32",
+    "",
+  ].join("\n"));
+  const winCLayoutH = join(directory, "win_c_layout.h");
+  cli(["build", winCLayoutDir, "--emit", "header", "-o", winCLayoutH]);
+  const winCLayoutCheck = join(directory, "win_c_layout_check.c");
+  writeFileSync(winCLayoutCheck, [
+    "#define WIN32_LEAN_AND_MEAN",
+    "#include <windows.h>",
+    "#include <stddef.h>",
+    '#include "win_c_layout.h"',
+    '_Static_assert(sizeof(tz_record_4Main_7LogFont) == sizeof(LOGFONTW), "LOGFONTW size");',
+    '_Static_assert(offsetof(tz_record_4Main_7LogFont, face_name) == offsetof(LOGFONTW, lfFaceName), "LOGFONTW face");',
+    '_Static_assert(sizeof(tz_record_4Main_11DlgTemplate) == sizeof(DLGTEMPLATE), "DLGTEMPLATE size");',
+    '_Static_assert(offsetof(tz_record_4Main_11DlgTemplate, cdit) == offsetof(DLGTEMPLATE, cdit), "DLGTEMPLATE cdit");',
+    '_Static_assert(sizeof(tz_record_4Main_4Guid) == sizeof(GUID), "GUID size");',
+    '_Static_assert(sizeof(tz_record_4Main_3Msg) == sizeof(MSG), "MSG size");',
+    '_Static_assert(sizeof(tz_record_4Main_10WndClassEx) == sizeof(WNDCLASSEXW), "WNDCLASSEXW size");',
+    '_Static_assert(offsetof(tz_record_4Main_10WndClassEx, lpsz_class_name) == offsetof(WNDCLASSEXW, lpszClassName), "WNDCLASSEXW class");',
+    "int ok(void) { return 0; }",
+    "",
+  ].join("\n"));
+  execute(clang, [...nativeFlags, "-c", "-I", directory, winCLayoutCheck, "-o", join(directory, "win_c_layout_check.obj")]);
+  const fontExe = join(directory, "win-c-layout-font.exe");
+  cli(["build", winCLayoutDir, "--no-cache", "-O3", "-l", "gdi32", "-l", "user32", "-o", fontExe]);
+  assert.equal(execute(fontExe, [], false).status, 7, "CreateFontIndirectW with @c_layout LogFont");
+  console.log("Windows MSVC: W21 @c_layout Win32 header parity & CreateFontIndirectW passed");
+
   runGuiStage(compiler, clang, directory);
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
     }
