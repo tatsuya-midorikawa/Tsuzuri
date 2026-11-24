@@ -1,5 +1,8 @@
-// An operating-system API named only by a public function that nothing reaches. A target without those APIs
-// (Windows) refuses a program that reaches them, and no longer one that does not (before PB03 D1 it was E2002).
-def never_called :: string -> IO<Result<string, Os.Error>> = \path -> File.read_text path
+// An operating-system API named only by a public function that nothing reaches.
+// Native executable pruning drops `never_called` so no `@tsuzuri_os_` is emitted;
+// WebAssembly keeps public functions as reachability roots and refuses OS APIs.
+def never_called :: own string -> IO<Result<string, Os.Error>> = \path -> File.read_text path
 
-"ok"
+def main :: unit -> i32 = \() ->
+    do! IO.writeln "ok"
+    0
