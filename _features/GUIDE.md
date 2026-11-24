@@ -2005,6 +2005,18 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **守る範囲**: 新しい予約語、生ポインター型、`unsafe`、`?.` / `??` 演算子、フロー依存の暗黙の型変更は入れない。使う予約枠（各チケットの要承認）は `W1011`（NS05 の `--warn unwrap`）、`W1012`（NS04 の 2026 互換警告）、`bindgen --nonnull`（NS03）、opt-in モジュール `ExternAddr`（NS07）で、D-55 の未割り当て枠（`W1011`〜`W1015`）と規則に従う。NS08 は既存の規則に沿う健全性不具合の修正で承認は要らない。
 - **1 チケット 1 PR**。NS08（P0、承認不要）は単独で直ちに着手でき、NS04・NS05・NS06 は W 系と独立に進められる。NS01〜NS03 は W15 の後、NS07 は W24 の後に進める。
 
+### D-65 数値計算基盤と NumPy 互換機能（案 C: ハイブリッド。NC01〜NC14）
+
+- **経緯**: 2026-11-24、利用者の依頼「Tsuzuri で Numpy 互換の機能を提供したい。そこでまずはどういった実装が不足しているかリストアップして。」へのギャップ調査と、続く方針決定「元々の案Cでいきましょう。それ前提に、実現に必要な実装等について `_features` フォルダーに開発用チケットを作成してください。」およびモジュール命名決定（「`Npy` というモジュール名は Numpy を意識しすぎているので、もう少しいい名称はない？」→ `TensorCodec` / `TensorIO`）から、NC01〜NC14 を起票した（HEAD `27069465`）。計画と依存は [README の追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](README.md#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) にある。
+- **採用した方針（案 C: ハイブリッド）**:
+  1. **全機能は純 Tsuzuri 数値計算ライブラリで完結させる**: `Tensor`（`Tensor.Mut`・負/0 ストライド・64 軸・ブロードキャスト・生成・形状/マスク・ufunc・軸指定還元/統計/ソート）、`Complex`、`Math` 拡張、`Linalg`、`Fft`、`Polynomial`、`Random` 分布群、および中立な永続化モジュール **`TensorCodec`**（純粋 `[ubyte]` 変換、`.npy`/`.npz`/Safetensors/CSV、WASM 動作）と **`TensorIO`**（ファイル I/O とネイティブ読み取り専用 `mmap`）を標準ライブラリとして構築する。すべて D-59（対象を最後の引数）と決定論契約に従い、オプション引数は最頻出の短縮名（`*_axis`）と設定レコード（`*_with`）で表現する。
+  2. **言語仕様への拡張は「他の型にも広く役立つ汎用的な 2 機能」に限定する**: ① 算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Pow`/`Neg`）の借用対応（[NC03](NC03-borrowed-arithmetic-operators.md)。D-20 の `Eq`/`Ord` と同じ非消費契約で、`BigInt`・`Tensor`・ユーザー定義型すべてに効く）、② 既存の `x[k]` 構文をユーザー型へ開放する汎用 `Index`（Phase 2 で `IndexMut`）型クラスと標準スライス記述子モジュール `Slice`（[NC04](NC04-generic-index-class-and-slice.md)。`Tensor`/`Matrix`/`Map`/`HashMap` すべてに効き、パーサー文法を増やさない）。
+  3. **性能・相互運用**: 移植可能かつ決定論的な純 Tsuzuri 基準実装の上に、C FFI 数値可変バッファ拡張＋明示的 BLAS/LAPACK 経路（[NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md)、[W13](W13-extern-ref-mut-and-mutable-buffers.md) に依存）、x86-64 FMA lowering・SIMD/Parallel・加算順序保存タイリング GEMM・GPU 数値カーネル（[NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)）、および Python/NumPy ゼロコピー連携（[NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md)）を積み上げる。
+- **採用しないもの（Tsuzuri の既存の美学・簡潔さ・安全性を守る境界）**: 新しい予約語、行列積演算子 `@`（`@attribute` と衝突）、キーワード引数・デフォルト引数（カリー化・`>>` 合成と衝突）、Python 風のコロン区切りスライス文法 `a[1::2, ::-1]`（`:` 型注釈・`..` 範囲と衝突）、`==`/`<` の配列特例オーバーロード（`Eq`/`Ord` の `bool` 契約を壊す）、一般のユーザー定義多パラメータ型クラス・定数ジェネリクスの型レベル算術、暗黙の `fast-math` / 暗黙 FMA / 暗黙の dtype 変換、`Npy` のような特定エコシステム名のトップレベルモジュール、`.npy` の `object`（pickle）dtype。
+- **新規 opt-in std モジュール（各チケットで要承認・`RESERVED_MODULES` および `D-55` へ登録）**: `Complex`（NC01）、`Slice`（NC04）、`Linalg`（NC08）、`Fft`・`Polynomial`（NC09）、`RandomTensor`（NC10 Phase 2。常時ロードの `Random` から opt-in `Tensor`/`Linalg` への逆依存を避けるため分離）、`TensorCodec`・`TensorIO`（NC11）。加えて組み込み型クラス `Index`（Phase 2 で `IndexMut`、NC04）を `BUILTIN_CLASSES` と `D-55` へ登録する。
+- **NumPy との意図的な意味差の集約**: `remainder`（NumPy は床剰余、Tsuzuri は `floor_mod` と `ieee_remainder` に分離）、`round`（Tsuzuri は 0 から遠い側、NumPy 相当は `round_even`）、`sign(-0.0)`、`ddof >= n` の `NaN`、`==` のスカラー `bool` 契約、乱数列の非互換などは `_tsuzuri/language-reference/built-in-types-and-modules/numpy-migration.md`（NC07 で新設、後続チケットで追記）に一元記載する。
+- **1 チケット 1 PR**（XL の NC08・NC13 は Phase ごとに 1 PR）。推奨順は Phase 1（NC01・NC02・NC03・NC04）→ Phase 2（NC05・NC06・NC07）→ Phase 3（NC08・NC09・NC10）→ Phase 4（NC11・NC12・NC13・NC14）。
+
 ## 10. 完了の定義（全チケット共通）
 
 - [ ] 仕様どおりに動作し、仕様外の入力は安定した診断コードで拒否される。
