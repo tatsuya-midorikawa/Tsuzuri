@@ -392,10 +392,13 @@ impl Platform {
         self.aarch64()
     }
 
-    /// Whether `src/runtime/os.c` has an implementation for the target: macOS and Linux.
-    /// Windows has no implementation (G10 is the execution gate and does not include one).
+    /// Whether `src/runtime/os.c` has an implementation for the target: POSIX on macOS/Linux and
+    /// Win32 (`src/runtime/os-windows.h`, W11) on Windows.
     pub const fn os_apis(self) -> bool {
-        !self.windows()
+        match self.0 {
+            Some(_) => true,
+            None => cfg!(any(target_os = "macos", target_os = "linux", windows)),
+        }
     }
 
     /// Whether `src/runtime/net.c` has an implementation for the target.
@@ -690,8 +693,8 @@ mod tests {
                 triple.name()
             );
         }
-        // The socket runtime is written for macOS, Linux, and Windows, and the operating-system
-        // runtime for macOS and Linux.
+        // Both the socket runtime and the operating-system runtime are written for macOS, Linux,
+        // and Windows (W11).
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             assert_eq!(
@@ -702,7 +705,7 @@ mod tests {
             );
             assert_eq!(
                 platform.os_apis(),
-                triple.os() != Os::Windows,
+                matches!(triple.os(), Os::MacOs | Os::Linux | Os::Windows),
                 "{}",
                 triple.name()
             );

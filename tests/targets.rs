@@ -839,19 +839,6 @@ fn runtimes_a_target_lacks_are_refused_before_any_tool_runs() {
             }
         }
         // The gates read the target's table, not the machine the compiler runs on.
-        let message = |triple: Triple| {
-            let output = setup
-                .command(&["build", "--no-cache", "--target", triple.name()])
-                .env("TSUZURI_CLANG", setup.root.join("missing-clang"))
-                .output()
-                .unwrap();
-            text(&output).1
-        };
-        if name == "os" {
-            assert!(message(Triple::X86_64WindowsGnu).contains(
-                "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10)"
-            ));
-        }
         fs::remove_dir_all(setup.root).unwrap();
     }
 }

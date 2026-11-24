@@ -318,12 +318,14 @@ try {
   assert.equal(error.message, `'--cpu native' requires the host target; use '--cpu generic' when cross-compiling to ${foreign}`);
   error = failure(["run", "examples/control", "--target", "wasm32"]);
   assert.equal(error.code, "E2000");
-  // The runtimes a target lacks are refused before any tool runs, whatever the host.
+  // W11: OS APIs are now supported on Windows targets too, so x86_64-pc-windows-gnu proceeds past
+  // the platform gate (only --emit object with embedded OS runtime is rejected on Windows).
   const os = join(work, "os");
   mkdirSync(os);
   writeFileSync(join(os, "Main.tz"), 'def main :: unit -> i32 = \\() ->\n    let! home = Env.var "HOME"\n    0\n');
-  error = failure(["build", os, "--target", "x86_64-pc-windows-gnu", "--no-cache", "-o", join(work, "os-windows")]);
-  assert.match(error.message, /not supported on Windows yet \(G10\)/);
+  error = failure(["build", os, "--target", "x86_64-pc-windows-gnu", "--emit", "object", "--no-cache", "-o", join(work, "os-windows.obj")]);
+  assert.equal(error.code, "E2002");
+  assert.match(error.message, /operating-system runtime/);
 
   const lines = triples.map(([name]) => {
     const found = outcome.get(name);

@@ -484,6 +484,12 @@ if (isMain) {
     const rejected = cli(["build", "tests/fixtures/tzroutine/Main.tz", "--emit", "object", "-o", join(directory, "rejected.obj"), "--json"], false);
     assert.equal(diagnostic(rejected).code, "E2002");
   }
+  const osObjDir = join(directory, "os-obj");
+  mkdirSync(osObjDir);
+  writeFileSync(join(osObjDir, "Main.tz"), 'def main :: unit -> i32 = \\() ->\n    let! _ = File.read_text "missing.txt"\n    0\n');
+  const osObjRejected = cli(["build", osObjDir, "--emit", "object", "--no-cache", "-o", join(directory, "os-obj.obj"), "--json"], false);
+  assert.equal(diagnostic(osObjRejected).code, "E2002");
+  assert.match(diagnostic(osObjRejected).message, /operating-system runtime/);
   const alias = join(directory, "source-alias.ll");
   linkSync(input, alias);
   const protectedResult = cli(["build", input, "--emit", "llvm", "-o", alias, "--json"], false);

@@ -275,3 +275,9 @@ jobs:
           export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
           export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
           node ../tests/windows.mjs toolchain/bin/tsuzuri.exe --stage gui
+      - name: Windows OS API with the bundled toolchain (W11)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: |
+          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
+          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          node ../tests/os.mjs toolchain/bin/tsuzuri.exe

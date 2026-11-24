@@ -102,27 +102,7 @@ static void tz_arguments_from_utf8(int64_t count, char **values, struct tz_argum
 #endif
 
 #if defined(_WIN32) || defined(TZ_ARGUMENTS_TEST)
-static const uint16_t *tz_arguments_blank(const uint16_t *at) {
-    while (*at == ' ' || *at == '\t') at++;
-    return at;
-}
-
-// Reads the argument at `at`, stores its units in `output` unless it is NULL, and returns where
-// it ends.
-static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, int64_t *length) {
-    int quoted = 0;
-    int64_t count = 0;
-    for (; *at != 0 && (quoted || (*at != ' ' && *at != '\t')); at++) {
-        if (*at == '"') {
-            quoted = !quoted;
-        } else {
-            if (output) output[count] = *at;
-            count++;
-        }
-    }
-    *length = count;
-    return at;
-}
+#include "arguments-split.h"
 
 // The arguments of a command line after the program name.
 static void tz_arguments_split(const uint16_t *line, struct tz_arguments_array *output) {

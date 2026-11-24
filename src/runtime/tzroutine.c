@@ -1396,14 +1396,16 @@ static long tzr_env(const char *name, long low, long high, long fallback) {
 
 /* Time.sleep_ms (src/runtime/os.c) on a tzroutine waits like Time.sleep instead of stopping the M's
  * thread (TZ05). os.c and this file are in one translation unit when both are used, so the hook has
- * one definition; a program without tzroutines leaves it null. os.c has no Windows version. */
-#if !defined(_WIN32)
+ * one definition; a program without tzroutines leaves it null. */
 #ifndef TSUZURI_OS_SLEEP_HOOK_DEFINED
 #define TSUZURI_OS_SLEEP_HOOK_DEFINED
+#if defined(_WIN32)
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t) = 0;
+#else
 __attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t);
 #endif
-static int32_t tzr_sleep_if_routine(int64_t ns);
 #endif
+static int32_t tzr_sleep_if_routine(int64_t ns);
 TZR_API void tsuzuri_tz_blocking_enter(void);
 TZR_API void tsuzuri_tz_blocking_exit(void);
 #if !defined(_WIN32)
@@ -1426,9 +1428,7 @@ static void tzr_init(void) {
 #if defined(TZ_STACK_GUARD)
     atomic_store_explicit(&tsuzuri_stack_guard_hook, tsuzuri_tz_stack_guard_hit, memory_order_release);
 #endif
-#if !defined(_WIN32)
     atomic_store_explicit(&tsuzuri_os_sleep_hook, tzr_sleep_if_routine, memory_order_release);
-#endif
     atomic_store_explicit(&tsuzuri_blocking_enter_hook, tsuzuri_tz_blocking_enter, memory_order_release);
     atomic_store_explicit(&tsuzuri_blocking_exit_hook, tsuzuri_tz_blocking_exit, memory_order_release);
 #if !defined(_WIN32)
@@ -4125,7 +4125,7 @@ TZR_API int32_t tsuzuri_tz_sleep(int64_t ns) {
     return tzr_park(tzr_unlock_timers, NULL, "Time.sleep");
 }
 
-#if !defined(_WIN32) && !defined(TZR_JSPI)
+#if !defined(TZR_JSPI)
 static int32_t tzr_sleep_if_routine(int64_t ns) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL) return 0; /* a thread: os.c stops it */

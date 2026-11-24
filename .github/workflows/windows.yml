@@ -179,6 +179,10 @@ jobs:
       - name: W5 Windows MSVC end-to-end
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/windows.mjs target/release/tsuzuri.exe
+      # W11: File, Dir, Env, Time, Random, and Process.run on Win32.
+      - name: OS API end to end (W11)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/os.mjs target/release/tsuzuri.exe
       # TZ02: tzroutine { } end to end on fibers.
       - name: tzroutine end to end (TZ02)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

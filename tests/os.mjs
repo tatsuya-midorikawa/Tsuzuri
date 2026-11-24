@@ -113,7 +113,413 @@ const message = (text, code) => (code ? `${text} (os error ${code})` : text);
 const lines = result => result.stdout.split("\n").slice(0, -1);
 const bytesText = buffer => `ok:${[...buffer].join(",")}`;
 
+async function runWindowsSuite() {
+  const isBundledClang = /tsuzuri-clang(?:\.exe)?$/i.test(clang);
+  const cFlags = isBundledClang
+    ? ["-D_CRT_SECURE_NO_WARNINGS"]
+    : [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld", "-D_CRT_SECURE_NO_WARNINGS"];
+  const refBin = join(root, "os_windows_reference.exe");
+  execute(clang, [...cFlags, "-O1", "tests/os_windows_reference.c", "-o", refBin]);
+
+  const winProgram = (name, source) => {
+    const directory = join(root, `win-${name}`);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "Main.tz"), source + prelude);
+    return optimization => {
+      const key = `win-${name}${optimization}`;
+      if (!builds.has(key)) {
+        const executable = join(directory, `program${optimization}.exe`);
+        execute(compiler, ["build", directory, "--no-cache", optimization, "-o", executable]);
+        builds.set(key, executable);
+      }
+      return builds.get(key);
+    };
+  };
+
+  // 1. File round trips, append, raw bytes, remove, IO+OS linking
+  const files = winProgram("files", `
+def main :: unit -> i32 = \\() ->
+    let _lazy = File.write_text "lazy.txt" "never"
+    let! first = File.write_text "keep.txt" "h\\u00e9llo\\n"
+    do! say (unit_text first)
+    let! bytes = File.read_bytes "keep.txt"
+    do! say (bytes_text bytes)
+    let! appended = File.append_text "keep.txt" "w\\u00f6rld"
+    do! say (unit_text appended)
+    let! text = File.read_text "keep.txt"
+    do! say (text_text text)
+    let! raw = File.write_bytes "raw.bin" [0ubyte, 1ubyte, 255ubyte, 10ubyte]
+    do! say (unit_text raw)
+    let! raw_back = File.read_bytes "raw.bin"
+    do! say (bytes_text raw_back)
+    let! removed = File.remove "raw.bin"
+    do! say (unit_text removed)
+    let! gone = File.read_bytes "raw.bin"
+    do! say (bytes_text gone)
+    0
+`);
+
+  // 2-6. Failure kinds and Win32 error codes (NotFound 2, PermissionDenied 5 & 32, InvalidInput 0, InvalidEncoding 0)
+  const failures = winProgram("failures", `
+def main :: unit -> i32 = \\() ->
+    let! missing = File.read_text "missing.txt"
+    do! say (text_text missing)
+    let! locked = File.read_bytes "locked.txt"
+    do! say (bytes_text locked)
+    let! ro_write = File.write_text "readonly.txt" "x"
+    do! say (unit_text ro_write)
+    let! ro_remove = File.remove "readonly.txt"
+    do! say (unit_text ro_remove)
+    let! bad_utf8 = File.read_text "bad.bin"
+    do! say (text_text bad_utf8)
+    let! read_dir = File.read_bytes "sub"
+    do! say (bytes_text read_dir)
+    let! nul_path = File.read_text "a\\0b"
+    do! say (text_text nul_path)
+    0
+`);
+
+  // 7-8. Directories, UTF-8 byte order, empty path, long path (> 260 chars), junction (Symlink), Dir.walk
+  const dirs = winProgram("dirs", `
+def clone_str :: ref string -> string
+fn clone_str s = Maybe.get (String.slice 0 s.length s)
+
+def main :: Array<string> -> i32 = \\args ->
+    let long_path = clone_str (ref args[0])
+    let! created = Dir.create "made"
+    do! say (unit_text created)
+    let! dup = Dir.create "made"
+    do! say (unit_text dup)
+    let! listed = Dir.list "tree"
+    do! say (names_text listed)
+    let! empty_path = Dir.list ""
+    do! say (names_text empty_path)
+    let! long_w = File.write_text (clone_str (ref long_path)) "deep-ok"
+    do! say (unit_text long_w)
+    let! long_r = File.read_text long_path
+    do! say (text_text long_r)
+    let! jmeta = File.link_metadata "junc"
+    do! say (match jmeta with
+        | Result.Ok m -> match m.kind with | File.Symlink -> "junc:link" | _ -> "junc:other"
+        | Result.Error e -> Os.message (ref e))
+    let! walked = Dir.walk "walkroot"
+    do! say (names_text walked)
+    let! rm_junc_dir = Dir.remove "junc"
+    do! say (unit_text rm_junc_dir)
+    let! rm_junc_file = File.remove "junc"
+    do! say (unit_text rm_junc_file)
+    let! rm_made = Dir.remove "made"
+    do! say (unit_text rm_made)
+    0
+`);
+
+  // 9. Env.args (same split as main), Env.var, Env.current_dir
+  const envProg = winProgram("env", `
+def main :: Array<string> -> i32 = \\main_args ->
+    let! env_args = Env.args ()
+    let sep = "|"
+    let main_joined = String.join (ref sep) (ref main_args)
+    let env_joined = match env_args with
+        | Result.Ok xs -> String.join (ref sep) (ref xs)
+        | Result.Error e -> "ERR:" + Os.message (ref e)
+    do! say ("same:" + to_string (main_joined == env_joined) + ":" + env_joined)
+    let! present = Env.var "TZ_W11_VAR"
+    do! say (option_text present)
+    let! empty_v = Env.var "TZ_W11_EMPTY"
+    do! say (option_text empty_v)
+    let! missing = Env.var "TZ_W11_MISSING_999"
+    do! say (option_text missing)
+    let! bad_eq = Env.var "A=B"
+    do! say (option_text bad_eq)
+    let! cwd = Env.current_dir ()
+    do! say (text_text cwd)
+    0
+`);
+
+  // 10-11. Clocks, sleep_ms, Random
+  const clockRand = winProgram("clockrand", `
+def main :: unit -> i32 = \\() ->
+    let! t0 = Time.monotonic_ns ()
+    let! slept = Time.sleep_ms 50
+    let! t1 = Time.monotonic_ns ()
+    let! u = Time.unix_ns ()
+    let! rnd = Random.bytes 32
+    let! bad_rnd = Random.bytes (-1)
+    let! bad_sleep = Time.sleep_ms (-1)
+    do! say (unit_text slept)
+    do! say (to_string (Result.get t1 - Result.get t0))
+    do! say (to_string (Result.get u))
+    do! say (length_text rnd)
+    do! say (length_text bad_rnd)
+    do! say (unit_text bad_sleep)
+    0
+`);
+
+  // 17 & 19. File.Handle & metadata
+  const handlesMeta = winProgram("handles", `
+def main :: unit -> i32 = \\() ->
+    let! wh = File.open "h.bin" File.Write
+    do! match wh with
+    | Result.Ok h -> IO {
+        let! w1 = File.write h [97ubyte, 98ubyte, 99ubyte]
+        let! fl = File.flush h
+        let! c1 = File.close h
+        let! c2 = File.close h
+        do! say (unit_text w1 + "," + unit_text fl + "," + unit_text c1 + "," + unit_text c2)
+      }
+    | Result.Error e -> say (Os.message (ref e))
+    let! dup = File.open "h.bin" File.CreateNew
+    do! say (match dup with | Result.Ok _ -> "unexpected-ok" | Result.Error e -> Os.message (ref e))
+    let! rh = File.open "h.bin" File.Read
+    do! match rh with
+    | Result.Ok h -> IO {
+        let! b1 = File.read h 2
+        let! b2 = File.read h 4
+        let! b3 = File.read h 4
+        let! c2 = File.close h
+        do! say (bytes_text b1 + "|" + bytes_text b2 + "|" + bytes_text b3 + "|" + unit_text c2)
+      }
+    | Result.Error e -> say (Os.message (ref e))
+    let! meta = File.metadata "h.bin"
+    do! say (match meta with
+        | Result.Ok m ->
+            let k = match m.kind with | File.Regular -> "file" | File.Directory -> "dir" | File.Symlink -> "link" | File.Other -> "other"
+            k + ":" + to_string m.size + ":" + to_string m.modified_ns
+        | Result.Error e -> Os.message (ref e))
+    0
+`);
+
+  // 21. Phase 2: Process.run (quoting, stdin/stdout/stderr, exit codes, .bat/.cmd rejection, PATH-only, concurrent tzroutines)
+  const procProg = winProgram("proc", `
+def text_of :: ref [ubyte] -> string
+fn text_of bytes =
+    match Os.decode (Array.sub 0 bytes.length bytes) with
+    | Result.Ok text -> text
+    | Result.Error _ -> "<bad>"
+
+def run_summary :: own Result<Process.Output, Os.Error> -> string
+fn run_summary result =
+    match result with
+    | Result.Ok out ->
+        "ok:" + to_string out.code + ":" + to_string out.signal + ":" + text_of (ref out.stdout) + ":" + text_of (ref out.stderr)
+    | Result.Error e -> "err:" + Os.message (ref e)
+
+def clone_str :: ref string -> string
+fn clone_str s = Maybe.get (String.slice 0 s.length s)
+
+def main :: Array<string> -> i32 = \\args ->
+    let node_bin = clone_str (ref args[0])
+    let! echoed = Process.run (clone_str (ref node_bin)) ["-e", "process.stdout.write(JSON.stringify(process.argv.slice(1)))", "--", "a b", "", "c\\"d", "e\\\\", "f\\\\\\\\\\"g", "tab\\t", "\\u00fc"] []
+    do! say (run_summary echoed)
+    let! piped = Process.run (clone_str (ref node_bin)) ["-e", "const chunks=[];process.stdin.on('data',c=>chunks.push(c));process.stdin.on('end',()=>{process.stdout.write(Buffer.concat(chunks).toString('utf8').toUpperCase());process.stderr.write('err!');process.exit(3);});"] [104ubyte, 105ubyte]
+    do! say (run_summary piped)
+    let! bat1 = Process.run "x.bat" [] []
+    do! say (run_summary bat1)
+    let! bat2 = Process.run "X.CMD" [] []
+    do! say (run_summary bat2)
+    let! bat3 = Process.run "x.bat." [] []
+    do! say (run_summary bat3)
+    let! bat4 = Process.run "x.bat " [] []
+    do! say (run_summary bat4)
+    let! cwd_only = Process.run "evil_cwd_only" [] []
+    do! say (run_summary cwd_only)
+    let! bat_path_only = Process.run "onlybat" [] []
+    do! say (run_summary bat_path_only)
+    // Concurrent tzroutines: a 1500ms child and an instant child must not block each other on inherited pipe handles.
+    let order: Channel<string> = Channel.make 2
+    let slow_ch = Channel.share order
+    let fast_ch = Channel.share order
+    let node1 = clone_str (ref node_bin)
+    let node2 = clone_str (ref node_bin)
+    tzroutine {
+        let! _ = Process.run node1 ["-e", "setTimeout(()=>process.stdout.write('slow'),1500)"] []
+        Channel.send slow_ch "slow"
+    }
+    tzroutine {
+        let! _ = Process.run node2 ["-e", "process.stdout.write('fast')"] []
+        Channel.send fast_ch "fast"
+    }
+    let first = Maybe.get (Channel.recv order)
+    let second = Maybe.get (Channel.recv order)
+    do! say ("order:" + first + "," + second)
+    0
+`);
+
+  for (const optimization of optimizations) {
+    // 1. Files
+    {
+      const cwd = scratch("w-files", optimization);
+      const out = lines(run(files(optimization), cwd));
+      assert.deepEqual(out, [
+        "ok",
+        bytesText(Buffer.from("héllo\n")),
+        "ok",
+        "ok:héllo",
+        "wörld",
+        "ok",
+        "ok:0,1,255,10",
+        "ok",
+        message("not found", 2),
+      ]);
+      assert.equal(existsSync(join(cwd, "lazy.txt")), false);
+      assert.equal(readFileSync(join(cwd, "keep.txt"), "utf8"), "héllo\nwörld");
+    }
+
+    // 2-6. Failures
+    {
+      const cwd = scratch("w-failures", optimization);
+      writeFileSync(join(cwd, "locked.txt"), "secret");
+      writeFileSync(join(cwd, "readonly.txt"), "ro");
+      chmodSync(join(cwd, "readonly.txt"), 0o444);
+      writeFileSync(join(cwd, "bad.bin"), Buffer.from([0x80, 0xff]));
+      mkdirSync(join(cwd, "sub"));
+      const holder = spawn(refBin, ["hold", join(cwd, "locked.txt")], { stdio: ["pipe", "pipe", "pipe"] });
+      await new Promise((res, rej) => {
+        holder.stdout.once("data", () => res());
+        holder.once("error", rej);
+        holder.once("exit", code => rej(new Error(`holder exited early: ${code}`)));
+      });
+      try {
+        const out = lines(run(failures(optimization), cwd));
+        assert.deepEqual(out, [
+          message("not found", 2),
+          message("permission denied", 32),
+          message("permission denied", 5),
+          message("permission denied", 5),
+          "invalid encoding",
+          "invalid input",
+          "invalid input",
+        ]);
+      } finally {
+        holder.stdin.end();
+        await new Promise(res => holder.once("exit", res));
+        chmodSync(join(cwd, "readonly.txt"), 0o666);
+      }
+    }
+
+    // 7-8. Dirs, long paths, junctions, Dir.walk
+    {
+      const cwd = scratch("w-dirs", optimization);
+      mkdirSync(join(cwd, "tree"));
+      writeFileSync(join(cwd, "tree", "b.txt"), "1");
+      writeFileSync(join(cwd, "tree", "a.txt"), "2");
+      writeFileSync(join(cwd, "tree", "ä.txt"), "3");
+      mkdirSync(join(cwd, "targetdir"));
+      writeFileSync(join(cwd, "targetdir", "inside.txt"), "x");
+      symlinkSync(join(cwd, "targetdir"), join(cwd, "junc"), "junction");
+      mkdirSync(join(cwd, "walkroot", "sub"), { recursive: true });
+      writeFileSync(join(cwd, "walkroot", "a.txt"), "a");
+      writeFileSync(join(cwd, "walkroot", "sub", "b.txt"), "b");
+      symlinkSync(join(cwd, "targetdir"), join(cwd, "walkroot", "linkdir"), "junction");
+
+      // > 260 character deep path
+      let deepDir = cwd;
+      for (let i = 0; i < 6; i++) {
+        deepDir = join(deepDir, `segment_${i}_${"x".repeat(42)}`);
+        mkdirSync(deepDir, { recursive: true });
+      }
+      const deepFile = join(deepDir, "deep.txt");
+      assert.ok(deepFile.length > 260);
+
+      const expectedTree = readdirSync(join(cwd, "tree"))
+        .sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))
+        .join("|");
+      const out = lines(run(dirs(optimization), cwd, { args: [deepFile] }));
+      assert.deepEqual(out, [
+        "ok",
+        message("already exists", 183),
+        `ok:3:${expectedTree}`,
+        message("not found", 3),
+        "ok",
+        "ok:deep-ok",
+        "junc:link",
+        "ok:4:a.txt|linkdir|sub|sub/b.txt",
+        "not found",
+        "ok",
+        "ok",
+      ]);
+      assert.equal(existsSync(join(cwd, "junc")), false);
+      assert.equal(existsSync(join(cwd, "targetdir", "inside.txt")), true);
+    }
+
+    // 9. Env
+    {
+      const cwd = realpathSync.native(scratch("w-env", optimization));
+      const out = lines(run(envProg(optimization), cwd, {
+        args: ["alpha", "beta gamma", "C:\\dir\\"],
+        env: { TZ_W11_VAR: "hello-win", TZ_W11_EMPTY: "" },
+      }));
+      assert.deepEqual(out, [
+        "same:true:alpha|beta gamma|C:\\dir\\",
+        "some:hello-win",
+        "some:",
+        "none",
+        "invalid input",
+        `ok:${cwd}`,
+      ]);
+    }
+
+    // 10-11. Clocks & Random
+    {
+      const cwd = scratch("w-clock", optimization);
+      const beforeMs = Date.now();
+      const out = lines(run(clockRand(optimization), cwd));
+      assert.equal(out[0], "ok");
+      assert.ok(BigInt(out[1]) >= 45_000_000n, `sleep elapsed ${out[1]}`);
+      const unixMs = Number(BigInt(out[2]) / 1_000_000n);
+      assert.ok(Math.abs(unixMs - beforeMs) < 60_000, `unix_ns drift ${unixMs - beforeMs}`);
+      assert.equal(out[3], "length:32");
+      assert.equal(out[4], "invalid input");
+      assert.equal(out[5], "invalid input");
+    }
+
+    // 17 & 19. Handles & Metadata
+    {
+      const cwd = scratch("w-handles", optimization);
+      const out = lines(run(handlesMeta(optimization), cwd));
+      assert.equal(out[0], `ok,ok,ok,${message("invalid input", 6)}`);
+      assert.equal(out[1], message("already exists", 80));
+      assert.equal(out[2], "ok:97,98|ok:99|ok:|ok");
+      const st = statSync(join(cwd, "h.bin"), { bigint: true });
+      const parts = out[3].split(":");
+      assert.equal(parts[0], "file");
+      assert.equal(parts[1], String(st.size));
+      const diff = BigInt(parts[2]) - st.mtimeNs;
+      assert.ok(diff >= -10_000_000n && diff <= 10_000_000n, `mtime diff ${diff}`);
+    }
+
+    // 21. Phase 2 Process.run
+    {
+      const cwd = scratch("w-proc", optimization);
+      const binDir = join(cwd, "pathbin");
+      mkdirSync(binDir);
+      writeFileSync(join(cwd, "x.bat"), "@echo bad > marker.txt\r\n");
+      writeFileSync(join(cwd, "X.CMD"), "@echo bad > marker.txt\r\n");
+      writeFileSync(join(cwd, "evil_cwd_only.exe"), "not-a-real-exe");
+      writeFileSync(join(binDir, "onlybat.bat"), "@echo bad > marker.txt\r\n");
+      const out = lines(run(procProg(optimization), cwd, {
+        args: [process.execPath],
+        env: { PATH: `${binDir};${process.env.PATH ?? ""}`, TSUZURI_MAXPROCS: "2" },
+      }));
+      assert.equal(out[0], `ok:0:0:${JSON.stringify(["a b", "", 'c"d', "e\\", 'f\\\\"g', "tab\t", "\u00fc"])}:`);
+      assert.equal(out[1], "ok:3:0:HI:err!");
+      assert.equal(out[2], "err:invalid input");
+      assert.equal(out[3], "err:invalid input");
+      assert.equal(out[4], "err:invalid input");
+      assert.equal(out[5], "err:invalid input");
+      assert.equal(out[6], `err:${message("not found", 2)}`);
+      assert.equal(out[7], `err:${message("not found", 2)}`);
+      assert.equal(out[8], "order:fast,slow");
+      assert.equal(existsSync(join(cwd, "marker.txt")), false);
+    }
+  }
+  console.log("OS (Windows): File, Dir, Env, Time, Random, Handles, Metadata, Dir.walk, and Process.run at -O0 and -O3 passed");
+}
+
 try {
+  if (process.platform === "win32") {
+    await runWindowsSuite();
+  } else {
   // 1. Whole-file round trips; an action that is built but never run leaves no file; the IO and OS runtimes link together.
   const files = program("files", `
 def main :: unit -> i32 = \\() ->
@@ -1674,6 +2080,7 @@ char *tz_test_strdup(const char *);
     assert.equal(lines(result).length, 16 * 64);
   }
   console.log("OS: native and wasm32 File, Dir, Path, Env, Time, Random, exit codes, and allocation tracking at -O0 and -O3 passed");
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

@@ -1,5 +1,6 @@
-// Operating-system primitives of the standard File, Dir, Env, Time, and Random modules (E08).
-// POSIX only (macOS and Linux). The driver links this file when the program reaches Os.__*.
+// Operating-system primitives of the standard File, Dir, Env, Time, Random, and Process modules
+// (E08, W11). POSIX (macOS and Linux) and Windows (src/runtime/os-windows.h). The driver links this
+// file when the program reaches Os.__*.
 //
 // Every function that returns bytes writes its descriptor first and on every path (NULL and 0
 // on failure), and returns a status: 0 on success or (kind << 32) | (code & 0xffffffff) with
@@ -12,31 +13,20 @@
 #define _GNU_SOURCE
 #endif
 
-#include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <poll.h>
-#include <pthread.h>
-#include <signal.h>
-#include <spawn.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
-#if defined(__APPLE__)
-#include <crt_externs.h>
-#include <sys/random.h>
-#define TZ_OS_ENVIRON (*_NSGetEnviron())
-#else
-extern char **environ;
-#define TZ_OS_ENVIRON environ
+#if !defined(_WIN32)
+#include <dirent.h>
 #endif
 
+#if defined(_WIN32)
+#define TZ_OS_API
+#else
 #define TZ_OS_API __attribute__((weak, visibility("hidden")))
+#endif
 
 extern void *tsuzuri_alloc(int64_t size);
 extern void tsuzuri_free(void *pointer);
@@ -71,6 +61,17 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 #define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
 #endif
 
+/* The tzroutine runtime (src/runtime/tzroutine.c, TZ05) sets this when it starts: on a tzroutine
+ * it waits without stopping the thread and returns 1. Both files define it when both are used. */
+#ifndef TSUZURI_OS_SLEEP_HOOK_DEFINED
+#define TSUZURI_OS_SLEEP_HOOK_DEFINED
+#if defined(_WIN32)
+__attribute__((selectany)) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t) = 0;
+#else
+__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t);
+#endif
+#endif
+
 enum {
     TZ_OS_NOT_FOUND = 1,
     TZ_OS_PERMISSION_DENIED = 2,
@@ -83,42 +84,10 @@ enum {
 
 #define TZ_OS_MAX_RANDOM (INT64_C(1) << 30)
 #define TZ_OS_MAX_CURRENT_DIR (1024 * 1024)
+#define TZ_OS_MAX_CAPTURE (INT64_C(1) << 30)
 
 static int64_t tz_os_status(int kind, int code) {
     return ((int64_t)kind << 32) | (int64_t)(uint32_t)code;
-}
-
-static int64_t tz_os_error(int error) {
-    int kind;
-    switch (error) {
-    case ENOENT:
-    case ENOTDIR:
-        kind = TZ_OS_NOT_FOUND;
-        break;
-    case EACCES:
-    case EPERM:
-    case EROFS:
-        kind = TZ_OS_PERMISSION_DENIED;
-        break;
-    case EEXIST:
-        kind = TZ_OS_ALREADY_EXISTS;
-        break;
-    case EINVAL:
-    case ENAMETOOLONG:
-    case EISDIR:
-        kind = TZ_OS_INVALID_INPUT;
-        break;
-    case EILSEQ:
-        kind = TZ_OS_INVALID_ENCODING;
-        break;
-    case EINTR:
-        kind = TZ_OS_INTERRUPTED;
-        break;
-    default:
-        kind = TZ_OS_OTHER;
-        break;
-    }
-    return tz_os_status(kind, error);
 }
 
 static int64_t tz_os_invalid_input(void) {
@@ -156,6 +125,74 @@ static char *tz_os_name(const unsigned char *bytes, int64_t length, int64_t *sta
     if (length > 0) memcpy(name, bytes, (size_t)length);
     name[length] = '\0';
     return name;
+}
+
+static int tz_os_compare_names(const void *left, const void *right) {
+    const char *first = *(const char *const *)left;
+    const char *second = *(const char *const *)right;
+    size_t first_length = strlen(first);
+    size_t second_length = strlen(second);
+    int order = memcmp(first, second, first_length < second_length ? first_length : second_length);
+    if (order != 0) return order;
+    return first_length < second_length ? -1 : first_length > second_length ? 1 : 0;
+}
+
+static void tz_os_put_i64(unsigned char *at, int64_t value) {
+    for (int index = 0; index < 8; index++) at[index] = (unsigned char)((uint64_t)value >> (8 * index));
+}
+
+#if defined(_WIN32)
+#include "os-windows.h"
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#if defined(__APPLE__)
+#include <crt_externs.h>
+#include <sys/random.h>
+#define TZ_OS_ENVIRON (*_NSGetEnviron())
+#else
+extern char **environ;
+#define TZ_OS_ENVIRON environ
+#endif
+
+static int64_t tz_os_error(int error) {
+    int kind;
+    switch (error) {
+    case ENOENT:
+    case ENOTDIR:
+        kind = TZ_OS_NOT_FOUND;
+        break;
+    case EACCES:
+    case EPERM:
+    case EROFS:
+        kind = TZ_OS_PERMISSION_DENIED;
+        break;
+    case EEXIST:
+        kind = TZ_OS_ALREADY_EXISTS;
+        break;
+    case EINVAL:
+    case ENAMETOOLONG:
+    case EISDIR:
+        kind = TZ_OS_INVALID_INPUT;
+        break;
+    case EILSEQ:
+        kind = TZ_OS_INVALID_ENCODING;
+        break;
+    case EINTR:
+        kind = TZ_OS_INTERRUPTED;
+        break;
+    default:
+        kind = TZ_OS_OTHER;
+        break;
+    }
+    return tz_os_status(kind, error);
 }
 
 static int tz_os_open(const char *name, int flags) {
@@ -218,16 +255,6 @@ static int64_t tz_os_read_file(struct tz_os_buffer *output, const char *name) {
     int64_t status = tz_os_deliver(output, buffer, length);
     free(buffer);
     return status;
-}
-
-static int tz_os_compare_names(const void *left, const void *right) {
-    const char *first = *(const char *const *)left;
-    const char *second = *(const char *const *)right;
-    size_t first_length = strlen(first);
-    size_t second_length = strlen(second);
-    int order = memcmp(first, second, first_length < second_length ? first_length : second_length);
-    if (order != 0) return order;
-    return first_length < second_length ? -1 : first_length > second_length ? 1 : 0;
 }
 
 // Lists the entries of a directory except "." and "..", sorted by their bytes, each followed by a NUL.
@@ -301,10 +328,6 @@ static int64_t tz_os_current_directory(struct tz_os_buffer *output) {
         if (capacity >= TZ_OS_MAX_CURRENT_DIR) return tz_os_status(TZ_OS_OTHER, ERANGE);
         capacity *= 2;
     }
-}
-
-static void tz_os_put_i64(unsigned char *at, int64_t value) {
-    for (int index = 0; index < 8; index++) at[index] = (unsigned char)((uint64_t)value >> (8 * index));
 }
 
 // The 24 bytes of File.metadata: the kind (0 file, 1 directory, 2 symbolic link, 3 other), then the size
@@ -662,8 +685,6 @@ TZ_OS_API int64_t tsuzuri_os_close(int64_t handle) {
 }
 
 // Output captured from a child stays below this many bytes in all, or the child is killed.
-#define TZ_OS_MAX_CAPTURE (INT64_C(1) << 30)
-
 struct tz_os_capture {
     int descriptor;
     unsigned char *data;
@@ -936,13 +957,6 @@ TZ_OS_API int64_t tsuzuri_os_clock(int32_t operation) {
     return (int64_t)now.tv_sec * INT64_C(1000000000) + (int64_t)now.tv_nsec;
 }
 
-/* The tzroutine runtime (src/runtime/tzroutine.c, TZ05) sets this when it starts: on a tzroutine
- * it waits without stopping the thread and returns 1. Both files define it when both are used. */
-#ifndef TSUZURI_OS_SLEEP_HOOK_DEFINED
-#define TSUZURI_OS_SLEEP_HOOK_DEFINED
-__attribute__((weak, visibility("hidden"))) int32_t (*_Atomic tsuzuri_os_sleep_hook)(int64_t);
-#endif
-
 TZ_OS_API int64_t tsuzuri_os_sleep(int64_t milliseconds) {
     if (milliseconds < 0) return tz_os_invalid_input();
     if (milliseconds == 0) return 0;
@@ -956,3 +970,4 @@ TZ_OS_API int64_t tsuzuri_os_sleep(int64_t milliseconds) {
     }
     return 0;
 }
+#endif

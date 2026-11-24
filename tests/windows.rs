@@ -473,3 +473,163 @@ fn windows_outputs_protect_hardlinks_and_replace_existing_files() {
     assert_eq!(fs::read_to_string(&source).unwrap(), "42");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn cross_links_the_os_runtime_with_microsoft_sdk_when_requested() {
+    let Some(sdk) = std::env::var_os("TSUZURI_WINDOWS_SDK") else {
+        return;
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let sdk = PathBuf::from(sdk);
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-os-coff-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    let source = "def main :: unit -> i32 = \\() ->
+    let! _a = File.read_text \"missing.txt\"
+    let! _b = Env.var \"PATH\"
+    let! _t = Time.monotonic_ns ()
+    let! _r = Random.bytes 8
+    0
+";
+    let module = tsuzuri::analyze_modules(&[("Main.tz", source)]).unwrap();
+    let runtime_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/runtime");
+    let os_src = fs::read_to_string(runtime_dir.join("os.c"))
+        .unwrap()
+        .replacen(
+            "#include \"os-windows.h\"",
+            &fs::read_to_string(runtime_dir.join("os-windows.h")).unwrap(),
+            1,
+        )
+        .replacen(
+            "#include \"arguments-split.h\"",
+            &fs::read_to_string(runtime_dir.join("arguments-split.h")).unwrap(),
+            1,
+        );
+    let io_src = fs::read_to_string(runtime_dir.join("io.c")).unwrap();
+    fs::write(root.join("runtime.c"), format!("{os_src}\n{io_src}")).unwrap();
+    let check = |command: &mut Command| {
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{command:?}\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
+    let includes = [
+        "crt/include",
+        "sdk/include/ucrt",
+        "sdk/include/shared",
+        "sdk/include/um",
+    ];
+    for (triple, target, architecture) in [
+        (
+            Triple::X86_64WindowsMsvc,
+            "x86_64-pc-windows-msvc",
+            "x86_64",
+        ),
+        (
+            Triple::Aarch64WindowsMsvc,
+            "aarch64-pc-windows-msvc",
+            "aarch64",
+        ),
+    ] {
+        let ir = {
+            let _scope = PlatformScope::enter(Platform::new(Some(triple)));
+            llvm::emit_with_export_style(
+                &module,
+                llvm::EmitOptions {
+                    entry: llvm::Entry::Console,
+                    wasm: false,
+                    debug_output: false,
+                    runtime_objects: false,
+                    wasm_simd128: false,
+                    allocator: llvm::Allocator::System,
+                    f16: llvm::F16Path::Soft,
+                },
+                llvm::ExportStyle::Dllexport,
+            )
+            .unwrap()
+        };
+        assert!(ir.contains("declare i64 @tsuzuri_os_read("));
+        let ir = ir.replace(" weak hidden global ", " internal global ");
+        let module_ll = root.join(format!("module-{architecture}.ll"));
+        fs::write(&module_ll, ir).unwrap();
+        for optimization in ["-O0", "-O3"] {
+            check(
+                Command::new(&clang)
+                    .args([
+                        &format!("--target={target}"),
+                        "-Wno-override-module",
+                        "-c",
+                        optimization,
+                    ])
+                    .arg(&module_ll)
+                    .arg("-o")
+                    .arg(root.join(format!("module-{architecture}.obj"))),
+            );
+            let mut command = Command::new(&clang);
+            command.args([
+                &format!("--target={target}"),
+                "-std=c11",
+                optimization,
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ]);
+            for include in includes {
+                command.arg("-isystem").arg(sdk.join(include));
+            }
+            check(
+                command
+                    .arg("-c")
+                    .arg(root.join("runtime.c"))
+                    .arg("-o")
+                    .arg(root.join(format!("runtime-{architecture}.obj"))),
+            );
+            if architecture != "x86_64" {
+                continue;
+            }
+            let mut linker = Command::new(
+                std::env::var_os("TSUZURI_LLD_LINK").unwrap_or_else(|| "lld-link".into()),
+            );
+            linker.args([
+                "/entry:mainCRTStartup",
+                "/subsystem:console",
+                "/nodefaultlib:libcmt",
+                "libcmt.lib",
+                "libvcruntime.lib",
+                "libucrt.lib",
+                "kernel32.lib",
+                "bcrypt.lib",
+            ]);
+            for library in ["crt/lib/x86_64", "sdk/lib/ucrt/x86_64", "sdk/lib/um/x86_64"] {
+                linker.arg(format!("/libpath:{}", sdk.join(library).display()));
+            }
+            linker.arg(format!("/out:{}", root.join("program.exe").display()));
+            linker.arg(root.join("module-x86_64.obj"));
+            linker.arg(root.join("runtime-x86_64.obj"));
+            check(&mut linker);
+            let bytes = fs::read(root.join("program.exe")).unwrap();
+            assert_eq!(&bytes[..2], b"MZ");
+            assert!(
+                bytes
+                    .windows(b"bcrypt.dll".len())
+                    .any(|window| window.eq_ignore_ascii_case(b"bcrypt.dll")),
+                "the executable imports bcrypt.dll"
+            );
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
