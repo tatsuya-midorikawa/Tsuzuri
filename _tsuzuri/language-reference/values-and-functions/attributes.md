@@ -289,9 +289,11 @@ def main :: unit -> i32 = \() -> distance 3 7
 `@count(位置, 型)` は、`extern` 関数の直前に置き、1 始まりの引数位置にあるバッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）に添える C 側の長さ引数の整数型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`）を指定します。既定は `i64` です。
 
 ```tsuzuri
+extern type copy Hwnd
+
 @trusted
-@count(1, i32)
-extern "GetWindowTextW" def get_window_text :: ref mut [i16u..] -> i32
+@count(2, i32)
+extern "GetWindowTextW" def get_window_text :: Hwnd -> ref mut [i16u..] -> i32
 ```
 
 - 位置は Tsuzuri の `extern` シグネチャの 1 始まりの番号で、対象がバッファ引数でないとき、範囲外のとき、同じ位置に 2 回付けたときは `E1008` です。
