@@ -1006,6 +1006,7 @@ fn monoid_float(ty: &Type, types: &TypeContext<'_>, span: Span) -> Diagnostic {
 pub(super) struct InstanceView<'a> {
     pub(super) class: usize,
     pub(super) head: &'a Type,
+    pub(super) extra_args: Vec<&'a Type>,
     pub(super) derived: bool,
     pub(super) span: Span,
     pub(super) methods: Vec<(usize, &'a str)>,
@@ -1038,11 +1039,13 @@ impl Classes {
     }
 
     pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
-        self.instances
+        let mut views: Vec<InstanceView<'_>> = self
+            .instances
             .iter()
             .map(|instance| InstanceView {
                 class: instance.class,
                 head: &instance.head,
+                extra_args: Vec::new(),
                 derived: instance.derived,
                 span: instance.span,
                 methods: instance
@@ -1052,7 +1055,32 @@ impl Classes {
                     .map(|((function, _), method)| (*function, method.name.as_str()))
                     .collect(),
             })
-            .collect()
+            .collect();
+        if let Some(&class) = self.names.get("Index") {
+            for instance in &self.index_instances {
+                views.push(InstanceView {
+                    class,
+                    head: &instance.self_ty,
+                    extra_args: vec![&instance.key_ty, &instance.output_ty],
+                    derived: false,
+                    span: instance.span,
+                    methods: vec![(instance.function, "index")],
+                });
+            }
+        }
+        if let Some(&class) = self.names.get("IndexMut") {
+            for instance in &self.index_mut_instances {
+                views.push(InstanceView {
+                    class,
+                    head: &instance.self_ty,
+                    extra_args: vec![&instance.key_ty, &instance.output_ty],
+                    derived: false,
+                    span: instance.span,
+                    methods: vec![(instance.function, "index_mut")],
+                });
+            }
+        }
+        views
     }
 
     pub(super) fn reads_parameter(&self, function: &str, index: usize) -> bool {

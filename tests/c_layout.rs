@@ -323,6 +323,26 @@ export def sum :: ref Pair -> i32 = \\p -> (p.a as i32) + (p.b as i32)
     let py = bindings::python(&m_num, "demo", false);
     assert!(py.contains("_pack_ = 2"), "{py}");
     assert!(py.contains("_ctypes.c_int8"), "{py}");
+
+    // Phase 2 fixture with FnPtr, ref ZString, and Maybe<ref ZString> must not panic in C#/Python/C++.
+    let fixture = std::fs::read_to_string("tests/fixtures/c_layout/Main.tz").unwrap();
+    let m_phase2 = analyze(&fixture).unwrap();
+    let cs_p2 = bindings::csharp(&m_phase2, "c_layout", false);
+    assert!(
+        cs_p2.contains("public struct tz_record_4Main_11Phase2Input"),
+        "{cs_p2}"
+    );
+    assert!(cs_p2.contains("public nint cb;"), "{cs_p2}");
+    assert!(cs_p2.contains("public nint title;"), "{cs_p2}");
+    assert!(cs_p2.contains("public nint opt_menu;"), "{cs_p2}");
+    let py_p2 = bindings::python(&m_phase2, "c_layout", false);
+    assert!(
+        py_p2.contains("class tz_record_4Main_11Phase2Input:"),
+        "{py_p2}"
+    );
+    assert!(py_p2.contains("_ctypes.c_void_p"), "{py_p2}");
+    let cpp_p2 = bindings::cpp(&m_phase2, "c_layout", false);
+    assert!(!cpp_p2.is_empty());
 }
 
 #[test]

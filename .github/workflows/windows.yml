@@ -183,6 +183,14 @@ jobs:
       - name: OS API end to end (W11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/os.mjs target/release/tsuzuri.exe
+      # W21 & W24: @c_layout records and extern view on Windows MSVC.
+      - name: C layout and extern view end to end (W21, W24)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/c_layout.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "c_layout.mjs failed: $LASTEXITCODE" }
+          node tests/extern_view.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "extern_view.mjs failed: $LASTEXITCODE" }
       # TZ02: tzroutine { } end to end on fibers.
       - name: tzroutine end to end (TZ02)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

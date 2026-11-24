@@ -106,28 +106,57 @@ fn mul left right =
         im: left.re * right.im + left.im * right.re
     }
 
-/// Divides `left` by `right` using Smith's scaled algorithm to avoid intermediate overflow and underflow.
+private pure def div_smith :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
+fn div_smith left right =
+    let mut lr = left.re
+    let mut li = left.im
+    let mut rr = right.re
+    let mut ri = right.im
+    let r_finite = Math.is_finite rr && Math.is_finite ri
+    let l_finite = Math.is_finite lr && Math.is_finite li
+    let r_huge = r_finite && (Math.is_infinite (rr + rr) || Math.is_infinite (ri + ri))
+    let l_huge = l_finite && (Math.is_infinite (lr + lr) || Math.is_infinite (li + li))
+    let two: 'a = Math.floor (Math.e())
+    let one = two / two
+    let four = two + two
+    let quarter = one / four
+    let mut post_scale = false
+    if r_huge then
+        lr = lr * quarter
+        li = li * quarter
+        rr = rr * quarter
+        ri = ri * quarter
+    elif l_huge then
+        lr = lr * quarter
+        li = li * quarter
+        post_scale = true
+    else ()
+    let q =
+        if Math.abs ri <= Math.abs rr then
+            let r = ri / rr
+            let d = rr + ri * r
+            Complex {
+                re: (lr + li * r) / d,
+                im: (li - lr * r) / d
+            }
+        else
+            let r = rr / ri
+            let d = ri + rr * r
+            Complex {
+                re: (li + lr * r) / d,
+                im: (li * r - lr) / d
+            }
+    if post_scale then Complex { re: q.re * four, im: q.im * four }
+    else q
+
+/// Divides `left` by `right` using scaled Smith's algorithm to avoid intermediate overflow and underflow.
 ///
 /// ```tsuzuri run=true
-/// let q = Complex.div (Complex.of 1.0e200 2.0e200) (Complex.of 1.0e200 0.0)
-/// q.re == 1.0 && q.im == 2.0
+/// let q = Complex.div (Complex.of 1.0e308 1.0e308) (Complex.of 1.0e308 1.0e308)
+/// q.re == 1.0 && q.im == 0.0
 /// ```
 pure def div :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Complex<'a> -> Complex<'a> -> Complex<'a>
-fn div left right =
-    if Math.abs right.im <= Math.abs right.re then
-        let r = right.im / right.re
-        let d = right.re + right.im * r
-        Complex {
-            re: (left.re + left.im * r) / d,
-            im: (left.im - left.re * r) / d
-        }
-    else
-        let r = right.re / right.im
-        let d = right.im + right.re * r
-        Complex {
-            re: (left.im + left.re * r) / d,
-            im: (left.im * r - left.re) / d
-        }
+fn div left right = div_smith left right
 
 /// Negates both components of `z`.
 ///
@@ -340,20 +369,46 @@ instance (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Copy<'a>) => Mul<Complex<'a>> {
 
 instance (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Div<Complex<'a>> {
     fn div left right =
-        if Math.abs right.im <= Math.abs right.re then
-            let r = right.im / right.re
-            let d = right.re + right.im * r
-            Complex {
-                re: (left.re + left.im * r) / d,
-                im: (left.im - left.re * r) / d
-            }
-        else
-            let r = right.re / right.im
-            let d = right.im + right.re * r
-            Complex {
-                re: (left.im + left.re * r) / d,
-                im: (left.im * r - left.re) / d
-            }
+        let mut lr = left.re
+        let mut li = left.im
+        let mut rr = right.re
+        let mut ri = right.im
+        let r_finite = Math.is_finite rr && Math.is_finite ri
+        let l_finite = Math.is_finite lr && Math.is_finite li
+        let r_huge = r_finite && (Math.is_infinite (rr + rr) || Math.is_infinite (ri + ri))
+        let l_huge = l_finite && (Math.is_infinite (lr + lr) || Math.is_infinite (li + li))
+        let two: 'a = Math.floor (Math.e())
+        let one = two / two
+        let four = two + two
+        let quarter = one / four
+        let mut post_scale = false
+        if r_huge then
+            lr = lr * quarter
+            li = li * quarter
+            rr = rr * quarter
+            ri = ri * quarter
+        elif l_huge then
+            lr = lr * quarter
+            li = li * quarter
+            post_scale = true
+        else ()
+        let q =
+            if Math.abs ri <= Math.abs rr then
+                let r = ri / rr
+                let d = rr + ri * r
+                Complex {
+                    re: (lr + li * r) / d,
+                    im: (li - lr * r) / d
+                }
+            else
+                let r = rr / ri
+                let d = ri + rr * r
+                Complex {
+                    re: (li + lr * r) / d,
+                    im: (li * r - lr) / d
+                }
+        if post_scale then Complex { re: q.re * four, im: q.im * four }
+        else q
 }
 
 instance (Float<'a>, Neg<'a>, Copy<'a>) => Neg<Complex<'a>> {

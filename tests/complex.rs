@@ -147,7 +147,11 @@ def main :: unit -> i32 = \() ->
         Int.div_floor 7i8u 3i8u == 2i8u &&
         Int.rem_floor 7i8u 3i8u == 1i8u
     let all = ok_expm1 && ok_log1p && ok_hyp && ok_lae && ok_sinc && ok_ang && ok_rem && ok_modf && ok_frexp && ok_next && ok_sign && ok_gcd
-    do! IO.writeln (if all then "PASS" else "FAIL")
+    let huge = Complex.of 1.0e308 1.0e308
+    let q_fn = Complex.div huge huge
+    let q_op = huge / huge
+    let ok_huge = q_fn.re == 1.0 && q_fn.im == 0.0 && q_op.re == 1.0 && q_op.im == 0.0
+    do! IO.writeln (if all && ok_huge then "PASS" else "FAIL")
     0i32
 "#;
     for opt in ["-O0", "-O3"] {

@@ -574,6 +574,10 @@ pub fn csharp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 storage.push(format!("public {array} {public};"));
             } else if let Type::Handle(hname, _) = crate::abi::c_view(field_type, &types).as_ref() {
                 storage.push(format!("public {} {public};", handle_c_name(hname)));
+            } else if matches!(field_type, Type::FnPtr(_))
+                || is_borrowed_zstring(field_type, &types)
+            {
+                storage.push(format!("public nint {public};"));
             } else {
                 storage.push(format!(
                     "public {} {public};",
@@ -1028,6 +1032,13 @@ fn python_ctype(shape: &Shape) -> String {
     }
 }
 
+fn is_borrowed_zstring(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    matches!(
+        crate::abi::c_view(ty, types).as_ref(),
+        Type::Reference(inner, false) if crate::abi::zstring(inner, types)
+    )
+}
+
 /// The Python expression that checks `value` and makes the C value of `ty`.
 fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str, exact: bool) -> String {
     if let Some(scalar) = Scalar::of(ty) {
@@ -1056,6 +1067,20 @@ fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str, exact:
         return format!(
             "(None if {value} is None else _integer({value}.value if isinstance({value}, {h}) else {value}, 1, _POINTER_MAX, \"{h}\", {at}))"
         );
+    }
+    if matches!(ty, Type::FnPtr(_)) {
+        return format!("_integer({value}, 1, _POINTER_MAX, \"FnPtr\", {at})");
+    }
+    if matches!(
+        crate::abi::nullable(ty, &types),
+        Some(crate::abi::Nullable::BorrowedZString(_))
+    ) {
+        return format!(
+            "(None if {value} is None else _integer({value}, 1, _POINTER_MAX, \"ZString\", {at}))"
+        );
+    }
+    if is_borrowed_zstring(ty, &types) {
+        return format!("_integer({value}, 1, _POINTER_MAX, \"ZString\", {at})");
     }
     match ty {
         Type::Record(..) => format!("_to_{}({value}, {at})", record_name(ty, module)),
@@ -1086,6 +1111,9 @@ fn python_lift(ty: &Type, module: &CheckedModule, raw: &str) -> String {
         crate::abi::nullable(ty, &types)
     {
         return format!("(None if not {raw} else {}({raw}))", handle_c_name(hname));
+    }
+    if matches!(ty, Type::FnPtr(_)) || is_borrowed_zstring(ty, &types) {
+        return raw.to_owned();
     }
     match ty {
         Type::Bool => format!("{raw} != 0"),
@@ -1179,6 +1207,7 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 Type::FixedArray(..) => "tuple".to_owned(),
                 Type::Bool => "bool".to_owned(),
                 Type::Binary(_) => "float".to_owned(),
+                Type::FnPtr(_) => "int".to_owned(),
                 _ if matches!(
                     crate::abi::nullable(field_type, &types),
                     Some(crate::abi::Nullable::Handle(_))
@@ -1186,6 +1215,14 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 {
                     "int | None".to_owned()
                 }
+                _ if matches!(
+                    crate::abi::nullable(field_type, &types),
+                    Some(crate::abi::Nullable::BorrowedZString(_))
+                ) =>
+                {
+                    "int | None".to_owned()
+                }
+                _ if is_borrowed_zstring(field_type, &types) => "int".to_owned(),
                 _ => "int".to_owned(),
             };
             let _ = writeln!(output, "    {}: {annotation}", python_name(field));
@@ -1197,7 +1234,9 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 let ctype = if matches!(
                     crate::abi::c_view(field_type, &types).as_ref(),
                     Type::Handle(..)
-                ) {
+                ) || matches!(field_type, Type::FnPtr(_))
+                    || is_borrowed_zstring(field_type, &types)
+                {
                     "_ctypes.c_void_p".to_owned()
                 } else {
                     match field_type {
