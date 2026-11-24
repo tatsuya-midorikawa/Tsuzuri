@@ -3277,6 +3277,27 @@ impl Classes {
                     )
                 });
             }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_thread_bound(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureUnsendableInFunctionValue,
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tzroutines or threads, and the value is bound to the thread that created it",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
+                        format!(
+                            "values that move to another tzroutine or thread must be Send; {} is bound to the thread that created it",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if class == "Capture" && constraint.ty.holds_cell(types) {
                 return Err(Diagnostic::of(
                     DiagnosticKind::CaptureSyncPrimitiveInFunctionValue,
@@ -3804,6 +3825,7 @@ impl Checker<'_> {
             Builtin::SyncMapReplace => Some("SyncMap"),
             // TZ07: every `Context` builtin is behind `std/Context.tz`.
             builtin if builtin.is_context() => Some("Context"),
+            Builtin::AnchorRelease => Some("Anchor"),
             _ => None,
         };
         if let Some(module) = sync_module

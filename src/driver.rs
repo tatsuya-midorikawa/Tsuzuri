@@ -3869,6 +3869,12 @@ fn build_complete(
     // TZ03: a trap that returns to the host skips the ends of the waits that the tzroutine runtime
     // keeps for a Channel, and the boundary of trap.c cannot undo them; TZ06: nor the locks and the
     // Once states of the sync types.
+    if options.trap_return && llvm::uses_anchor(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with Anchor: a trap would leave active borrows and the anchor table behind",
+        ));
+    }
     if options.trap_return && llvm::uses_tzroutine(module) {
         return Err(driver_error_of(
             DiagnosticKind::OptionConflict,
@@ -4256,6 +4262,7 @@ fn build_complete(
         };
         if let Some((_, feature)) = [
             ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
+            ("@tsuzuri_tz_anchor_", "Anchor"),
             ("@tsuzuri_tz_", "tzroutine"),
             ("declare i32 @tsuzuri_io_", "the standard IO"),
             ("declare i64 @tsuzuri_os_", "the operating-system APIs"),
@@ -4341,7 +4348,12 @@ fn build_complete(
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
     {
         if tzroutine_symbols && options.target.is_wasm() && options.wasm_threads {
-            return Err(if runtime_symbols.prefix("tsuzuri_tz_chan_") {
+            return Err(if runtime_symbols.prefix("tsuzuri_tz_anchor_") {
+                driver_error_of(
+                    DiagnosticKind::OptionConflict,
+                    "Anchor cannot be combined with --wasm-feature threads: Anchor uses the single-thread or JSPI tzroutine runtime",
+                )
+            } else if runtime_symbols.prefix("tsuzuri_tz_chan_") {
                 driver_error_of(
                     DiagnosticKind::OptionConflict,
                     "Channel cannot be used with --wasm-feature threads; use DataChannel, which runs on the threads backend",

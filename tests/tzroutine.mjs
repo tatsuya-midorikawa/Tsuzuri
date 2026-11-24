@@ -385,6 +385,38 @@ fn run _ =
 
 run ()
 `, "stopped after ticks\n"],
+  // W23: an Anchor token sent over a Channel to a tzroutine on another OS thread returns WrongThread,
+  // while an Anchor created inside a tzroutine pins its G to its M across 1,000 yields.
+  [`let main_anchor = Anchor.create 99i64
+let main_tok = Anchor.token (ref main_anchor)
+let out: Channel<i64> = Channel.make 2
+let out_other = Channel.share out
+let out_pinned = Channel.share out
+tzroutine {
+    let other_code = match Anchor.read (\\(n: ref i64) -> deref n) main_tok with
+        | Result.Error Anchor.WrongThread -> 1
+        | _ -> 0
+    Channel.send out_other other_code
+}
+tzroutine {
+    let local_anchor = Anchor.create 7i64
+    let local_tok = Anchor.token (ref local_anchor)
+    let mut ok = 0i64
+    for _ in 1 ..= 1000 do
+        Routine.yield ()
+        match Anchor.read (\\(n: ref i64) -> deref n) local_tok with
+        | Result.Ok 7 -> ok = ok + 1
+        | _ -> ()
+    Channel.send out_pinned ok
+}
+let r1 = match Channel.recv out with
+    | Maybe.Some v -> v
+    | Maybe.None -> -1
+let r2 = match Channel.recv out with
+    | Maybe.Some v -> v
+    | Maybe.None -> -1
+r1 + r2
+`, "1001\n"],
   // The end of main stops the timers an hour away without waiting for them.
   [`def leave :: unit -> i64
 fn leave _ =

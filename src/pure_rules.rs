@@ -209,9 +209,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
         | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop
         | ContextBackground | ContextWithCancel | ContextCancel | ContextDone | ContextErr
-        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter => {
-            Some(State)
-        }
+        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter
+        | AnchorCreate | AnchorRead | AnchorUpdate | AnchorRelease => Some(State),
         AtomicCreate
         | AtomicLoad
         | AtomicStore

@@ -346,6 +346,8 @@ diagnostic_kinds! {
         (UpdateDropTypeValue, "update_drop_type_value", "E1012"),
         (UseAfterMove, "use_after_move", "E1012"),
         // E1013
+        (AnchorResultRetainsBorrow, "anchor_result_retains_borrow", "E1013"),
+        (AnchorValueRetainsBorrow, "anchor_value_retains_borrow", "E1013"),
         (AnonymousUnionBorrowedMember, "anonymous_union_borrowed_member", "E1013"),
         (AssignmentExtendsBorrow, "assignment_extends_borrow", "E1013"),
         (BorrowAcrossAsyncBoundary, "borrow_across_async_boundary", "E1013"),

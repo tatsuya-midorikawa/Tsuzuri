@@ -204,6 +204,10 @@ function runGuiStage(compiler, clang, directory) {
     const w22FnPtrExe = buildGui("w22_fnptr", [optimization], { compiler, clang, directory });
     assert.equal(launchWithoutHandles(w22FnPtrExe, [], { launcher }), 42, `w22_fnptr ${optimization}`);
 
+    // W23: Anchor<AppState> in GWLP_USERDATA: WNDPROC updates state, self-SendMessageW hits Busy, and RAII Drop DestroyWindow hits Stale.
+    const w23AnchorExe = buildGui("w23_anchor", [optimization], { compiler, clang, directory });
+    assert.equal(launchWithoutHandles(w23AnchorExe, [], { launcher }), 42, `w23_anchor ${optimization}`);
+
     // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
     const tickDir = join(directory, `tick-obj${optimization}`);
     mkdirSync(tickDir, { recursive: true });

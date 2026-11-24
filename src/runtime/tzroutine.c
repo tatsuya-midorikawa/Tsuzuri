@@ -73,6 +73,15 @@ static void tzr_ready_unlock(tzr_g *g, tzr_lock *lock) {
 /* No standard error: the trap at the call site is the report. */
 TZR_API void tsuzuri_tz_report(int32_t what) { (void)what; }
 
+static void tzr_fatal(const char *message) {
+    (void)message;
+    __builtin_trap();
+}
+
+static uint64_t tzr_anchor_thread_id(void) { return 1; }
+static int tzr_anchor_pin_current(void) { return 0; }
+static void tzr_anchor_unpin_current(void) {}
+
 /* xorshift64*, as the scheduler's: the choice among the ready cases of a select. */
 static uint64_t tzr_rand(uint64_t *state) {
     uint64_t x = *state;
@@ -2185,6 +2194,31 @@ TZR_API void tsuzuri_tz_lock_thread(void) {
 }
 
 TZR_API void tsuzuri_tz_unlock_thread(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL) return;
+    tzr_unlockm(m->curg);
+}
+
+static _Atomic uint64_t tzr_anchor_next_tid = 1;
+static _Thread_local uint64_t tzr_tls_anchor_tid;
+
+static TZR_NOINLINE uint64_t tzr_anchor_thread_id(void) {
+    uint64_t id = tzr_tls_anchor_tid;
+    if (id == 0) {
+        id = atomic_fetch_add_explicit(&tzr_anchor_next_tid, 1, memory_order_relaxed);
+        tzr_tls_anchor_tid = id;
+    }
+    return id;
+}
+
+static TZR_NOINLINE int tzr_anchor_pin_current(void) {
+    tzr_m *m = tzr_this_m();
+    if (m == NULL || m->curg == NULL) return 0;
+    tzr_lockm(m, m->curg);
+    return 1;
+}
+
+static TZR_NOINLINE void tzr_anchor_unpin_current(void) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL) return;
     tzr_unlockm(m->curg);
@@ -5277,3 +5311,319 @@ TZR_API int64_t tsuzuri_tz_select(tzr_scase *cases, int64_t n, int32_t block, in
     return chosen; /* a receive from a closed and empty channel: *ok == 0 */
 }
 #endif /* TZR_SINGLE */
+
+/* ---------------------------------------------------------------- anchors (W23) */
+
+enum {
+    TZR_ANCHOR_FREE = 0,
+    TZR_ANCHOR_LIVE = 1,
+    TZR_ANCHOR_DYING = 2,
+};
+
+#define TZR_ANCHOR_CHUNK 256u
+#define TZR_ANCHOR_IDX_MASK 0xFFFFFFu
+#define TZR_ANCHOR_MAX_SLOTS 0xFFFFFFu
+#define TZR_ANCHOR_EPOCH_MAX 0x7FFFu
+
+typedef struct tzr_anchor_slot {
+    uint32_t generation; /* 1..tzr_anchor_gen_max; 0 when retired */
+    uint32_t state;      /* FREE, LIVE, DYING */
+    uint64_t owner;      /* creating OS thread's monotonic anchor id */
+    const void *type;    /* descriptor of T */
+    void *box;           /* heap box allocated by generated code */
+    void (*drop)(void *);/* drops value in box and frees box */
+    uint32_t readers;
+    uint32_t writer;
+    uint32_t next_free;
+    uint16_t pinned;
+    uint16_t retired;
+} tzr_anchor_slot;
+
+static uint32_t tzr_anchor_gen_max = 0xFFFFFFu;
+
+static struct {
+    tzr_lock lock;
+    tzr_anchor_slot **chunks;
+    uint32_t chunk_count;
+    uint32_t chunk_cap;
+    uint32_t slot_count;
+    uint32_t free_head;
+    uint32_t live;
+    uint32_t active;
+    uint32_t epoch;
+    void (*release)(void *);
+} tzr_anchors;
+
+static inline tzr_anchor_slot *tzr_anchor_at(uint32_t idx) {
+    return &tzr_anchors.chunks[idx / TZR_ANCHOR_CHUNK][idx % TZR_ANCHOR_CHUNK];
+}
+
+typedef struct {
+    tzr_anchor_slot **chunks;
+    uint32_t count;
+    void (*release)(void *);
+} tzr_anchor_detached;
+
+/* Must be called with tzr_anchors.lock held when a DYING slot's borrow & drop have completed. */
+static tzr_anchor_detached tzr_anchor_finish_dying(uint32_t idx) {
+    tzr_anchor_detached detached = {NULL, 0, NULL};
+    tzr_anchor_slot *slot = tzr_anchor_at(idx);
+    slot->state = TZR_ANCHOR_FREE;
+    slot->type = NULL;
+    slot->drop = NULL;
+    slot->owner = 0;
+    if (!slot->retired) {
+        slot->next_free = tzr_anchors.free_head;
+        tzr_anchors.free_head = idx;
+    }
+    if (--tzr_anchors.active == 0 && tzr_anchors.epoch < TZR_ANCHOR_EPOCH_MAX) {
+        detached.chunks = tzr_anchors.chunks;
+        detached.count = tzr_anchors.chunk_count;
+        detached.release = tzr_anchors.release;
+        tzr_anchors.chunks = NULL;
+        tzr_anchors.chunk_count = 0;
+        tzr_anchors.chunk_cap = 0;
+        tzr_anchors.slot_count = 0;
+        tzr_anchors.free_head = UINT32_MAX;
+        tzr_anchors.epoch++;
+    }
+    return detached;
+}
+
+static void tzr_anchor_free_detached(tzr_anchor_detached d) {
+    if (d.release == NULL || d.chunks == NULL) return;
+    for (uint32_t i = 0; i < d.count; i++) {
+        d.release(d.chunks[i]);
+    }
+    d.release(d.chunks);
+}
+
+TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*drop)(void *),
+                                         void *(*alloc)(int64_t), void (*release)(void *)) {
+    int pinned = tzr_anchor_pin_current();
+    uint64_t owner = tzr_anchor_thread_id();
+    tzr_anchor_slot *spare_chunk = NULL;
+    tzr_anchor_slot **spare_table = NULL;
+    uint32_t spare_cap = 0;
+
+    for (;;) {
+        tzr_lock_acquire(&tzr_anchors.lock);
+        if (tzr_anchors.epoch == 0) {
+            tzr_anchors.epoch = 1;
+            tzr_anchors.free_head = UINT32_MAX;
+        }
+        tzr_anchors.release = release;
+        if (tzr_anchors.live >= TZR_ANCHOR_MAX_SLOTS) {
+            tzr_lock_release(&tzr_anchors.lock);
+            tzr_fatal("too many live anchors");
+        }
+        if (spare_table != NULL && tzr_anchors.chunk_count == tzr_anchors.chunk_cap && spare_cap > tzr_anchors.chunk_cap) {
+            if (tzr_anchors.chunks != NULL) {
+                memcpy(spare_table, tzr_anchors.chunks, tzr_anchors.chunk_count * sizeof(tzr_anchor_slot *));
+            }
+            tzr_anchor_slot **old = tzr_anchors.chunks;
+            tzr_anchors.chunks = spare_table;
+            tzr_anchors.chunk_cap = spare_cap;
+            spare_table = old;
+            spare_cap = 0;
+        }
+        if (spare_chunk != NULL && tzr_anchors.slot_count == tzr_anchors.chunk_count * TZR_ANCHOR_CHUNK &&
+            tzr_anchors.chunk_count < tzr_anchors.chunk_cap) {
+            tzr_anchors.chunks[tzr_anchors.chunk_count++] = spare_chunk;
+            spare_chunk = NULL;
+        }
+
+        uint32_t idx = UINT32_MAX;
+        if (tzr_anchors.free_head != UINT32_MAX) {
+            idx = tzr_anchors.free_head;
+            tzr_anchor_slot *slot = tzr_anchor_at(idx);
+            tzr_anchors.free_head = slot->next_free;
+        } else if (tzr_anchors.slot_count < tzr_anchors.chunk_count * TZR_ANCHOR_CHUNK) {
+            if (tzr_anchors.slot_count >= TZR_ANCHOR_MAX_SLOTS) {
+                tzr_lock_release(&tzr_anchors.lock);
+                tzr_fatal("too many live anchors");
+            }
+            idx = tzr_anchors.slot_count++;
+            tzr_anchor_slot *slot = tzr_anchor_at(idx);
+            slot->generation = 1;
+            slot->retired = 0;
+        }
+
+        if (idx != UINT32_MAX) {
+            tzr_anchor_slot *slot = tzr_anchor_at(idx);
+            slot->state = TZR_ANCHOR_LIVE;
+            slot->owner = owner;
+            slot->type = type;
+            slot->box = box;
+            slot->drop = drop;
+            slot->readers = 0;
+            slot->writer = 0;
+            slot->next_free = UINT32_MAX;
+            slot->pinned = (uint16_t)pinned;
+            tzr_anchors.live++;
+            tzr_anchors.active++;
+            int64_t token = ((int64_t)tzr_anchors.epoch << 48) |
+                            ((int64_t)slot->generation << 24) |
+                            (int64_t)(idx + 1u);
+            tzr_lock_release(&tzr_anchors.lock);
+            if (spare_chunk != NULL) release(spare_chunk);
+            if (spare_table != NULL) release(spare_table);
+            return token;
+        }
+
+        if (tzr_anchors.slot_count >= TZR_ANCHOR_MAX_SLOTS) {
+            tzr_lock_release(&tzr_anchors.lock);
+            tzr_fatal("too many live anchors");
+        }
+        uint32_t need_cap = 0;
+        if (tzr_anchors.chunk_count == tzr_anchors.chunk_cap) {
+            need_cap = tzr_anchors.chunk_cap ? tzr_anchors.chunk_cap * 2u : 16u;
+        }
+        tzr_lock_release(&tzr_anchors.lock);
+
+        if (spare_table != NULL) {
+            release(spare_table);
+            spare_table = NULL;
+        }
+        if (need_cap > 0) {
+            spare_table = (tzr_anchor_slot **)alloc((int64_t)(need_cap * sizeof(tzr_anchor_slot *)));
+            memset(spare_table, 0, need_cap * sizeof(tzr_anchor_slot *));
+            spare_cap = need_cap;
+        }
+        if (spare_chunk == NULL) {
+            spare_chunk = (tzr_anchor_slot *)alloc((int64_t)(TZR_ANCHOR_CHUNK * sizeof(tzr_anchor_slot)));
+            memset(spare_chunk, 0, TZR_ANCHOR_CHUNK * sizeof(tzr_anchor_slot));
+        }
+    }
+}
+
+/* Status: 0 = ok, 1 = Stale, 2 = WrongType, 3 = WrongThread, 4 = Busy.
+ * Check order (W23 spec 2): Stale -> WrongThread -> WrongType -> Busy. */
+TZR_API int32_t tsuzuri_tz_anchor_begin(int64_t token, const void *type, int32_t exclusive, void **box) {
+    if (token <= 0) return 1;
+    uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
+    uint32_t gen = (uint32_t)(((uint64_t)token >> 24) & TZR_ANCHOR_IDX_MASK);
+    uint32_t epoch = (uint32_t)(((uint64_t)token >> 48) & TZR_ANCHOR_EPOCH_MAX);
+    if (idx1 == 0 || gen == 0 || epoch == 0) return 1;
+    uint64_t caller = tzr_anchor_thread_id();
+    uint32_t idx = idx1 - 1u;
+
+    tzr_lock_acquire(&tzr_anchors.lock);
+    if (epoch != tzr_anchors.epoch || idx >= tzr_anchors.slot_count) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 1;
+    }
+    tzr_anchor_slot *slot = tzr_anchor_at(idx);
+    if (slot->state != TZR_ANCHOR_LIVE || slot->generation != gen) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 1;
+    }
+    if (slot->owner != caller) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 3;
+    }
+    if (slot->type != type) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 2;
+    }
+    if (exclusive) {
+        if (slot->writer != 0 || slot->readers != 0) {
+            tzr_lock_release(&tzr_anchors.lock);
+            return 4;
+        }
+        slot->writer = 1;
+    } else {
+        if (slot->writer != 0) {
+            tzr_lock_release(&tzr_anchors.lock);
+            return 4;
+        }
+        slot->readers++;
+    }
+    *box = slot->box;
+    tzr_lock_release(&tzr_anchors.lock);
+    return 0;
+}
+
+/* Ends a borrow started by tsuzuri_tz_anchor_begin. Returns 1 if the owner is still LIVE, 0 if DYING. */
+TZR_API int32_t tsuzuri_tz_anchor_end(int64_t token, int32_t exclusive) {
+    uint32_t idx = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK) - 1u;
+    tzr_lock_acquire(&tzr_anchors.lock);
+    tzr_anchor_slot *slot = tzr_anchor_at(idx);
+    if (exclusive) {
+        slot->writer = 0;
+        if (slot->state == TZR_ANCHOR_LIVE) {
+            tzr_lock_release(&tzr_anchors.lock);
+            return 1;
+        }
+        /* DYING: the value was already moved out by update; generated code drops new_val and frees box. */
+        slot->box = NULL;
+        tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
+        tzr_lock_release(&tzr_anchors.lock);
+        tzr_anchor_free_detached(detached);
+        return 0;
+    }
+    slot->readers--;
+    if (slot->state == TZR_ANCHOR_LIVE) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 1;
+    }
+    if (slot->readers > 0) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 0;
+    }
+    void *box = slot->box;
+    void (*drop)(void *) = slot->drop;
+    slot->box = NULL;
+    tzr_lock_release(&tzr_anchors.lock);
+    if (box != NULL && drop != NULL) drop(box);
+    tzr_lock_acquire(&tzr_anchors.lock);
+    tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
+    tzr_lock_release(&tzr_anchors.lock);
+    tzr_anchor_free_detached(detached);
+    return 0;
+}
+
+TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
+    if (token <= 0) return;
+    uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
+    uint32_t gen = (uint32_t)(((uint64_t)token >> 24) & TZR_ANCHOR_IDX_MASK);
+    uint32_t epoch = (uint32_t)(((uint64_t)token >> 48) & TZR_ANCHOR_EPOCH_MAX);
+    if (idx1 == 0 || gen == 0 || epoch == 0) return;
+    uint32_t idx = idx1 - 1u;
+
+    tzr_lock_acquire(&tzr_anchors.lock);
+    if (epoch != tzr_anchors.epoch || idx >= tzr_anchors.slot_count) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return;
+    }
+    tzr_anchor_slot *slot = tzr_anchor_at(idx);
+    if (slot->state != TZR_ANCHOR_LIVE || slot->generation != gen) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return;
+    }
+    int pinned = slot->pinned;
+    slot->pinned = 0;
+    if (slot->generation < tzr_anchor_gen_max) {
+        slot->generation++;
+    } else {
+        slot->generation = 0;
+        slot->retired = 1;
+    }
+    slot->state = TZR_ANCHOR_DYING;
+    tzr_anchors.live--;
+    if (slot->readers > 0 || slot->writer != 0) {
+        tzr_lock_release(&tzr_anchors.lock);
+        if (pinned) tzr_anchor_unpin_current();
+        return;
+    }
+    void *box = slot->box;
+    void (*drop)(void *) = slot->drop;
+    slot->box = NULL;
+    tzr_lock_release(&tzr_anchors.lock);
+    if (pinned) tzr_anchor_unpin_current();
+    if (box != NULL && drop != NULL) drop(box);
+    tzr_lock_acquire(&tzr_anchors.lock);
+    tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
+    tzr_lock_release(&tzr_anchors.lock);
+    tzr_anchor_free_detached(detached);
+}

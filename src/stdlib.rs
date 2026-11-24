@@ -71,6 +71,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
     ("std/Text.tt", include_str!("../std/Text.tt")),
     ("std/RegexText.tt", include_str!("../std/RegexText.tt")),
+    ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -155,6 +156,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ErrGroup",
     // W22: static function pointer values.
     "FnPtr",
+    // W23: callback-reachable application state.
+    "Anchor",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -217,6 +220,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Context.Context"
             | "Context.AfterFunc"
             | "ErrGroup.ErrGroup"
+            | "Anchor.Anchor"
     )
 }
 
@@ -442,6 +446,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "Monoids",
         names: &["Monoids"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "Anchor",
+        names: &["Anchor"],
         aliases: &[],
         uses: &[],
     },
@@ -842,7 +852,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 74);
+        assert_eq!(RESERVED_MODULES.len(), 75);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

@@ -1,0 +1,200 @@
+record Counter {
+    clicks: i64,
+    name: string,
+}
+
+record Tracked {
+    value: i64,
+    drops: Arc<Atomic<i64>>,
+}
+
+instance Drop<Tracked> {
+    fn drop item =
+        let _prev = Atomic.fetch_add (Arc.get (ref item.drops)) 1
+        ()
+}
+
+record SelfReader {
+    self_tok: Arc<Atomic<i64>>,
+    outcome: Arc<Atomic<i64>>,
+}
+
+instance Drop<SelfReader> {
+    fn drop item =
+        let tok = Atomic.load (Arc.get (ref item.self_tok))
+        let code = match Anchor.read (\(_r: ref SelfReader) -> 99) tok with
+            | Result.Error Anchor.Stale -> 1
+            | _ -> 0
+        Atomic.store (Arc.get (ref item.outcome)) code
+}
+
+def on_click :: i64 -> i64
+fn on_click token =
+    let tag = "clicked" + "!"
+    match Anchor.update (\(c: Counter) -> Counter { clicks: c.clicks + 1, name: tag }) token with
+    | Result.Ok () -> 0
+    | Result.Error _ -> 1
+
+export def basic :: i64
+fn basic =
+    let state = Anchor.create (Counter { clicks: 0, name: "main" })
+    let token = Anchor.token (ref state)
+    let e1 = on_click token
+    let e2 = on_click token
+    let e3 = on_click token
+    match token |> Anchor.read (\(c: ref Counter) -> c.clicks) with
+    | Result.Ok n -> if e1 == 0 && e2 == 0 && e3 == 0 then n else -1
+    | Result.Error _ -> -2
+
+export def nested_reads :: i64
+fn nested_reads =
+    let a = Anchor.create 20i64
+    let b = Anchor.create 2i64
+    let ta = Anchor.token (ref a)
+    let tb = Anchor.token (ref b)
+    match Anchor.read (\(va: ref i64) ->
+        let _u = Anchor.update (\(vb: i64) -> vb + 20) tb
+        let inner_a = match Anchor.read (\(va2: ref i64) -> deref va2) ta with
+            | Result.Ok x -> x
+            | Result.Error _ -> -100
+        let inner_b = match Anchor.read (\(vb2: ref i64) -> deref vb2) tb with
+            | Result.Ok y -> y
+            | Result.Error _ -> -200
+        deref va + inner_a - 20 + inner_b) ta with
+    | Result.Ok sum -> sum
+    | Result.Error _ -> -1
+
+export def busy_matrix :: i64
+fn busy_matrix =
+    let state = Anchor.create "alpha"
+    let tok = Anchor.token (ref state)
+    let extra1 = "heap-" + "capture"
+    let extra2 = "heap-" + "capture2"
+    let seen = Arc.new (Atomic.create 0i64)
+    let seen_in = Arc.share (ref seen)
+    let r_in_r = match Anchor.read (\(_s: ref string) ->
+        match Anchor.read (\s2 -> String.length s2) tok with
+        | Result.Ok 5 -> 1
+        | _ -> 0) tok with
+        | Result.Ok v -> v
+        | Result.Error _ -> 0
+    let u_in_r = match Anchor.read (\(_s: ref string) ->
+        let suffix = clone_string (ref extra1)
+        match Anchor.update (\old -> old + suffix) tok with
+        | Result.Error Anchor.Busy -> 2
+        | _ -> 0) tok with
+        | Result.Ok v -> v
+        | Result.Error _ -> 0
+    let _upd = Anchor.update (\(old: string) ->
+        let cap1 = clone_string (ref extra2)
+        let c3 = match Anchor.read (\s -> String.length s + String.length (ref cap1)) tok with
+            | Result.Error Anchor.Busy -> 3
+            | _ -> 0
+        let cap2 = clone_string (ref extra2)
+        let c4 = match Anchor.update (\x -> x + cap2) tok with
+            | Result.Error Anchor.Busy -> 4
+            | _ -> 0
+        Atomic.store (Arc.get (ref seen_in)) (c3 * 10 + c4)
+        old) tok
+    r_in_r * 1000 + u_in_r * 100 + Atomic.load (Arc.get (ref seen))
+
+export def nested_drop_during_read :: i64
+fn nested_drop_during_read =
+    let drops = Arc.new (Atomic.create 0i64)
+    let child = Anchor.create (Tracked { value: 77, drops: Arc.share (ref drops) })
+    let child_tok = Anchor.token (ref child)
+    let parent: Anchor<Maybe<Anchor<Tracked>>> = Anchor.create (Maybe.Some child)
+    let parent_tok = Anchor.token (ref parent)
+    let drops_in = Arc.share (ref drops)
+    let during = match Anchor.read (\(item: ref Tracked) ->
+        let _dropped = Anchor.update (\(_slot: Maybe<Anchor<Tracked>>) -> Maybe.None) parent_tok
+        let d_now = Atomic.load (Arc.get (ref drops_in))
+        let stale_now = match Anchor.read (\(x: ref Tracked) -> x.value) child_tok with
+            | Result.Error Anchor.Stale -> 1
+            | _ -> 0
+        if d_now == 0 && stale_now == 1 then item.value else -1) child_tok with
+        | Result.Ok v -> v
+        | Result.Error _ -> -2
+    let d_after = Atomic.load (Arc.get (ref drops))
+    during * 10 + d_after
+
+export def drop_reenters :: i64
+fn drop_reenters =
+    let self_tok = Arc.new (Atomic.create 0i64)
+    let outcome = Arc.new (Atomic.create 0i64)
+    let owner = Anchor.create (SelfReader {
+        self_tok: Arc.share (ref self_tok),
+        outcome: Arc.share (ref outcome),
+    })
+    Atomic.store (Arc.get (ref self_tok)) (Anchor.token (ref owner))
+    Owned.drop owner
+    Atomic.load (Arc.get (ref outcome))
+
+export def update_after_owner_drop :: i64
+fn update_after_owner_drop =
+    let drops = Arc.new (Atomic.create 0i64)
+    let child = Anchor.create (Tracked { value: 10, drops: Arc.share (ref drops) })
+    let child_tok = Anchor.token (ref child)
+    let parent: Anchor<Maybe<Anchor<Tracked>>> = Anchor.create (Maybe.Some child)
+    let parent_tok = Anchor.token (ref parent)
+    let d_share = Arc.share (ref drops)
+    let res = Anchor.update (\(old: Tracked) ->
+        let v = old.value
+        Owned.drop old
+        let _dropped = Anchor.update (\(_slot: Maybe<Anchor<Tracked>>) -> Maybe.None) parent_tok
+        Tracked { value: v + 10, drops: d_share }) child_tok
+    let is_stale = match res with
+        | Result.Error Anchor.Stale -> 1
+        | _ -> 0
+    is_stale * 10 + Atomic.load (Arc.get (ref drops))
+
+export def forged :: i64
+fn forged =
+    let is_stale = \tok ->
+        match Anchor.read (\(n: ref i64) -> deref n) tok with
+        | Result.Error Anchor.Stale -> 1
+        | _ -> 0
+    let c0 = is_stale 0
+    let c1 = is_stale (-1)
+    let c2 = is_stale 123456789
+    let keep = Anchor.create 10i64
+    let temp = Anchor.create 20i64
+    let temp_tok = Anchor.token (ref temp)
+    Owned.drop temp
+    let c3 = is_stale temp_tok
+    let keep_tok = Anchor.token (ref keep)
+    Owned.drop keep
+    // All anchors are now gone (table epoch resets on next create).
+    let fresh = Anchor.create 30i64
+    let c4 = is_stale keep_tok
+    let text_ok = if to_string Anchor.Stale == "stale anchor token" then 1 else 0
+    Owned.drop fresh
+    c0 + c1 + c2 + c3 + c4 + text_ok * 10
+
+export def wrong_type :: i64
+fn wrong_type =
+    let num = Anchor.create 42i64
+    let tok = Anchor.token (ref num)
+    let bad = match Anchor.read (\s -> String.length s) tok with
+        | Result.Error Anchor.WrongType -> 1
+        | _ -> 0
+    let shown = if to_string Anchor.WrongType == "anchor token has a different value type" then 10 else 0
+    bad + shown
+
+export def many :: i64
+fn many =
+    let drops = Arc.new (Atomic.create 0i64)
+    let mut owners: Vec<Anchor<Tracked>> = Vec.empty()
+    let mut tokens: Vec<i64> = Vec.empty()
+    for i in 1 ..= 10000 do
+        let a = Anchor.create (Tracked { value: i, drops: Arc.share (ref drops) })
+        Vec.push_mut (Anchor.token (ref a)) (ref mut tokens)
+        Vec.push_mut a (ref mut owners)
+    let mut sum = 0i64
+    for i in 0 ..< 10000 do
+        match Anchor.read (\(t: ref Tracked) -> t.value) tokens[i] with
+        | Result.Ok v -> sum = sum + v
+        | Result.Error _ -> sum = -1000000
+    Owned.drop owners
+    let dropped = Atomic.load (Arc.get (ref drops))
+    if sum == 50005000 && dropped == 10000 then 42 else -1

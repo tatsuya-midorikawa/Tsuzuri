@@ -618,6 +618,8 @@ pub(crate) fn with_stack_checks(ir: String, bounds: StackBounds) -> String {
     output
 }
 
+#[path = "llvm_anchor.rs"]
+mod anchor;
 #[path = "llvm_bulk.rs"]
 mod bulk;
 #[path = "llvm_channel.rs"]
@@ -2947,6 +2949,8 @@ struct Globals {
     /// The values of the deferred shared blocks that the program drops, with whether they
     /// count atomically (C10).
     shared_types: BTreeSet<(Type, bool)>,
+    /// W23: anchored value types whose `@tz.anchor.type.*` and `@tz.anchor.drop.*` helpers are emitted.
+    anchor_types: BTreeSet<Type>,
     /// The user drop of each Drop type's `codegen_identity`, `identity_drops` (A29).
     user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
@@ -3012,6 +3016,7 @@ impl Default for Globals {
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
+            anchor_types: BTreeSet::new(),
             user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
             guard_callbacks_after_main: false,
@@ -4769,6 +4774,27 @@ pub fn uses_tzroutine(module: &CheckedModule) -> bool {
         (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
             && expression_uses_tzroutine(&function.body)
     })
+}
+
+/// W23: whether the program reaches any `Anchor` builtin.
+pub fn uses_anchor(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_uses_anchor(&function.body)
+    })
+}
+
+fn expression_uses_anchor(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.is_anchor() => {
+            true
+        }
+        _ => expression
+            .children()
+            .into_iter()
+            .any(expression_uses_anchor),
+    }
 }
 
 fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
@@ -8515,7 +8541,8 @@ fn emit_builtin(
                 || builtin.is_channel()
                 || builtin.is_timer()
                 || builtin.is_wait()
-                || builtin.is_context() =>
+                || builtin.is_context()
+                || builtin.is_anchor() =>
         {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
@@ -8751,6 +8778,8 @@ fn emit_typed_builtin(
         emitter.vector_builtin(instance, ty)
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
+    } else if instance.builtin.is_anchor() {
+        emitter.anchor_builtin(instance, ty)
     } else if instance.builtin.is_atomic()
         || instance.builtin.is_data_channel()
         || matches!(
@@ -8895,6 +8924,9 @@ fn emit_typed_builtin(
         shared_globals
             .shared_types
             .append(&mut local_globals.shared_types);
+        shared_globals
+            .anchor_types
+            .append(&mut local_globals.anchor_types);
     }
     definition
 }

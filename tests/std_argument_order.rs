@@ -62,6 +62,7 @@ const HARNESS: &str = "a test or benchmark entry point: the generator or setup c
 const MODULES: &[(&str, Kind)] = &[
     // `since` reads a Stats subject; snapshot and measure have no Stats input.
     ("Alloc", subject(&["Stats"])),
+    ("Anchor", subject(&["Anchor"])),
     ("Arena", subject(&["Arena"])),
     ("Array", subject(&["[]"])),
     ("Atomic", Exempt(BUILTIN_HANDLE)),

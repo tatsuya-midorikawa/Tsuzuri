@@ -541,6 +541,20 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // W22: `FnPtr.of` produces the static address of a callback wrapper without side effects or allocation.
         FnPtrOf => facts(None, false, false, false, false, false, None),
+        // W23: `Anchor` stores and borrows values in the runtime's anchor table.
+        AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        AnchorRead | AnchorUpdate => {
+            facts(Some(Effect::Atomic), false, false, false, true, false, None)
+        }
+        AnchorRelease => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
         TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -3556,9 +3570,9 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of.
-        assert_eq!(Builtin::ALL.len(), 341);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 165);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins.
+        assert_eq!(Builtin::ALL.len(), 345);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 176);
     }
 
@@ -3569,7 +3583,7 @@ mod tests {
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 16);
-        assert_eq!(by(Effect::Atomic), 92);
+        assert_eq!(by(Effect::Atomic), 96);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3578,12 +3592,12 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 75);
+        assert_eq!(count(|facts| facts.alloc), 76);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 55);
+        assert_eq!(count(|facts| facts.trap), 56);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 
@@ -3594,7 +3608,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 28);
+        assert_eq!(count(|facts| facts.callbacks), 30);
     }
 
     fn checked(source: &str) -> CheckedModule {

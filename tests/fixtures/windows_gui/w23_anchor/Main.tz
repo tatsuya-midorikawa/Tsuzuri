@@ -1,0 +1,104 @@
+@trusted
+extern "w12_gui_register_class" def register_class :: (i64 -> i32u -> i64u -> i64 -> i64) -> i64
+
+@trusted
+extern "w12_gui_create_registered" def create_window :: unit -> i64
+
+@trusted
+extern "w12_gui_def_proc" def def_proc :: i64 -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w12_gui_destroy" def destroy_window :: i64 -> i64
+
+@trusted
+extern "w12_gui_set_userdata" def set_userdata :: i64 -> i64 -> i64
+
+@trusted
+extern "w12_gui_get_userdata" def get_userdata :: i64 -> i64
+
+@trusted
+extern "w06_gui_send" def send_msg :: i64 -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w12_gui_set_mark" def set_mark :: i64 -> unit
+
+@trusted
+extern "w12_gui_get_mark" def get_mark :: unit -> i64
+
+record RaiiWindow {
+    hwnd: i64,
+}
+
+instance Drop<RaiiWindow> {
+    fn drop w =
+        if w.hwnd != 0 then
+            let _d = destroy_window w.hwnd
+            ()
+}
+
+record AppState {
+    win: RaiiWindow,
+    messages: i64,
+    busy_hits: i64,
+    note: string,
+}
+
+// WM_APP (32768): normal update (+wparam).
+// WM_APP + 1 (32769): inside Anchor.update, sends WM_APP (32768) reentrantly to self -> reentrant update gets Busy!
+// WM_DESTROY (2): triggered inside Drop<AppState> -> Drop<RaiiWindow> -> DestroyWindow -> Anchor.update gets Stale!
+def wndproc :: i64 -> i32u -> i64u -> i64 -> i64 = \hwnd msg wparam lparam ->
+    let tok = get_userdata hwnd
+    if msg == 32768i32u then
+        match Anchor.update (\(s: AppState) ->
+            let next_msgs = s.messages + (wparam as i64)
+            AppState {
+                win: s.win,
+                messages: next_msgs,
+                busy_hits: s.busy_hits,
+                note: s.note,
+            }) tok with
+        | Result.Ok () -> 1
+        | Result.Error Anchor.Busy -> 77
+        | Result.Error _ -> -1
+    elif msg == 32769i32u then
+        match Anchor.update (\(s: AppState) ->
+            let re_code = send_msg hwnd 32768i32u 99i64u 0
+            let next_busy = if re_code == 77 then s.busy_hits + 1 else s.busy_hits
+            AppState {
+                win: s.win,
+                messages: s.messages,
+                busy_hits: next_busy,
+                note: s.note,
+            }) tok with
+        | Result.Ok () -> 1
+        | Result.Error _ -> -1
+    elif msg == 2i32u then
+        let code = match Anchor.update (\(s: AppState) -> s) tok with
+            | Result.Error Anchor.Stale -> 55
+            | _ -> -1
+        set_mark code
+        0
+    else
+        def_proc hwnd msg wparam lparam
+
+def main :: unit -> i32 = \() ->
+    let _ok = register_class wndproc
+    let hwnd = create_window ()
+    let state = Anchor.create (AppState {
+        win: RaiiWindow { hwnd: hwnd },
+        messages: 0,
+        busy_hits: 0,
+        note: "window-state",
+    })
+    let tok = Anchor.token (ref state)
+    let _old = set_userdata hwnd tok
+    let _r1 = send_msg hwnd 32768i32u 10i64u 0
+    let _r2 = send_msg hwnd 32768i32u 5i64u 0
+    let _r3 = send_msg hwnd 32769i32u 0i64u 0
+    let summary = match Anchor.read (\(s: ref AppState) -> s.messages * 10 + s.busy_hits) tok with
+        | Result.Ok v -> v
+        | Result.Error _ -> -1
+    // Dropping `state` runs RaiiWindow.drop -> DestroyWindow -> WM_DESTROY, where `tok` is already Stale (mark == 55)!
+    Owned.drop state
+    let destroy_mark = get_mark ()
+    if summary == 151 && destroy_mark == 55 then 42 else 1

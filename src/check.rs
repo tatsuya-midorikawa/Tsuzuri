@@ -754,7 +754,11 @@ impl Type {
     /// Std records that borrows must not share between threads: a lazy sequence holds function
     /// values whose environments are not visible, and GPU handles are not thread-safe (F10 D6).
     fn is_unsync_record(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Anchor.Anchor"))
+    }
+
+    fn is_unsend_record(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Anchor.Anchor")
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -1144,6 +1148,7 @@ impl Type {
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
                 !ty.is_unresolved()
+                    && !ty.is_unsend_record(types)
                     && !matches!(ty, Type::Reference(..))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
@@ -1173,7 +1178,10 @@ impl Type {
             | Self::Vec(element)
             | Self::FixedArray(element, _) => element.can_send(types),
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
-            Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
+            Self::Record(id, args) => {
+                !self.is_unsend_record(types)
+                    && types.record_fields_all(*id, args, |ty| ty.can_send(types))
+            }
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
             // Plain data, a tzroutine body (its result was judged where it was made) and a function
             // value, whose environment is checked by ownership, not by its call signature.
@@ -1209,6 +1217,11 @@ impl Type {
             self,
             |ty| !matches!(ty, Type::Shared(_, kind) if !kind.atomic()),
         )
+    }
+
+    /// W23 / W19: whether a value of this type owns a thread-bound value (`Anchor<T>` or `local` handle).
+    pub(crate) fn holds_thread_bound(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !ty.is_unsend_record(types))
     }
 
     /// Whether several threads may hold shared borrows of a value of this type at once, which is
@@ -1656,6 +1669,11 @@ pub enum Builtin {
     /// `FnPtr.of :: 'f -> FnPtr<'f>`, producing the static C callback wrapper address of a
     /// top-level user function (W22).
     FnPtrOf,
+    /// W23: callback-reachable application state (`Anchor`).
+    AnchorCreate,
+    AnchorRead,
+    AnchorUpdate,
+    AnchorRelease,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2253,6 +2271,10 @@ impl Builtin {
         Self::FixedArrayInit,
         Self::DynOf,
         Self::FnPtrOf,
+        Self::AnchorCreate,
+        Self::AnchorRead,
+        Self::AnchorUpdate,
+        Self::AnchorRelease,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2603,6 +2625,10 @@ impl Builtin {
             Self::FixedArrayInit => "FixedArray.init",
             Self::DynOf => "Dyn.of",
             Self::FnPtrOf => "FnPtr.of",
+            Self::AnchorCreate => "Anchor.create",
+            Self::AnchorRead => "Anchor.read",
+            Self::AnchorUpdate => "Anchor.update",
+            Self::AnchorRelease => "Anchor.__release",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3376,6 +3402,9 @@ impl Builtin {
             // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
             Self::DynOf => (vec![a()], Var("b"), Vec::new()),
             Self::FnPtrOf => (vec![a()], BuiltinType::FnPtr(Box::new(a())), Vec::new()),
+            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
+                self.anchor_scheme()
+            }
             Self::ListCons => (
                 vec![a(), BuiltinType::List(Box::new(a()))],
                 BuiltinType::List(Box::new(a())),
@@ -4117,6 +4146,45 @@ impl Builtin {
         name.starts_with("Channel.")
             || name.starts_with("SendOnly.")
             || name.starts_with("ReceiveOnly.")
+    }
+
+    pub(crate) fn is_anchor(self) -> bool {
+        matches!(
+            self,
+            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease
+        )
+    }
+
+    #[inline(never)]
+    fn anchor_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Function, Reference, Var};
+        let a = || Var("a");
+        let b = || Var("b");
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let error = || std("Anchor", "Error", Vec::new());
+        let result_of = |ok| std("Result", "Result", vec![ok, error()]);
+        match self {
+            Self::AnchorCreate => (vec![a()], std("Anchor", "Anchor", vec![a()]), Vec::new()),
+            Self::AnchorRead => (
+                vec![
+                    Function(vec![Reference(Box::new(a()), false)], Box::new(b())),
+                    Concrete(Type::I64),
+                ],
+                result_of(b()),
+                Vec::new(),
+            ),
+            Self::AnchorUpdate => (
+                vec![Function(vec![a()], Box::new(a())), Concrete(Type::I64)],
+                result_of(Concrete(Type::Unit)),
+                Vec::new(),
+            ),
+            Self::AnchorRelease => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
+            _ => unreachable!("not an Anchor builtin"),
+        }
     }
 
     /// The operation of `Channel` that a `SendOnly` or `ReceiveOnly` builtin is (TZ03 Phase 2): the
