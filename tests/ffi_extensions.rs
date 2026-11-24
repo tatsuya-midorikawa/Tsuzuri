@@ -433,6 +433,14 @@ extern \"w18_peek\" def peek_hwnd :: ref Hwnd -> i64
         ),
         (
             "extern \"w18_mut\" def mut_hwnd :: ref mut Hwnd -> i64\n1",
+            "ok",
+        ),
+        (
+            "extern type OwnedH\nextern \"w18_mut\" def mut_owned :: ref mut OwnedH -> i64\n1",
+            "E1008",
+        ),
+        (
+            "export def mut_exp :: ref mut Hwnd -> i64\nfn mut_exp _h = 1\n1",
             "E1008",
         ),
         ("make_hwnd 1 == make_hwnd 2", "E1005"),

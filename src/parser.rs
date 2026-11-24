@@ -20,6 +20,13 @@ struct Attributes {
     cpu: Option<u8>,
     effects: Vec<EffectMark>,
     trusted: Option<TrustedMark>,
+    counts: Vec<CountMark>,
+}
+
+struct CountMark {
+    position: u32,
+    length: CountLength,
+    span: Span,
 }
 
 /// A `@trusted` attribute as read: its properties, its whole span, the span of its `@` and the
@@ -566,6 +573,7 @@ impl Parser<'_> {
             cpu_attributes: Vec::new(),
             effect_attributes: Vec::new(),
             trusted: Vec::new(),
+            extern_counts: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -630,6 +638,7 @@ impl Parser<'_> {
                     cpu,
                     effects,
                     trusted,
+                    counts,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -640,6 +649,15 @@ impl Parser<'_> {
                         DiagnosticKind::TrustedWrongTarget,
                         "'@trusted' applies to an extern declaration; remove it or declare the function with 'extern'",
                         mark.span,
+                    ));
+                }
+                if let Some(count) = counts.first()
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedCountAttribute,
+                        "'@count' applies to an 'extern' function declaration",
+                        count.span,
                     ));
                 }
                 if let Some(&(kind, span)) = effects.first() {
@@ -727,6 +745,13 @@ impl Parser<'_> {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
                     ExternDeclaration::Type(declaration) => {
+                        if let Some(count) = counts.first() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedCountAttribute,
+                                "'@count' applies to an 'extern' function declaration, not an 'extern type'",
+                                count.span,
+                            ));
+                        }
                         if let Some(mark) = trusted {
                             if let Some(first) = mark.first {
                                 return Err(Diagnostic::of(
@@ -749,6 +774,14 @@ impl Parser<'_> {
                                 target: signature.name.clone(),
                                 properties: mark.properties,
                                 span: mark.span,
+                            });
+                        }
+                        for count in counts {
+                            program.extern_counts.push(CountAttribute {
+                                target: signature.name.clone(),
+                                position: count.position,
+                                length: count.length,
+                                span: count.span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1328,6 +1361,8 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.trusted = Some(trusted);
+            } else if let Some(count) = self.count_attribute()? {
+                attributes.counts.push(count);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1383,6 +1418,82 @@ impl Parser<'_> {
             span,
             at,
             first,
+        }))
+    }
+
+    /// `@count(position, length)` before an `extern` function declaration (W13).
+    fn count_attribute(&mut self) -> Result<Option<CountMark>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "count"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let name_span = self.take().span;
+        let syntax_err = |span: Span, detail: &str| {
+            Diagnostic::of(
+                DiagnosticKind::CountAttributeSyntax,
+                format!(
+                    "invalid '@count' attribute ({detail}); write '@count(<position>, i32 | i32u | i64 | i64u | none)'"
+                ),
+                span,
+            )
+        };
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(syntax_err(
+                at.through(name_span),
+                "expected '(' after '@count'",
+            ));
+        }
+        self.take();
+        let position = match &self.current().kind {
+            TokenKind::Integer(text) if text.bytes().all(|byte| byte.is_ascii_digit()) => {
+                text.parse::<u32>().unwrap_or(u32::MAX)
+            }
+            _ => {
+                return Err(syntax_err(
+                    self.current().span,
+                    "expected a 1-based parameter position",
+                ));
+            }
+        };
+        self.take();
+        if !self.eat(&TokenKind::Comma) {
+            return Err(syntax_err(
+                self.current().span,
+                "expected ',' after the parameter position",
+            ));
+        }
+        let length = match &self.current().kind {
+            TokenKind::Ident(text) => CountLength::from_name(text).ok_or_else(|| {
+                syntax_err(
+                    self.current().span,
+                    "length type must be i32, i32u, i64, i64u, or none",
+                )
+            })?,
+            _ => {
+                return Err(syntax_err(
+                    self.current().span,
+                    "expected length type i32, i32u, i64, i64u, or none",
+                ));
+            }
+        };
+        self.take();
+        if !self.at(&TokenKind::RightParen) {
+            return Err(syntax_err(
+                self.current().span,
+                "expected ')' after the length type",
+            ));
+        }
+        let end = self.take().span;
+        Ok(Some(CountMark {
+            position,
+            length,
+            span: at.through(end),
         }))
     }
 
@@ -2151,7 +2262,8 @@ impl Parser<'_> {
                 && (self.effect_attribute_ahead().is_some()
                     || matches!(
                         self.tokens.get(self.position + 1).map(|token| &token.kind),
-                        Some(TokenKind::Ident(name)) if name == "cpu" || name == "trusted"
+                        Some(TokenKind::Ident(name))
+                            if matches!(name.as_str(), "cpu" | "trusted" | "count")
                     ))
             {
                 break;

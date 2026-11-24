@@ -208,6 +208,10 @@ function runGuiStage(compiler, clang, directory) {
     const w23AnchorExe = buildGui("w23_anchor", [optimization], { compiler, clang, directory });
     assert.equal(launchWithoutHandles(w23AnchorExe, [], { launcher }), 42, `w23_anchor ${optimization}`);
 
+    // W13: GetClientRect (ref mut Rect), SetWindowTextW / GetWindowTextW (@count + ref mut [i16u..]), and PeekMessageW (ref mut Msg).
+    const w13Win32Exe = buildGui("w13_win32", [optimization], { compiler, clang, directory });
+    assert.equal(launchWithoutHandles(w13Win32Exe, [], { launcher }), 42, `w13_win32 ${optimization}`);
+
     // W07: C host linking `--emit object` (no VEH) terminates with 0xC000001D in both TIMERPROC and WM_CREATE.
     const tickDir = join(directory, `tick-obj${optimization}`);
     mkdirSync(tickDir, { recursive: true });

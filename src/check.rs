@@ -5216,6 +5216,16 @@ pub struct HostImport {
     pub explicit: bool,
     /// Takes a function-typed parameter: a callback the host calls through a C function pointer.
     pub callbacks: bool,
+    /// W13: `(parameter_index, CountLength)` sorted by parameter index from `@count(pos, len)`.
+    pub counts: Vec<(usize, crate::syntax::CountLength)>,
+}
+
+impl HostImport {
+    pub fn count_at(&self, index: usize) -> Option<crate::syntax::CountLength> {
+        self.counts
+            .iter()
+            .find_map(|(pos, len)| (*pos == index).then_some(*len))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -8395,6 +8405,7 @@ fn check_modules_collect(
     }
     let mut external_functions = BTreeMap::new();
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
+    let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
@@ -8414,6 +8425,7 @@ fn check_modules_collect(
                     wasm_name: link.symbol.clone(),
                     explicit: true,
                     callbacks: false,
+                    counts: Vec::new(),
                 }
             } else {
                 let native_symbol = format!(
@@ -8430,6 +8442,7 @@ fn check_modules_collect(
                     wasm_name: format!("{}.{}", module.name, external.name.text),
                     explicit: false,
                     callbacks: false,
+                    counts: Vec::new(),
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8446,6 +8459,19 @@ fn check_modules_collect(
                     && mark.target.span.start == external.name.span.start
             }) {
                 trusted_by_id.insert(function_declarations.len(), mark.properties);
+            }
+            let raw_counts: Vec<CountAttribute> = module
+                .program
+                .extern_counts
+                .iter()
+                .filter(|attr| {
+                    attr.target.text == external.name.text
+                        && attr.target.span.start == external.name.span.start
+                })
+                .cloned()
+                .collect();
+            if !raw_counts.is_empty() {
+                counts_by_id.insert(function_declarations.len(), raw_counts);
             }
             external_functions.insert(function_declarations.len(), import);
             function_declarations.push((
@@ -9303,14 +9329,60 @@ fn check_modules_collect(
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
-                        "extern signatures support scalar/unit, shared ABI buffers and scalar records, and owned ABI buffer or scalar record results",
+                        "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
                         function.name.span,
                     ));
                 }
+                if let Some(raw) = counts_by_id.get(&id) {
+                    let mut validated: Vec<(usize, CountLength)> = Vec::new();
+                    for attr in raw {
+                        let pos = attr.position as usize;
+                        if pos == 0 || pos > signature.parameters.len() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountPositionOutOfRange,
+                                format!(
+                                    "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
+                                    attr.position,
+                                    signature.parameters.len()
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        let index = pos - 1;
+                        if crate::abi::extern_buffer_parameter(&signature.parameters[index])
+                            .is_none()
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountNotBuffer,
+                                format!(
+                                    "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
+                                    signature.parameters[index].display(&types)
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        if validated.iter().any(|(seen, _)| *seen == index) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountRepeated,
+                                format!(
+                                    "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        validated.push((index, attr.length));
+                    }
+                    validated.sort_by_key(|(index, _)| *index);
+                    external_functions.get_mut(&id).unwrap().counts = validated;
+                }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared =
-                        crate::abi::c_signature(&signature.parameters, &signature.result, &types);
+                    let declared = crate::abi::c_signature(
+                        &signature.parameters,
+                        &signature.result,
+                        &import.counts,
+                        &types,
+                    );
                     match explicit_symbols.entry(import.native_symbol.clone()) {
                         std::collections::btree_map::Entry::Vacant(slot) => {
                             slot.insert((

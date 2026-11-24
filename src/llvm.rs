@@ -4175,6 +4175,13 @@ pub(crate) fn validate_wasm_externs(
                 function.span,
             ));
         }
+        if crate::abi::uses_w13_native_only(&function.signature.parameters, &import.counts) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "extern 'ref mut' parameters, i16u/i32/i32u buffers, and '@count' are supported only on native targets; build for a native target",
+                function.span,
+            ));
+        }
         if crate::abi::uses_nullable_abi(
             &function.signature.parameters,
             &function.signature.result,

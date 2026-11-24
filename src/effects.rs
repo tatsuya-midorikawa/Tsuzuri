@@ -1306,9 +1306,17 @@ impl<'s, 'a> Scan<'s, 'a> {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind
             && import.callbacks
-            && takes_string(function)
         {
-            self.source(Effect::Alloc, span, "string-marshalling");
+            if takes_string(function) {
+                self.source(Effect::Alloc, span, "string-marshalling");
+            }
+            if import
+                .counts
+                .iter()
+                .any(|(_, len)| len.max_length().is_some())
+            {
+                self.source(Effect::Trap, span, "count-bounds");
+            }
         }
     }
 
@@ -1749,7 +1757,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 ));
                 true
             }
-            K::HostCall(..) => {
+            K::HostCall(import, _) => {
                 // E15: a person vouched for this property of the extern function.
                 let vouched = self.state.options.trusted.is_some_and(|bit| {
                     self.function
@@ -1766,7 +1774,15 @@ impl<'s, 'a> Scan<'s, 'a> {
                 if takes_string(self.function) {
                     self.source(Effect::Alloc, span, "string-marshalling");
                 }
-                self.exempt(Effect::Trap, span, "host-call");
+                if import
+                    .counts
+                    .iter()
+                    .any(|(_, len)| len.max_length().is_some())
+                {
+                    self.source(Effect::Trap, span, "count-bounds");
+                } else {
+                    self.exempt(Effect::Trap, span, "host-call");
+                }
                 false
             }
             K::Closure(id, captures) => {

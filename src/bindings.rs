@@ -480,6 +480,9 @@ fn typed_array(buffer: Buffer) -> &'static str {
         Buffer::I64 => "BigInt64Array",
         Buffer::F64 => "Float64Array",
         Buffer::UByte => "Uint8Array",
+        Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+            unreachable!("native-only extern buffers are rejected on WASM")
+        }
         Buffer::String | Buffer::Utf8String => unreachable!("strings are JavaScript strings"),
     }
 }

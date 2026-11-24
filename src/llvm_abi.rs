@@ -110,7 +110,7 @@ pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
 fn record_types(module: &CheckedModule) -> Vec<Type> {
     fn visit(ty: &Type, module: &CheckedModule, seen: &mut BTreeSet<Type>, result: &mut Vec<Type>) {
         let viewed = crate::abi::c_view(ty, &module.types());
-        let ty = if let Type::Reference(inner, false) = viewed.as_ref() {
+        let ty = if let Type::Reference(inner, _) = viewed.as_ref() {
             inner.as_ref()
         } else {
             viewed.as_ref()
@@ -252,6 +252,10 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
 
 pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -> String {
     let types = module.types();
+    let import = match &function.body.kind {
+        TypedExprKind::HostCall(import, _) => Some(import.as_ref()),
+        _ => None,
+    };
     let mut parameters = Vec::new();
     let result = &function.signature.result;
     if let Some(buffer) = Buffer::of(result) {
@@ -278,6 +282,39 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
                     .join(", ")
             };
             parameters.push(format!("{} (*arg{index})({inputs})", c_type(output)));
+            continue;
+        }
+        if let Some((buffer, mutable)) = crate::abi::extern_buffer_parameter(ty) {
+            let qual = if mutable { "" } else { "const " };
+            parameters.push(format!("{qual}{} *arg{index}_ptr", buffer.c_element()));
+            let count_len = import.and_then(|imp| imp.count_at(index));
+            if let Some(len_c_ty) =
+                count_len.map_or(Some("int64_t"), crate::syntax::CountLength::c_type)
+            {
+                parameters.push(format!("{len_c_ty} arg{index}_len"));
+            }
+            continue;
+        }
+        if let Type::Reference(inner, true) = ty {
+            if matches!(inner.as_ref(), Type::Record(..)) {
+                parameters.push(format!("{} *arg{index}", record_name(inner, module)));
+            } else {
+                let pointee = match inner.as_ref() {
+                    Type::Integer(8, true) => "int8_t".to_owned(),
+                    Type::Integer(8, false) => "uint8_t".to_owned(),
+                    Type::Integer(16, true) => "int16_t".to_owned(),
+                    Type::Integer(16, false) => "uint16_t".to_owned(),
+                    Type::Integer(32, true) | Type::Bool => "int32_t".to_owned(),
+                    Type::Integer(32, false) => "uint32_t".to_owned(),
+                    Type::Integer(64, true) => "int64_t".to_owned(),
+                    Type::Integer(64, false) => "uint64_t".to_owned(),
+                    Type::Binary(32) => "float".to_owned(),
+                    Type::Binary(64) => "double".to_owned(),
+                    Type::Handle(name, _) => handle_c_name(name),
+                    _ => unreachable!("validated mutable extern scalar: {inner:?}"),
+                };
+                parameters.push(format!("{pointee} *arg{index}"));
+            }
             continue;
         }
         let viewed = crate::abi::c_view(ty, &types);

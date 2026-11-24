@@ -1,0 +1,73 @@
+record Point {
+    x: i32,
+    y: i32,
+}
+
+record Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+record Msg {
+    hwnd: i64,
+    message: i32u,
+    wparam: i64u,
+    lparam: i64,
+    time: i32u,
+    pt: Point,
+    lprivate: i32u,
+}
+
+@trusted
+extern "w13_gui_sized_window" def create_sized_window :: i32 -> i32 -> i64
+
+@trusted
+extern "w12_gui_destroy" def destroy_window :: i64 -> i64
+
+@trusted
+extern "GetClientRect" def get_client_rect :: i64 -> ref mut Rect -> i32
+
+@trusted
+@count(2, none)
+extern "SetWindowTextW" def set_window_text :: i64 -> ref [i16u] -> i32
+
+@trusted
+@count(2, i32)
+extern "GetWindowTextW" def get_window_text :: i64 -> ref mut [i16u..] -> i32
+
+@trusted
+extern "PostMessageW" def post_message :: i64 -> i32u -> i64u -> i64 -> i32
+
+@trusted
+extern "PeekMessageW" def peek_message :: ref mut Msg -> i64 -> i32u -> i32u -> i32u -> i32
+
+def main :: unit -> i32 = \() ->
+    let hwnd = create_sized_window 120i32 80i32
+    let mut rc = Rect { left: 99i32, top: 88i32, right: 77i32, bottom: 66i32 }
+    let ok_rect = get_client_rect hwnd (ref mut rc)
+    let rect_ok = ok_rect != 0i32 && rc.left == 0i32 && rc.top == 0i32 && rc.right == 120i32 && rc.bottom == 80i32
+
+    // "Hi!" in UTF-16LE + NUL: 72, 105, 33, 0
+    let title_z: [i16u] = [72i16u, 105i16u, 33i16u, 0i16u]
+    let ok_set = set_window_text hwnd (ref title_z)
+    let mut buf: [i16u] = new [i16u](32, \_ -> 999i16u)
+    let len = get_window_text hwnd (ref mut buf)
+    let text_ok = ok_set != 0i32 && len == 3i32 && buf[0] == 72i16u && buf[1] == 105i16u && buf[2] == 33i16u && buf[3] == 0i16u
+
+    let _posted = post_message hwnd 32768i32u 77i64u 88
+    let mut msg = Msg {
+        hwnd: 0,
+        message: 0i32u,
+        wparam: 0i64u,
+        lparam: 0,
+        time: 0i32u,
+        pt: Point { x: 0i32, y: 0i32 },
+        lprivate: 0i32u,
+    }
+    let got = peek_message (ref mut msg) hwnd 32768i32u 32768i32u 1i32u
+    let msg_ok = got != 0i32 && msg.hwnd == hwnd && msg.message == 32768i32u && msg.wparam == 77i64u && msg.lparam == 88
+
+    let _d = destroy_window hwnd
+    if rect_ok && text_ok && msg_ok then 42i32 else 1i32

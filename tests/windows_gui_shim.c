@@ -143,6 +143,12 @@ int64_t w06_gui_window(void) {
     return (int64_t)(intptr_t)hwnd;
 }
 
+int64_t w13_gui_sized_window(int32_t width, int32_t height) {
+    if (!ensure_test_class()) return 0;
+    HWND hwnd = CreateWindowExW(0, L"tz-test", L"sized", WS_POPUP, 0, 0, width, height, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    return (int64_t)(intptr_t)hwnd;
+}
+
 int64_t w06_gui_wait(int64_t window) {
     HWND hwnd = (HWND)(intptr_t)window;
     if (!hwnd) return -2;

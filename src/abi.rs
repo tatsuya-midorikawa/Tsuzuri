@@ -112,6 +112,9 @@ pub enum Buffer {
     I64,
     F64,
     UByte,
+    I16U,
+    I32,
+    I32U,
     String,
     Utf8String,
 }
@@ -131,11 +134,45 @@ impl Buffer {
         }
     }
 
+    fn of_element(element: &Type) -> Option<Self> {
+        match element {
+            Type::Integer(64, true) => Some(Self::I64),
+            Type::Binary(64) => Some(Self::F64),
+            Type::Integer(8, false) => Some(Self::UByte),
+            Type::Integer(16, false) => Some(Self::I16U),
+            Type::Integer(32, true) => Some(Self::I32),
+            Type::Integer(32, false) => Some(Self::I32U),
+            _ => None,
+        }
+    }
+
+    /// W13: shared buffer targets accepted on native `extern` parameters (the 5 portable buffers plus
+    /// `[i16u]`, `[i32]`, and `[i32u]`).
+    pub fn of_extern(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Array(element) => Self::of_element(element),
+            Type::String => Some(Self::String),
+            Type::Utf8String => Some(Self::Utf8String),
+            _ => None,
+        }
+    }
+
+    /// W13: mutable buffer targets (`[T]` and `[T..]`) accepted on native `extern` `ref mut` parameters.
+    pub fn of_extern_mutable(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Array(element) | Type::ArrayView(element) => Self::of_element(element),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::I64 => "i64",
             Self::F64 => "f64",
             Self::UByte => "ubyte",
+            Self::I16U => "i16u",
+            Self::I32 => "i32",
+            Self::I32U => "i32u",
             Self::String => "string",
             Self::Utf8String => "utf8string",
         }
@@ -146,14 +183,17 @@ impl Buffer {
             Self::I64 => "int64_t",
             Self::F64 => "double",
             Self::UByte | Self::Utf8String => "uint8_t",
-            Self::String => "uint16_t",
+            Self::I16U | Self::String => "uint16_t",
+            Self::I32 => "int32_t",
+            Self::I32U => "uint32_t",
         }
     }
 
     pub fn width(self) -> usize {
         match self {
             Self::I64 | Self::F64 => 8,
-            Self::String => 2,
+            Self::I32 | Self::I32U => 4,
+            Self::I16U | Self::String => 2,
             Self::UByte | Self::Utf8String => 1,
         }
     }
@@ -285,11 +325,47 @@ pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
         )
 }
 
+/// W13: whether `inner` may be passed as `ref mut inner` with copy-in/copy-out on a native `extern`.
+pub fn mutable_extern_scalar(inner: &Type) -> bool {
+    inner.exportable() || matches!(inner, Type::Handle(_, crate::syntax::HandleKind::Copy))
+}
+
+/// W13: returns `(buffer, mutable)` when `ty` is a shared or mutable `extern` buffer parameter.
+pub fn extern_buffer_parameter(ty: &Type) -> Option<(Buffer, bool)> {
+    match ty {
+        Type::Reference(inner, false) => Buffer::of_extern(inner).map(|b| (b, false)),
+        Type::Reference(inner, true) => Buffer::of_extern_mutable(inner).map(|b| (b, true)),
+        _ => None,
+    }
+}
+
+/// W13: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers, or `@count`.
+pub fn uses_w13_native_only(
+    parameters: &[Type],
+    counts: &[(usize, crate::syntax::CountLength)],
+) -> bool {
+    !counts.is_empty()
+        || parameters.iter().any(|ty| match ty {
+            Type::Reference(_, true) => true,
+            Type::Reference(inner, false) => matches!(
+                Buffer::of_extern(inner),
+                Some(Buffer::I16U | Buffer::I32 | Buffer::I32U)
+            ),
+            _ => false,
+        })
+}
+
 pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     parameter(ty, types)
         || extern_scalar(ty, types)
         || fnptr(ty, types)
         || matches!(nullable(ty, types), Some(Nullable::BorrowedRecord(_)))
+        || extern_buffer_parameter(ty).is_some()
+        || matches!(
+            ty,
+            Type::Reference(inner, true)
+                if scalar_record(inner, types) || mutable_extern_scalar(inner)
+        )
 }
 
 pub fn extern_result(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -478,17 +554,43 @@ fn c_scalar(ty: &Type) -> CType {
     }
 }
 
-pub fn c_signature(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> CSignature {
+pub fn c_signature(
+    parameters: &[Type],
+    result: &Type,
+    counts: &[(usize, crate::syntax::CountLength)],
+    types: &TypeContext<'_>,
+) -> CSignature {
     let mut lowered = Vec::new();
     let viewed_result = c_view(result, types);
     if out_result(&viewed_result) {
         lowered.push(CType::Ptr);
     }
-    for parameter in parameters {
+    for (index, parameter) in parameters.iter().enumerate() {
         if *parameter == Type::Unit {
             continue;
         }
         if matches!(parameter, Type::Function(..) | Type::FnPtr(_)) {
+            lowered.push(CType::Ptr);
+            continue;
+        }
+        if extern_buffer_parameter(parameter).is_some() {
+            lowered.push(CType::Ptr);
+            match counts
+                .iter()
+                .find_map(|(pos, len)| (*pos == index).then_some(*len))
+            {
+                Some(crate::syntax::CountLength::None) => {}
+                Some(crate::syntax::CountLength::I32 | crate::syntax::CountLength::I32U) => {
+                    lowered.push(CType::I32);
+                }
+                Some(crate::syntax::CountLength::I64 | crate::syntax::CountLength::I64U)
+                | Option::None => {
+                    lowered.push(CType::I64);
+                }
+            }
+            continue;
+        }
+        if matches!(parameter, Type::Reference(_, true)) {
             lowered.push(CType::Ptr);
             continue;
         }
