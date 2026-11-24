@@ -38,7 +38,7 @@ flowchart TD
 | `@cpu` | `private` や `export` より前、トップレベル `def` の直前 | 命令セットごとの関数の版 | [関数 / 高階関数 / 再帰関数](./functions.md) |
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
-| `@count` | リンク名付き `extern` 関数の宣言の直前（`@trusted` と任意の順序） | スライスバッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
+| `@count` | `extern` 関数の宣言の直前（`@trusted` と任意の順序） | バッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
 
@@ -286,7 +286,7 @@ def main :: unit -> i32 = \() -> distance 3 7
 
 ## @count (extern バッファの長さ引数)
 
-`@count(位置, 型)` は、リンク名付きの `extern` 関数の直前に置き、1 始まりの引数位置にあるスライスバッファ（`ref [T]`・`ref mut [T]`・`ref mut [T..]`）に添える C 側の長さ引数の整数型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`）を指定します。既定は `i64` です。
+`@count(位置, 型)` は、`extern` 関数の直前に置き、1 始まりの引数位置にあるバッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）に添える C 側の長さ引数の整数型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`）を指定します。既定は `i64` です。
 
 ```tsuzuri
 @trusted
@@ -294,10 +294,10 @@ def main :: unit -> i32 = \() -> distance 3 7
 extern "GetWindowTextW" def get_window_text :: ref mut [i16u..] -> i32
 ```
 
-- 位置は Tsuzuri の `extern` シグネチャの 1 始まりの番号で、対象がスライスバッファでないとき、範囲外のとき、同じ位置に 2 回付けたときは `E1008` です。
+- 位置は Tsuzuri の `extern` シグネチャの 1 始まりの番号で、対象がバッファ引数でないとき、範囲外のとき、同じ位置に 2 回付けたときは `E1008` です。
 - `i32`（上限 `2^31 - 1`）や `i32u`（上限 `2^32 - 1`）を指定したバッファの長さが上限を超えた場合は、呼び出し前に境界検査でトラップするため、`@no_trap` の検査では `trap` の源になります。
 - `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
-- リンク名のない `extern def`（WASM / 自動シンボル名）や `extern` 以外の宣言に付けるとエラーになります（`E1008` / `E0002`）。
+- WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` 以外の宣言に付けると `E0002`（`misplaced_count_attribute`）になります。
 
 ## @json (JSON での名前)
 

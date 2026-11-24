@@ -6,7 +6,7 @@
 
 ## この記事のポイント
 
-- `ZString.literal "..."` は、文字列リテラルからコンパイル時に静的な NUL 終端 UTF-16 配列を作り、ヒープ確保なしで `ref ZString` を返します。リテラル内に `\0`（`\u{0}`）があるとコンパイル時に `E1008`（`zstring_interior_nul`）になります。
+- `ZString.literal "..."` は、文字列リテラルからコンパイル時に静的な NUL 終端 UTF-16 配列を作り、ヒープ確保なしで `ref ZString` を返します。リテラル内に `\0`（`\u{0}`）があるとコンパイル時に `E1005`（`zstring_literal_interior_nul`）になります。
 - 実行時の `string` からは `ZString.of text` で `Result<ZString, ZString.Error>` を作ります。途中に `U+0000` があれば、最初の UTF-16 位置を `ZString.InteriorNul index` で返します。
 - `ZString.to_string (ref z)` で末尾の NUL を除いた通常の `string` に戻せます。
 - ネイティブの `extern def` の引数には `ref ZString`（非 `NULL` の `const uint16_t *`）と `Maybe<ref ZString>`（`None` が `NULL`、`Some` が `const uint16_t *`）を書けます。所有の `ZString` の値渡し・戻り値・`export def`・WebAssembly の `extern` は `E1008` です。
@@ -16,7 +16,7 @@
 
 ```text
 record ZString                 // 不透明な NUL 終端 UTF-16 文字列
-union Error = InteriorNul i64
+union Error = InteriorNul of i64
 
 ZString.literal :: string -> ref ZString
 ZString.of :: ref string -> Result<ZString, ZString.Error>

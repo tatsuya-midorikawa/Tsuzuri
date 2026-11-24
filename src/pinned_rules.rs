@@ -393,29 +393,83 @@ pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
         Ok(summary) => summary,
         Err(error) => return vec![error],
     };
+    let std_call_spans = first_user_call_spans(module);
     let types = module.types();
     let mut checker = Checker {
         module,
         types: &types,
         effects: &effects,
+        override_span: None,
         diagnostics: Vec::new(),
     };
-    for function in &module.functions {
-        if function.origin.module == ModuleOrigin::Std
-            || function.module == "$builtin"
-            || !function.type_parameters.is_empty()
-        {
+    for (id, function) in module.functions.iter().enumerate() {
+        if function.module == "$builtin" || !function.type_parameters.is_empty() {
             continue;
+        }
+        if function.origin.module == ModuleOrigin::Std {
+            let Some(&call_span) = std_call_spans.get(&id) else {
+                continue;
+            };
+            checker.override_span = Some(call_span);
+        } else {
+            checker.override_span = None;
         }
         checker.visit(&function.body);
     }
     checker.diagnostics
 }
 
+/// For each specialized `Std` function reachable from non-`Std` code, the source span of the first
+/// non-`Std` expression that calls or references it.
+fn first_user_call_spans(module: &CheckedModule) -> BTreeMap<usize, Span> {
+    let mut direct: BTreeMap<usize, Span> = BTreeMap::new();
+    let mut std_edges: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (caller_id, function) in module.functions.iter().enumerate() {
+        if function.module == "$builtin" || !function.type_parameters.is_empty() {
+            continue;
+        }
+        let is_std = function.origin.module == ModuleOrigin::Std;
+        let mut stack = vec![&function.body];
+        while let Some(expr) = stack.pop() {
+            let callee = match &expr.kind {
+                TypedExprKind::Function(FunctionRef::User(id)) => Some(*id),
+                TypedExprKind::Closure(id, _) => Some(*id),
+                _ => None,
+            };
+            if let Some(target_id) = callee
+                && module.functions[target_id].origin.module == ModuleOrigin::Std
+            {
+                if is_std {
+                    std_edges.entry(caller_id).or_default().push(target_id);
+                } else {
+                    direct.entry(target_id).or_insert(expr.span);
+                }
+            }
+            for child in expr.children().into_iter().rev() {
+                stack.push(child);
+            }
+        }
+    }
+    let mut result = direct.clone();
+    let mut queue: std::collections::VecDeque<(usize, Span)> = direct.into_iter().collect();
+    while let Some((curr, span)) = queue.pop_front() {
+        if let Some(targets) = std_edges.get(&curr) {
+            for &next in targets {
+                if let std::collections::btree_map::Entry::Vacant(slot) = result.entry(next) {
+                    slot.insert(span);
+                    queue.push_back((next, span));
+                }
+            }
+        }
+    }
+    result
+}
+
 struct Checker<'a> {
     module: &'a CheckedModule,
     types: &'a TypeContext<'a>,
     effects: &'a FunctionEffects,
+    override_span: Option<Span>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -625,6 +679,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_spawned(&mut self, target_id: usize, span: Span) {
+        let span = self.override_span.unwrap_or(span);
         let handle = self.source_handle_name(target_id);
         let message = format!(
             "this starts code that uses the thread-bound extern type '{handle}' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread"
@@ -638,6 +693,7 @@ impl<'a> Checker<'a> {
     }
 
     fn report_function_value(&mut self, target_id: usize, span: Span) {
+        let span = self.override_span.unwrap_or(span);
         let handle = self.source_handle_name(target_id);
         let message = format!(
             "this function value runs code that uses the thread-bound extern type '{handle}', and a function value may reach another tzroutine or thread; call the function directly, pass it straight to 'Routine.with_locked_thread', or use 'for' or 'match' instead of a callback"
@@ -766,7 +822,9 @@ fn is_std_spawn_wrapper(function: &CheckedFunction, supplied: usize) -> bool {
         return false;
     }
     let name = function.qualified_name();
-    name.starts_with("ErrGroup.go") || name.starts_with("Context.after_func")
+    name.starts_with("ErrGroup.go")
+        || name.starts_with("ErrGroup.try_go")
+        || name.starts_with("Context.after_func")
 }
 
 fn function_local_handle(function: &CheckedFunction, types: &TypeContext<'_>) -> Option<String> {

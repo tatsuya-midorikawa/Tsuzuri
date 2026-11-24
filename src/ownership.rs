@@ -2747,13 +2747,19 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                         (builtin, &expression.ty)
                     {
                         let kept = match builtin {
-                            AnchorCreate | AnchorUpdate | OnceValueGet => Some(0),
+                            AnchorCreate | OnceValueGet => {
+                                parameters.types.first().map(without_views)
+                            }
+                            AnchorUpdate => match parameters.types.first() {
+                                Some(Type::Function(_, result)) => Some(without_views(result)),
+                                _ => None,
+                            },
                             ChannelSend | ChannelTrySend | DataChannelSend | SendOnlySend
-                            | SendOnlyTrySend => Some(1),
+                            | SendOnlyTrySend => parameters.types.get(1).map(without_views),
                             _ => None,
                         };
-                        if let Some(ty) = kept.and_then(|kept| parameters.types.get(kept)) {
-                            escaping.insert(without_views(ty));
+                        if let Some(ty) = kept {
+                            escaping.insert(ty);
                         }
                         if builtin == OwnedFunction {
                             wrapped.extend(parameters.types.first().map(without_views));

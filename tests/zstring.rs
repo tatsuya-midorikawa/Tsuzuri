@@ -212,6 +212,18 @@ fn check_z _x =
     let ok_mod = analyze(pure_wasm).unwrap();
     llvm::emit_target(&ok_mod, llvm::Entry::Library, true)
         .expect("ZString functions without extern must emit cleanly on WASM");
+
+    // Exporting a function that calls an extern taking `ref ZString` must not panic in `--emit bindings-*`.
+    let bindings_src = "extern \"lstrlenW\" def lstrlen :: ref ZString -> i32\nexport def run :: i32 -> i32\nfn run _x = lstrlen (ZString.literal \"hi\")\n";
+    let b_mod = analyze(bindings_src).unwrap();
+    for emit in [
+        tsuzuri::bindings::csharp,
+        tsuzuri::bindings::python,
+        tsuzuri::bindings::cpp,
+    ] {
+        let rendered = emit(&b_mod, "demo", false);
+        assert!(rendered.contains("run"), "{rendered}");
+    }
 }
 
 #[test]

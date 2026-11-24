@@ -363,4 +363,9 @@ fn keep x = x
         ),
         "{header}"
     );
+    let ir = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(
+        ir.contains("icmp ne ptr") && ir.contains("null"),
+        "ref mut CopyHandle copy-out must guard against NULL:\n{ir}"
+    );
 }

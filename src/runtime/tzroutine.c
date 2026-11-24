@@ -79,8 +79,9 @@ static void tzr_fatal(const char *message) {
 }
 
 static uint64_t tzr_anchor_thread_id(void) { return 1; }
-static int tzr_anchor_pin_current(void) { return 0; }
-static void tzr_anchor_unpin_current(void) {}
+static uint64_t tzr_anchor_pin_current(void) { return 0; }
+static void tzr_anchor_unpin_current(uint64_t gid) { (void)gid; }
+static void tzr_anchor_overflow(void) { __builtin_trap(); }
 
 /* xorshift64*, as the scheduler's: the choice among the ready cases of a select. */
 static uint64_t tzr_rand(uint64_t *state) {
@@ -1720,6 +1721,8 @@ static void tzr_after_exit(tzr_m *m, tzr_g *g) {
     g->spawn_scope = NULL;
     g->code = NULL;
     g->env = NULL;
+    g->locks = 0;
+    g->lockedm = NULL;
     /* keep the G and its stack for the next spawn */
     tzr_p *p = m->p;
     int local = 0;
@@ -2213,17 +2216,24 @@ static TZR_NOINLINE uint64_t tzr_anchor_thread_id(void) {
     return id;
 }
 
-static TZR_NOINLINE int tzr_anchor_pin_current(void) {
+static TZR_NOINLINE uint64_t tzr_anchor_pin_current(void) {
     tzr_m *m = tzr_this_m();
     if (m == NULL || m->curg == NULL) return 0;
     tzr_lockm(m, m->curg);
-    return 1;
+    return m->curg->id;
 }
 
-static TZR_NOINLINE void tzr_anchor_unpin_current(void) {
+static TZR_NOINLINE void tzr_anchor_unpin_current(uint64_t gid) {
+    if (gid == 0) return;
     tzr_m *m = tzr_this_m();
-    if (m == NULL || m->curg == NULL) return;
+    if (m == NULL || m->curg == NULL || m->curg->id != gid || m->curg->locks == 0) return;
     tzr_unlockm(m->curg);
+}
+
+static TZR_NOINLINE void tzr_anchor_overflow(void) {
+    static const char msg[] = "Tsuzuri runtime: too many live anchors\n";
+    tzr_report(msg, sizeof msg - 1);
+    TZR_TRAP();
 }
 
 /* ---------------------------------------------------------------- asynchronous preemption (TZ10 Phase 2) */
@@ -5331,13 +5341,13 @@ typedef struct tzr_anchor_slot {
     uint32_t generation; /* 1..tzr_anchor_gen_max; 0 when retired */
     uint32_t state;      /* FREE, LIVE, DYING */
     uint64_t owner;      /* creating OS thread's monotonic anchor id */
+    uint64_t pinned_gid; /* creating tzroutine's id when pinned on M, else 0 */
     const void *type;    /* descriptor of T */
     void *box;           /* heap box allocated by generated code */
     void (*drop)(void *);/* drops value in box and frees box */
     uint32_t readers;
     uint32_t writer;
     uint32_t next_free;
-    uint16_t pinned;
     uint16_t retired;
 } tzr_anchor_slot;
 
@@ -5402,7 +5412,7 @@ static void tzr_anchor_free_detached(tzr_anchor_detached d) {
 
 TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*drop)(void *),
                                          void *(*alloc)(int64_t), void (*release)(void *)) {
-    int pinned = tzr_anchor_pin_current();
+    uint64_t pinned_gid = tzr_anchor_pin_current();
     uint64_t owner = tzr_anchor_thread_id();
     tzr_anchor_slot *spare_chunk = NULL;
     tzr_anchor_slot **spare_table = NULL;
@@ -5417,7 +5427,7 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
         tzr_anchors.release = release;
         if (tzr_anchors.live >= TZR_ANCHOR_MAX_SLOTS) {
             tzr_lock_release(&tzr_anchors.lock);
-            tzr_fatal("too many live anchors");
+            tzr_anchor_overflow();
         }
         if (spare_table != NULL && tzr_anchors.chunk_count == tzr_anchors.chunk_cap && spare_cap > tzr_anchors.chunk_cap) {
             if (tzr_anchors.chunks != NULL) {
@@ -5443,7 +5453,7 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
         } else if (tzr_anchors.slot_count < tzr_anchors.chunk_count * TZR_ANCHOR_CHUNK) {
             if (tzr_anchors.slot_count >= TZR_ANCHOR_MAX_SLOTS) {
                 tzr_lock_release(&tzr_anchors.lock);
-                tzr_fatal("too many live anchors");
+                tzr_anchor_overflow();
             }
             idx = tzr_anchors.slot_count++;
             tzr_anchor_slot *slot = tzr_anchor_at(idx);
@@ -5455,13 +5465,13 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
             tzr_anchor_slot *slot = tzr_anchor_at(idx);
             slot->state = TZR_ANCHOR_LIVE;
             slot->owner = owner;
+            slot->pinned_gid = pinned_gid;
             slot->type = type;
             slot->box = box;
             slot->drop = drop;
             slot->readers = 0;
             slot->writer = 0;
             slot->next_free = UINT32_MAX;
-            slot->pinned = (uint16_t)pinned;
             tzr_anchors.live++;
             tzr_anchors.active++;
             int64_t token = ((int64_t)tzr_anchors.epoch << 48) |
@@ -5475,7 +5485,7 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
 
         if (tzr_anchors.slot_count >= TZR_ANCHOR_MAX_SLOTS) {
             tzr_lock_release(&tzr_anchors.lock);
-            tzr_fatal("too many live anchors");
+            tzr_anchor_overflow();
         }
         uint32_t need_cap = 0;
         if (tzr_anchors.chunk_count == tzr_anchors.chunk_cap) {
@@ -5558,10 +5568,13 @@ TZR_API int32_t tsuzuri_tz_anchor_end(int64_t token, int32_t exclusive) {
             return 1;
         }
         /* DYING: the value was already moved out by update; generated code drops new_val and frees box. */
+        uint64_t pinned_gid = slot->pinned_gid;
+        slot->pinned_gid = 0;
         slot->box = NULL;
         tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
         tzr_lock_release(&tzr_anchors.lock);
         tzr_anchor_free_detached(detached);
+        tzr_anchor_unpin_current(pinned_gid);
         return 0;
     }
     slot->readers--;
@@ -5575,9 +5588,12 @@ TZR_API int32_t tsuzuri_tz_anchor_end(int64_t token, int32_t exclusive) {
     }
     void *box = slot->box;
     void (*drop)(void *) = slot->drop;
+    uint64_t pinned_gid = slot->pinned_gid;
+    slot->pinned_gid = 0;
     slot->box = NULL;
     tzr_lock_release(&tzr_anchors.lock);
     if (box != NULL && drop != NULL) drop(box);
+    tzr_anchor_unpin_current(pinned_gid);
     tzr_lock_acquire(&tzr_anchors.lock);
     tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
     tzr_lock_release(&tzr_anchors.lock);
@@ -5603,8 +5619,6 @@ TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
         tzr_lock_release(&tzr_anchors.lock);
         return;
     }
-    int pinned = slot->pinned;
-    slot->pinned = 0;
     if (slot->generation < tzr_anchor_gen_max) {
         slot->generation++;
     } else {
@@ -5614,16 +5628,18 @@ TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
     slot->state = TZR_ANCHOR_DYING;
     tzr_anchors.live--;
     if (slot->readers > 0 || slot->writer != 0) {
+        /* Keep pinned_gid on the DYING slot until tsuzuri_tz_anchor_end finishes dropping box. */
         tzr_lock_release(&tzr_anchors.lock);
-        if (pinned) tzr_anchor_unpin_current();
         return;
     }
     void *box = slot->box;
     void (*drop)(void *) = slot->drop;
+    uint64_t pinned_gid = slot->pinned_gid;
+    slot->pinned_gid = 0;
     slot->box = NULL;
     tzr_lock_release(&tzr_anchors.lock);
-    if (pinned) tzr_anchor_unpin_current();
     if (box != NULL && drop != NULL) drop(box);
+    tzr_anchor_unpin_current(pinned_gid);
     tzr_lock_acquire(&tzr_anchors.lock);
     tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
     tzr_lock_release(&tzr_anchors.lock);

@@ -179,9 +179,10 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
         match viewed.as_ref() {
             Type::Reference(inner, _) => visit(inner, module, records),
             ty @ Type::Record(id, arguments)
-                if records
-                    .insert(record_name(ty, module), ty.clone())
-                    .is_none() =>
+                if !crate::abi::zstring(ty, &module.types())
+                    && records
+                        .insert(record_name(ty, module), ty.clone())
+                        .is_none() =>
             {
                 for field in module.types().record_fields(*id, arguments) {
                     visit(&field, module, records);

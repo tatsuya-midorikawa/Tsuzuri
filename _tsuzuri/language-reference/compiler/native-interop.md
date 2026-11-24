@@ -225,11 +225,11 @@ Win32 GDI の `HDC`、OpenGL のコンテキスト、COM の STA ポインタの
 
 ### 可変参照（ref mut）と @count
 
-リンク名付きのネイティブ `extern "sym" def` の引数には、読み書き両用の `ref mut` とスライスバッファの長さ指定 `@count` を書けます（WebAssembly で到達すると `E1008` `abi_native_only`）。
+ネイティブの `extern` 関数の引数には、読み書き両用の `ref mut` とバッファの長さ指定 `@count` を書けます（WebAssembly で到達すると `E1008` `abi_native_only`）。
 
 - **レコード・スカラー・`copy` ハンドルの `ref mut`**: `ref mut R`（C ABI 互換のスカラーレコード）、`ref mut T`（`i8`〜`i64`・`i8u`〜`i64u`・`f32`・`f64`・`bool`）、`ref mut CopyHandle` は、スタック上の一時領域へ値をコピーしてポインタを渡し、C 関数から戻った後に書き戻します（`bool` は非ゼロを `true` に正規化し、`copy` ハンドルが `NULL` に書き換えられていれば `null extern handle` でトラップします）。
-- **可変スライスバッファ**: `ref mut [T]` と `ref mut [T..]`（要素型 `T` は `i8`・`i8u`・`i16u`・`i32`・`i32u`・`i64`・`i64u`・`f32`・`f64`）は、排他借用によって一意性が保証されるためゼロコピーで要素ポインタと長さを渡します。長さ 0 のスライスは書き込み不可の `NULL` ではなく有効なダミーアドレスを渡します。
-- **`@count(pos, kind)`**: 1 始まりの引数番号 `pos` のスライスバッファに対し、直後に渡す長さ引数の型を `i32`・`i32u`・`i64`（既定）・`i64u` から選ぶか、`none` で長さ引数を省略できます（[属性](../values-and-functions/attributes.md#count-extern-バッファの長さ引数)）。
+- **可変スライスバッファ**: `ref mut [T]` と `ref mut [T..]`（要素型 `T` は `i64`・`f64`・`ubyte`（`i8u`）・`i16u`・`i32`・`i32u`）は、排他借用によって一意性が保証されるためゼロコピーで要素ポインタと長さを渡します。長さ 0 のスライスは書き込み不可の `NULL` ではなく有効なダミーアドレスを渡します。
+- **`@count(pos, kind)`**: 1 始まりの引数番号 `pos` のバッファ引数（スライスバッファおよび `ref string`・`ref utf8string`）に対し、直後に渡す長さ引数の型を `i32`・`i32u`・`i64`（既定）・`i64u` から選ぶか、`none` で長さ引数を省略できます（[属性](../values-and-functions/attributes.md#count-extern-バッファの長さ引数)）。
 
 ### NUL 終端文字列（ZString）
 
@@ -255,7 +255,7 @@ extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module
 
 ホストが受け取るのは、その関数の C ABI ラッパーへの関数ポインタです。環境は捕捉しません。コールバックの引数はスカラーかハンドル（ネイティブでは `Maybe<H>`・`Maybe<ref H>` も可）、戻り値はスカラーか `unit` です。バッファやレコードは渡せません。この `extern` 自体は、部分適用できません。コールバック以外の共有借用引数には、ほかの `extern` と同じく一時値（文字列リテラル、`$"..."`、呼び出しの結果など）を渡せ、呼び出しの間だけ借用されて戻った後に解放されます。
 
-ネイティブ実行ファイルでは、`main` が実行されている間であれば、`extern` 呼び出しが返ったあと（たとえば `RegisterClassExW` に登録したウィンドウプロシージャを後の `DispatchMessageW` が呼ぶ場合や、OS のワーカースレッド・タイマーコールバックから呼ぶ場合）でも静的コールバックを安全に呼べます。ランタイム未参加のホストスレッドから呼ばれたときは、その呼び出しの間だけ一時的なコンテキストで実行します。一方、`main` が返ってランタイムの終了処理が始まった後にコールバックが呼ばれた場合は、未定義動作にはならず `callback invoked after main returned` で即座にトラップします（Windows では `RaiseFailFastException` で Windows Error Reporting や呼び出し元の SEH に捕まらず即終了します）。
+ネイティブ実行ファイルでは、`main` が実行されている間であれば、`extern` 呼び出しが返ったあと（たとえば `RegisterClassExW` に登録したウィンドウプロシージャを後の `DispatchMessageW` が呼ぶ場合や、OS のワーカースレッド・タイマーコールバックから呼ぶ場合）でも静的コールバックを安全に呼べます。ランタイム未参加のホストスレッドから呼ばれたときは、その呼び出しの間だけ一時的なコンテキストで実行します。一方、`main` が返ってランタイムの終了処理が始まった後にコールバックが呼ばれた場合は、未定義動作にはならず `Tsuzuri runtime: a callback was called after main returned; stop the timers, threads and windows that call it before main returns` を報告して即座にトラップします（Windows では `RaiseFailFastException` で Windows Error Reporting や呼び出し元の SEH に捕まらず即終了します）。
 
 ### 信頼の印（@trusted）
 

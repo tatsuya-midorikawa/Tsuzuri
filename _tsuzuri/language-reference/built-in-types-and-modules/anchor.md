@@ -9,7 +9,7 @@
 - `Anchor.create value` は `value` をスロット表に格納し、その寿命を握る所有値 `Anchor<T>` を返します。`Anchor<T>` が `Drop` されるとスロットは即座に解放され、同じトークンは二度と有効になりません（世代番号つき）。
 - `Anchor.token (ref anchor)` が返す `i64` は非ゼロで、C 側の整数・ポインタ幅 userdata にそのまま保存できます。トークン自体は型引数を持たない `i64` なので、`Anchor.read`・`Anchor.update` に渡す関数側で期待する状態の型（`\(s: ref AppState) -> ...` や名前付き関数）を示します。
 - コールバック側では `Anchor.read (\state -> ...) token` で共有借用 `ref T` を読み、`Anchor.update (\state -> next_state) token` で値を置き換えます。
-- 解放済みトークンは `Stale`、型の不一致は `WrongType`、作成した OS スレッド以外からの呼び出しは `WrongThread`、同じスロットへの再入（たとえば `Anchor.read` の中から `SendMessageW` で同じウィンドウ手続きが呼ばれたとき）は `Busy` として、未定義動作ではなく `Result.Error` で返ります。
+- 解放済みトークンは `Stale`、型の不一致は `WrongType`、作成した OS スレッド以外からの呼び出しは `WrongThread`、書き込み借用（`Anchor.update`）と競合する再入は `Busy` として、未定義動作ではなく `Result.Error` で返ります（共有借用の `Anchor.read` 同士の入れ子は成功します）。
 - `Anchor<T>` 自身は作成した OS スレッドに結び付いており、`Copy`・`Capture`・`Send`・`Sync` のいずれも満たしません。一方、`Anchor.token` が返す `i64` はただの整数なので自由に渡せます。
 
 ## API
@@ -72,8 +72,8 @@ count=2 after_drop=stale anchor token
 
 - `Anchor.read` のコールバックが受け取る `ref 'a` は、その `Anchor.read` が返るまでの借用です。コールバックの戻り値にその借用を含めることはできず、試みると所有権検査の `E1013`（`anchor_result_retains_borrow`）になります。
 - `Anchor.create` と `Anchor.update` に渡す値は、外の変数の借用を保持していてはなりません（`E1013` `anchor_value_retains_borrow`）。
-- `Anchor.read` または `Anchor.update` の実行中はそのスロットが貸し出し中になり、同じスロットに対する入れ子の `Anchor.read`・`Anchor.update` は `Result.Error Anchor.Busy` を返します。
-- `Anchor.create` を `tzroutine` の中から呼ぶ場合、M:N スケジューラ上では呼び出し元の tzroutine が OS スレッドに固定されている必要があります（`Routine.with_locked_thread` の内側、または `main` のメインスレッド）。固定されていない tzroutine から `Anchor.create` を呼ぶとランタイムがトラップします。
+- 同じ生存中トークンに対する入れ子の `Anchor.read`（共有借用同士）は成功します。一方、`Anchor.update` の実行中に同じトークンへ `Anchor.read` または `Anchor.update` で再入したとき、および `Anchor.read` の実行中に同じトークンへ `Anchor.update` で再入したときは `Result.Error Anchor.Busy` を返します。
+- `Anchor.create` を `tzroutine` の中から呼ぶと、ランタイムは自動的にその tzroutine を現在の OS スレッドに固定します（`Anchor<T>` が `Drop` されて解放が終わるまでその OS スレッドにとどまり、その間その OS スレッド上で他の tzroutine と協調的に切り替わります）。事前に `Routine.with_locked_thread` で囲む必要はなく、トラップもしません。
 
 ## エラーの種類
 
@@ -82,7 +82,7 @@ count=2 after_drop=stale anchor token
 | `Anchor.Stale` | `stale anchor token` | `0`・未割り当ての番号、または `Anchor<T>` がすでに `Drop` された後のトークン |
 | `Anchor.WrongType` | `anchor token has a different value type` | `Anchor.create` 時の型 `T` と異なる型で `read` / `update` を呼んだとき |
 | `Anchor.WrongThread` | `anchor token belongs to another thread` | `Anchor.create` を実行した OS スレッドとは別の OS スレッドから呼んだとき |
-| `Anchor.Busy` | `anchor value is already borrowed` | 同じスロットの `read` / `update`・解放の途中で再入したとき |
+| `Anchor.Busy` | `anchor value is already borrowed` | `Anchor.update` の実行中に同じスロットへ `read` / `update` で再入したとき、または `Anchor.read` の実行中に同じスロットへ `update` で再入したとき |
 
 ## 関連項目
 

@@ -221,3 +221,22 @@ export def run :: i64 -> i64 = \x ->
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn anchor_propagates_inner_drop_effects_to_effect_attributes() {
+    // Dropping `Anchor<TrappingGuard>` runs `TrappingGuard::drop`, so `@no_trap` must reject it!
+    let src = r#"
+record TrappingGuard { x: i64 }
+instance Drop<TrappingGuard> {
+    fn drop g = assert (g.x > 0)
+}
+
+@no_trap
+def drop_anchored :: own Anchor<TrappingGuard> -> i64 = \_a -> 0
+
+let a = Anchor.create (TrappingGuard { x: 1 })
+drop_anchored a
+"#;
+    let err = analyze(src).expect_err("dropping Anchor<TrappingGuard> in @no_trap must fail");
+    assert_eq!(err.code, "E1031", "{err:?}");
+}

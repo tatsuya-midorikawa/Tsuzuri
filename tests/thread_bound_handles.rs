@@ -385,11 +385,12 @@ tzroutine {
         Some(DiagnosticKind::PinnedCodeSpawned.id())
     );
 
-    // 4. `Routine.go`, `WaitGroup.go`, `ErrGroup.go`, `Time.after_func`, `Context.after_func`, `Routine.scope`, `Parallel.init`.
+    // 4. `Routine.go`, `WaitGroup.go`, `ErrGroup.go`, `ErrGroup.try_go`, `Time.after_func`, `Context.after_func`, `Routine.scope`, `Parallel.init`, `Parallel.fold`, and `Anchor<Guard>` drop.
     for snippet in [
         "Routine.go (Owned.function (\\() -> touch ()))",
         "let wg = WaitGroup.create ()\nWaitGroup.go (ref wg) (Owned.function (\\() -> touch ()))",
         "let ctx = Context.background ()\nlet eg: ErrGroup<i64> = ErrGroup.with_context (ref ctx)\nErrGroup.go (ref eg) (Owned.function (\\() -> { touch (); Result.Ok () }))",
+        "let ctx = Context.background ()\nlet eg: ErrGroup<i64> = ErrGroup.with_context (ref ctx)\nErrGroup.set_limit (ref eg) 2\nlet _ok = ErrGroup.try_go (ref eg) (Owned.function (\\() -> { touch (); Result.Ok () }))",
         "let _t = Time.after_func 1000 (Owned.function (\\() -> touch ()))",
         "let ctx = Context.background ()\nlet _af = Context.after_func (ref ctx) (Owned.function (\\() -> touch ()))",
         "let shared = 10\nlet _out = Routine.scope (ref shared) 2 (\\s _i -> { touch (); *s })",
@@ -414,6 +415,59 @@ pure def touch :: unit -> unit = \() -> rel_dc (get_dc ())
             "expected PinnedCodeSpawned for `{snippet}`, got {err:?}"
         );
     }
+
+    // 5. Specialized `std` higher-order spawn (`Parallel.fold` over a `Monoid` whose `combine` touches `Hdc`)!
+    let parallel_fold_err = check_err(
+        r#"
+extern type local Hdc
+@trusted pure
+extern "get_dc" def get_dc :: unit -> Hdc
+@trusted pure
+extern "rel_dc" def rel_dc :: own Hdc -> i64
+
+record Job { v: i64 } deriving (Eq)
+instance Monoid<Job> {
+    let empty = \() -> Job { v: 0 }
+    fn combine a b = Job { v: a.v + b.v + rel_dc (get_dc ()) }
+}
+
+let jobs = [Job { v: 1 }, Job { v: 2 }]
+let _res = Parallel.fold (ref jobs)
+0
+"#,
+    );
+    assert_eq!(
+        parallel_fold_err.kind,
+        Some(DiagnosticKind::PinnedCodeSpawned.id()),
+        "{parallel_fold_err:?}"
+    );
+
+    // 6. Dropping `Anchor<Guard>` (where `Guard` holds `Hdc`) outside a pinned block in a `tzroutine`!
+    let anchor_drop_err = check_err(
+        r#"
+extern type local Hdc
+@trusted
+extern "get_dc" def get_dc :: unit -> Hdc
+@trusted
+extern "rel_dc" def rel_dc :: ref Hdc -> unit
+
+record DcGuard { dc: Hdc }
+instance Drop<DcGuard> {
+    fn drop g = rel_dc (ref g.dc)
+}
+
+tzroutine {
+    let _a = Routine.with_locked_thread (\() -> Anchor.create (DcGuard { dc: get_dc () }))
+    ()
+}
+0
+"#,
+    );
+    assert_eq!(
+        anchor_drop_err.kind,
+        Some(DiagnosticKind::PinnedCodeSpawned.id()),
+        "{anchor_drop_err:?}"
+    );
 }
 
 #[test]

@@ -331,7 +331,7 @@ Windows の実行ファイルをビルド・実行するときの既定の PE �
 subsystem = "windows"
 ```
 
-値は `"console"` または `"windows"` です（それ以外は `E0002` `invalid_windows_setting`）。コマンドラインの `--subsystem` が優先されます。Windows 以外のターゲットで `subsystem = "windows"` のプロジェクトをビルドするときは、`--subsystem console` で上書きしない限り `E2000` になります。
+値は `"console"` または `"windows"` です（それ以外は `E0002` `invalid_windows_setting`）。コマンドラインの `--subsystem` が優先されます。Windows 以外のターゲットや `--emit exe` 以外の出力では `[windows]` の設定は無視されます（コマンドラインで `--subsystem` を明示した場合は `console`・`windows` を問わず非 Windows ターゲット・非 `exe` 出力で `E2000` になります）。
 
 ## 権限（capabilities）
 

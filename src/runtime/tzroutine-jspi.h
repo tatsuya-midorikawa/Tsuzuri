@@ -388,8 +388,9 @@ TZR_API void tsuzuri_tz_lock_thread(void) {}
 TZR_API void tsuzuri_tz_unlock_thread(void) {}
 
 static uint64_t tzr_anchor_thread_id(void) { return 1; }
-static int tzr_anchor_pin_current(void) { return 0; }
-static void tzr_anchor_unpin_current(void) {}
+static uint64_t tzr_anchor_pin_current(void) { return 0; }
+static void tzr_anchor_unpin_current(uint64_t gid) { (void)gid; }
+static void tzr_anchor_overflow(void) { __builtin_trap(); }
 
 TZR_API void *tsuzuri_tz_scope_current(void) { return tzr_current()->spawn_scope; }
 TZR_API void tsuzuri_tz_scope_reset(void *scope) { tzr_current()->spawn_scope = scope; }

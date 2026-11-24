@@ -361,6 +361,10 @@ impl FunctionEmitter<'_, '_> {
                         c_llvm_ty,
                     } => {
                         let raw = emitter.value(format!("load {c_llvm_ty}, ptr {slot}"));
+                        if !emitter.globals.wasm && matches!(ty, Type::Handle(..)) {
+                            let valid = emitter.value(format!("icmp ne ptr {raw}, null"));
+                            emitter.guard(&valid, TrapKind::NullHandle);
+                        }
                         let decoded = if *ty == Type::Bool {
                             emitter.value(format!("icmp ne i32 {raw}, 0"))
                         } else {

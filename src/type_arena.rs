@@ -98,8 +98,16 @@ impl<'a> TypeArena<'a> {
                 return;
             }
             Type::Record(record, arguments) => {
-                let fields = types.record_fields(*record, arguments);
-                for ty in fields {
+                let record = *record;
+                let is_anchor = types.records[record].origin == crate::ModuleOrigin::Std
+                    && types.records[record].name == "Anchor.Anchor";
+                let extra = if is_anchor {
+                    arguments.to_vec()
+                } else {
+                    Vec::new()
+                };
+                let fields = types.record_fields(record, arguments);
+                for ty in fields.into_iter().chain(extra) {
                     pending.push(self.owned(ty));
                 }
                 return;
