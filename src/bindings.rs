@@ -103,7 +103,9 @@ fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction
         .filter_map(|id| {
             let function = &module.functions[id];
             match &function.body.kind {
-                TypedExprKind::HostCall(import, _) => Some((import.as_ref(), function)),
+                TypedExprKind::HostCall(import, _) if import.view.is_none() => {
+                    Some((import.as_ref(), function))
+                }
                 _ => None,
             }
         })

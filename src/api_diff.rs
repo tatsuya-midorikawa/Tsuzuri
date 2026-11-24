@@ -1601,8 +1601,13 @@ fn add_items(
             |signature| signature.parameters.iter().collect(),
         );
         let result = signature.map_or(&declaration.result, |signature| &signature.result);
+        let kind_label = if declaration.view {
+            "extern view def"
+        } else {
+            "extern def"
+        };
         let header = function_text(
-            "extern def",
+            kind_label,
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,
@@ -1610,7 +1615,7 @@ fn add_items(
             result,
             fresh(),
         );
-        let mut item = Item::new("extern def", qualified(&declaration.name.text), header)
+        let mut item = Item::new(kind_label, qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         for attribute in extern_counts

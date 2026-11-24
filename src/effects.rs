@@ -1811,6 +1811,23 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::HostCall(import, _) => {
+                if import.view.is_some() {
+                    // W24: an extern view does not allocate, deep-copy, or diverge, so it satisfies
+                    // `@no_alloc`, `@no_copy`, and `@terminates` automatically, while remaining an
+                    // `extern` and `trap` source (null/alignment guard) for `pure` and `@no_trap`.
+                    let compiler_vouched = self.state.options.trusted.is_some_and(|bit| {
+                        let guaranteed = crate::syntax::trusted_property_bit("no_alloc")
+                            .unwrap_or(0)
+                            | crate::syntax::trusted_property_bit("no_copy").unwrap_or(0)
+                            | crate::syntax::trusted_property_bit("terminates").unwrap_or(0);
+                        bit & guaranteed != 0
+                    });
+                    if !compiler_vouched {
+                        self.source(Effect::Extern, span, "extern-view");
+                    }
+                    self.source(Effect::Trap, span, "extern-view-address");
+                    return false;
+                }
                 // E15: a person vouched for this property of the extern function.
                 let vouched = self.state.options.trusted.is_some_and(|bit| {
                     self.function
@@ -3405,19 +3422,28 @@ pub fn validate(
     validate_trusted(module, effects, &BTreeMap::new(), attributes)
 }
 
-/// The attributes whose `@trusted` property some extern function of `module` states, and
-/// which forbid `extern`: each needs its own summary (E15, D14).
+/// The attributes whose `@trusted` property some extern function of `module` states (or that the
+/// compiler itself guarantees for an `extern view`: `no_alloc`, `no_copy`, `terminates`), and
+/// which forbid `extern`: each needs its own summary (E15, D14, W24).
 pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
+    let has_view = module.functions.iter().any(|function| {
+        matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some())
+    });
     EffectKind::ALL
         .into_iter()
         .filter(|kind| {
             forbidden(*kind).contains(Effect::Extern)
-                && module.functions.iter().any(|function| {
-                    function
-                        .origin
-                        .trusted
-                        .is_some_and(|bits| bits & trusted_property(*kind) != 0)
-                })
+                && ((has_view
+                    && matches!(
+                        kind,
+                        EffectKind::NoAlloc | EffectKind::NoCopy | EffectKind::Terminates
+                    ))
+                    || module.functions.iter().any(|function| {
+                        function
+                            .origin
+                            .trusted
+                            .is_some_and(|bits| bits & trusted_property(*kind) != 0)
+                    }))
         })
         .collect()
 }

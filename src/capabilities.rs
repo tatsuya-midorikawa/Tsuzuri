@@ -392,6 +392,7 @@ pub struct ExternUse {
     pub function: usize,
     pub name: String,
     pub symbol: String,
+    pub view: Option<crate::syntax::ViewDirection>,
     pub package: Option<PackageId>,
     /// The name of the declaration.
     pub span: Span,
@@ -915,6 +916,7 @@ pub fn analyze_with_limits(
             function: id,
             name: function.name.clone(),
             symbol: import.native_symbol.clone(),
+            view: import.view,
             package: source_of(id).and_then(|source| source.package.clone()),
             span: function.span,
             trusted: function.origin.trusted,
@@ -1144,6 +1146,7 @@ pub struct ExternReport {
     pub package: String,
     pub name: String,
     pub symbol: String,
+    pub view: Option<crate::syntax::ViewDirection>,
     pub path: String,
     pub line: usize,
     pub column: usize,
@@ -1288,6 +1291,7 @@ impl Report {
                     package: name_of(&extern_use.package),
                     name: extern_use.name.clone(),
                     symbol: extern_use.symbol.clone(),
+                    view: extern_use.view,
                     path,
                     line,
                     column,
@@ -1423,10 +1427,13 @@ impl Report {
                             .collect::<Vec<_>>()
                             .join(" "),
                     };
+                    let target = match extern_report.view {
+                        Some(dir) => format!("view {}", dir.as_str()),
+                        None => format!("\"{}\"", extern_report.symbol),
+                    };
                     out.push_str(&format!(
-                        "    {} -> \"{}\"  {}:{}:{}  {trust}\n",
+                        "    {} -> {target}  {}:{}:{}  {trust}\n",
                         extern_report.name,
-                        extern_report.symbol,
                         extern_report.path,
                         extern_report.line,
                         extern_report.column
@@ -1531,11 +1538,14 @@ impl Report {
             ));
         }
         for extern_report in &self.externs {
+            let symbol_and_view = match extern_report.view {
+                Some(dir) => format!("null,\"view\":{}", json_string(dir.as_str())),
+                None => json_string(&extern_report.symbol),
+            };
             out.push_str(&format!(
-                "{{\"type\":\"extern\",\"package\":{},\"name\":{},\"symbol\":{},\"path\":{},\"line\":{},\"column\":{},\"trusted\":{},\"properties\":{},\"used\":{}}}\n",
+                "{{\"type\":\"extern\",\"package\":{},\"name\":{},\"symbol\":{symbol_and_view},\"path\":{},\"line\":{},\"column\":{},\"trusted\":{},\"properties\":{},\"used\":{}}}\n",
                 json_string(&extern_report.package),
                 json_string(&extern_report.name),
-                json_string(&extern_report.symbol),
                 json_string(&extern_report.path),
                 extern_report.line,
                 extern_report.column,

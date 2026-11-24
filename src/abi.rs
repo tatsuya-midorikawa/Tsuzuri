@@ -377,6 +377,85 @@ pub fn plain_record_contains_c_layout(
     find(candidate, types, 0)
 }
 
+/// W24 (Phase 1 & Phase 2): validates that `ty` is a record allowed as the target of `extern view`.
+/// Phase 1 accepts non-empty `scalar_record`s whose leaves are 32/64-bit numbers (`i32`, `i32u`,
+/// `i64`, `i64u`, `f32`, `f64`), and Phase 2 additionally accepts bidirectional `@c_layout` records
+/// (exact-width numbers, fixed arrays, nested `@c_layout` records, `copy` handles, `Maybe<Handle>`,
+/// without `FnPtr` or borrowed `ZString` fields).
+pub fn view_record(ty: &Type, types: &TypeContext<'_>, view_name: &str) -> Result<(), String> {
+    fn check_plain_leaves(
+        ty: &Type,
+        types: &TypeContext<'_>,
+        record_name: &str,
+        view_name: &str,
+        depth: usize,
+    ) -> Result<(), String> {
+        if depth >= crate::syntax::MAX_NESTING {
+            return Err(format!(
+                "extern view '{view_name}' copies the record '{record_name}', which exceeds the maximum record nesting"
+            ));
+        }
+        let Type::Record(id, arguments) = ty else {
+            return Err(format!("extern view '{view_name}' must copy a record type"));
+        };
+        let rec = &types.records[*id];
+        if rec.fields.is_empty() {
+            return Err(format!(
+                "extern view '{view_name}' copies the empty record '{record_name}'; a view record must have at least one field"
+            ));
+        }
+        for ((fname, _), fty) in rec.fields.iter().zip(types.record_fields(*id, arguments)) {
+            let leaf = match &fty {
+                Type::FixedArray(element, _) => element.as_ref(),
+                other => other,
+            };
+            match leaf {
+                Type::Integer(32 | 64, _) | Type::Binary(32 | 64) => {}
+                Type::Record(..) => {
+                    check_plain_leaves(leaf, types, record_name, view_name, depth + 1)?;
+                }
+                _ => {
+                    let shown = leaf.display(types);
+                    return Err(format!(
+                        "extern view '{view_name}' copies the record '{record_name}', whose field '{fname}' is {shown}; the record ABI widens it, so its layout differs from C; use 32-bit or 64-bit fields or declare '{record_name}' with '@c_layout'"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let Type::Record(id, _) = ty else {
+        return Err(format!("extern view '{view_name}' must copy a record type"));
+    };
+    let rec = &types.records[*id];
+    let short = rec.name.rsplit('.').next().unwrap_or(&rec.name);
+    if rec.c_layout.is_some() {
+        if c_layout_input_only(ty, types) {
+            return Err(format!(
+                "extern view '{view_name}' copies '@c_layout' record '{short}', which holds a FnPtr or borrowed ZString field; extern views only copy data and handle fields"
+            ));
+        }
+        if c_layout_record(ty, types) {
+            return Ok(());
+        }
+        return Err(format!(
+            "extern view '{view_name}' copies invalid '@c_layout' record '{short}'"
+        ));
+    }
+    if !scalar_record(ty, types) {
+        if let Some((_, fname, inner)) = plain_record_contains_c_layout(ty, types) {
+            return Err(format!(
+                "extern view '{view_name}' copies the record '{short}', whose field '{fname}' is the '@c_layout' record '{inner}'; declare '{short}' with '@c_layout'"
+            ));
+        }
+        return Err(format!(
+            "extern view '{view_name}' copies the record '{short}', which is not a C-compatible record; use 32-bit or 64-bit scalar fields or declare '{short}' with '@c_layout'"
+        ));
+    }
+    check_plain_leaves(ty, types, short, view_name, 0)
+}
+
 pub fn parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     abi_scalar(ty)
         || host_record_bidirectional(ty, types)

@@ -8,8 +8,8 @@ pub(super) fn header(module: &CheckedModule) -> String {
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
-        // An explicit symbol belongs to the host, whose own header declares it.
-        if import.explicit {
+        // An explicit symbol belongs to the host; an extern view links no symbol.
+        if import.explicit || import.view.is_some() {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
@@ -29,6 +29,39 @@ pub(super) fn header(module: &CheckedModule) -> String {
 }
 
 impl FunctionEmitter<'_, '_> {
+    /// W24: lowers `extern view def` inline at the call site: validates non-null and C alignment
+    /// via `host_pointer` (trapping at the call site with `BoundsCheck`), then reads or writes
+    /// the record field-by-field using the C struct layout.
+    pub(super) fn extern_view(
+        &mut self,
+        direction: crate::syntax::ViewDirection,
+        arguments: &[TypedExpr],
+        result: &Type,
+    ) -> String {
+        match direction {
+            crate::syntax::ViewDirection::Read => {
+                let address = self.expression(&arguments[0]);
+                let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
+                let (size, align) = host_abi::record_layout(result, self.module);
+                self.host_pointer(&ptr, &size.to_string(), align, false);
+                self.read_host_record(result, &ptr)
+            }
+            crate::syntax::ViewDirection::Write => {
+                let address = self.expression(&arguments[0]);
+                let source_ref = self.expression(&arguments[1]);
+                let Type::Reference(record_ty, false) = &arguments[1].ty else {
+                    unreachable!("validated extern view write parameter")
+                };
+                let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
+                let (size, align) = host_abi::record_layout(record_ty, self.module);
+                self.host_pointer(&ptr, &size.to_string(), align, false);
+                let value = self.value(format!("load {}, ptr {source_ref}", self.ty(record_ty)));
+                self.write_host_record(record_ty, &value, &ptr);
+                "0".into()
+            }
+        }
+    }
+
     pub(super) fn host_call(
         &mut self,
         import: &HostImport,

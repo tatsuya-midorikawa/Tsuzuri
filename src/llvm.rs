@@ -1803,7 +1803,9 @@ fn extern_symbols(module: &CheckedModule) -> BTreeSet<String> {
         .functions
         .iter()
         .filter_map(|function| match &function.body.kind {
-            TypedExprKind::HostCall(import, _) => Some(import.native_symbol.clone()),
+            TypedExprKind::HostCall(import, _) if import.view.is_none() => {
+                Some(import.native_symbol.clone())
+            }
             _ => None,
         })
         .collect()
@@ -2147,9 +2149,9 @@ fn emit_program_in(
     };
     for id in order {
         let function = &module.functions[id];
-        // A callback extern has no function body: its calls pass the host the callback wrappers directly.
+        // A callback extern or extern view has no standalone function body: calls are lowered inline.
         if !emitted[id]
-            || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks)
+            || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks || import.view.is_some())
         {
             continue;
         }
@@ -4219,6 +4221,13 @@ pub(crate) fn validate_wasm_externs(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if import.view.is_some() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'extern view' copies native host memory and is supported only on native targets; build for a native target",
+                function.span,
+            ));
+        }
         if function
             .signature
             .parameters
@@ -7525,17 +7534,24 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
     }
 
     fn call(&mut self, callee: &TypedExpr, arguments: &[TypedExpr]) -> String {
-        // E12 D9 / W01: a callback extern has no function body, so every call of it is the host call
-        // itself, whatever its arguments are (a borrowed temporary included).
+        // E12 D9 / W01 / W24: callback externs and extern views have no function body and lower inline.
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind
             && let TypedExprKind::HostCall(import, _) = &self.module.functions[id].body.kind
-            && import.callbacks
         {
-            return self.host_call(
-                import,
-                arguments,
-                &self.module.functions[id].signature.result,
-            );
+            if let Some(direction) = import.view {
+                return self.extern_view(
+                    direction,
+                    arguments,
+                    &self.module.functions[id].signature.result,
+                );
+            }
+            if import.callbacks {
+                return self.host_call(
+                    import,
+                    arguments,
+                    &self.module.functions[id].signature.result,
+                );
+            }
         }
         if arguments
             .iter()

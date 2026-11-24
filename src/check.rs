@@ -5271,6 +5271,8 @@ pub struct HostImport {
     pub callbacks: bool,
     /// W13: `(parameter_index, CountLength)` sorted by parameter index from `@count(pos, len)`.
     pub counts: Vec<(usize, crate::syntax::CountLength)>,
+    /// W24: `Some(Read | Write)` when declared as `extern view def`.
+    pub view: Option<crate::syntax::ViewDirection>,
 }
 
 impl HostImport {
@@ -8465,7 +8467,17 @@ fn check_modules_collect(
             for ty in external.parameters.iter().chain([&external.result]) {
                 regions::reject_local(ty)?;
             }
-            let import = if let Some(link) = &external.link {
+            let import = if external.view {
+                HostImport {
+                    native_symbol: String::new(),
+                    wasm_module: String::new(),
+                    wasm_name: String::new(),
+                    explicit: false,
+                    callbacks: false,
+                    counts: Vec::new(),
+                    view: Some(crate::syntax::ViewDirection::Read),
+                }
+            } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
                     return Err(error);
                 }
@@ -8479,6 +8491,7 @@ fn check_modules_collect(
                     explicit: true,
                     callbacks: false,
                     counts: Vec::new(),
+                    view: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -8496,6 +8509,7 @@ fn check_modules_collect(
                     explicit: false,
                     callbacks: false,
                     counts: Vec::new(),
+                    view: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -9374,48 +9388,82 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if crate::abi::has_invalid_extern_maybe(
-                    &signature.parameters,
-                    &signature.result,
-                    &types,
-                ) {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::AbiNullablePayload,
-                        "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
-                        function.name.span,
-                    ));
-                }
-                for ty in signature
-                    .parameters
-                    .iter()
-                    .chain(std::iter::once(&signature.result))
-                {
-                    if let Some((outer, fname, inner)) =
-                        crate::abi::plain_record_contains_c_layout(ty, &types)
+                if external_functions[&id].view.is_some() {
+                    let (direction, target_record) = match (
+                        signature.parameters.as_slice(),
+                        &signature.result,
+                    ) {
+                        ([Type::Integer(64, true)], rec @ Type::Record(..)) => {
+                            (crate::syntax::ViewDirection::Read, rec)
+                        }
+                        ([Type::Integer(64, true), Type::Reference(rec, false)], Type::Unit)
+                            if matches!(rec.as_ref(), Type::Record(..)) =>
+                        {
+                            (crate::syntax::ViewDirection::Write, rec.as_ref())
+                        }
+                        _ => {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ExternViewSignature,
+                                "an extern view is 'i64 -> R' to read or 'i64 -> ref R -> unit' to write, with R a record",
+                                function.name.span,
+                            ));
+                        }
+                    };
+                    if let Err(reason) =
+                        crate::abi::view_record(target_record, &types, &function.name.text)
                     {
                         return Err(Diagnostic::of(
-                            DiagnosticKind::CLayoutInPlainRecord,
-                            format!(
-                                "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
-                            ),
+                            DiagnosticKind::ExternViewRecord,
+                            reason,
                             function.name.span,
                         ));
                     }
-                }
-                if crate::abi::reaches_fnptr(&signature.result, &types)
-                    || signature.parameters.iter().any(|ty| match ty {
-                        Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
-                        Type::Reference(inner, true) => crate::abi::reaches_fnptr(inner, &types),
-                        _ => false,
-                    })
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::FnptrFromHost,
-                        "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
-                        function.name.span,
-                    ));
-                }
-                if crate::abi::c_layout_has_zstring_field(&signature.result, &types)
+                    external_functions.get_mut(&id).unwrap().view = Some(direction);
+                } else {
+                    if crate::abi::has_invalid_extern_maybe(
+                        &signature.parameters,
+                        &signature.result,
+                        &types,
+                    ) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::AbiNullablePayload,
+                            "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
+                            function.name.span,
+                        ));
+                    }
+                    for ty in signature
+                        .parameters
+                        .iter()
+                        .chain(std::iter::once(&signature.result))
+                    {
+                        if let Some((outer, fname, inner)) =
+                            crate::abi::plain_record_contains_c_layout(ty, &types)
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CLayoutInPlainRecord,
+                                format!(
+                                    "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
+                                ),
+                                function.name.span,
+                            ));
+                        }
+                    }
+                    if crate::abi::reaches_fnptr(&signature.result, &types)
+                        || signature.parameters.iter().any(|ty| match ty {
+                            Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
+                            Type::Reference(inner, true) => {
+                                crate::abi::reaches_fnptr(inner, &types)
+                            }
+                            _ => false,
+                        })
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FnptrFromHost,
+                            "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
+                            function.name.span,
+                        ));
+                    }
+                    if crate::abi::c_layout_has_zstring_field(&signature.result, &types)
                     || signature.parameters.iter().any(|ty| {
                         matches!(ty, Type::Reference(inner, true) if crate::abi::c_layout_has_zstring_field(inner, &types))
                     })
@@ -9445,114 +9493,113 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::FnptrSignature,
-                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
-                        function.name.span,
-                    ));
-                }
-                if signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types))
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::UnsupportedExternSignature,
-                        "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
-                        function.name.span,
-                    ));
-                }
-                if signature.parameters.iter().any(|ty| {
-                    !crate::abi::extern_parameter(ty, &types)
-                        && *ty != Type::Unit
-                        && !matches!(ty, Type::Function(..))
-                }) || !crate::abi::extern_result(&signature.result, &types)
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::UnsupportedExternSignature,
-                        "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
-                        function.name.span,
-                    ));
-                }
-                if let Some(raw) = counts_by_id.get(&id) {
-                    let mut validated: Vec<(usize, CountLength)> = Vec::new();
-                    for attr in raw {
-                        let pos = attr.position as usize;
-                        if pos == 0 || pos > signature.parameters.len() {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountPositionOutOfRange,
-                                format!(
-                                    "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
-                                    attr.position,
-                                    signature.parameters.len()
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        let index = pos - 1;
-                        if crate::abi::extern_buffer_parameter(&signature.parameters[index])
-                            .is_none()
-                        {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountNotBuffer,
-                                format!(
-                                    "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
-                                    signature.parameters[index].display(&types)
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        if validated.iter().any(|(seen, _)| *seen == index) {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountRepeated,
-                                format!(
-                                    "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        validated.push((index, attr.length));
+                    if signature
+                        .parameters
+                        .iter()
+                        .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FnptrSignature,
+                            "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                            function.name.span,
+                        ));
                     }
-                    validated.sort_by_key(|(index, _)| *index);
-                    external_functions.get_mut(&id).unwrap().counts = validated;
-                }
-                let import = &external_functions[&id];
-                if import.explicit {
-                    let declared = crate::abi::c_signature(
-                        &signature.parameters,
-                        &signature.result,
-                        &import.counts,
-                        &types,
-                    );
-                    match explicit_symbols.entry(import.native_symbol.clone()) {
-                        std::collections::btree_map::Entry::Vacant(slot) => {
-                            slot.insert((
-                                declared.clone(),
-                                declared,
-                                false,
-                                import.wasm_module.clone(),
-                                function.name.span,
-                            ));
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut slot) => {
-                            let (first, canonical, mixed, wasm_module, first_span) = slot.get_mut();
-                            if *wasm_module != import.wasm_module {
+                    if signature.parameters.iter().any(|ty| {
+                        matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types)
+                    }) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UnsupportedExternSignature,
+                            "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
+                            function.name.span,
+                        ));
+                    }
+                    if signature.parameters.iter().any(|ty| {
+                        !crate::abi::extern_parameter(ty, &types)
+                            && *ty != Type::Unit
+                            && !matches!(ty, Type::Function(..))
+                    }) || !crate::abi::extern_result(&signature.result, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UnsupportedExternSignature,
+                            "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
+                            function.name.span,
+                        ));
+                    }
+                    if let Some(raw) = counts_by_id.get(&id) {
+                        let mut validated: Vec<(usize, CountLength)> = Vec::new();
+                        for attr in raw {
+                            let pos = attr.position as usize;
+                            if pos == 0 || pos > signature.parameters.len() {
                                 return Err(Diagnostic::of(
-                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    DiagnosticKind::CountPositionOutOfRange,
                                     format!(
-                                        "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
-                                        import.native_symbol
+                                        "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
+                                        attr.position,
+                                        signature.parameters.len()
                                     ),
+                                    attr.span,
+                                ));
+                            }
+                            let index = pos - 1;
+                            if crate::abi::extern_buffer_parameter(&signature.parameters[index])
+                                .is_none()
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::CountNotBuffer,
+                                    format!(
+                                        "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
+                                        signature.parameters[index].display(&types)
+                                    ),
+                                    attr.span,
+                                ));
+                            }
+                            if validated.iter().any(|(seen, _)| *seen == index) {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::CountRepeated,
+                                    format!(
+                                        "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
+                                    ),
+                                    attr.span,
+                                ));
+                            }
+                            validated.push((index, attr.length));
+                        }
+                        validated.sort_by_key(|(index, _)| *index);
+                        external_functions.get_mut(&id).unwrap().counts = validated;
+                    }
+                    let import = &external_functions[&id];
+                    if import.explicit {
+                        let declared = crate::abi::c_signature(
+                            &signature.parameters,
+                            &signature.result,
+                            &import.counts,
+                            &types,
+                        );
+                        match explicit_symbols.entry(import.native_symbol.clone()) {
+                            std::collections::btree_map::Entry::Vacant(slot) => {
+                                slot.insert((
+                                    declared.clone(),
+                                    declared,
+                                    false,
+                                    import.wasm_module.clone(),
                                     function.name.span,
                                 ));
                             }
-                            if let Some(reason) = declared.mismatch(first) {
-                                return Err(Diagnostic::of(
+                            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                                let (first, canonical, mixed, wasm_module, first_span) =
+                                    slot.get_mut();
+                                if *wasm_module != import.wasm_module {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::ConflictingExternDeclaration,
+                                        format!(
+                                            "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
+                                            import.native_symbol
+                                        ),
+                                        function.name.span,
+                                    ));
+                                }
+                                if let Some(reason) = declared.mismatch(first) {
+                                    return Err(Diagnostic::of(
                                     DiagnosticKind::ConflictingExternDeclaration,
                                     format!(
                                         "extern symbol '{}' has a different C ABI here: {reason}; declarations of one symbol may differ only in types that pass the same way",
@@ -9565,9 +9612,10 @@ fn check_modules_collect(
                                     "first defined here",
                                     *first_span,
                                 ));
-                            }
-                            if canonical.merge_canonical(&declared) || declared != *first {
-                                *mixed = true;
+                                }
+                                if canonical.merge_canonical(&declared) || declared != *first {
+                                    *mixed = true;
+                                }
                             }
                         }
                     }
@@ -10566,8 +10614,13 @@ fn lower_zstring_literals(
 
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
+    let is_view_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some());
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
+        _ => None,
+    };
+    let view_extern = |expression: &TypedExpr| match &expression.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) if is_view_extern(*id) => Some(*id),
         _ => None,
     };
     let is_fnptr_of = |expression: &TypedExpr| {
@@ -10582,6 +10635,16 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             DiagnosticKind::ExternCallbackCallForm,
             format!(
                 "extern '{}' takes a callback and must be called directly with all arguments",
+                module.functions[id].name
+            ),
+            span,
+        )
+    };
+    let view_direct_only = |id: usize, span: Span| {
+        Diagnostic::of(
+            DiagnosticKind::ExternViewCallForm,
+            format!(
+                "extern view '{}' must be called directly with all its arguments",
                 module.functions[id].name
             ),
             span,
@@ -10660,6 +10723,19 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
                 // The callee is the extern itself; only the arguments can hold other uses.
                 pending.extend(arguments.iter());
                 continue;
+            }
+            if let TypedExprKind::Call(callee, arguments) = &expression.kind
+                && let Some(id) = view_extern(callee)
+            {
+                let target = &module.functions[id];
+                if arguments.len() != target.parameters.len() {
+                    return Err(view_direct_only(id, expression.span));
+                }
+                pending.extend(arguments.iter());
+                continue;
+            }
+            if let Some(id) = view_extern(expression) {
+                return Err(view_direct_only(id, expression.span));
             }
             if let Some(id) = callback_extern(expression) {
                 return Err(direct_only(id, expression.span));

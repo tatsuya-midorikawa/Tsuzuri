@@ -850,6 +850,44 @@ if (isMain) {
   assert.equal(execute(fontExe, [], false).status, 7, "CreateFontIndirectW with @c_layout LogFont");
   console.log("Windows MSVC: W21 @c_layout Win32 header parity & CreateFontIndirectW passed");
 
+  // W24: extern view live HeapAlloc / HeapFree round-trip and null trap with call-site location.
+  const winViewDir = join(directory, "win-extern-view");
+  mkdirSync(winViewDir);
+  writeFileSync(join(winViewDir, "Main.tz"), [
+    "record Point { x: i32, y: i32 }",
+    "@trusted",
+    'extern "GetProcessHeap" def process_heap :: unit -> i64',
+    "@trusted",
+    'extern "HeapAlloc" def heap_alloc :: i64 -> i32u -> i64 -> i64',
+    "@trusted",
+    'extern "HeapFree" def heap_free :: i64 -> i32u -> i64 -> i32',
+    "@trusted",
+    "extern view def read_point :: i64 -> Point",
+    "@trusted",
+    "extern view def write_point :: i64 -> ref Point -> unit",
+    "def main :: Array<string> -> i32 = \\args ->",
+    "    if args.length > 0 then",
+    "        (read_point 0).x",
+    "    else",
+    "        let heap = process_heap ()",
+    "        let address = heap_alloc heap 8i32u 8",
+    "        let point = Point { x: 40i32, y: 2i32 }",
+    "        write_point address (ref point)",
+    "        let back = read_point address",
+    "        let _ = heap_free heap 0i32u address",
+    "        back.x + back.y",
+    "",
+  ].join("\n"));
+  for (const optimization of ["-O0", "-O3"]) {
+    const viewExe = join(directory, `win-view${optimization}.exe`);
+    cli(["build", winViewDir, "--no-cache", optimization, "--trap-info", "-o", viewExe]);
+    assert.equal(execute(viewExe, [], false).status, 42, `extern view HeapAlloc ${optimization}`);
+    const trapped = execute(viewExe, ["null"], false);
+    assert.equal(trapped.status >>> 0, 0xc000001d, `extern view null trap ${optimization}`);
+    assert.match(trapped.stderr, /index out of bounds at .*Main\.tz:14:/, `extern view trap site ${optimization}: ${trapped.stderr}`);
+  }
+  console.log("Windows MSVC: W24 extern view HeapAlloc round-trip & null trap passed");
+
   runGuiStage(compiler, clang, directory);
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
     }

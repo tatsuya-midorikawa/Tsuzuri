@@ -725,6 +725,22 @@ pub struct ContractClause {
     pub span: Span,
 }
 
+/// Direction of an `extern view def` memory copy (W24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ViewDirection {
+    Read,
+    Write,
+}
+
+impl ViewDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub doc: Option<Documentation>,
@@ -740,6 +756,8 @@ pub struct SignatureDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub link: Option<Box<LinkName>>,
+    /// Declared as `extern view def` (W24).
+    pub view: bool,
 }
 
 /// The strings of `extern "symbol" def` or `extern "module" "symbol" def`.

@@ -787,10 +787,28 @@ impl Parser<'_> {
                         program.extern_types.push(declaration)
                     }
                     ExternDeclaration::Function(signature) => {
+                        if signature.view {
+                            if let Some(count) = counts.first() {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedCountAttribute,
+                                    "'@count' applies to an 'extern' function declaration, not an 'extern view'",
+                                    count.span,
+                                ));
+                            }
+                            if let Some(mark) = &trusted
+                                && let Some(first) = mark.first
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::TrustedViewProperty,
+                                    "'@trusted' on an extern view takes no properties; the compiler knows its effects",
+                                    first,
+                                ));
+                            }
+                        }
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
                                 target: signature.name.clone(),
-                                properties: mark.properties,
+                                properties: if signature.view { 0 } else { mark.properties },
                                 span: mark.span,
                             });
                         }
@@ -2439,6 +2457,7 @@ impl Parser<'_> {
             result,
             constraints,
             link: None,
+            view: false,
         })
     }
 
@@ -4825,7 +4844,22 @@ impl Parser<'_> {
                 self.current().span,
             ));
         }
-        self.expect(&TokenKind::Def, "'def' after extern")?;
+        let view = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "view") {
+            self.take();
+            if let Some(link) = &link {
+                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternViewLinkName,
+                    "an extern view copies memory and links no symbol; remove the string",
+                    first,
+                ));
+            }
+            self.expect(&TokenKind::Def, "'def' after 'extern view'")?;
+            true
+        } else {
+            self.expect(&TokenKind::Def, "'def' after extern")?;
+            false
+        };
         let name = self.ident()?;
         if taken(&name.text) {
             return Err(Diagnostic::of(
@@ -4842,6 +4876,7 @@ impl Parser<'_> {
         signature.doc = doc;
         signature.visibility = visibility;
         signature.link = link;
+        signature.view = view;
         Ok(ExternDeclaration::Function(signature))
     }
 

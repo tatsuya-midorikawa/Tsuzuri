@@ -1150,6 +1150,7 @@ impl Wire for SignatureDecl {
             result,
             constraints,
             link,
+            view,
         } = self;
         put_doc(doc, out)?;
         name.put(out)?;
@@ -1162,7 +1163,8 @@ impl Wire for SignatureDecl {
         parameters.put(out)?;
         result.put(out)?;
         constraints.put(out)?;
-        link.put(out)
+        link.put(out)?;
+        view.put(out)
     }
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
@@ -1179,6 +1181,7 @@ impl Wire for SignatureDecl {
             result: TypeExpr::get(input)?,
             constraints: Vec::get(input)?,
             link: Option::get(input)?,
+            view: bool::get(input)?,
         })
     }
 }

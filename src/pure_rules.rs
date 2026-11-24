@@ -889,7 +889,10 @@ impl<'a> Scanner<'a> {
             } else {
                 use TypedExprKind as K;
                 match &expression.kind {
-                    K::HostCall(import, _) => Some(Effect::Host(import.native_symbol.clone())),
+                    K::HostCall(import, _) => Some(Effect::Host(match import.view {
+                        Some(dir) => format!("view {}", dir.as_str()),
+                        None => import.native_symbol.clone(),
+                    })),
                     // Spawning outlives the call, unlike the closed task operations (TZ02).
                     K::RoutineGo(_) => Some(Effect::Builtin(Builtin::RoutineGo, Category::Task)),
                     // A select waits on channels (TZ04), as Channel.recv does.

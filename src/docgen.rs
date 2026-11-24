@@ -415,7 +415,11 @@ fn render_declarations(program: &Program) -> String {
             continue;
         }
         let code = signature(
-            "extern def",
+            if declaration.view {
+                "extern view def"
+            } else {
+                "extern def"
+            },
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,

@@ -21,14 +21,15 @@ pub(super) fn has_handle_parameter(function: &CheckedFunction) -> bool {
 }
 
 fn host_function(function: &CheckedFunction) -> bool {
-    function.exported || matches!(function.body.kind, TypedExprKind::HostCall(..))
+    function.exported
+        || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
 }
 
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     let types = module.types();
     module.functions.iter().any(|function| {
         extended(function)
-            || (matches!(function.body.kind, TypedExprKind::HostCall(..))
+            || (matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
@@ -135,7 +136,7 @@ pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
     name
 }
 
-fn record_types(module: &CheckedModule) -> Vec<Type> {
+fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
     fn visit(ty: &Type, module: &CheckedModule, seen: &mut BTreeSet<Type>, result: &mut Vec<Type>) {
         let viewed = crate::abi::c_view(ty, &module.types());
         let ty = if let Type::Reference(inner, _) = viewed.as_ref() {
@@ -159,11 +160,11 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
     }
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
-    for function in module
-        .functions
-        .iter()
-        .filter(|function| host_function(function))
-    {
+    for function in module.functions.iter().filter(|function| {
+        host_function(function)
+            || (include_views
+                && matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()))
+    }) {
         for ty in function
             .signature
             .parameters
@@ -174,6 +175,10 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
         }
     }
     result
+}
+
+fn record_types(module: &CheckedModule) -> Vec<Type> {
+    record_types_for(module, false)
 }
 
 /// W21: layout of one field inside a `@c_layout` record.
@@ -312,11 +317,14 @@ fn c_layout_c_field(ty: &Type, name: &str, module: &CheckedModule) -> String {
 }
 
 pub(super) fn type_definitions(module: &CheckedModule) -> String {
-    if !uses_host_abi(module) {
+    let has_views = module.functions.iter().any(
+        |f| matches!(&f.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()),
+    );
+    if !uses_host_abi(module) && !has_views {
         return String::new();
     }
     let mut output = String::new();
-    for ty in record_types(module) {
+    for ty in record_types_for(module, true) {
         let Type::Record(id, arguments) = &ty else {
             unreachable!()
         };
