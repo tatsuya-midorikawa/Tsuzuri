@@ -172,7 +172,7 @@ do! IO.writeln text
 - 改行のない最後の行も `Some` です。
 - LF と CRLF は除きます。単独の CR は残します。
 - 不正な UTF-8 は `InvalidEncoding` です。置換文字にはしません。
-- 標準ストリーム自体が存在しない環境（Windows の `--subsystem windows` でハンドル継承なしに起動されたプロセスや、閉じられたファイル記述子 0/1/2）では、`try_readln`・`try_write`・`try_write_err` はいずれも `Result.Error IO.Unavailable` を返します（`try_` なしは `standard input is unavailable` / `standard output is unavailable` / `standard error is unavailable` でトラップします）。
+- 標準ストリーム自体が存在しない環境（Windows の `--subsystem windows` でハンドル継承なしに起動されたプロセスや、閉じられたファイル記述子 0/1/2）では、`try_readln`・`try_write`・`try_writeln`・`try_write_err`・`try_write_errln` はいずれも `Result.Error IO.Unavailable` を返します（`try_` なしは他の失敗と同じく `Result.get` でトラップし、Windows で標準エラーが無ければトラップの報告は `OutputDebugStringW` に送られます）。
 
 `try_` が付かない `readln`・`write`・`writeln`・`write_err`・`write_errln` は、`try_` 付きの結果から `Result.get` で中身を取り出します。失敗するとトラップし、呼び出し元ではキャッチできません。回復するなら `try_` を使います。
 

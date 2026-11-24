@@ -25,7 +25,7 @@ ZString.to_string :: ref ZString -> string
 
 ### 引数の順序
 
-`ZString.of`・`ZString.to_string`・`ZString.literal` はいずれも変換元の文字列 1 つだけを引数に取るため、`"hello" |> ZString.of` のようにそのままパイプで渡せます（[標準ライブラリの引数の順序](argument-order.md)）。
+`ZString.of` と `ZString.to_string` はどちらも変換元の文字列 1 つだけを引数に取るため、`"hello" |> ZString.of` のようにそのままパイプで渡せます（[標準ライブラリの引数の順序](argument-order.md)）。`ZString.literal "..."` は文字列リテラルを直接受け取るコンパイル時構文であり、関数値やパイプとしては使えません。
 
 ## 基本の書き方
 
