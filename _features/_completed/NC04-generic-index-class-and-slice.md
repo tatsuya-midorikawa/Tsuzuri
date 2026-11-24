@@ -7,7 +7,7 @@
 | 規模 | L（`Index` 組み込みクラスまたは型クラスディスパッチ・`ExprKind::Index` 拡張・`std/Slice.tz`） |
 | 依存 | ([NC02](NC02-tensor-core-views-and-broadcasting.md)) |
 | 後続 | ([NC05](NC05-tensor-shape-indexing-and-masking.md)) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（組み込み型クラス `Index` の追加・`x[k]` のユーザー型開放・opt-in std モジュール `Slice` の登録。決定事項 D1・D2 が要承認、ほかは既定案） |
 | 手本にする既存実装 | `src/check.rs` 13779 行（`ExprKind::Index` の型検査）、`src/polymorph.rs`（組み込みクラス解決）、`std/Text.tt`（標準型クラス）、`std/Tensor.tz`（`narrow`/`index_axis`） |

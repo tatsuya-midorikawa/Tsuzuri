@@ -112,6 +112,8 @@
 - [Matrix](./built-in-types-and-modules/matrix.md)
 - [MatrixView](./built-in-types-and-modules/matrix-view.md)
 - [Tensor](./built-in-types-and-modules/tensor.md)
+- [Slice](./built-in-types-and-modules/slice.md) — `Tensor`・`Matrix`・`MatrixView` 向けのスライス記述子
+- [Complex](./built-in-types-and-modules/complex.md) — 複素数型 `Complex<'a>` と初等関数
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
 - [Atomic](./built-in-types-and-modules/atomic.md)
 - [Mutex](./built-in-types-and-modules/mutex.md)

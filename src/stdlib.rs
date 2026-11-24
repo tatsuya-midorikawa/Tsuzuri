@@ -319,7 +319,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Matrix",
         names: &["Matrix"],
         aliases: &[],
-        uses: &["MatrixView", "Slice"],
+        uses: &[],
     },
     OptIn {
         module: "Net",
@@ -585,6 +585,9 @@ pub fn sources_for<'a>(
         if !needed.contains(&module) {
             needed.push(module);
         }
+    }
+    if needed.contains(&"Matrix") && needed.contains(&"Slice") && !needed.contains(&"MatrixView") {
+        needed.push("MatrixView");
     }
     let mut next = 0;
     while next < needed.len() {

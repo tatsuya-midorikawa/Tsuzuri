@@ -4150,12 +4150,8 @@ do! IO.writeln (to_string (run 1))
         source
     };
     for declaration in &run2 {
-        rejects(
-            &loopplace(declaration, false),
-            "E1017",
-            "loop_ownership_limit",
-            "let t = ref p.s",
-        );
+        // A34 resolved the safe `loopplace` rejection so both forms now converge and pass.
+        accepts(&loopplace(declaration, false));
         accepts(&loopplace(declaration, true));
     }
 }

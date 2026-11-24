@@ -55,7 +55,8 @@ flowchart TD
 | `min`、`max`、`copysign` | `Float<'a> => 'a -> 'a -> 'a` | 2 引数 |
 | `clamp` | `Float<'a> => 'a -> 'a -> 'a -> 'a` | 値、下限、上限 |
 | `fma` | `Float<'a> => 'a -> 'a -> 'a -> 'a` | `x * y + z` を 1 回で丸める |
-| `is_nan`、`is_infinite`、`is_finite` | `Float<'a> => 'a -> bool` | 分類 |
+| `is_nan`、`is_infinite`、`is_finite`、`signbit` | `Float<'a> => 'a -> bool` | 分類・符号ビット判定 |
+| `sign` | `Float<'a> => 'a -> 'a` | 符号（`-1`・`0`・`+1`、NaN は NaN） |
 | `pi`、`e` | `Float<'a> => 'a` | 呼び出しは `Math.pi()` |
 
 丸めの方向は次のとおりです。結果がゼロになるときは、元の符号を保ちます。
@@ -80,9 +81,13 @@ flowchart TD
 | 関数 | シグネチャ | 説明 |
 | --- | --- | --- |
 | `sin`、`cos`、`tan`、`asin`、`acos`、`atan` | `Elementary<'a> => 'a -> 'a` | 三角関数と逆関数 |
-| `exp`、`exp2`、`log`、`log2`、`log10`、`cbrt` | `Elementary<'a> => 'a -> 'a` | 指数、対数、立方根 |
-| `atan2` | `Elementary<'a> => 'a -> 'a -> 'a` | `atan2 y x`。縦、横の順 |
-| `pow`、`hypot` | `Elementary<'a> => 'a -> 'a -> 'a` | 累乗と、斜辺の長さ |
+| `sinh`、`cosh`、`tanh`、`asinh`、`acosh`、`atanh` | `Elementary<'a> => 'a -> 'a` | 双曲線関数と逆双曲線関数 |
+| `exp`、`exp2`、`expm1`、`log`、`log2`、`log10`、`log1p`、`cbrt` | `Elementary<'a> => 'a -> 'a` | 指数、対数、高精度 `exp(x)-1`・`ln(1+x)`、立方根 |
+| `sinc`、`degrees`、`radians` | `Elementary<'a> => 'a -> 'a` | 正規化 `sin(pi*x)/(pi*x)`、度・ラジアン変換 |
+| `atan2`、`pow`、`hypot`、`logaddexp`、`logaddexp2` | `Elementary<'a> => 'a -> 'a -> 'a` | `atan2 y x`、累乗、斜辺、`ln(e^x+e^y)`、`log2(2^x+2^y)` |
+| `fmod`、`floor_div`、`floor_mod`、`ieee_remainder`、`nextafter` | `Elementary<'a> => 'a -> 'a -> 'a` | 剰余・床除算・IEEE 754 剰余・次の表現可能浮動小数点数 |
+| `modf` / `frexp` | `Elementary<'a> => 'a -> ('a * 'a)` / `('a * i32)` | 小数部・整数部への分解、仮数部・指数部への分解 |
+| `ldexp` | `Elementary<'a> => 'a -> i32 -> 'a` | `x * 2^exp` |
 
 精度の契約は、最終結果が 1 ulp 以内です。これは「正しく丸めた 1 つの値」とは違います。その範囲の中で、非 NaN のビット列はネイティブと WASM、`-O0` と `-O3` で一致します。ホストの C ライブラリ `libm` やロケールには依存しません。同梱の数学実装を使います。`tests/math.mjs` が、このビット照合を持っています。
 

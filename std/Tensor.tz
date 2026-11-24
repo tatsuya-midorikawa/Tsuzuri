@@ -1999,11 +1999,13 @@ fn rot90 k view =
     let mut new_offset = view.offset
     let mut new_shape = Array.copy (ref view.shape)
     let mut new_strides = Array.copy (ref view.strides)
-    if turns == 1 then
+    match turns with
+    | 1 ->
         // fliplr then swapaxes 0 1
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
             Array.write 1 (-new_strides[1]) (ref mut new_strides)
+        else ()
         let s0 = new_shape[0]
         let s1 = new_shape[1]
         let st0 = new_strides[0]
@@ -2012,14 +2014,16 @@ fn rot90 k view =
         Array.write 1 s0 (ref mut new_shape)
         Array.write 0 st1 (ref mut new_strides)
         Array.write 1 st0 (ref mut new_strides)
-    elif turns == 2 then
+    | 2 ->
         if new_shape[0] > 1 then
             new_offset = new_offset + (new_shape[0] - 1) * new_strides[0]
             Array.write 0 (-new_strides[0]) (ref mut new_strides)
+        else ()
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
             Array.write 1 (-new_strides[1]) (ref mut new_strides)
-    elif turns == 3 then
+        else ()
+    | 3 ->
         // swapaxes 0 1 then fliplr
         let s0 = new_shape[0]
         let s1 = new_shape[1]
@@ -2032,6 +2036,8 @@ fn rot90 k view =
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
             Array.write 1 (-new_strides[1]) (ref mut new_strides)
+        else ()
+    | _ -> ()
     View { data: view.data, offset: new_offset, shape: new_shape, strides: new_strides }
 
 /// Returns a 1D contiguous view without copying; traps unless `is_contiguous view` holds.

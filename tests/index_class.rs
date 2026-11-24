@@ -129,8 +129,9 @@ fn index_rejects_overlaps_builtin_overrides_missing_instances_and_class_name_col
         "E1016",
     );
 
-    // Unsupported key on a type with other Index instances gives E1005.
-    rejects("let m = Matrix.of_array 2 2 [1, 2, 3, 4]\nm[0]", "E1005");
+    // Unsupported key on a multi-instance Index type gives E1005; single-instance hints E1003.
+    rejects("let t = Tensor.of_array [2] [1, 2]\nt[\"bad\"]", "E1005");
+    rejects("let m = Matrix.of_array 2 2 [1, 2, 3, 4]\nm[0]", "E1003");
 
     // Non-indexable type without Index instances gives E1005 (IndexNonIndexable).
     rejects("let x = 42\nx[0]", "E1005");

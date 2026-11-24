@@ -87,7 +87,7 @@ if left == right then 42 else 0
 42
 ```
 
-`Eq<Box<T>>` を使うには `Eq<T>` が必要で、この条件は呼び出し元へ伝播します。`==` は値を共有借用するので、非 Copy の文字列も比較のあとで使えます。比較のメソッド `Eq.eq` は `ref` を受け取ります。算術の `Add.add` は値を受け取るので、所有権の契約は同じではありません。
+`Eq<Box<T>>` を使うには `Eq<T>` が必要で、この条件は呼び出し元へ伝播します。`==` は値を共有借用するので、非 Copy の文字列も比較のあとで使えます。算術演算子（`Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg`）についても、ユーザー定義型や標準ライブラリの非 Copy 型（[`BigInt`](../built-in-types-and-modules/bigint.md)・[`Complex`](../built-in-types-and-modules/complex.md) など）のインスタンスは引数を共有借用（`ref`）で受け取り、被演算子を消費せずに繰り返し式で使えます。スカラー数値・SIMD・`string` 連結は既存の組み込み演算の契約を保ちます。
 
 同じクラスで head が単一化できるインスタンスは共存できません。汎用の `Eq<Box<'value>>` と具体的な `Eq<Box<i64>>` を両方書くと、具体的な方を優先せず `E1016`（overlapping instance）です。ファイルの順にも依存しません。型エイリアスは展開後の型で同一視されます。
 
@@ -124,7 +124,8 @@ flowchart TD
 
 | クラス | 役割 |
 | --- | --- |
-| `Add` `Sub` `Mul` `Div` | 加算、減算、乗算、除算。`Div` までは数値。`Add` は文字列も連結できる |
+| `Add` `Sub` `Mul` `Div` `Rem` `Pow` `Neg` | 算術演算。ユーザー・標準ライブラリ型のインスタンスは引数を共有借用し、非 Copy 型も消費せずに使える。`Add` は文字列連結も担う |
+| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装） |
 | `Rem` `Bits` `Integer` | 剰余とビット演算、整数の分類。`Integer` は印 |
 | `Neg` `Pow` | 符号反転、べき乗。`Pow` は整数と `f32` / `f64` |
 | `Eq` `Ord` | 共有借用による等値と比較。`Ord` は `Eq` を要求する |

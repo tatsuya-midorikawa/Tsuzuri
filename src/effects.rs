@@ -1319,18 +1319,21 @@ impl<'s, 'a> Scan<'s, 'a> {
     /// copies of its string arguments are made in the caller.
     fn host_call_here(&mut self, callee: usize, span: Span) {
         let function = &self.state.module.functions[callee];
-        if let TypedExprKind::HostCall(import, _) = &function.body.kind
-            && import.callbacks
-        {
-            if takes_string(function) {
-                self.source(Effect::Alloc, span, "string-marshalling");
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind {
+            if import.view.is_some() {
+                self.source(Effect::Trap, span, "extern-view-address");
             }
-            if import
-                .counts
-                .iter()
-                .any(|(_, len)| len.max_length().is_some())
-            {
-                self.source(Effect::Trap, span, "count-bounds");
+            if import.callbacks {
+                if takes_string(function) {
+                    self.source(Effect::Alloc, span, "string-marshalling");
+                }
+                if import
+                    .counts
+                    .iter()
+                    .any(|(_, len)| len.max_length().is_some())
+                {
+                    self.source(Effect::Trap, span, "count-bounds");
+                }
             }
         }
     }
@@ -3832,10 +3835,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal.
-        assert_eq!(Builtin::ALL.len(), 346);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; NC01 added 23 Math and 6 Int builtins.
+        assert_eq!(Builtin::ALL.len(), 375);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 177);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 206);
     }
 
     #[test]
@@ -3859,7 +3862,7 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 56);
+        assert_eq!(count(|facts| facts.trap), 58);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 

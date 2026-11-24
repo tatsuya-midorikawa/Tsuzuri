@@ -7,7 +7,7 @@
 | 規模 | M（純 Tsuzuri ライブラリ実装、`std/Tensor.tz` 拡張とテスト） |
 | 依存 | [NC02](NC02-tensor-core-views-and-broadcasting.md), ([NC04](NC04-generic-index-class-and-slice.md)) |
 | 後続 | [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 不要（既定案のみ。新予約語・構文・モジュール追加なし） |
 | 手本にする既存実装 | `std/Tensor.tz`、`std/Array.tz`（`filter`/`partition`/`concat`/`take`/`skip` の引数順序とエラー処理） |

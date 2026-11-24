@@ -279,10 +279,3 @@ instance Copy<'a> => Index<Matrix<'a>, (i64 * i64), 'a> {
         match coords with
         | (row, col) -> deref (at row col self)
 }
-
-instance Index<Matrix<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>> {
-    fn index axes self =
-        let mv = MatrixView.of_matrix self
-        match axes with
-        | (r_axis, c_axis) -> MatrixView.slice (ref r_axis) (ref c_axis) mv
-}

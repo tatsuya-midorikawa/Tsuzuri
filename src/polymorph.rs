@@ -2552,7 +2552,7 @@ impl Classes {
             &self.index_instances
         };
         for previous in existing {
-            let mut inference = Inference::default();
+            let mut inference = Inference::quiet();
             let instantiate_pair = |inf: &mut Inference, s: &Type, k: &Type, vars: &[String]| {
                 let subs: BTreeMap<String, Type> = vars
                     .iter()
@@ -2704,6 +2704,7 @@ impl Classes {
         let mut matched: Option<Type> = None;
         for cand in list {
             let mut inf = inference.clone();
+            inf.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
@@ -2749,6 +2750,7 @@ impl Classes {
         let mut candidates = Vec::new();
         for (idx, cand) in list.iter().enumerate() {
             let mut trial = inference.clone();
+            trial.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()

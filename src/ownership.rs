@@ -9505,7 +9505,16 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // A local bound to a value that cannot share the environment (`let base =
                 // seven`, a lambda that captured a `ref string`, handlers that `Array.map` made)
                 // keeps nothing of it.
-                self.absorb_owner(id, &kept);
+                // A34 (`loopplace`): a reference local (including an annotated lambda parameter
+                // bound from a hidden parameter) cannot be repointed by a hidden sink store; the
+                // absorbed loans live only in the target's cells (`through`).
+                if matches!(local.ty, Type::Reference(..)) {
+                    let mut marked = kept.clone();
+                    marked.through.extend(kept.loans.iter().copied());
+                    self.absorb_owner(id, &marked);
+                } else {
+                    self.absorb_owner(id, &kept);
+                }
                 self.store_exported(id, &kept, span, true);
             }
         }
