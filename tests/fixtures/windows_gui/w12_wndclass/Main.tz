@@ -1,0 +1,80 @@
+@trusted
+extern "w12_gui_register_class" def register_class :: (i64 -> i32u -> i64u -> i64 -> i64) -> i64
+
+@trusted
+extern "w12_gui_create_registered" def create_window :: unit -> i64
+
+@trusted
+extern "w12_gui_def_proc" def def_proc :: i64 -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w12_gui_destroy" def destroy_window :: i64 -> i64
+
+@trusted
+extern "w12_gui_pump_pending" def pump_pending :: unit -> i64
+
+@trusted
+extern "w12_gui_set_userdata" def set_userdata :: i64 -> i64 -> i64
+
+@trusted
+extern "w12_gui_get_userdata" def get_userdata :: i64 -> i64
+
+@trusted
+extern "w06_gui_send" def send_msg :: i64 -> i32u -> i64u -> i64 -> i64
+
+@trusted
+extern "w06_gui_post" def post_msg :: i64 -> i64u -> i64
+
+@trusted
+extern "w07_gui_timer_proc" def run_timer_proc :: (i64u -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_gui_pool_submit_wait" def pool_submit_wait :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_gui_set_mark" def set_mark :: i64 -> unit
+
+@trusted
+extern "w12_gui_get_mark" def get_mark :: unit -> i64
+
+// Tracks trace digits in GWLP_USERDATA: WM_CREATE(1)->1, Send(WM_APP)->2, Post(WM_APP)->3, WM_CLOSE(16)->4, reentrant WM_DESTROY(2)->5
+def wndproc :: i64 -> i32u -> i64u -> i64 -> i64 = \hwnd msg wparam lparam ->
+    if msg == 1i32u then
+        let _old = set_userdata hwnd 1
+        0
+    elif msg == 32768i32u then
+        let cur = get_userdata hwnd
+        let _old = set_userdata hwnd (cur * 10 + (wparam as i64))
+        0
+    elif msg == 16i32u then
+        let cur = get_userdata hwnd
+        let _old = set_userdata hwnd (cur * 10 + 4)
+        let _d = destroy_window hwnd
+        0
+    elif msg == 2i32u then
+        let cur = get_userdata hwnd
+        set_mark (cur * 10 + 5)
+        0
+    else
+        def_proc hwnd msg wparam lparam
+
+def on_tick :: i64u -> i64 = \_id -> 1
+
+def on_pool :: i64 -> i64 = \x ->
+    tzroutine {
+        Time.sleep (15 * Time.millisecond())
+        set_mark (x * 10)
+    }
+    x + 1
+
+def main :: unit -> i32 = \() ->
+    let _ok = register_class wndproc
+    let hwnd = create_window ()
+    let _s1 = send_msg hwnd 32768i32u 2i64u 0
+    let _p1 = post_msg hwnd 3i64u
+    let _pumped = pump_pending ()
+    let _closed = send_msg hwnd 16i32u 0i64u 0
+    let trace = get_mark ()
+    let ticks = run_timer_proc on_tick 3
+    let pool = pool_submit_wait on_pool 7
+    if trace == 12345 && ticks == 3 && pool == 78 then 42 else 1

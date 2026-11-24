@@ -128,6 +128,110 @@ try {
     execute(compiler, ["build", nullableFixture, optimization, "--link", host, "-l", "pthread", "-o", out]);
     assert.equal(execute(out, []).stdout.trim(), "45");
   }
+  // W13: ref mut records/scalars (copy-in/copy-out), mutable slice buffers, and @count lengths.
+  const w13Dir = join(root, "w13-ref-mut");
+  mkdirSync(w13Dir);
+  writeFileSync(join(w13Dir, "Main.tz"), [
+    "record Rect { left: i32, top: i32, right: i32, bottom: i32 }",
+    "record Narrow { a: i8, w: i16u, b: bool }",
+    'extern "w13_inflate_rect" def inflate_rect :: ref mut Rect -> i32 -> i32 -> i32',
+    'extern "w13_mut_narrow" def mut_narrow :: ref mut Narrow -> ref mut i16u -> ref mut bool -> i32',
+    'extern "w13_noop_rect" def noop_rect :: ref mut Rect -> ref mut i32 -> unit',
+    'extern "w13_fill_window" def fill_window :: ref mut [i16u..] -> i16u -> i32',
+    "@count(1, i32)",
+    "@count(2, i32u)",
+    'extern "w13_sum_counts" def sum_counts :: ref [i32] -> ref [i32u] -> i64',
+    "@count(2, none)",
+    'extern "w13_write_counted_none" def write_none :: i32 -> ref mut [i32..] -> unit',
+    "",
+    "const BASE_ARR: [i16u] = [1i16u, 2i16u, 3i16u, 4i16u, 5i16u, 6i16u]",
+    "",
+    "def run_all :: unit -> i64 = \\() ->",
+    "    let mut rc = Rect { left: 10i32, top: 20i32, right: 30i32, bottom: 40i32 }",
+    "    let sum_in = inflate_rect (ref mut rc) 2i32 5i32",
+    "    let rect_ok = sum_in == 100i32 && rc.left == 8i32 && rc.top == 15i32 && rc.right == 32i32 && rc.bottom == 45i32",
+    "    let mut nar = Narrow { a: 5i8, w: 10i16u, b: false }",
+    "    let mut w: i16u = 25i16u",
+    "    let mut fl = false",
+    "    let nar_in = mut_narrow (ref mut nar) (ref mut w) (ref mut fl)",
+    "    let nar_ok = nar_in == 40i32 && nar.a == -7i8 && nar.w == 50000i16u && nar.b && w == 1025i16u && fl",
+    "    let mut keep_rc = Rect { left: 1i32, top: 2i32, right: 3i32, bottom: 4i32 }",
+    "    let mut keep_n = 77i32",
+    "    noop_rect (ref mut keep_rc) (ref mut keep_n)",
+    "    let untouched_ok = keep_rc.left == 1i32 && keep_rc.bottom == 4i32 && keep_n == 77i32",
+    "    let mut win = BASE_ARR",
+    "    let wrote = fill_window (ref mut win[2..5]) 100i16u",
+    "    let mut empty: [i16u] = []",
+    "    let wrote0 = fill_window (ref mut empty) 1i16u",
+    "    let win_ok = wrote == 3i32 && wrote0 == 0i32 && win[0] == 1i16u && win[1] == 2i16u && win[2] == 100i16u && win[3] == 110i16u && win[4] == 120i16u && win[5] == 6i16u",
+    "    let sc = sum_counts (ref [10i32, 20i32, 30i32]) (ref [100i32u, 200i32u])",
+    "    let mut raw: [i32] = [0i32, 0i32, 0i32, 99i32]",
+    "    write_none 3i32 (ref mut raw[0..3])",
+    "    let cnt_ok = sc == 360 && raw[0] == 11i32 && raw[1] == 22i32 && raw[2] == 33i32 && raw[3] == 99i32",
+    "    if rect_ok && nar_ok && untouched_ok && win_ok && cnt_ok then 42 else -1",
+    "",
+    "run_all ()",
+    "",
+  ].join("\n"));
+  for (const extra of [["-O0"], ["-O3"], ["--backend", "fast"]]) {
+    const out = join(root, `w13-${extra.join("")}`);
+    const built = execute(compiler, ["build", w13Dir, ...extra, "--link", host, "-l", "pthread", "-o", out], false);
+    if (extra[0] === "--backend" && /built without the fast backend|not available on/.test(built.stderr)) continue;
+    assert.equal(built.status, 0, built.stderr);
+    assert.equal(execute(out, []).stdout.trim(), "42");
+  }
+  // W20: ZString.literal, ZString.of (Latin-1 & non-BMP), ZString.to_string, and Maybe<ref ZString> under default and compact strings.
+  const w20Dir = join(root, "w20-zstring");
+  mkdirSync(w20Dir);
+  writeFileSync(join(w20Dir, "Main.tz"), [
+    'extern "w20_zlen" def zlen :: ref ZString -> i64',
+    'extern "w20_zlen" def opt_zlen :: Maybe<ref ZString> -> i64',
+    "",
+    "def check_all :: unit -> i64 = \\() ->",
+    '    let lit = ZString.literal "Tsuzuri"',
+    '    let empty_lit = ZString.literal ""',
+    '    let latin = "abc"',
+    '    let astral = "Hi😀!"',
+    "    let z_latin = match ZString.of (ref latin) with | Result.Ok z -> zlen (ref z) | Result.Error _ -> -99",
+    "    let z_astral = match ZString.of (ref astral) with",
+    "        | Result.Ok z ->",
+    "            let back = ZString.to_string (ref z)",
+    "            if back == astral then zlen (ref z) else -88",
+    "        | Result.Error _ -> -77",
+    '    let nul_err = match ZString.of "ab\\0cd" with',
+    '        | Result.Error err -> if to_string err == "U+0000 at UTF-16 index 2 cannot be in a NUL-terminated string" then 1 else 0',
+    "        | Result.Ok _ -> 0",
+    "    let opt_some = opt_zlen (Maybe.Some lit)",
+    "    let opt_none = opt_zlen Maybe.None",
+    "    if zlen lit == 7 && zlen empty_lit == 0 && z_latin == 3 && z_astral == 5 && nul_err == 1 && opt_some == 7 && opt_none == -1 then 42 else -1",
+    "",
+    "check_all ()",
+    "",
+  ].join("\n"));
+  for (const compact of [false, true]) {
+    for (const optimization of ["-O0", "-O3"]) {
+      const out = join(root, `w20-${compact ? "compact" : "utf16"}${optimization}`);
+      const env = compact ? { ...process.env, TSUZURI_STRINGS: "compact" } : process.env;
+      const res = spawnSync(compiler, ["build", w20Dir, "--no-cache", optimization, "--link", host, "-l", "pthread", "-o", out], { encoding: "utf8", env });
+      assert.equal(res.status, 0, res.stderr);
+      assert.equal(execute(out, []).stdout.trim(), "42");
+    }
+  }
+  // W19: thread-bound `extern type local` handles stay on their creating OS thread across yields and MAXPROCS=1/4, and also lower cleanly on WASM.
+  const threadBoundFixture = resolve("tests/fixtures/thread_bound");
+  execute(compiler, ["check", threadBoundFixture]);
+  execute(compiler, ["build", threadBoundFixture, "--target", "wasm32", "--wasm-feature", "jspi", "-o", join(root, "tb.wasm")]);
+  for (const optimization of ["-O0", "-O3"]) {
+    const out = join(root, `w19-thread-bound${optimization}`);
+    execute(compiler, ["build", threadBoundFixture, "--no-cache", optimization, "--link", host, "-l", "pthread", "-o", out]);
+    for (const procs of ["1", "4"]) {
+      for (let round = 0; round < 5; round++) {
+        const run = spawnSync(out, [], { encoding: "utf8", env: { ...process.env, TSUZURI_MAXPROCS: procs } });
+        assert.equal(run.status, 0, run.stderr);
+        assert.equal(run.stdout.trim(), "8704", `W19 thread_bound ${optimization} P=${procs} round=${round}`);
+      }
+    }
+  }
   // NS01: non-Maybe extern handles trap with "null extern handle" on NULL across extern return, export param, and callback param.
   const nullTrap = join(root, "null-trap");
   mkdirSync(nullTrap);

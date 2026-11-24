@@ -70,7 +70,7 @@ fn scalar_imports_use_effectful_abi_wrappers_and_prune_unused_declarations() {
         ("extern def bad :: string -> unit", "E1008"),
         ("extern def bad :: i128 -> i64", "E1008"),
         ("extern def bad :: (string -> i64) -> i64", "E1008"),
-        ("extern def bad :: &mut i64 -> unit", "E1008"),
+        ("extern def bad :: &mut string -> unit", "E1008"),
         ("extern def now :: i64\nconst Bad: i64 = now()", "E1026"),
     ] {
         assert_eq!(analyze(source).unwrap_err().code, code, "{source}");

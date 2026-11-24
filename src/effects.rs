@@ -1,5 +1,5 @@
-//! The effect summary of each function (A20): a set of the 14 effects of D-53, inferred from the
-//! typed IR after specialization and closure lowering, and the checks of the effect attributes
+//! The effect summary of each function (A20, W19): a set of the 15 effects of D-53, inferred from
+//! the typed IR after specialization and closure lowering, and the checks of the effect attributes
 //! `@no_alloc`, `@no_copy`, `@no_trap` and `@terminates`.
 //!
 //! The analysis only reads the typed IR: it changes no type, ownership or specialization rule and
@@ -28,6 +28,7 @@ pub enum Effect {
     Io,
     Net,
     Os,
+    Pinned,
     Rc,
     Task,
     Trap,
@@ -35,7 +36,7 @@ pub enum Effect {
 }
 
 impl Effect {
-    pub const ALL: [Effect; 14] = [
+    pub const ALL: [Effect; 15] = [
         Effect::Alloc,
         Effect::Atomic,
         Effect::Copy,
@@ -46,6 +47,7 @@ impl Effect {
         Effect::Io,
         Effect::Net,
         Effect::Os,
+        Effect::Pinned,
         Effect::Rc,
         Effect::Task,
         Effect::Trap,
@@ -64,6 +66,7 @@ impl Effect {
             Effect::Io => "io",
             Effect::Net => "net",
             Effect::Os => "os",
+            Effect::Pinned => "pinned",
             Effect::Rc => "rc",
             Effect::Task => "task",
             Effect::Trap => "trap",
@@ -82,7 +85,7 @@ pub struct EffectSet(u16);
 
 impl EffectSet {
     pub const EMPTY: EffectSet = EffectSet(0);
-    pub const ALL: EffectSet = EffectSet((1 << 14) - 1);
+    pub const ALL: EffectSet = EffectSet((1 << 15) - 1);
     /// What A19's `pure` forbids: the 10 effects that are not `alloc`, `copy`, `diverge` or `trap`.
     pub const PURE_FORBIDDEN: EffectSet = EffectSet::of(&[
         Effect::Atomic,
@@ -312,16 +315,16 @@ pub struct FunctionEffects {
     empty: Summary,
 }
 
-const BITS: usize = 17;
-const DYN: usize = 14;
-const UNRESOLVED: usize = 15;
-const VALUE_CALL: usize = 16;
+const BITS: usize = 18;
+const DYN: usize = 15;
+const UNRESOLVED: usize = 16;
+const VALUE_CALL: usize = 17;
 
 fn bit(effect: Effect) -> usize {
     effect as usize
 }
 
-/// The 14 effects and the three sources of an unknown summary, as one bit set.
+/// The 15 effects and the three sources of an unknown summary, as one bit set.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 struct Bits(u32);
 
@@ -335,7 +338,7 @@ impl Bits {
     }
 
     fn effects(self) -> EffectSet {
-        EffectSet((self.0 & ((1 << 14) - 1)) as u16)
+        EffectSet((self.0 & ((1 << 15) - 1)) as u16)
     }
 }
 
@@ -539,6 +542,22 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineWithLockedThread => {
             facts(Some(Effect::Task), false, false, false, true, false, None)
         }
+        // W22: `FnPtr.of` and W20: `ZString.literal` produce static addresses without side effects or allocation.
+        FnPtrOf | ZStringLiteral => facts(None, false, false, false, false, false, None),
+        // W23: `Anchor` stores and borrows values in the runtime's anchor table.
+        AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
+        AnchorRead | AnchorUpdate => {
+            facts(Some(Effect::Atomic), false, false, false, true, false, None)
+        }
+        AnchorRelease => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
         // TZ05: the timers read the clock; a period of 0 or less traps; a timer's channel is allocated.
         TimeSleep => facts(Some(Effect::Os), false, false, false, false, false, None),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
@@ -814,7 +833,10 @@ struct CallSite {
 struct Local {
     bits: Bits,
     first: [Option<(Span, Why)>; BITS],
-    edges: Vec<(usize, Span)>,
+    /// `(callee, span, carries_pinned)`: `carries_pinned` is `false` only for callbacks that a
+    /// pinning boundary (`Routine.with_locked_thread`, `FnPtr.of`, or a callback `extern`) runs on
+    /// a pinned OS thread (W19).
+    edges: Vec<(usize, Span, bool)>,
     calls: Vec<CallSite>,
     /// Calls of the function's own parameters: the bit set and the first call of each.
     param_calls: u64,
@@ -894,6 +916,9 @@ struct Ctx {
     pattern: bool,
     /// An element of a literal tree whose root already counted the frame bytes.
     nested: bool,
+    /// W19: the function value is passed directly to a thread-pinning boundary, so its `pinned`
+    /// effect does not propagate to the caller.
+    pinning_arg: bool,
     /// What the enclosing expressions do with the value, when it is a function.
     consumer: Consumer,
 }
@@ -1290,9 +1315,17 @@ impl<'s, 'a> Scan<'s, 'a> {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind
             && import.callbacks
-            && takes_string(function)
         {
-            self.source(Effect::Alloc, span, "string-marshalling");
+            if takes_string(function) {
+                self.source(Effect::Alloc, span, "string-marshalling");
+            }
+            if import
+                .counts
+                .iter()
+                .any(|(_, len)| len.max_length().is_some())
+            {
+                self.source(Effect::Trap, span, "count-bounds");
+            }
         }
     }
 
@@ -1308,7 +1341,7 @@ impl<'s, 'a> Scan<'s, 'a> {
             if id == usize::MAX {
                 self.unknown(UNRESOLVED, span, "user-drop");
             } else {
-                self.local.edges.push((id, span));
+                self.local.edges.push((id, span, true));
             }
         }
     }
@@ -1365,6 +1398,27 @@ impl<'s, 'a> Scan<'s, 'a> {
         if crate::llvm::compact_replacement(function).is_some() {
             self.source(Effect::Alloc, function.body.span, "string-build");
         }
+        if self.state.module.thread_bound && self.state.computes(Effect::Pinned) {
+            let types = self.state.module.types();
+            for parameter in &function.parameters {
+                if parameter.ty.reaches_local_handle(&types) {
+                    let span = if parameter.span == Span::default() {
+                        function.body.span
+                    } else {
+                        parameter.span
+                    };
+                    self.source(Effect::Pinned, span, "local-handle");
+                }
+            }
+            if function.signature.result.reaches_local_handle(&types) {
+                let span = if function.span == Span::default() {
+                    function.body.span
+                } else {
+                    function.span
+                };
+                self.source(Effect::Pinned, span, "local-handle");
+            }
+        }
         if user_drops {
             // The function drops the owned parameters that its body does not move on, so their
             // destructors run here even when no expression names them (review of #63). A
@@ -1391,6 +1445,7 @@ impl<'s, 'a> Scan<'s, 'a> {
         let module = self.state.module;
         let types = module.types();
         let user_drops = !module.user_drops.is_empty();
+        let track_pinned = module.thread_bound && self.state.computes(Effect::Pinned);
         let mut entered = Vec::new();
         let mut stack = vec![Item::Node(root, Ctx::default())];
         while let Some(item) = stack.pop() {
@@ -1420,16 +1475,20 @@ impl<'s, 'a> Scan<'s, 'a> {
             if self.state.nodes > self.state.limits.nodes {
                 return Err(limit_error(self.state.limits, expression.span));
             }
+            if track_pinned && expression.ty.reaches_local_handle(&types) {
+                self.source(Effect::Pinned, expression.span, "local-handle");
+            }
             if user_drops {
                 self.user_drop(&expression.ty, expression.span);
             }
             let pushed = self.node(expression, ctx, &types, &mut stack);
             if !pushed {
                 // A dereference or a cast of a function value is the same function.
-                let consumer = if matches!(
+                let forward = matches!(
                     expression.kind,
                     TypedExprKind::Dereference(_) | TypedExprKind::Cast(_)
-                ) {
+                );
+                let consumer = if forward {
                     ctx.consumer
                 } else {
                     Consumer::default()
@@ -1438,6 +1497,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: false,
                     pattern: ctx.pattern,
                     nested: false,
+                    pinning_arg: forward && ctx.pinning_arg,
                     consumer,
                 };
                 for value in expression.children().into_iter().rev() {
@@ -1494,17 +1554,19 @@ impl<'s, 'a> Scan<'s, 'a> {
             read: inherit,
             pattern: ctx.pattern,
             nested: false,
+            pinning_arg: false,
             consumer: Consumer::default(),
         };
         let element = Ctx {
             read: ctx.read,
             pattern: false,
             nested: ctx.read,
+            pinning_arg: false,
             consumer: Consumer::default(),
         };
         match &expression.kind {
             K::GenericFunction(id, _) if self.state.options.templates => {
-                self.local.edges.push((*id, span));
+                self.local.edges.push((*id, span, true));
                 false
             }
             K::Lambda { .. } if self.state.options.templates => false,
@@ -1561,7 +1623,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 false
             }
             K::Function(FunctionRef::User(id)) => {
-                self.local.edges.push((*id, span));
+                self.local.edges.push((*id, span, !ctx.pinning_arg));
                 if !self.state.module.functions[*id].origin.asserts.is_empty() {
                     self.local.references.push((*id, span, ctx.consumer));
                 }
@@ -1646,6 +1708,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                         }
                         _ => self.value_call(Some(right), &[left.as_ref()], span),
                     }
+                    let left_pinned = pinning_argument_mask(self.state.module, right, 1) == 1;
                     stack.push(Item::Node(
                         right,
                         Ctx {
@@ -1656,7 +1719,13 @@ impl<'s, 'a> Scan<'s, 'a> {
                             ..read(true)
                         },
                     ));
-                    stack.push(Item::Node(left, read(false)));
+                    stack.push(Item::Node(
+                        left,
+                        Ctx {
+                            pinning_arg: left_pinned,
+                            ..read(false)
+                        },
+                    ));
                     return true;
                 }
                 if matches!(
@@ -1707,8 +1776,16 @@ impl<'s, 'a> Scan<'s, 'a> {
                 {
                     self.source(Effect::Alloc, span, "partial-application");
                 }
-                for value in arguments.iter().rev() {
-                    stack.push(Item::Node(value, read(false)));
+                let pinning_mask =
+                    pinning_argument_mask(self.state.module, callee, arguments.len());
+                for (index, value) in arguments.iter().enumerate().rev() {
+                    stack.push(Item::Node(
+                        value,
+                        Ctx {
+                            pinning_arg: index < 64 && (pinning_mask & (1 << index)) != 0,
+                            ..read(false)
+                        },
+                    ));
                 }
                 // The callee receives these arguments; a partial application is used as its
                 // result is, with these arguments already supplied.
@@ -1733,7 +1810,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 ));
                 true
             }
-            K::HostCall(..) => {
+            K::HostCall(import, _) => {
                 // E15: a person vouched for this property of the extern function.
                 let vouched = self.state.options.trusted.is_some_and(|bit| {
                     self.function
@@ -1750,11 +1827,19 @@ impl<'s, 'a> Scan<'s, 'a> {
                 if takes_string(self.function) {
                     self.source(Effect::Alloc, span, "string-marshalling");
                 }
-                self.exempt(Effect::Trap, span, "host-call");
+                if import
+                    .counts
+                    .iter()
+                    .any(|(_, len)| len.max_length().is_some())
+                {
+                    self.source(Effect::Trap, span, "count-bounds");
+                } else {
+                    self.exempt(Effect::Trap, span, "host-call");
+                }
                 false
             }
             K::Closure(id, captures) => {
-                self.local.edges.push((*id, span));
+                self.local.edges.push((*id, span, !ctx.pinning_arg));
                 if !captures.is_empty() || matches!(expression.ty, Type::Once(_)) {
                     self.source(Effect::Alloc, span, "closure-environment");
                 }
@@ -1825,6 +1910,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: ctx.read,
                     pattern: ctx.pattern,
                     nested: ctx.nested,
+                    pinning_arg: ctx.pinning_arg,
                     consumer: ctx.consumer,
                 };
                 stack.push(Item::Leave);
@@ -1858,12 +1944,14 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: false,
                     pattern: true,
                     nested: false,
+                    pinning_arg: false,
                     consumer: Consumer::default(),
                 };
                 let body = Ctx {
                     read: ctx.read,
                     pattern: ctx.pattern,
                     nested: ctx.nested,
+                    pinning_arg: ctx.pinning_arg,
                     consumer: ctx.consumer,
                 };
                 for arm in arms.iter().rev() {
@@ -1895,6 +1983,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                         read: ctx.read,
                         pattern: ctx.pattern,
                         nested: ctx.nested,
+                        pinning_arg: ctx.pinning_arg,
                         consumer: ctx.consumer,
                     },
                 ));
@@ -2004,6 +2093,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                         read: true,
                         pattern: ctx.pattern,
                         nested: false,
+                        pinning_arg: false,
                         consumer: Consumer::default(),
                     },
                 ));
@@ -2026,6 +2116,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 stack.push(Item::Node(
                     value,
                     Ctx {
+                        pinning_arg: ctx.pinning_arg,
                         consumer: ctx.consumer,
                         ..read(true)
                     },
@@ -2041,6 +2132,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 stack.push(Item::Node(
                     value,
                     Ctx {
+                        pinning_arg: !*mutable && ctx.pinning_arg,
                         consumer,
                         ..read(!*mutable)
                     },
@@ -2074,6 +2166,71 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
         }
     }
+}
+
+/// W19: bitmask of call argument positions (`< 64`) that run on a pinned OS thread, so their
+/// `Effect::Pinned` does not propagate to the caller.
+pub(crate) fn pinning_argument_mask(
+    module: &CheckedModule,
+    mut callee: &TypedExpr,
+    arg_count: usize,
+) -> u64 {
+    while let TypedExprKind::Cast(inner)
+    | TypedExprKind::BorrowOperand(inner)
+    | TypedExprKind::Borrow(inner, false)
+    | TypedExprKind::Dereference(inner) = &callee.kind
+    {
+        callee = inner;
+    }
+    match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance))
+            if arg_count == 1
+                && matches!(
+                    instance.builtin,
+                    Builtin::RoutineWithLockedThread | Builtin::FnPtrOf
+                ) =>
+        {
+            1
+        }
+        TypedExprKind::Function(FunctionRef::User(id)) => {
+            let function = &module.functions[*id];
+            if function.module == "$builtin"
+                && arg_count == 1
+                && wrapper_builtin(function) == Some(Builtin::RoutineWithLockedThread)
+            {
+                return 1;
+            }
+            if let TypedExprKind::HostCall(import, _) = &function.body.kind
+                && import.callbacks
+                && arg_count == function.parameters.len()
+            {
+                let mut mask = 0u64;
+                for (index, parameter) in function.parameters.iter().enumerate().take(64) {
+                    if matches!(parameter.ty, Type::Function(..)) {
+                        mask |= 1 << index;
+                    }
+                }
+                return mask;
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
+/// W19: the `Builtin` that a generated `$builtin` wrapper calls, if `function` is one.
+pub(crate) fn wrapper_builtin(function: &CheckedFunction) -> Option<Builtin> {
+    if function.module != "$builtin" {
+        return None;
+    }
+    let mut pending = vec![&function.body];
+    while let Some(expression) = pending.pop() {
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &expression.kind {
+            return Some(instance.builtin);
+        }
+        pending.extend(expression.children());
+    }
+    None
 }
 
 /// The components of the reached graph, callees before callers (Kosaraju, iterative).
@@ -2210,7 +2367,7 @@ fn summarize_roots(
             .iter()
             .any(|parameter| state.is_open(&parameter.ty));
         let local = scan_function(&mut state, id)?;
-        for &(callee, _) in &local.edges {
+        for &(callee, _, _) in &local.edges {
             if queued.insert(callee) {
                 pending.push_back(callee);
             }
@@ -2220,12 +2377,13 @@ fn summarize_roots(
     let graph: BTreeMap<usize, Vec<usize>> = locals
         .iter()
         .map(|(&id, local)| {
-            let mut edges: Vec<usize> = local.edges.iter().map(|&(callee, _)| callee).collect();
+            let mut edges: Vec<usize> = local.edges.iter().map(|&(callee, _, _)| callee).collect();
             edges.sort_unstable();
             edges.dedup();
             (id, edges)
         })
         .collect();
+    let pinned_bit = bit(Effect::Pinned);
     let mut bits: BTreeMap<usize, Bits> = BTreeMap::new();
     for component in components(&graph) {
         let members: BTreeSet<usize> = component.iter().copied().collect();
@@ -2233,11 +2391,11 @@ fn summarize_roots(
         if cyclic && options.computed.contains(Effect::Diverge) {
             for &id in &component {
                 let local = locals.get_mut(&id).unwrap();
-                if let Some(&(target, span)) = local
+                if let Some(&(target, span, _)) = local
                     .edges
                     .iter()
-                    .filter(|(callee, _)| members.contains(callee))
-                    .min_by_key(|(_, span)| position(*span))
+                    .filter(|(callee, _, _)| members.contains(callee))
+                    .min_by_key(|(_, span, _)| position(*span))
                 {
                     result.cycle_targets.insert(id, target);
                     local.source(bit(Effect::Diverge), span, why("cycle"));
@@ -2301,12 +2459,13 @@ fn summarize_roots(
         }
         let mut union = Bits::default();
         for &id in &component {
-            union.0 |= locals[&id].bits.0;
-            for &(callee, _) in &locals[&id].edges {
+            union.0 |= locals[&id].bits.0 & !(1 << pinned_bit);
+            for &(callee, _, _) in &locals[&id].edges {
                 if members.contains(&callee) {
                     continue;
                 }
                 let mut callee_bits = bits[&callee];
+                callee_bits.0 &= !(1 << pinned_bit);
                 if !open[callee] {
                     // A closed callee only calls the function values that its own reach creates.
                     callee_bits.0 &= !(1 << VALUE_CALL);
@@ -2340,7 +2499,7 @@ fn summarize_roots(
         // The witnesses: a direct source, else the smallest call of a callee outside the component
         // that has the bit, else breadth-first from those through the component's callers.
         for index in 0..BITS {
-            if !union.contains(index) {
+            if index == pinned_bit || !union.contains(index) {
                 continue;
             }
             let mut queue = VecDeque::new();
@@ -2351,15 +2510,15 @@ fn summarize_roots(
                     queue.push_back(id);
                     continue;
                 }
-                if let Some(&(callee, span)) = local
+                if let Some(&(callee, span, _)) = local
                     .edges
                     .iter()
-                    .filter(|(callee, _)| {
+                    .filter(|(callee, _, _)| {
                         !members.contains(callee)
                             && bits[callee].contains(index)
                             && (index != VALUE_CALL || open[*callee])
                     })
-                    .min_by_key(|(_, span)| position(*span))
+                    .min_by_key(|(_, span, _)| position(*span))
                 {
                     result.witnesses[id][index] = Some(Witness::Via { callee, span });
                     queue.push_back(id);
@@ -2370,13 +2529,94 @@ fn summarize_roots(
                     if result.witnesses[caller][index].is_some() {
                         continue;
                     }
-                    if let Some(&(_, span)) = locals[&caller]
+                    if let Some(&(_, span, _)) = locals[&caller]
                         .edges
                         .iter()
-                        .filter(|(target, _)| *target == callee)
-                        .min_by_key(|(_, span)| position(*span))
+                        .filter(|(target, _, _)| *target == callee)
+                        .min_by_key(|(_, span, _)| position(*span))
                     {
                         result.witnesses[caller][index] = Some(Witness::Via { callee, span });
+                        queue.push_back(caller);
+                    }
+                }
+            }
+        }
+    }
+    if module.thread_bound && options.computed.contains(Effect::Pinned) {
+        let pinned_graph: BTreeMap<usize, Vec<usize>> = locals
+            .iter()
+            .map(|(&id, local)| {
+                let mut edges: Vec<usize> = local
+                    .edges
+                    .iter()
+                    .filter(|&&(_, _, carries)| carries)
+                    .map(|&(callee, _, _)| callee)
+                    .collect();
+                edges.sort_unstable();
+                edges.dedup();
+                (id, edges)
+            })
+            .collect();
+        let mut pinned_has: BTreeMap<usize, bool> = BTreeMap::new();
+        for component in components(&pinned_graph) {
+            let members: BTreeSet<usize> = component.iter().copied().collect();
+            let mut has = false;
+            for &id in &component {
+                if locals[&id].bits.contains(pinned_bit) {
+                    has = true;
+                }
+                for &(callee, _, carries) in &locals[&id].edges {
+                    if carries
+                        && !members.contains(&callee)
+                        && pinned_has.get(&callee).copied().unwrap_or(false)
+                    {
+                        has = true;
+                    }
+                }
+            }
+            for &id in &component {
+                pinned_has.insert(id, has);
+                if has {
+                    result.summaries[id].effects.insert(Effect::Pinned);
+                }
+            }
+            if !has {
+                continue;
+            }
+            let mut queue = VecDeque::new();
+            for &id in &component {
+                let local = &locals[&id];
+                if let Some((span, why)) = local.first[pinned_bit] {
+                    result.witnesses[id][pinned_bit] = Some(Witness::Direct { span, why });
+                    queue.push_back(id);
+                    continue;
+                }
+                if let Some(&(callee, span, _)) = local
+                    .edges
+                    .iter()
+                    .filter(|&&(callee, _, carries)| {
+                        carries
+                            && !members.contains(&callee)
+                            && pinned_has.get(&callee).copied().unwrap_or(false)
+                    })
+                    .min_by_key(|(_, span, _)| position(*span))
+                {
+                    result.witnesses[id][pinned_bit] = Some(Witness::Via { callee, span });
+                    queue.push_back(id);
+                }
+            }
+            while let Some(callee) = queue.pop_front() {
+                for &caller in &component {
+                    if result.witnesses[caller][pinned_bit].is_some() {
+                        continue;
+                    }
+                    if let Some(&(_, span, _)) = locals[&caller]
+                        .edges
+                        .iter()
+                        .filter(|&&(target, _, carries)| carries && target == callee)
+                        .min_by_key(|(_, span, _)| position(*span))
+                    {
+                        result.witnesses[caller][pinned_bit] = Some(Witness::Via { callee, span });
                         queue.push_back(caller);
                     }
                 }
@@ -2739,7 +2979,7 @@ fn declared_name(function: &CheckedFunction) -> String {
 }
 
 /// How a diagnostic names a function: a generated built-in wrapper by the built-in's name.
-fn shown(module: &CheckedModule, id: usize) -> String {
+pub(crate) fn shown(module: &CheckedModule, id: usize) -> String {
     let function = &module.functions[id];
     if function.module == "$builtin" {
         let mut pending = vec![&function.body];
@@ -3363,7 +3603,7 @@ pub(crate) fn impurities(
             };
             scan.scan_root(condition)?;
             let local = scan.local;
-            callees.extend(local.edges.iter().map(|(callee, _)| *callee));
+            callees.extend(local.edges.iter().map(|(callee, _, _)| *callee));
             scanned.push((*function, *line, local));
         }
     }
@@ -3379,7 +3619,7 @@ pub(crate) fn impurities(
             let Some((span, why)) = local.first[index] else {
                 continue;
             };
-            let reason = if index < 14 {
+            let reason = if index < Effect::ALL.len() {
                 let effect = Effect::ALL[index];
                 if !EffectSet::PURE_FORBIDDEN.contains(effect) {
                     continue;
@@ -3419,7 +3659,7 @@ pub(crate) fn impurities(
                 candidates.push((site.span, "cannot be proven pure".into()));
             }
         }
-        for &(callee, span) in &local.edges {
+        for &(callee, span, _) in &local.edges {
             let summary = summaries.summary(callee);
             let impure = summary.effects.intersection(EffectSet::PURE_FORBIDDEN);
             if let Some(effect) = impure.iter().next() {
@@ -3500,7 +3740,7 @@ mod tests {
 
     #[test]
     fn effect_names_are_sorted_and_round_trip() {
-        assert_eq!(Effect::ALL.len(), 14);
+        assert_eq!(Effect::ALL.len(), 15);
         let names: Vec<_> = Effect::ALL.iter().map(|effect| effect.name()).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
@@ -3510,14 +3750,20 @@ mod tests {
             assert_eq!(effect as usize, bit(effect));
         }
         assert_eq!(Effect::from_name("pure"), None);
-        assert_eq!(EffectSet::ALL.iter().count(), 14);
+        assert_eq!(EffectSet::ALL.iter().count(), 15);
         assert_eq!(EffectSet::ALL.names(), names);
     }
 
     #[test]
     fn pure_forbidden_has_ten_effects() {
         assert_eq!(EffectSet::PURE_FORBIDDEN.iter().count(), 10);
-        for effect in [Effect::Alloc, Effect::Copy, Effect::Diverge, Effect::Trap] {
+        for effect in [
+            Effect::Alloc,
+            Effect::Copy,
+            Effect::Diverge,
+            Effect::Pinned,
+            Effect::Trap,
+        ] {
             assert!(!EffectSet::PURE_FORBIDDEN.contains(effect));
         }
     }
@@ -3554,10 +3800,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations.
-        assert_eq!(Builtin::ALL.len(), 340);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 165);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 175);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal.
+        assert_eq!(Builtin::ALL.len(), 346);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 177);
     }
 
     #[test]
@@ -3567,7 +3813,7 @@ mod tests {
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 16);
-        assert_eq!(by(Effect::Atomic), 92);
+        assert_eq!(by(Effect::Atomic), 96);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -3576,12 +3822,12 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 75);
+        assert_eq!(count(|facts| facts.alloc), 76);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 55);
+        assert_eq!(count(|facts| facts.trap), 56);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 
@@ -3592,7 +3838,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 28);
+        assert_eq!(count(|facts| facts.callbacks), 30);
     }
 
     fn checked(source: &str) -> CheckedModule {

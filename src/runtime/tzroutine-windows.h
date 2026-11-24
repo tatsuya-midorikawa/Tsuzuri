@@ -64,6 +64,26 @@ static inline size_t tzr_page_size(void) {
     return (size_t)info.dwPageSize;
 }
 
+/* W07: non-continuable fail-fast with STATUS_ILLEGAL_INSTRUCTION (0xC000001D), so SEH frames
+ * above a callback or scheduler wait cannot swallow a runtime trap. */
+#ifndef FAIL_FAST_GENERATE_EXCEPTION_ADDRESS
+#define FAIL_FAST_GENERATE_EXCEPTION_ADDRESS 0x1
+#endif
+#ifndef FAIL_FAST_NO_HARD_ERROR_DLG
+#define FAIL_FAST_NO_HARD_ERROR_DLG 0x2
+#endif
+static __declspec(noreturn) void tzr_fail_fast(void) {
+    EXCEPTION_RECORD record;
+    ZeroMemory(&record, sizeof record);
+    record.ExceptionCode = (DWORD)0xC000001Du;
+    record.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+    record.NumberParameters = 1;
+    record.ExceptionInformation[0] = 0;
+    RaiseFailFastException(&record, NULL, FAIL_FAST_GENERATE_EXCEPTION_ADDRESS | FAIL_FAST_NO_HARD_ERROR_DLG);
+    __builtin_unreachable();
+}
+#define TZR_TRAP() tzr_fail_fast()
+
 /* W04: sends UTF-8 runtime reports directly to STD_ERROR_HANDLE via WriteFile, or to
  * OutputDebugStringW in <=255-byte UTF-8 chunks when stderr is absent or cannot be written. */
 static void tzr_debugger_write(const char *data, size_t length) {

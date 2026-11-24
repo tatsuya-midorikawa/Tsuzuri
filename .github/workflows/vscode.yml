@@ -269,3 +269,9 @@ jobs:
             node ../tests/net.mjs toolchain/bin/tsuzuri.exe "$block" || status=1
           done
           exit $status
+      - name: Windows GUI stage with the bundled toolchain
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        run: |
+          export TSUZURI_CLANG="$(node -p "require('node:path').resolve('toolchain/bin/tsuzuri-clang.exe')")"
+          export TSUZURI_WASM_LD="$(node -p "require('node:path').resolve('toolchain/bin/wasm-ld.exe')")"
+          node ../tests/windows.mjs toolchain/bin/tsuzuri.exe --stage gui

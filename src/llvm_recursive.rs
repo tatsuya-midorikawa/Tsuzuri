@@ -32,7 +32,25 @@ pub(super) fn emit_helpers(
     let mut output = String::new();
     let mut completed = BTreeSet::new();
     let mut shared_completed = BTreeSet::new();
+    let mut anchor_completed = BTreeSet::new();
     loop {
+        if let Some(anchored) = globals
+            .anchor_types
+            .iter()
+            .find(|ty| !anchor_completed.contains(*ty))
+            .cloned()
+        {
+            anchor_completed.insert(anchored.clone());
+            output.push_str(&super::anchor::emit_type_helpers(
+                &anchored,
+                module,
+                builtins,
+                intrinsics,
+                globals,
+                specializations,
+            ));
+            continue;
+        }
         // Dropping a shared value can reach recursive nodes and the reverse, so both kinds of
         // helper are emitted until neither set grows (C10).
         if let Some(shared) = globals

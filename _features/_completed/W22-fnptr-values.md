@@ -8,7 +8,7 @@
 | 規模 | M |
 | 依存 | [W12](W12-static-callback-lifetime.md)（静的コールバックの寿命の契約） |
 | 後続 | [W21](W21-c-layout-records.md)（Phase 2 の `FnPtr` の field）、[W26](W26-com-objects-in-tsuzuri.md)、[W27](W27-win32-package-from-winmd.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（D-55）。D1 は要承認、D2〜D7 は既定案。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 手本にする既存実装 | コールバックの下げ方: `src/llvm_imports.rs` の `FunctionEmitter::host_call`（`ptr @tz.callback.<name>` と `Globals::callbacks`）、`src/llvm_abi.rs` の `wrapper`（`WrapperKind::Callback`）。実引数の検査: `src/check.rs` の `validate_callbacks`（`plain_function`・`direct_only`）。組み込みの型の名前: `src/check.rs` の `resolve_type_with_kinds` の `Vec`・`SharedKind::named` の腕、`builtin_type_head`、`reserved_type_name`。ABI の判定: `src/abi.rs` の `callback`・`abi_scalar`・`parameter`・`result` |

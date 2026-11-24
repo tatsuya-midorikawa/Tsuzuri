@@ -52,6 +52,10 @@
 
 /* ---------------------------------------------------------------- failure, memory, time */
 
+#ifndef TZR_TRAP
+#define TZR_TRAP() __builtin_trap()
+#endif
+
 static void tzr_fatal(const char *message) {
     (void)message;
     __builtin_trap();
@@ -375,12 +379,22 @@ TZR_API void tzr_jspi_run(tzr_g *g) {
 /* ---------------------------------------------------------------- the calls of other parts */
 
 /* One thread: a blocking call holds no P, a callback needs no M, and every G is on the thread. */
+static inline void tzr_host_enter(tzr_g *g) { (void)g; }
+static inline void tzr_host_leave(tzr_g *g) { (void)g; }
+
 TZR_API void tsuzuri_tz_blocking_enter(void) {}
 TZR_API void tsuzuri_tz_blocking_exit(void) {}
 TZR_API int32_t tsuzuri_tz_callback_enter(void) { return 0; }
 TZR_API void tsuzuri_tz_callback_exit(int32_t depth) { (void)depth; }
+TZR_API void *tsuzuri_tz_callback_scope_enter(void) { return NULL; }
+TZR_API void tsuzuri_tz_callback_scope_leave(void *scope) { (void)scope; }
 TZR_API void tsuzuri_tz_lock_thread(void) {}
 TZR_API void tsuzuri_tz_unlock_thread(void) {}
+
+static uint64_t tzr_anchor_thread_id(void) { return 1; }
+static uint64_t tzr_anchor_pin_current(void) { return 0; }
+static void tzr_anchor_unpin_current(uint64_t gid) { (void)gid; }
+static void tzr_anchor_overflow(void) { __builtin_trap(); }
 
 TZR_API void *tsuzuri_tz_scope_current(void) { return tzr_current()->spawn_scope; }
 TZR_API void tsuzuri_tz_scope_reset(void *scope) { tzr_current()->spawn_scope = scope; }

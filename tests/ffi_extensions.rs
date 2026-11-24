@@ -433,6 +433,14 @@ extern \"w18_peek\" def peek_hwnd :: ref Hwnd -> i64
         ),
         (
             "extern \"w18_mut\" def mut_hwnd :: ref mut Hwnd -> i64\n1",
+            "ok",
+        ),
+        (
+            "extern type OwnedH\nextern \"w18_mut\" def mut_owned :: ref mut OwnedH -> i64\n1",
+            "E1008",
+        ),
+        (
+            "export def mut_exp :: ref mut Hwnd -> i64\nfn mut_exp _h = 1\n1",
             "E1008",
         ),
         ("make_hwnd 1 == make_hwnd 2", "E1005"),
@@ -1026,4 +1034,43 @@ const NAME: string = \"abcd\"
                 .contains("must be called directly with all arguments")
         );
     }
+}
+
+#[test]
+fn console_callbacks_guard_against_calls_after_main_while_libraries_stay_process_wide() {
+    let source = "extern \"w_reg\" def register :: (i64 -> i64) -> unit\n\
+                  extern \"w_reg2\" def register2 :: (i64 -> i64) -> unit\n\
+                  def cb1 :: i64 -> i64 = \\x -> x + 1\n\
+                  def cb2 :: i64 -> i64 = \\x -> x + 2\n\
+                  def main :: unit -> i32 = \\() -> { register cb1; register2 cb2; 0 }\n";
+    let module = analyze_with_edition(source, Edition::E2027).unwrap();
+    let console = llvm::emit(&module, llvm::Entry::Console).unwrap();
+    assert_eq!(console, llvm::emit(&module, llvm::Entry::Console).unwrap());
+    assert!(console.contains("@tz.main.done = internal global i32 0, align 4"));
+    assert_eq!(
+        console
+            .matches("define internal void @tz.callback.after_main()")
+            .count(),
+        1
+    );
+    assert!(console.contains("store atomic i32 1, ptr @tz.main.done release, align 4"));
+    assert_eq!(
+        console
+            .matches("load atomic i32, ptr @tz.main.done acquire, align 4")
+            .count(),
+        2
+    );
+
+    let library = llvm::emit(&module, llvm::Entry::Library).unwrap();
+    assert!(!library.contains("@tz.main.done"));
+    assert!(!library.contains("@tz.callback.after_main"));
+
+    let wasm = ir(&module, true);
+    assert!(!wasm.contains("@tz.main.done"));
+    assert!(!wasm.contains("@tz.callback.after_main"));
+
+    let no_cb =
+        analyze_with_edition("def main :: unit -> i32 = \\() -> 0\n", Edition::E2027).unwrap();
+    let plain_console = llvm::emit(&no_cb, llvm::Entry::Console).unwrap();
+    assert!(!plain_console.contains("@tz.main.done"));
 }

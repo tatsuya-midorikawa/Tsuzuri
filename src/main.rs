@@ -315,6 +315,9 @@ Build options:
                          requires --allocator host and rejects IO, OS APIs, Net sockets, tzroutines, and Debug
     --strip                Link a native executable without its local symbols (build only; not with -g;
                          a Windows link is left as it is)
+    --subsystem console|windows
+                         Windows PE subsystem of a native executable (build or run; default: console;
+                         Tsuzuri.toml [windows] subsystem sets the project default)
     --wasm-opt             Run Binaryen's wasm-opt -Oz over the linked .wasm (build with --target wasm32
                          only; not with -g or threads). It is never run unless asked: install Binaryen
                          or set TSUZURI_WASM_OPT, or the build fails with E2002
@@ -556,6 +559,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut allocator = None;
     let mut freestanding = false;
     let mut strip = false;
+    let mut subsystem = None;
     let mut wasm_opt = false;
     let mut profile_generate = None;
     let mut profile_use = None;
@@ -1016,6 +1020,27 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         ));
                     }
                     strip = true;
+                    continue;
+                }
+                Some("--subsystem") => {
+                    if subsystem.is_some() {
+                        return Err(command_line_error(
+                            DiagnosticKind::DuplicateOption,
+                            "subsystem specified more than once",
+                        ));
+                    }
+                    subsystem = Some(
+                        match next_value(arguments, &mut position, "--subsystem")?.to_str() {
+                            Some("console") => driver::Subsystem::Console,
+                            Some("windows") => driver::Subsystem::Windows,
+                            _ => {
+                                return Err(command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "--subsystem must be console or windows",
+                                ));
+                            }
+                        },
+                    );
                     continue;
                 }
                 Some("--wasm-opt") => {
@@ -1483,6 +1508,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             "--strip is only valid with build",
         ));
     }
+    if subsystem.is_some() && !matches!(action, Action::Build | Action::Run) {
+        return Err(command_line_error(
+            DiagnosticKind::OptionInvalidForCommand,
+            "--subsystem is only valid with build or run",
+        ));
+    }
     if wasm_opt && action != Action::Build {
         return Err(command_line_error(
             DiagnosticKind::OptionInvalidForCommand,
@@ -1773,6 +1804,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         wasm_opt,
         triple,
         overflow_report,
+        subsystem,
     };
     // These checks report `E2000` diagnostics without a position, as the command line does.
     options.validate()?;
@@ -1860,6 +1892,12 @@ fn profile_path(value: &OsStr, option: &str) -> Result<PathBuf, Diagnostic> {
         ));
     }
     Ok(PathBuf::from(value))
+}
+
+/// Whether the root manifest's `[windows]` settings apply to `action` (W09): `build` and `run` only,
+/// never `test` or `bench` runners (which report results on standard output).
+fn windows_apply(action: Action) -> bool {
+    matches!(action, Action::Build | Action::Run)
 }
 
 /// Whether the action links a native executable, the only output that takes host link inputs.
@@ -4164,6 +4202,9 @@ fn cli(
     }
     let mut arguments = arguments;
     arguments.options = arguments.options.with_manifest_wasm(project.wasm);
+    if windows_apply(arguments.action) {
+        arguments.options = arguments.options.with_manifest_windows(&project.windows);
+    }
     // Command-line values were validated during parsing, so only manifest values can fail here.
     if let Err(mut error) = arguments.options.validate() {
         // The diagnostic keeps its code and kind; the message names where the setting came from.
@@ -5205,6 +5246,107 @@ mod tests {
             assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
         }
         assert!(HELP.contains("--strip"));
+    }
+
+    #[test]
+    fn subsystem_is_a_build_and_run_option() {
+        assert_eq!(
+            parse(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "x86_64-pc-windows-msvc",
+                "--subsystem",
+                "windows"
+            ])
+            .unwrap()
+            .options
+            .subsystem,
+            Some(driver::Subsystem::Windows)
+        );
+        assert_eq!(
+            parse(&[
+                "run",
+                "Main.tz",
+                "--target",
+                "x86_64-pc-windows-gnu",
+                "--subsystem",
+                "console"
+            ])
+            .unwrap()
+            .options
+            .subsystem,
+            Some(driver::Subsystem::Console)
+        );
+        assert_eq!(
+            parse(&["build", "Main.tz"]).unwrap().options.subsystem,
+            None
+        );
+        for (values, message) in [
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--subsystem",
+                    "windows",
+                    "--subsystem",
+                    "console",
+                ],
+                "subsystem specified more than once",
+            ),
+            (
+                vec!["build", "Main.tz", "--subsystem", "efi"],
+                "--subsystem must be console or windows",
+            ),
+            (
+                vec!["test", "Main.tz", "--subsystem", "windows"],
+                "--subsystem is only valid with build or run",
+            ),
+            (
+                vec!["check", "Main.tz", "--subsystem", "windows"],
+                "--subsystem is only valid with build or run",
+            ),
+            (
+                vec!["bench", "Main.tz", "--subsystem", "windows"],
+                "--subsystem is only valid with build or run",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--subsystem",
+                    "windows",
+                    "--emit",
+                    "object",
+                ],
+                "--subsystem requires native executable output (--emit exe)",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--subsystem",
+                    "windows",
+                    "--target",
+                    "wasm32",
+                ],
+                "--subsystem requires native executable output (--emit exe)",
+            ),
+            (
+                vec![
+                    "build",
+                    "Main.tz",
+                    "--subsystem",
+                    "windows",
+                    "--target",
+                    "x86_64-unknown-linux-gnu",
+                ],
+                "--subsystem applies only to Windows targets; build for *-pc-windows-msvc or *-pc-windows-gnu, or remove it",
+            ),
+        ] {
+            assert_eq!(parse(&values).unwrap_err(), message, "{values:?}");
+        }
+        assert!(HELP.contains("--subsystem console|windows"));
     }
 
     /// What `validate_fast` says last, to options that pass all of its own checks: a host that has no

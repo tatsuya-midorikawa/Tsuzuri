@@ -16,7 +16,7 @@
 
 ## 実装者向け早見
 
-- 範囲: Phase 1 は Windows の target（x86-64・Arm64、MSVC・MinGW）の `--trap-mode return`（`--emit object`・`llvm`・`header`・`shared`、C#・Python・C++ のバインディング）。①`trap.c` の排他を SRWLOCK にする、②`tzroutine.c` の Windows の「境界の中か」の判定（今は常に偽）と hook を POSIX と同じ意味にする（Windows は定義を持たない弱い参照）、③trap ランタイムだけを埋め込む COFF の object の `E2002` を外す（ランタイムを bitcode にして `-Xclang -mlink-bitcode-file` で連結）、④W05 の DLL の `E2000`（W05 D4）を外す。巻き戻しは [W07](W07-windows-trap-fail-fast.md) の `uwtable`（`.pdata`）の上で CRT の `longjmp` に任せる。Phase 2 は `Domain.run` の Windows（`E1038` を外す）。
+- 範囲: Phase 1 は Windows の target（x86-64・Arm64、MSVC・MinGW）の `--trap-mode return`（`--emit object`・`llvm`・`header`・`shared`、C#・Python・C++ のバインディング）。①`trap.c` の排他を SRWLOCK にする、②`tzroutine.c` の Windows の「境界の中か」の判定（今は常に偽）と hook を POSIX と同じ意味にする（Windows は定義を持たない弱い参照）、③trap ランタイムだけを埋め込む COFF の object の `E2002` を外す（ランタイムを bitcode にして `-Xclang -mlink-bitcode-file` で連結）、④W05 の DLL の `E2000`（W05 D4）を外す。巻き戻しは [W07](_completed/W07-windows-trap-fail-fast.md) の `uwtable`（`.pdata`）の上で CRT の `longjmp` に任せる。Phase 2 は `Domain.run` の Windows（`E1038` を外す）。
 - 最初に読む: 「現状」の測定の表 → 仕様 → [E14](_completed/E14-trap-boundary.md) の D6 と「実装と検証（Phase 2・3）」の 9。
 - 最初に書くテスト: `tests/trap_return.mjs` の Windows の段（trap だけの fixture の `--emit object -O3`。今は `E2002`）と、`--emit llvm -O3` を C のホストにリンクした段（W07 の前は 0xC00000FF）。
 - 触ってはいけない: `tsuzuri_try_<name>` の ABI と状態 0・1・2、`tz_<name>`、トラップした呼び出しの確保を解放する規則、POSIX の `trap.c`・`tzroutine.c` の生成コード、tzroutine・CPU・IO・Net・OS のランタイムを埋め込む Windows の object の `E2002`、コールバックとの併用の `E2000`。
@@ -180,9 +180,9 @@ typedef pthread_mutex_t tz_lock;
 
 ## 前提とする他チケットのインターフェース
 
-- [W07](W07-windows-trap-fail-fast.md): Windows の IR のすべての `define` の `uwtable`（`with_unwind_tables`）、境界の外のトラップの `@tz.trap.fail`、ランタイム C の `TZR_TRAP()`。`trap.c` 自身はトラップしない（メモリ不足は `abort()`）。
+- [W07](_completed/W07-windows-trap-fail-fast.md): Windows の IR のすべての `define` の `uwtable`（`with_unwind_tables`）、境界の外のトラップの `@tz.trap.fail`、ランタイム C の `TZR_TRAP()`。`trap.c` 自身はトラップしない（メモリ不足は `abort()`）。
 - [W05](W05-windows-shared-library.md)（あれば）: `link_shared` の Windows の分岐、`module_definition`、`validate_shared` の D4 の判定。
-- [W06](W06-windows-gui-test-harness.md)（W07 の依存なので入っている）: `tests/windows_launch.c` の `--timeout-ms`。
+- [W06](_completed/W06-windows-gui-test-harness.md)（W07 の依存なので入っている）: `tests/windows_launch.c` の `--timeout-ms`。
 
 ## 他チケットへ提供するインターフェース
 

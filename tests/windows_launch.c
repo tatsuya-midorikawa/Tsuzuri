@@ -1,6 +1,9 @@
 /* W04 / W06: launches a Windows child process with or without standard handles, optionally
  * capturing OutputDebugStringW/A messages as UTF-8 lines via WaitForDebugEventEx. */
 #undef NDEBUG
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -8,11 +11,37 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <io.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static void format_exception_site(HANDLE process, const void *address, unsigned long long *rva_out, char *module_out, size_t module_cap) {
+    *rva_out = (unsigned long long)(uintptr_t)address;
+    strncpy(module_out, "<unknown>", module_cap);
+    module_out[module_cap - 1] = 0;
+    HMODULE modules[256];
+    DWORD needed = 0;
+    if (!K32EnumProcessModules(process, modules, sizeof(modules), &needed)) return;
+    DWORD count = needed / sizeof(HMODULE);
+    if (count > 256) count = 256;
+    uintptr_t target = (uintptr_t)address;
+    for (DWORD i = 0; i < count; i++) {
+        MODULEINFO info;
+        if (!K32GetModuleInformation(process, modules[i], &info, sizeof(info))) continue;
+        uintptr_t base = (uintptr_t)info.lpBaseOfDll;
+        if (target >= base && target < base + (uintptr_t)info.SizeOfImage) {
+            *rva_out = (unsigned long long)(target - base);
+            if (!K32GetModuleBaseNameA(process, modules[i], module_out, (DWORD)module_cap)) {
+                strncpy(module_out, "<module>", module_cap);
+                module_out[module_cap - 1] = 0;
+            }
+            return;
+        }
+    }
+}
 
 static const wchar_t *skip_spaces(const wchar_t *p) {
     while (*p == L' ' || *p == L'\t') p++;
@@ -233,7 +262,10 @@ int main(void) {
                 } else {
                     if (first_exception && !reported_exception && event.u.Exception.dwFirstChance && code != 0x40010006u && code != 0x4001000Au) {
                         reported_exception = 1;
-                        printf("exception=0x%08lX address=%p\n", code, event.u.Exception.ExceptionRecord.ExceptionAddress);
+                        unsigned long long rva = 0;
+                        char mod_name[260];
+                        format_exception_site(process.hProcess, event.u.Exception.ExceptionRecord.ExceptionAddress, &rva, mod_name, sizeof(mod_name));
+                        printf("exception=0x%08lX rva=0x%llx module=%s\n", code, rva, mod_name);
                     }
                     status = DBG_EXCEPTION_NOT_HANDLED;
                 }

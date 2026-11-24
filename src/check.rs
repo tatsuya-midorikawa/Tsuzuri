@@ -24,6 +24,8 @@ mod control;
 mod deriving;
 #[path = "domain_rules.rs"]
 mod domain_rules;
+#[path = "pinned_rules.rs"]
+mod pinned_rules;
 #[path = "select.rs"]
 mod select;
 pub(crate) use domain_rules::domain_calls;
@@ -182,6 +184,8 @@ pub enum Type {
     /// `Rc<T>`, `Rc.Weak<T>`, `Arc<T>`, or `Arc.Weak<T>` (C10 Phase 2): a pointer to a
     /// reference-counted heap block `{ i64 strong, i64 weak, T value }`.
     Shared(Box<Type>, SharedKind),
+    /// `FnPtr<F>` (W22): a C function pointer value with normalized C-callable signature `F`.
+    FnPtr(Box<Type>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -328,6 +332,28 @@ impl Type {
     pub const I32: Self = Self::Integer(32, true);
     pub const I64: Self = Self::Integer(64, true);
     pub const F64: Self = Self::Binary(64);
+
+    /// W22: normalizes the inner function type `F` of `FnPtr<F>` so curried `a -> b -> c`,
+    /// `pure`, and parameter-convention annotations collapse to one canonical C function type.
+    pub(crate) fn normalize_fnptr_inner(inner: Self) -> Self {
+        match inner {
+            Self::Function(mut parameters, mut result) => {
+                while let Self::Function(next_params, next_result) = *result {
+                    parameters.types.extend(next_params.types);
+                    result = next_result;
+                }
+                Self::Function(
+                    Box::new(FunctionParameters {
+                        types: parameters.types,
+                        conventions: Box::default(),
+                        pure: false,
+                    }),
+                    result,
+                )
+            }
+            other => other,
+        }
+    }
 
     /// The element type of a slice, which is a `%tz.array` value: a shared `ref [T]` or an
     /// exclusive `ref mut [T..]` (C08).
@@ -546,6 +572,14 @@ impl Type {
             ),
             Self::Once(_) => "tzroutine body".into(),
             Self::Handle(name, _) => names.handle_display(name),
+            Self::FnPtr(inner) => {
+                let text = inner.display_with(names);
+                if matches!(**inner, Self::Function(..)) {
+                    format!("FnPtr<({text})>")
+                } else {
+                    format!("FnPtr<{text}>")
+                }
+            }
             Self::Dyn(dyn_type) => dyn_type.display_classes(|key| names.class_display(key)),
             Self::Shared(value, kind) => format!("{}<{}>", kind.name(), value.display_with(names)),
             Self::Function(parameters, _) if parameters.pure => {
@@ -589,6 +623,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Once(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_error(),
             Self::Function(parameters, result) => {
@@ -612,6 +647,7 @@ impl Type {
             | Self::List(ty)
             | Self::Vec(ty)
             | Self::Once(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _) => ty.contains_constructor(),
             Self::Function(parameters, result) => {
@@ -654,7 +690,7 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local)
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
             | Self::Reference(_, true)
@@ -720,7 +756,11 @@ impl Type {
     /// Std records that borrows must not share between threads: a lazy sequence holds function
     /// values whose environments are not visible, and GPU handles are not thread-safe (F10 D6).
     fn is_unsync_record(&self, types: &TypeContext<'_>) -> bool {
-        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function"))
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Anchor.Anchor"))
+    }
+
+    fn is_unsend_record(&self, types: &TypeContext<'_>) -> bool {
+        matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && types.records[*id].name == "Anchor.Anchor")
     }
 
     /// The std `Owned.Function`, whose environment has no clone (B07).
@@ -1056,7 +1096,7 @@ impl Type {
                         ty,
                         Type::Reference(_, true)
                             | Type::Once(_)
-                            | Type::Handle(_, HandleKind::Owned)
+                            | Type::Handle(_, HandleKind::Owned | HandleKind::Local)
                     ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
@@ -1068,7 +1108,9 @@ impl Type {
             );
         }
         match self {
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Reference(_, true)
+            | Self::Once(_)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
@@ -1110,7 +1152,8 @@ impl Type {
         if types.recursive(self) {
             return types.stored_all(self, |ty| {
                 !ty.is_unresolved()
-                    && !matches!(ty, Type::Reference(..))
+                    && !ty.is_unsend_record(types)
+                    && !matches!(ty, Type::Reference(..) | Type::Handle(_, HandleKind::Local))
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
@@ -1126,7 +1169,8 @@ impl Type {
             | Self::Infer(_)
             | Self::Partial(_)
             | Self::Application(..)
-            | Self::Reference(..) => false,
+            | Self::Reference(..)
+            | Self::Handle(_, HandleKind::Local) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it
@@ -1139,7 +1183,10 @@ impl Type {
             | Self::Vec(element)
             | Self::FixedArray(element, _) => element.can_send(types),
             Self::Tuple(elements) => elements.iter().all(|ty| ty.can_send(types)),
-            Self::Record(id, args) => types.record_fields_all(*id, args, |ty| ty.can_send(types)),
+            Self::Record(id, args) => {
+                !self.is_unsend_record(types)
+                    && types.record_fields_all(*id, args, |ty| ty.can_send(types))
+            }
             Self::Union(id, args) => types.union_payloads_all(*id, args, |ty| ty.can_send(types)),
             // Plain data, a tzroutine body (its result was judged where it was made) and a function
             // value, whose environment is checked by ownership, not by its call signature.
@@ -1157,7 +1204,8 @@ impl Type {
             | Self::ArrayView(_)
             | Self::Length(_)
             | Self::Once(_)
-            | Self::Handle(..)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Copy)
+            | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
     }
@@ -1174,6 +1222,37 @@ impl Type {
             self,
             |ty| !matches!(ty, Type::Shared(_, kind) if !kind.atomic()),
         )
+    }
+
+    /// W19: whether a value of this type owns a thread-bound `extern type local` handle.
+    pub(crate) fn holds_local_handle(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !matches!(ty, Type::Handle(_, HandleKind::Local)))
+    }
+
+    /// W19: whether this type reaches a thread-bound `extern type local` handle (including borrows).
+    pub(crate) fn reaches_local_handle(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(self, |ty| matches!(ty, Type::Handle(_, HandleKind::Local)))
+    }
+
+    /// W19: the display name of the first `extern type local` handle this type reaches.
+    pub(crate) fn first_local_handle_name(&self, types: &TypeContext<'_>) -> Option<String> {
+        let found = std::cell::RefCell::new(None);
+        types.reaches(self, |ty| {
+            if matches!(ty, Type::Handle(_, HandleKind::Local)) {
+                let display = ty.display(types);
+                let shown = display.strip_prefix("Main.").unwrap_or(&display).to_owned();
+                *found.borrow_mut() = Some(shown);
+                true
+            } else {
+                false
+            }
+        });
+        found.into_inner()
+    }
+
+    /// W23: whether a value of this type owns an `Anchor<T>`.
+    pub(crate) fn holds_thread_bound(&self, types: &TypeContext<'_>) -> bool {
+        !types.stored_all(self, |ty| !ty.is_unsend_record(types))
     }
 
     /// Whether several threads may hold shared borrows of a value of this type at once, which is
@@ -1199,7 +1278,9 @@ impl Type {
             // function, which is checked again for every type that it is used at. Every kind of
             // type is named here, so that a new one has to be judged.
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
-            Self::Reference(_, true) | Self::Once(_) | Self::Handle(_, HandleKind::Owned) => false,
+            Self::Reference(_, true)
+            | Self::Once(_)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
             Self::Handle(_, HandleKind::Copy) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
@@ -1226,6 +1307,7 @@ impl Type {
             | Self::List(_)
             | Self::Vec(_)
             | Self::Tuple(_)
+            | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
     }
@@ -1287,7 +1369,7 @@ impl Type {
     /// extern handle, a dyn value that is not Copy, or an `Owned.Function` (C10, W18).
     pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
         types.reaches(self, |ty| {
-            matches!(ty, Type::Handle(_, HandleKind::Owned))
+            matches!(ty, Type::Handle(_, HandleKind::Owned | HandleKind::Local))
                 || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                 || ty.is_owned_function(types)
         })
@@ -1617,6 +1699,16 @@ pub enum Builtin {
     /// `Dyn.of :: 'a -> 'b`, where the expected type `'b` is a `dyn` type whose classes `'a`
     /// implements (A14). Only a direct application with one argument type-checks.
     DynOf,
+    /// `FnPtr.of :: 'f -> FnPtr<'f>`, producing the static C callback wrapper address of a
+    /// top-level user function (W22).
+    FnPtrOf,
+    /// W23: callback-reachable application state (`Anchor`).
+    AnchorCreate,
+    AnchorRead,
+    AnchorUpdate,
+    AnchorRelease,
+    /// W20: `ZString.literal :: string -> ref ZString`, rewritten to a borrow of static UTF-16+NUL data.
+    ZStringLiteral,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2082,6 +2174,7 @@ pub enum BuiltinType {
     ArrayView(Box<BuiltinType>),
     List(Box<BuiltinType>),
     Vec(Box<BuiltinType>),
+    FnPtr(Box<BuiltinType>),
     Tuple(Vec<BuiltinType>),
     /// `Rc<T>` and the other shared pointers (C10).
     Shared(Box<BuiltinType>, SharedKind),
@@ -2212,6 +2305,12 @@ impl Builtin {
         Self::ArraySplitAtMut,
         Self::FixedArrayInit,
         Self::DynOf,
+        Self::FnPtrOf,
+        Self::AnchorCreate,
+        Self::AnchorRead,
+        Self::AnchorUpdate,
+        Self::AnchorRelease,
+        Self::ZStringLiteral,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2561,6 +2660,12 @@ impl Builtin {
             Self::ArraySplitAtMut => "Array.split_at_mut",
             Self::FixedArrayInit => "FixedArray.init",
             Self::DynOf => "Dyn.of",
+            Self::FnPtrOf => "FnPtr.of",
+            Self::AnchorCreate => "Anchor.create",
+            Self::AnchorRead => "Anchor.read",
+            Self::AnchorUpdate => "Anchor.update",
+            Self::AnchorRelease => "Anchor.__release",
+            Self::ZStringLiteral => "ZString.literal",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3333,6 +3438,22 @@ impl Builtin {
             ),
             // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
             Self::DynOf => (vec![a()], Var("b"), Vec::new()),
+            Self::FnPtrOf => (vec![a()], BuiltinType::FnPtr(Box::new(a())), Vec::new()),
+            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
+                self.anchor_scheme()
+            }
+            Self::ZStringLiteral => (
+                vec![Concrete(Type::String)],
+                Reference(
+                    Box::new(BuiltinType::Std {
+                        module: "ZString",
+                        name: "ZString",
+                        args: Vec::new(),
+                    }),
+                    false,
+                ),
+                Vec::new(),
+            ),
             Self::ListCons => (
                 vec![a(), BuiltinType::List(Box::new(a()))],
                 BuiltinType::List(Box::new(a())),
@@ -3976,6 +4097,7 @@ impl BuiltinType {
             | Self::ArrayView(ty)
             | Self::List(ty)
             | Self::Vec(ty)
+            | Self::FnPtr(ty)
             | Self::Shared(ty, _)
             | Self::Reference(ty, _)
             | Self::UnsignedOf(ty)
@@ -4073,6 +4195,45 @@ impl Builtin {
         name.starts_with("Channel.")
             || name.starts_with("SendOnly.")
             || name.starts_with("ReceiveOnly.")
+    }
+
+    pub(crate) fn is_anchor(self) -> bool {
+        matches!(
+            self,
+            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease
+        )
+    }
+
+    #[inline(never)]
+    fn anchor_scheme(self) -> (Vec<BuiltinType>, BuiltinType, Vec<BuiltinConstraint>) {
+        use BuiltinType::{Concrete, Function, Reference, Var};
+        let a = || Var("a");
+        let b = || Var("b");
+        let std = |module: &'static str, name: &'static str, args| BuiltinType::Std {
+            module,
+            name,
+            args,
+        };
+        let error = || std("Anchor", "Error", Vec::new());
+        let result_of = |ok| std("Result", "Result", vec![ok, error()]);
+        match self {
+            Self::AnchorCreate => (vec![a()], std("Anchor", "Anchor", vec![a()]), Vec::new()),
+            Self::AnchorRead => (
+                vec![
+                    Function(vec![Reference(Box::new(a()), false)], Box::new(b())),
+                    Concrete(Type::I64),
+                ],
+                result_of(b()),
+                Vec::new(),
+            ),
+            Self::AnchorUpdate => (
+                vec![Function(vec![a()], Box::new(a())), Concrete(Type::I64)],
+                result_of(Concrete(Type::Unit)),
+                Vec::new(),
+            ),
+            Self::AnchorRelease => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
+            _ => unreachable!("not an Anchor builtin"),
+        }
     }
 
     /// The operation of `Channel` that a `SendOnly` or `ReceiveOnly` builtin is (TZ03 Phase 2): the
@@ -4710,6 +4871,8 @@ pub struct CheckedModule {
     pub dyn_layouts: BTreeMap<DynType, DynLayout>,
     /// A14: some module writes a `dyn` type, so the IR defines `%tz.dyn`.
     pub uses_dyn: bool,
+    /// W19: some module declares an `extern type local`, so `pinned` effect confinement runs.
+    pub thread_bound: bool,
     /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
     /// program builds a non-CPU `Gpu.Backend`.
     pub gpu: crate::gpu_devices::GpuProgram,
@@ -5104,6 +5267,16 @@ pub struct HostImport {
     pub explicit: bool,
     /// Takes a function-typed parameter: a callback the host calls through a C function pointer.
     pub callbacks: bool,
+    /// W13: `(parameter_index, CountLength)` sorted by parameter index from `@count(pos, len)`.
+    pub counts: Vec<(usize, crate::syntax::CountLength)>,
+}
+
+impl HostImport {
+    pub fn count_at(&self, index: usize) -> Option<crate::syntax::CountLength> {
+        self.counts
+            .iter()
+            .find_map(|(pos, len)| (*pos == index).then_some(*len))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -8283,6 +8456,7 @@ fn check_modules_collect(
     }
     let mut external_functions = BTreeMap::new();
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
+    let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
@@ -8302,6 +8476,7 @@ fn check_modules_collect(
                     wasm_name: link.symbol.clone(),
                     explicit: true,
                     callbacks: false,
+                    counts: Vec::new(),
                 }
             } else {
                 let native_symbol = format!(
@@ -8318,6 +8493,7 @@ fn check_modules_collect(
                     wasm_name: format!("{}.{}", module.name, external.name.text),
                     explicit: false,
                     callbacks: false,
+                    counts: Vec::new(),
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8334,6 +8510,19 @@ fn check_modules_collect(
                     && mark.target.span.start == external.name.span.start
             }) {
                 trusted_by_id.insert(function_declarations.len(), mark.properties);
+            }
+            let raw_counts: Vec<CountAttribute> = module
+                .program
+                .extern_counts
+                .iter()
+                .filter(|attr| {
+                    attr.target.text == external.name.text
+                        && attr.target.span.start == external.name.span.start
+                })
+                .cloned()
+                .collect();
+            if !raw_counts.is_empty() {
+                counts_by_id.insert(function_declarations.len(), raw_counts);
             }
             external_functions.insert(function_declarations.len(), import);
             function_declarations.push((
@@ -8562,7 +8751,7 @@ fn check_modules_collect(
                 || polymorph::BUILTIN_CLASSES.contains(&class.name.text.as_str())
                 || matches!(
                     class.name.text.as_str(),
-                    "_" | "Array" | "Vec" | "Rc" | "Arc"
+                    "_" | "Array" | "Vec" | "FnPtr" | "Rc" | "Arc"
                 )
             {
                 diagnostics.push(duplicate(&class.name));
@@ -8948,10 +9137,12 @@ fn check_modules_collect(
         if function.pure {
             names.pure_functions.insert(id);
         }
+        let opt_in_std =
+            names.origin(module) == ModuleOrigin::Std && crate::stdlib::is_opt_in(module);
         if function.name.text == "_"
-            || Builtin::ALL
-                .iter()
-                .any(|builtin| builtin.name() == function.name.text || builtin.name() == qualified)
+            || Builtin::ALL.iter().any(|builtin| {
+                (!opt_in_std && builtin.name() == function.name.text) || builtin.name() == qualified
+            })
             || names.cases.contains_key(&qualified)
             || names.functions.insert(qualified.clone(), info).is_some()
         {
@@ -9084,6 +9275,18 @@ fn check_modules_collect(
             if function.exported
                 && (public_parameters
                     .iter()
+                    .any(|ty| crate::abi::reaches_fnptr(ty, &types))
+                    || crate::abi::reaches_fnptr(public_result, &types))
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FnptrFromHost,
+                    "FnPtr values pass Tsuzuri callbacks to the host and cannot appear in 'export def' signatures",
+                    function.name.span,
+                ));
+            }
+            if function.exported
+                && (public_parameters
+                    .iter()
                     .any(|ty| !crate::abi::parameter(ty, &types))
                     || !crate::abi::result(public_result, &types))
             {
@@ -9136,6 +9339,30 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
+                if crate::abi::reaches_fnptr(&signature.result, &types)
+                    || signature.parameters.iter().any(|ty| match ty {
+                        Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
+                        Type::Reference(inner, true) => crate::abi::reaches_fnptr(inner, &types),
+                        _ => false,
+                    })
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrFromHost,
+                        "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
+                        function.name.span,
+                    ));
+                }
+                if signature
+                    .parameters
+                    .iter()
+                    .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                        function.name.span,
+                    ));
+                }
                 if signature
                     .parameters
                     .iter()
@@ -9155,14 +9382,60 @@ fn check_modules_collect(
                 {
                     return Err(Diagnostic::of(
                         DiagnosticKind::UnsupportedExternSignature,
-                        "extern signatures support scalar/unit, shared ABI buffers and scalar records, and owned ABI buffer or scalar record results",
+                        "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
                         function.name.span,
                     ));
                 }
+                if let Some(raw) = counts_by_id.get(&id) {
+                    let mut validated: Vec<(usize, CountLength)> = Vec::new();
+                    for attr in raw {
+                        let pos = attr.position as usize;
+                        if pos == 0 || pos > signature.parameters.len() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountPositionOutOfRange,
+                                format!(
+                                    "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
+                                    attr.position,
+                                    signature.parameters.len()
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        let index = pos - 1;
+                        if crate::abi::extern_buffer_parameter(&signature.parameters[index])
+                            .is_none()
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountNotBuffer,
+                                format!(
+                                    "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
+                                    signature.parameters[index].display(&types)
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        if validated.iter().any(|(seen, _)| *seen == index) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CountRepeated,
+                                format!(
+                                    "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
+                                ),
+                                attr.span,
+                            ));
+                        }
+                        validated.push((index, attr.length));
+                    }
+                    validated.sort_by_key(|(index, _)| *index);
+                    external_functions.get_mut(&id).unwrap().counts = validated;
+                }
                 let import = &external_functions[&id];
                 if import.explicit {
-                    let declared =
-                        crate::abi::c_signature(&signature.parameters, &signature.result, &types);
+                    let declared = crate::abi::c_signature(
+                        &signature.parameters,
+                        &signature.result,
+                        &import.counts,
+                        &types,
+                    );
                     match explicit_symbols.entry(import.native_symbol.clone()) {
                         std::collections::btree_map::Entry::Vacant(slot) => {
                             slot.insert((
@@ -9805,14 +10078,21 @@ fn check_modules_collect(
             *requested = index;
         }
     }
+    let zstring_record_id = names.records.get("ZString.ZString").map(|info| info.id);
+    if zstring_record_id.is_some() {
+        validate_zstring_literals(&functions)?;
+    }
     let const_uses =
         constants::const_def_uses(&functions, &names.constants, &names.const_functions);
-    let statics = constants::fold(
+    let mut statics = constants::fold(
         &mut functions,
         &names.constants,
         &names.const_functions,
         &types,
     )?;
+    if let Some(zstring_id) = zstring_record_id {
+        lower_zstring_literals(&mut functions, zstring_id, &mut statics, &types)?;
+    }
     let mut references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
     // A `const def` that a constant calls is used, although `fold` replaced the call by a value.
@@ -9849,6 +10129,13 @@ fn check_modules_collect(
         uses_dyn: modules
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
+        thread_bound: modules.iter().any(|input| {
+            input
+                .program
+                .extern_types
+                .iter()
+                .any(|decl| decl.kind == HandleKind::Local)
+        }),
         gpu: Default::default(),
         statics,
         effects: None,
@@ -9941,6 +10228,8 @@ fn check_modules_collect(
     }
     // B10: each call of `Domain.run` passes a pure closure of plain data.
     diagnostics.extend(domain_rules::validate(&module));
+    // W19: functions that touch `extern type local` handles stay confined to their OS thread.
+    diagnostics.extend(pinned_rules::validate(&module));
     // A20: the effect attributes are checked against the inferred summaries; a program without
     // them computes nothing.
     if !declared_attributes.is_empty() {
@@ -10050,14 +10339,150 @@ fn validate_cpu_functions(module: &CheckedModule) -> Result<(), Diagnostic> {
 /// callback argument names a top-level user function: no lambda, local, partial
 /// application, generic function, std function, or extern. The host gets a
 /// static C function pointer, so nothing needs a context or a lifetime.
+/// W20: validates every `ZString.literal` occurrence before constant folding so `const` strings,
+/// variables, `$` string interpolations, function values, and interior U+0000 literals are rejected.
+fn validate_zstring_literals(functions: &[CheckedFunction]) -> Result<(), Diagnostic> {
+    let is_zstr_lit = |expr: &TypedExpr| {
+        matches!(
+            &expr.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ZStringLiteral
+        )
+    };
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && is_zstr_lit(callee)
+            {
+                let [argument] = arguments.as_slice() else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralArgument,
+                        "'ZString.literal' must be called directly with one string literal argument",
+                        expr.span,
+                    ));
+                };
+                let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralArgument,
+                        "'ZString.literal' requires a plain string literal without interpolation; use 'ZString.of' for dynamic strings",
+                        argument.span,
+                    ));
+                };
+                if units.contains(&0) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ZstringLiteralInteriorNul,
+                        "string literal passed to 'ZString.literal' contains U+0000, which cannot appear inside a NUL-terminated string",
+                        argument.span,
+                    ));
+                }
+                continue;
+            }
+            if is_zstr_lit(expr) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ZstringLiteralArgument,
+                    "'ZString.literal' must be called directly with a string literal argument and cannot be used as a function value",
+                    expr.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// W20: rewrites validated `ZString.literal "..."` calls into `Borrow(Static(id), false)` backed by
+/// deduplicated UTF-16+NUL static arrays.
+fn lower_zstring_literals(
+    functions: &mut [CheckedFunction],
+    zstring_record_id: usize,
+    statics: &mut BTreeMap<usize, StaticData>,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    fn rewrite(
+        expr: &mut TypedExpr,
+        zstring_record_id: usize,
+        statics: &mut BTreeMap<usize, StaticData>,
+        dedup: &mut BTreeMap<Vec<u16>, usize>,
+        next_id: &mut usize,
+        total_bytes: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        if let TypedExprKind::Call(callee, arguments) = &expr.kind
+            && matches!(
+                &callee.kind,
+                TypedExprKind::Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::ZStringLiteral
+            )
+            && let [argument] = arguments.as_slice()
+            && let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind
+        {
+            let mut with_nul = Vec::with_capacity(units.len() + 1);
+            with_nul.extend_from_slice(units);
+            with_nul.push(0);
+            let id = constants::intern_zstring(
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+                zstring_record_id,
+                with_nul,
+                expr.span,
+            )?;
+            let zstr_ty = Type::Record(zstring_record_id, Box::default());
+            let static_expr = TypedExpr {
+                kind: TypedExprKind::Static(id),
+                ty: zstr_ty.clone(),
+                span: expr.span,
+            };
+            expr.kind = TypedExprKind::Borrow(Box::new(static_expr), false);
+            expr.ty = Type::Reference(Box::new(zstr_ty), false);
+            return Ok(());
+        }
+        expr.try_for_each_child_mut(&mut |child| {
+            rewrite(
+                child,
+                zstring_record_id,
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+            )
+        })
+    }
+
+    let mut next_id = functions
+        .len()
+        .max(statics.keys().next_back().map_or(0, |last| last + 1));
+    let mut total_bytes = constants::total_static_bytes(statics, types);
+    let mut dedup: BTreeMap<Vec<u16>, usize> = BTreeMap::new();
+    for function in functions.iter_mut() {
+        rewrite(
+            &mut function.body,
+            zstring_record_id,
+            statics,
+            &mut dedup,
+            &mut next_id,
+            &mut total_bytes,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
-    if !(0..module.functions.len()).any(is_callback_extern) {
-        return Ok(());
-    }
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
         _ => None,
+    };
+    let is_fnptr_of = |expression: &TypedExpr| {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::FnPtrOf
+        )
     };
     let direct_only = |id: usize, span: Span| {
         Diagnostic::of(
@@ -10069,21 +10494,60 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             span,
         )
     };
-    let plain_function = |argument: &TypedExpr| match &argument.kind {
-        TypedExprKind::Function(FunctionRef::User(id)) => {
-            let function = &module.functions[*id];
-            function.origin.module == ModuleOrigin::User
-                && function.origin.provenance == Provenance::User
-                && function.origin.parent.is_none()
-                && function.origin.test.is_none()
-                && function.type_parameters.is_empty()
-                && !matches!(function.body.kind, TypedExprKind::HostCall(..))
-        }
-        _ => false,
+    let fnptr_direct_only = |span: Span| {
+        Diagnostic::of(
+            DiagnosticKind::FnptrCallForm,
+            "FnPtr.of must be called directly with one top-level function argument",
+            span,
+        )
     };
+    let plain_function = |mut argument: &TypedExpr| {
+        while let TypedExprKind::Cast(inner) = &argument.kind {
+            argument = inner;
+        }
+        match &argument.kind {
+            TypedExprKind::Function(FunctionRef::User(id)) => {
+                let function = &module.functions[*id];
+                function.origin.module == ModuleOrigin::User
+                    && function.origin.provenance == Provenance::User
+                    && function.origin.parent.is_none()
+                    && function.origin.test.is_none()
+                    && function.type_parameters.is_empty()
+                    && !matches!(function.body.kind, TypedExprKind::HostCall(..))
+            }
+            _ => false,
+        }
+    };
+    let types = module.types();
     for function in &module.functions {
         let mut pending = vec![&function.body];
         while let Some(expression) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expression.kind
+                && is_fnptr_of(callee)
+            {
+                if arguments.len() != 1 {
+                    return Err(fnptr_direct_only(expression.span));
+                }
+                let argument = &arguments[0];
+                if !plain_function(argument) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrArgument,
+                        "FnPtr.of requires a concrete top-level user function without captures; move the logic into a 'def' and pass its name",
+                        argument.span,
+                    ));
+                }
+                if !crate::abi::fnptr(&expression.ty, &types) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, pure, and nested functions are not supported",
+                        expression.span,
+                    ));
+                }
+                continue;
+            }
+            if is_fnptr_of(expression) {
+                return Err(fnptr_direct_only(expression.span));
+            }
             if let TypedExprKind::Call(callee, arguments) = &expression.kind
                 && let Some(id) = callback_extern(callee)
             {
@@ -10264,6 +10728,7 @@ fn recovery_module(
         vtables: BTreeMap::new(),
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
+        thread_bound: false,
         gpu: Default::default(),
         statics: BTreeMap::new(),
         effects: None,
@@ -10453,7 +10918,7 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
 /// and the built-in type classes. `tsuzuri bindgen` renames generated types with it.
 pub fn reserved_type_name(name: &str) -> bool {
     crate::numeric::primitive(name).is_some()
-        || matches!(name, "_" | "Array" | "Vec" | "Rc" | "Arc")
+        || matches!(name, "_" | "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
         || polymorph::BUILTIN_CLASSES.contains(&name)
 }
 
@@ -10545,7 +11010,7 @@ fn collect_unions(
                     .push(vec![false; union.parameters.len()].into());
                 return Ok(());
             }
-            if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
+            if matches!(name.text.as_str(), "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
                 || polymorph::BUILTIN_CLASSES.contains(&name.text.as_str())
                 || names.records.contains_key(&qualified)
                 || names.unions.contains_key(&qualified)
@@ -10622,7 +11087,7 @@ fn collect_unions(
                     ));
                 }
                 let qualified = format!("{module}.{}", name.text);
-                if matches!(name.text.as_str(), "Array" | "Vec" | "Rc" | "Arc")
+                if matches!(name.text.as_str(), "Array" | "Vec" | "FnPtr" | "Rc" | "Arc")
                     || names.records.contains_key(&qualified)
                     || names.unions.contains_key(&qualified)
                     || names.handles.contains_key(&qualified)
@@ -10734,10 +11199,18 @@ fn resolve_type(expression: &TypeExpr, module: &str, names: &Names) -> Result<Ty
     resolve_type_with_kinds(expression, module, names, &BTreeMap::new())
 }
 
+fn is_fnptr_type_name(name: &str) -> bool {
+    let name = name
+        .strip_prefix(crate::stdlib::NAMESPACE)
+        .and_then(|rest| rest.strip_prefix("::"))
+        .unwrap_or(name);
+    name == "FnPtr"
+}
+
 /// Whether an applied type name is a builtin type constructor rather than a declaration:
-/// `Vec`, or a shared pointer such as `Rc` or `Arc.Weak` (C10).
+/// `Vec`, `FnPtr`, or a shared pointer such as `Rc` or `Arc.Weak` (C10).
 fn builtin_type_head(name: &str) -> bool {
-    name == "Vec" || SharedKind::named(name).is_some()
+    name == "Vec" || is_fnptr_type_name(name) || SharedKind::named(name).is_some()
 }
 
 fn resolve_type_with_kinds(
@@ -10773,6 +11246,23 @@ fn resolve_type_with_kinds(
                 ));
             };
             Type::Vec(Box::new(resolve(element)?))
+        }
+        TypeExprKind::Apply(head, args) if is_fnptr_type_name(&head.text) => {
+            let [inner] = &**args else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::TypeArgumentCount,
+                    "FnPtr expects exactly one function type, as in 'FnPtr<i64 -> i64>'",
+                    expression.span,
+                ));
+            };
+            Type::FnPtr(Box::new(Type::normalize_fnptr_inner(resolve(inner)?)))
+        }
+        TypeExprKind::Named(name) if is_fnptr_type_name(name) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::TypeArgumentCount,
+                "FnPtr expects exactly one function type, as in 'FnPtr<i64 -> i64>'",
+                expression.span,
+            ));
         }
         TypeExprKind::Apply(head, args) if SharedKind::named(&head.text).is_some() => {
             let kind = SharedKind::named(&head.text).expect("checked by the guard");
@@ -11927,6 +12417,23 @@ impl Validation<'_> {
                     ));
                 }
                 self.check(value, span)?;
+                8
+            }
+            Type::FnPtr(inner) => {
+                if !polymorph::variables(inner).is_empty() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternSignatureNotConcrete,
+                        "FnPtr signatures must be concrete; type variables cannot cross the C callback ABI",
+                        span,
+                    ));
+                }
+                if !crate::abi::callback(inner, &self.layouts.types) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::FnptrSignature,
+                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                        span,
+                    ));
+                }
                 8
             }
             Type::Once(result) => {
@@ -14524,6 +15031,7 @@ impl<'a> Checker<'a> {
                 | Type::List(ty)
                 | Type::Vec(ty)
                 | Type::Once(ty)
+                | Type::FnPtr(ty)
                 | Type::Shared(ty, _)
                 | Type::Reference(ty, _) => closed(checker, ty, open),
                 Type::Function(parameters, result) => {

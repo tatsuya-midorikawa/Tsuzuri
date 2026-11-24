@@ -33,6 +33,8 @@ pub struct Manifest {
     /// The `allow` of `[capabilities]` and the span of its header (E15). Only the root
     /// package's section counts.
     pub capabilities: Option<(CapabilitySet, Span)>,
+    /// The `[windows]` section (W09). Only the root package's section counts.
+    pub windows: WindowsSettings,
 }
 
 /// A registry: a git repository whose `index/<name>.json` files list the
@@ -105,6 +107,12 @@ impl std::fmt::Display for Version {
 pub struct WasmSettings {
     pub max_memory: Option<u64>,
     pub stack_size: Option<u64>,
+}
+
+/// The `[windows]` section of the root manifest (W09; W10 adds the resource keys).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowsSettings {
+    pub subsystem: Option<crate::driver::Subsystem>,
 }
 
 /// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
@@ -700,6 +708,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut fields = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
     let mut wasm = WasmSettings::default();
+    let mut windows = WindowsSettings::default();
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
     let mut registry: Option<(Option<String>, Option<String>, Span)> = None;
@@ -727,6 +736,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some("registry")
             } else if cursor.take("[capabilities]") {
                 Some("capabilities")
+            } else if cursor.take("[windows]") {
+                Some("windows")
             } else {
                 cursor.take("[native]").then_some("native")
             };
@@ -734,7 +745,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
                     return Err(cursor.error(DiagnosticKind::ManifestSectionOrder,
-                        "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
+                        "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
                     ));
                 }
             }
@@ -926,6 +937,31 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     }
                 }
             }
+            "windows" => {
+                if key != "subsystem" {
+                    return Err(cursor.error(
+                        DiagnosticKind::UnknownManifestKey,
+                        "unknown windows key; expected subsystem",
+                    ));
+                }
+                let text = cursor.string()?;
+                let value = match text.as_str() {
+                    "console" => crate::driver::Subsystem::Console,
+                    "windows" => crate::driver::Subsystem::Windows,
+                    _ => {
+                        return Err(cursor.error(
+                            DiagnosticKind::InvalidWindowsSetting,
+                            "subsystem must be \"console\" or \"windows\"",
+                        ));
+                    }
+                };
+                if windows.subsystem.replace(value).is_some() {
+                    return Err(cursor.error(
+                        DiagnosticKind::DuplicateManifestKey,
+                        "windows keys must occur at most once",
+                    ));
+                }
+            }
             _ => {
                 return Err(cursor.error(
                     DiagnosticKind::ManifestSectionOrder,
@@ -1002,6 +1038,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         native,
         registry,
         capabilities,
+        windows,
     })
 }
 
@@ -1454,7 +1491,7 @@ mod tests {
             ),
             (
                 "[native]\n[native]",
-                "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
             ),
         ] {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();
@@ -1543,7 +1580,22 @@ mod tests {
             (
                 "[capabilities]\nallow = []\n[capabilities]\nallow = []\n",
                 "manifest_section_order",
-                "expected [package] followed by optional [dependencies], [wasm], [native], [registry] and [capabilities], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+            ),
+            (
+                "[windows]\nfoo = \"bar\"\n",
+                "unknown_manifest_key",
+                "unknown windows key; expected subsystem",
+            ),
+            (
+                "[windows]\nsubsystem = \"efi\"\n",
+                "invalid_windows_setting",
+                "subsystem must be \"console\" or \"windows\"",
+            ),
+            (
+                "[windows]\nsubsystem = \"windows\"\nsubsystem = \"console\"\n",
+                "duplicate_manifest_key",
+                "windows keys must occur at most once",
             ),
             (
                 "[capabilities]\n",

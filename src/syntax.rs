@@ -315,6 +315,8 @@ pub struct Program {
     pub effect_attributes: Vec<EffectAttribute>,
     /// The `@trusted` marks of this module's extern declarations, in source order (E15).
     pub trusted: Vec<TrustedAttribute>,
+    /// The `@count(pos, len)` attributes of this module's extern function declarations (W13).
+    pub extern_counts: Vec<CountAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -428,6 +430,74 @@ pub struct TrustedAttribute {
     /// Bit `i` for `TRUSTED_PROPERTIES[i]`.
     pub properties: u8,
     /// From `@trusted` through the last property.
+    pub span: Span,
+}
+
+/// The C length parameter kind chosen by `@count(position, length)` on an `extern` buffer (W13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CountLength {
+    I32,
+    I32U,
+    I64,
+    I64U,
+    None,
+}
+
+impl CountLength {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "i32" => Some(Self::I32),
+            "i32u" => Some(Self::I32U),
+            "i64" => Some(Self::I64),
+            "i64u" => Some(Self::I64U),
+            "none" => Some(Self::None),
+            _ => Option::None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::I32 => "i32",
+            Self::I32U => "i32u",
+            Self::I64 => "i64",
+            Self::I64U => "i64u",
+            Self::None => "none",
+        }
+    }
+
+    pub fn c_type(self) -> Option<&'static str> {
+        match self {
+            Self::I32 => Some("int32_t"),
+            Self::I32U => Some("uint32_t"),
+            Self::I64 => Some("int64_t"),
+            Self::I64U => Some("uint64_t"),
+            Self::None => Option::None,
+        }
+    }
+
+    pub fn llvm_type(self) -> Option<&'static str> {
+        match self {
+            Self::I32 | Self::I32U => Some("i32"),
+            Self::I64 | Self::I64U => Some("i64"),
+            Self::None => Option::None,
+        }
+    }
+
+    pub fn max_length(self) -> Option<u64> {
+        match self {
+            Self::I32 => Some(i32::MAX as u64),
+            Self::I32U => Some(u32::MAX as u64),
+            Self::I64 | Self::I64U | Self::None => Option::None,
+        }
+    }
+}
+
+/// `@count(position, length)` before an extern function declaration (W13).
+#[derive(Clone, Debug)]
+pub struct CountAttribute {
+    pub target: Ident,
+    pub position: u32,
+    pub length: CountLength,
     pub span: Span,
 }
 
@@ -666,13 +736,15 @@ pub struct LinkName {
     pub span: Span,
 }
 
-/// What an `extern type` declaration says about its values (E12 D3, W18).
+/// What an `extern type` declaration says about its values (E12 D3, W18, W19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HandleKind {
     /// `extern type H`: moved, not capturable, Send, not Sync (E12 D3).
     Owned,
     /// `extern type copy H`: an identifier that the host does not hand over (W18).
     Copy,
+    /// `extern type local H`: moved, bound to its OS thread, neither Send nor Sync (W19).
+    Local,
 }
 
 impl HandleKind {
@@ -680,6 +752,7 @@ impl HandleKind {
         match self {
             Self::Owned => None,
             Self::Copy => Some("copy"),
+            Self::Local => Some("local"),
         }
     }
 }

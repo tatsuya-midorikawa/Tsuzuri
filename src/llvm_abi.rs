@@ -32,7 +32,7 @@ pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
-                        && !matches!(ty, Type::Function(..))
+                        && !matches!(ty, Type::Function(..) | Type::FnPtr(_))
                 }) || out_result(&function.signature.result)))
     })
 }
@@ -56,6 +56,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
                 names.insert(name.to_string());
             }
             Type::Reference(inner, _) => visit(inner, types, names),
+            Type::FnPtr(inner) => visit(inner, types, names),
             Type::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| visit(ty, types, names));
                 visit(result, types, names);
@@ -109,12 +110,14 @@ pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
 fn record_types(module: &CheckedModule) -> Vec<Type> {
     fn visit(ty: &Type, module: &CheckedModule, seen: &mut BTreeSet<Type>, result: &mut Vec<Type>) {
         let viewed = crate::abi::c_view(ty, &module.types());
-        let ty = if let Type::Reference(inner, false) = viewed.as_ref() {
+        let ty = if let Type::Reference(inner, _) = viewed.as_ref() {
             inner.as_ref()
         } else {
             viewed.as_ref()
         };
-        if let Type::Record(id, arguments) = ty {
+        if let Type::Record(id, arguments) = ty
+            && !crate::abi::zstring(ty, &module.types())
+        {
             // The convention variants of a record are one type (A29).
             let ty = &codegen_identity(ty);
             if !seen.insert(ty.clone()) {
@@ -251,6 +254,10 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
 
 pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -> String {
     let types = module.types();
+    let import = match &function.body.kind {
+        TypedExprKind::HostCall(import, _) => Some(import.as_ref()),
+        _ => None,
+    };
     let mut parameters = Vec::new();
     let result = &function.signature.result;
     if let Some(buffer) = Buffer::of(result) {
@@ -262,7 +269,10 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         if *ty == Type::Unit {
             continue;
         }
-        if let Type::Function(inputs, output) = ty {
+        if let Type::Function(inputs, output) = match ty {
+            Type::FnPtr(inner) => inner.as_ref(),
+            other => other,
+        } {
             // A callback is a C function pointer; a lone `unit` input is `void`.
             let inputs = if matches!(inputs.as_slice(), [Type::Unit]) {
                 "void".to_owned()
@@ -276,8 +286,47 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
             parameters.push(format!("{} (*arg{index})({inputs})", c_type(output)));
             continue;
         }
+        if let Some((buffer, mutable)) = crate::abi::extern_buffer_parameter(ty) {
+            let qual = if mutable { "" } else { "const " };
+            parameters.push(format!("{qual}{} *arg{index}_ptr", buffer.c_element()));
+            let count_len = import.and_then(|imp| imp.count_at(index));
+            if let Some(len_c_ty) =
+                count_len.map_or(Some("int64_t"), crate::syntax::CountLength::c_type)
+            {
+                parameters.push(format!("{len_c_ty} arg{index}_len"));
+            }
+            continue;
+        }
+        if let Type::Reference(inner, true) = ty {
+            if matches!(inner.as_ref(), Type::Record(..)) {
+                parameters.push(format!("{} *arg{index}", record_name(inner, module)));
+            } else {
+                let pointee = match inner.as_ref() {
+                    Type::Integer(8, true) => "int8_t".to_owned(),
+                    Type::Integer(8, false) => "uint8_t".to_owned(),
+                    Type::Integer(16, true) => "int16_t".to_owned(),
+                    Type::Integer(16, false) => "uint16_t".to_owned(),
+                    Type::Integer(32, true) | Type::Bool => "int32_t".to_owned(),
+                    Type::Integer(32, false) => "uint32_t".to_owned(),
+                    Type::Integer(64, true) => "int64_t".to_owned(),
+                    Type::Integer(64, false) => "uint64_t".to_owned(),
+                    Type::Binary(32) => "float".to_owned(),
+                    Type::Binary(64) => "double".to_owned(),
+                    Type::Handle(name, _) => handle_c_name(name),
+                    _ => unreachable!("validated mutable extern scalar: {inner:?}"),
+                };
+                parameters.push(format!("{pointee} *arg{index}"));
+            }
+            continue;
+        }
         let viewed = crate::abi::c_view(ty, &types);
         let ty = viewed.as_ref();
+        if let Type::Reference(inner, false) = ty
+            && crate::abi::zstring(inner, &types)
+        {
+            parameters.push(format!("const uint16_t *arg{index}"));
+            continue;
+        }
         let inner = if let Type::Reference(inner, false) = ty {
             inner.as_ref()
         } else {
@@ -534,6 +583,17 @@ pub(super) fn wrapper(
         specializations,
     );
     emitter.current_span = function.span;
+    if kind == WrapperKind::Callback && emitter.globals.guard_callbacks_after_main {
+        let done = emitter.value("load atomic i32, ptr @tz.main.done acquire, align 4");
+        let after = emitter.value(format!("icmp ne i32 {done}, 0"));
+        let trap_label = emitter.label();
+        let ready_label = emitter.label();
+        emitter.branch(&after, &trap_label, &ready_label);
+        emitter.begin(&trap_label);
+        emitter.instruction("call void @tz.callback.after_main()");
+        emitter.instruction("unreachable");
+        emitter.begin(&ready_label);
+    }
     let result = &function.signature.result;
     let mut parameters = Vec::new();
     if out_result(result) {
@@ -777,6 +837,23 @@ impl FunctionEmitter<'_, '_> {
                     self.value(format!("select i1 {is_null}, ptr {null_slot}, ptr {value}"));
                 self.value(format!("load ptr, ptr {safe_slot}"))
             }
+            crate::abi::Nullable::BorrowedZString(zstr) => {
+                let nonnull = self.value(format!("icmp ne ptr {value}, null"));
+                let from_none = self.block.clone();
+                let some_block = self.label();
+                let done_block = self.label();
+                self.branch(&nonnull, &some_block, &done_block);
+                self.begin(&some_block);
+                let rec = self.value(format!("load {}, ptr {value}", self.ty(zstr)));
+                let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(zstr)));
+                let data = self.value(format!("extractvalue %tz.array {arr}, 0"));
+                let from_some = self.block.clone();
+                self.jump(&done_block);
+                self.begin(&done_block);
+                self.value(format!(
+                    "phi ptr [ null, %{from_none} ], [ {data}, %{from_some} ]"
+                ))
+            }
             crate::abi::Nullable::BorrowedRecord(record) => {
                 let slot = self.host_result_slot(record);
                 let nonnull = self.value(format!("icmp ne ptr {value}, null"));
@@ -833,8 +910,8 @@ impl FunctionEmitter<'_, '_> {
                 let is_null = self.value(format!("icmp eq ptr {pointer}, null"));
                 self.value(format!("select i1 {is_null}, ptr null, ptr {slot}"))
             }
-            crate::abi::Nullable::BorrowedRecord(_) => {
-                unreachable!("Maybe<ref R> is only an extern input parameter")
+            crate::abi::Nullable::BorrowedRecord(_) | crate::abi::Nullable::BorrowedZString(_) => {
+                unreachable!("Maybe<ref R> and Maybe<ref ZString> are only extern input parameters")
             }
         }
     }

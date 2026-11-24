@@ -221,6 +221,10 @@ struct Item {
     exported: bool,
     /// `extern type copy Name` (W18): adding `copy` is compatible, removing it breaks callers.
     copy_handle: bool,
+    /// `extern type local Name` (W19): adding `local` breaks callers, removing it is compatible.
+    local_handle: bool,
+    /// Non-default `@count(position, length)` settings on an `extern def` (W13; `i64` is normalized out).
+    extern_counts: BTreeMap<u32, CountLength>,
     /// A `const def`, which a `const` initializer of another module may call.
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
@@ -265,6 +269,8 @@ impl Item {
             header,
             exported: false,
             copy_handle: false,
+            local_handle: false,
+            extern_counts: BTreeMap::new(),
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
@@ -292,6 +298,9 @@ impl Item {
             text.push('@');
             text.push_str(kind.name());
             text.push(' ');
+        }
+        for (&position, &length) in &self.extern_counts {
+            text.push_str(&format!("@count({position}, {}) ", length.name()));
         }
         if self.exported {
             text.push_str("export ");
@@ -1450,6 +1459,7 @@ fn add_items(
         effect_attributes,
         // E15: `@trusted` is a reviewer's mark, not part of the API.
         trusted: _,
+        extern_counts,
         noncanonical: _,
         aliases,
         declaration_starts: _,
@@ -1593,6 +1603,17 @@ fn add_items(
         let mut item = Item::new("extern def", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
+        for attribute in extern_counts
+            .iter()
+            .filter(|attribute| attribute.target.text == declaration.name.text)
+        {
+            if attribute.length == CountLength::I64 {
+                item.extern_counts.remove(&attribute.position);
+            } else {
+                item.extern_counts
+                    .insert(attribute.position, attribute.length);
+            }
+        }
         add(item);
     }
     for declaration in extern_types {
@@ -1603,6 +1624,7 @@ fn add_items(
         let mut item = Item::new("extern type", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         item.copy_handle = declaration.kind == HandleKind::Copy;
+        item.local_handle = declaration.kind == HandleKind::Local;
         add(item);
     }
     for declaration in records {
@@ -2301,6 +2323,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
     if old.header != new.header
         || old.exported != new.exported
         || old.copy_handle != new.copy_handle
+        || old.local_handle != new.local_handle
+        || old.extern_counts != new.extern_counts
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
@@ -2313,10 +2337,14 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         // to pass callbacks that keep it, so it breaks them.
         let copy_added = old.kind == "extern type" && !old.copy_handle && new.copy_handle;
         let copy_removed = old.kind == "extern type" && old.copy_handle && !new.copy_handle;
+        let local_added = old.kind == "extern type" && !old.local_handle && new.local_handle;
+        let local_removed = old.kind == "extern type" && old.local_handle && !new.local_handle;
         let added_obligation = new.callbacks && new.asserts.0 & !old.asserts.0 != 0;
-        let widened = (old.header == new.header || copy_added)
+        let widened = (old.header == new.header || copy_added || local_removed)
             && old.exported <= new.exported
             && old.copy_handle <= new.copy_handle
+            && old.local_handle >= new.local_handle
+            && old.extern_counts == new.extern_counts
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
@@ -2332,8 +2360,12 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             new: Some(new.text()),
             note: if old.borrowing_defaults != new.borrowing_defaults {
                 "default parameter conventions change; effective signatures may differ"
+            } else if old.extern_counts != new.extern_counts {
+                "lowered C buffer count signature changes"
             } else if added_obligation {
                 "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
+            } else if local_added {
+                "values of the type are now bound to their OS thread"
             } else if copy_removed {
                 "values of the type are moved again"
             } else {

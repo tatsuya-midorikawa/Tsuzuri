@@ -3325,6 +3325,19 @@ const suites = {
     },
   },
   // TZ06: the sync types without a second tzroutine, native and default WebAssembly (TZR_SINGLE: no import).
+  anchor: {
+    cases: [
+      ["basic", [], 3n],
+      ["nested_reads", [], 42n],
+      ["busy_matrix", [], 1234n],
+      ["nested_drop_during_read", [], 771n],
+      ["drop_reenters", [], 1n],
+      ["update_after_owner_drop", [], 12n],
+      ["forged", [], 15n],
+      ["wrong_type", [], 11n],
+      ["many", [], 42n],
+    ],
+  },
   sync_single: {
     cases: [
       ["once_single", [], 11n],

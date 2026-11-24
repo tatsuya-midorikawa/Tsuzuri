@@ -278,7 +278,7 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
-unit_enum!(HandleKind { Owned, Copy });
+unit_enum!(HandleKind { Owned, Copy, Local });
 unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(RangeOp { Bare, Closed, Open });
 unit_enum!(FixLevel {
@@ -572,6 +572,7 @@ impl Wire for Program {
             cpu_attributes,
             effect_attributes,
             trusted,
+            extern_counts,
             noncanonical,
             aliases,
             declaration_starts,
@@ -601,6 +602,7 @@ impl Wire for Program {
         cpu_attributes.put(out)?;
         effect_attributes.put(out)?;
         trusted.put(out)?;
+        extern_counts.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -633,6 +635,7 @@ impl Wire for Program {
             cpu_attributes: Vec::get(input)?,
             effect_attributes: Vec::get(input)?,
             trusted: Vec::get(input)?,
+            extern_counts: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -706,6 +709,58 @@ impl Wire for TrustedAttribute {
         Ok(TrustedAttribute {
             target,
             properties,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for CountLength {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        out.byte(match self {
+            CountLength::I32 => 0,
+            CountLength::I32U => 1,
+            CountLength::I64 => 2,
+            CountLength::I64U => 3,
+            CountLength::None => 4,
+        });
+        Ok(())
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        match input.byte()? {
+            0 => Ok(CountLength::I32),
+            1 => Ok(CountLength::I32U),
+            2 => Ok(CountLength::I64),
+            3 => Ok(CountLength::I64U),
+            4 => Ok(CountLength::None),
+            _ => Err(Invalid),
+        }
+    }
+}
+
+impl Wire for CountAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let CountAttribute {
+            target,
+            position,
+            length,
+            span,
+        } = self;
+        target.put(out)?;
+        u64::from(*position).put(out)?;
+        length.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        let target = Ident::get(input)?;
+        let raw = u64::get(input)?;
+        let position = u32::try_from(raw).map_err(|_| Invalid)?;
+        let length = CountLength::get(input)?;
+        Ok(CountAttribute {
+            target,
+            position,
+            length,
             span: Span::get(input)?,
         })
     }
@@ -2702,7 +2757,13 @@ mod tests {
         seen.extend(round_trips("def bump :: mut i64 -> unit = \\n -> n = n + 1\n", 0).unwrap());
         seen.extend(round_trips("let hole = f ?a ?\nhole\n", 0).unwrap());
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
-        seen.extend(round_trips("extern type H\nextern type copy Hc\n", 0).unwrap());
+        seen.extend(
+            round_trips(
+                "extern type H\nextern type copy Hc\nextern type local Hl\n",
+                0,
+            )
+            .unwrap(),
+        );
         // A24: anonymous union types and type test patterns.
         seen.extend(
             round_trips(
@@ -2786,7 +2847,7 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
-            ("HandleKind", 2),
+            ("HandleKind", 3),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),
@@ -3041,6 +3102,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d01030000000000000300224500",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000000000300224500",
     );
 }

@@ -226,6 +226,7 @@ impl<'a> Translator<'a> {
             Type::Dyn(_) => return Err("a dyn value".into()),
             Type::Shared(..) => return Err("a shared pointer".into()),
             Type::Handle(..) => return Err("an extern handle".into()),
+            Type::FnPtr(_) => return Err("a function pointer".into()),
             Type::Length(_)
             | Type::Application(..)
             | Type::Partial(_)

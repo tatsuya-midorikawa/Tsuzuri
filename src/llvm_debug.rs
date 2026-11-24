@@ -405,7 +405,7 @@ impl DebugContext {
             let target = self.pointer_to(base, next, definitions);
             // Debuggers ignore the name of a pointer type, but show a typedef's.
             format!("!DIDerivedType(tag: DW_TAG_typedef, name: {name}, baseType: !{target})")
-        } else if matches!(ty, Type::Handle(..) | Type::Shared(..)) {
+        } else if matches!(ty, Type::Handle(..) | Type::FnPtr(_) | Type::Shared(..)) {
             let target = self.opaque_pointer(next, definitions);
             format!("!DIDerivedType(tag: DW_TAG_typedef, name: {name}, baseType: !{target})")
         } else if let Type::Union(union, arguments) = ty {
@@ -1025,7 +1025,9 @@ fn layout(ty: &Type, module: &CheckedModule, wasm: bool) -> (usize, usize) {
         Type::Array(_) | Type::List(_) | Type::String | Type::Utf8String => (16, 8),
         Type::Vec(_) => (24, 8),
         Type::Reference(..) if ty.slice_element().is_some() => (16, 8),
-        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => (pointer, pointer),
+        Type::Reference(..) | Type::Handle(..) | Type::FnPtr(_) | Type::Shared(..) => {
+            (pointer, pointer)
+        }
         Type::Function(..) | Type::Once(_) => (2 * pointer, pointer),
         Type::Dyn(_) => (2 * pointer, pointer),
         Type::Record(..) => aggregate(

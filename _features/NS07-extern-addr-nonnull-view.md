@@ -10,13 +10,13 @@
 | 状態 | todo |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（opt-in モジュール `ExternAddr` の登録（D-55）と [W24](W24-extern-view.md) の署名型の改訂。決定事項 D1・D2 が要承認、D3〜D5 は既定案） |
-| 手本にする既存実装 | [W20](W20-zstring.md) の `std/ZString.tz`（opt-in の不透明な std record で不変条件を入口関数 `of` で保証し、ABI・`extern` で内部の 1 スカラーを取り出す形）、`std/Timer.tz`、`src/stdlib.rs` の `opaque_record`・`OPT_IN`・`RESERVED_MODULES` |
+| 手本にする既存実装 | [W20](_completed/W20-zstring.md) の `std/ZString.tz`（opt-in の不透明な std record で不変条件を入口関数 `of` で保証し、ABI・`extern` で内部の 1 スカラーを取り出す形）、`std/Timer.tz`、`src/stdlib.rs` の `opaque_record`・`OPT_IN`・`RESERVED_MODULES` |
 | 主な影響ファイル | `std/ExternAddr.tz`（新規）, `src/stdlib.rs`, `src/abi.rs`, `src/check.rs`, `src/llvm_imports.rs`, `src/llvm_layout.rs`, `tests/std_argument_order.rs`, `tests/std_examples.rs`, `tests/extern_view.rs`, `tests/extern_view.mjs`, `vsc/src/core.ts`, `docs/language.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/built-in-types-and-modules/` |
 
 ## 実装者向け早見
 
 - 範囲: opt-in の標準モジュール `ExternAddr`（不透明な Copy レコード `record ExternAddr { raw: i64 }`、不変条件 `raw != 0`）を追加し、`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`・`ExternAddr.to_i64 :: ExternAddr -> i64`・`ExternAddr.offset :: i64 -> ExternAddr -> Maybe<ExternAddr>` を提供する。その上で [W24](W24-extern-view.md) の `extern view` のアドレス引数を生の `i64` から `ExternAddr` に改め、ホストから届いた `lParam` 等の整数アドレスに対して `0`（NULL）でないことの分岐確認を型システム上で強制する（生ポインタ型やポインタ演算演算子・`unsafe` を入れない [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) の範囲はそのまま守る）。
-- 最初に読む: ① 仕様 1〜3 ② [W24](W24-extern-view.md) の仕様 1〜3 ③ [W20](W20-zstring.md) の不透明 std record の作り方 ④ `src/stdlib.rs` の `OPT_IN`・`RESERVED_MODULES`・`opaque_record`。
+- 最初に読む: ① 仕様 1〜3 ② [W24](W24-extern-view.md) の仕様 1〜3 ③ [W20](_completed/W20-zstring.md) の不透明 std record の作り方 ④ `src/stdlib.rs` の `OPT_IN`・`RESERVED_MODULES`・`opaque_record`。
 - 最初に書くテスト: `tests/extern_view.rs` の `extern_addr_rejects_zero_and_view_requires_extern_addr`。
 - 触ってはいけない: `ExternAddr` を名指さないプログラムの IR・診断・内部番号。
 - 完了の見分け方: `lparam`（`i64`）をそのまま `read_nmhdr lparam` に渡すと `E1003` になり、`match ExternAddr.of_i64 lparam with | Some addr -> ... | None -> ...` を通したときだけ `read_nmhdr addr` が呼べる。

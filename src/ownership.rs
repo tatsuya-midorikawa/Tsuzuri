@@ -2739,21 +2739,27 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                 // (`Routine.go`, `WaitGroup.go`, `Time.after_func`).
                 E::Function(_) => {
                     use crate::check::Builtin::{
-                        ChannelSend, ChannelTrySend, DataChannelSend, OnceValueGet, OwnedCall,
-                        OwnedFunction, SendOnlySend, SendOnlyTrySend,
+                        AnchorCreate, AnchorUpdate, ChannelSend, ChannelTrySend, DataChannelSend,
+                        OnceValueGet, OwnedCall, OwnedFunction, SendOnlySend, SendOnlyTrySend,
                     };
                     let builtin = builtin_called(module, expression);
                     if let (Some(builtin), Type::Function(parameters, _)) =
                         (builtin, &expression.ty)
                     {
                         let kept = match builtin {
-                            OnceValueGet => Some(0),
+                            AnchorCreate | OnceValueGet => {
+                                parameters.types.first().map(without_views)
+                            }
+                            AnchorUpdate => match parameters.types.first() {
+                                Some(Type::Function(_, result)) => Some(without_views(result)),
+                                _ => None,
+                            },
                             ChannelSend | ChannelTrySend | DataChannelSend | SendOnlySend
-                            | SendOnlyTrySend => Some(1),
+                            | SendOnlyTrySend => parameters.types.get(1).map(without_views),
                             _ => None,
                         };
-                        if let Some(ty) = kept.and_then(|kept| parameters.types.get(kept)) {
-                            escaping.insert(without_views(ty));
+                        if let Some(ty) = kept {
+                            escaping.insert(ty);
                         }
                         if builtin == OwnedFunction {
                             wrapped.extend(parameters.types.first().map(without_views));
@@ -4130,7 +4136,7 @@ fn scheme_runs_code(ty: &crate::check::BuiltinType, types: &crate::check::TypeCo
         | B::Reference(element, _)
         | B::FixedArrayOf(element) => scheme_runs_code(element, types),
         B::Tuple(elements) => elements.iter().any(|ty| scheme_runs_code(ty, types)),
-        B::UnsignedOf(_) | B::WidenOf(_) | B::SimdLane(..) | B::SimdMask(_) => false,
+        B::FnPtr(_) | B::UnsignedOf(_) | B::WidenOf(_) | B::SimdLane(..) | B::SimdMask(_) => false,
     }
 }
 
@@ -6443,15 +6449,28 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// `Cond.wait_with`. Also the index of that callback among the arguments.
     fn locked_result(&self, callee: &TypedExpr) -> Option<(Type, usize)> {
         use crate::check::Builtin::{
-            CondWaitWith, MutexWith, OnceValueGet, RwMutexWithRead, RwMutexWithWrite,
+            AnchorRead, AnchorUpdate, CondWaitWith, MutexWith, OnceValueGet, RwMutexWithRead,
+            RwMutexWithWrite,
         };
         let builtin = self.builtin_called(callee)?;
         let callback = match builtin {
+            AnchorRead | AnchorUpdate => 0,
             MutexWith | RwMutexWithRead | RwMutexWithWrite | OnceValueGet => 1,
             CondWaitWith => 3,
             _ => return None,
         };
         match &callee.ty {
+            Type::Function(parameters, _) if builtin == AnchorRead && parameters.len() >= 2 => {
+                Some((callee.ty.after_arguments(2), callback))
+            }
+            Type::Function(parameters, _) if builtin == AnchorUpdate && !parameters.is_empty() => {
+                match &parameters[0] {
+                    Type::Function(cb_params, _) if !cb_params.is_empty() => {
+                        Some((cb_params[0].clone(), callback))
+                    }
+                    _ => None,
+                }
+            }
             // `OnceValue.get` keeps what its initializer returns in the cell, which outlives the
             // call: that value, the `'a` of the borrowed `OnceValue<'a>`, is the one checked (TZ06;
             // a curried initializer's own type is flattened).
@@ -6468,6 +6487,17 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             Type::Function(parameters, _) if parameters.len() > callback => {
                 Some((callee.ty.after_arguments(callback + 1), callback))
+            }
+            _ => None,
+        }
+    }
+
+    fn anchored_value(&self, callee: &TypedExpr) -> Option<Type> {
+        match &callee.ty {
+            Type::Function(parameters, _)
+                if self.builtin_called(callee) == Some(crate::check::Builtin::AnchorCreate) =>
+            {
+                parameters.first().cloned()
             }
             _ => None,
         }
@@ -11748,7 +11778,8 @@ impl<'a, 'run> Checker<'a, 'run> {
         // The locks lend their callbacks a borrow of the locked value (`Arg::locked`).
         let locks = matches!(
             builtin,
-            crate::check::Builtin::MutexWith
+            crate::check::Builtin::AnchorRead
+                | crate::check::Builtin::MutexWith
                 | crate::check::Builtin::RwMutexWithRead
                 | crate::check::Builtin::RwMutexWithWrite
                 | crate::check::Builtin::CondWaitWith
@@ -13659,6 +13690,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             .locked_result(callee)
             .filter(|(_, callback)| arguments.len() > *callback);
         let sent = self.sent_item(callee).filter(|_| arguments.len() >= 2);
+        let anchored = self
+            .anchored_value(callee)
+            .filter(|_| !arguments.is_empty());
         // A direct call of `Owned.function` checks its argument for borrows below (A30), so the
         // callee is not evaluated as a value, which `eval_value` rejects.
         let owned_function = !arguments.is_empty()
@@ -13684,7 +13718,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             ) => arguments.len() >= 2,
             _ => false,
         };
-        let value = if locked.is_some() || sent.is_some() || owned_function {
+        let value = if locked.is_some() || sent.is_some() || anchored.is_some() || owned_function {
             Value::default()
         } else {
             // A31: a callee read from a place is called where it is, not copied: the call drops
@@ -13733,7 +13767,10 @@ impl<'a, 'run> Checker<'a, 'run> {
             // applies the builtin to its own parameters proves nothing: its callers are checked.
             // `OnceValue.get` keeps the value in the cell, which outlives any borrow: its
             // initializer may hold none, from outside either (TZ06).
-            let kept = self.builtin_called(callee) == Some(crate::check::Builtin::OnceValueGet);
+            let kept = matches!(
+                self.builtin_called(callee),
+                Some(crate::check::Builtin::OnceValueGet | crate::check::Builtin::AnchorUpdate)
+            );
             if let Some((returned, callback)) = &locked
                 && index == *callback
                 && returned.carries_loans(&self.module.types())
@@ -13742,18 +13779,43 @@ impl<'a, 'run> Checker<'a, 'run> {
             {
                 let builtin = self.builtin_called(callee);
                 let name = builtin.map_or("Mutex.with_lock", |b| b.name());
-                let message = if builtin == Some(crate::check::Builtin::OnceValueGet) {
-                    format!(
-                        "{name} initializers must return values proven free of borrowed environments: the cell keeps the value after the borrowed data is gone; return an owned value, or a function that captures a copy"
-                    )
-                } else {
-                    format!(
-                        "{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"
-                    )
+                let (kind, message) = match builtin {
+                    Some(crate::check::Builtin::OnceValueGet) => (
+                        DiagnosticKind::MutexResultRetainsBorrow,
+                        format!(
+                            "{name} initializers must return values proven free of borrowed environments: the cell keeps the value after the borrowed data is gone; return an owned value, or a function that captures a copy"
+                        ),
+                    ),
+                    Some(crate::check::Builtin::AnchorUpdate) => (
+                        DiagnosticKind::AnchorValueRetainsBorrow,
+                        format!(
+                            "{name} callbacks must return values proven free of borrowed environments: the anchor table keeps the value beyond borrowed scopes; return an owned value, or a function that captures a copy"
+                        ),
+                    ),
+                    Some(crate::check::Builtin::AnchorRead) => (
+                        DiagnosticKind::AnchorResultRetainsBorrow,
+                        format!(
+                            "{name} results must be proven free of borrowed environments: a reference or function borrowing the anchored value would use it after the read ends; return an owned value, or a function that captures a copy"
+                        ),
+                    ),
+                    _ => (
+                        DiagnosticKind::MutexResultRetainsBorrow,
+                        format!(
+                            "{name} results must be proven free of borrowed environments: a function or other value that holds a borrow of the locked value would use it after the lock is released; return an owned value, or a function that captures a copy"
+                        ),
+                    ),
                 };
+                return Err(error(kind, message, argument.span));
+            }
+            if index == 0
+                && let Some(item) = &anchored
+                && item.carries_loans(&self.module.types())
+                && !value.loans.is_empty()
+                && !self.is_generated_parameter(argument)
+            {
                 return Err(error(
-                    DiagnosticKind::MutexResultRetainsBorrow,
-                    message,
+                    DiagnosticKind::AnchorValueRetainsBorrow,
+                    "Anchor.create values must be proven free of borrowed environments: the anchor table keeps the value beyond borrowed scopes; pass an owned value, or a function that captures a copy",
                     argument.span,
                 ));
             }
@@ -13804,6 +13866,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
+                None if self.builtin_called(callee)
+                    == Some(crate::check::Builtin::AnchorUpdate)
+                    && index == 0 => {}
                 // A28: `Rc.share` and its kin hold what the borrowed owner holds, when that is
                 // the body's own (`read_through`).
                 None if index == 0 && read_through => {
@@ -14053,6 +14118,17 @@ impl<'a, 'run> Checker<'a, 'run> {
                 let end = if builtin.is_data_channel() { "sender" } else { "channel" };
                 return Err(error(DiagnosticKind::MustApplyDirectly,
                     format!("{} must be fully applied directly when its item may hold a borrow, so that the item can be checked: call it with the {end} and the item together", builtin.name()),
+                    expression.span,
+                ));
+            }
+            E::Function(_)
+                if self
+                    .anchored_value(expression)
+                    .is_some_and(|item| item.carries_loans(&self.module.types())) =>
+            {
+                return Err(error(
+                    DiagnosticKind::MustApplyDirectly,
+                    "Anchor.create must be applied directly when its value may hold a borrow, so that the value can be checked: call it with the value directly",
                     expression.span,
                 ));
             }
@@ -14515,6 +14591,19 @@ impl<'a, 'run> Checker<'a, 'run> {
                 {
                     return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
                 }
+                let anchor_create = *operator == BinaryOp::Pipe
+                    && self.builtin_called(right) == Some(crate::check::Builtin::AnchorCreate);
+                if anchor_create
+                    && left.ty.carries_loans(&self.module.types())
+                    && !value.loans.is_empty()
+                    && !self.is_builtin_wrapper_parameter(left)
+                {
+                    return Err(error(
+                        DiagnosticKind::AnchorValueRetainsBorrow,
+                        "Anchor.create values must be proven free of borrowed environments: the anchor table keeps the value beyond borrowed scopes; pass an owned value, or a function that captures a copy",
+                        left.span,
+                    ));
+                }
                 self.held.push(value.clone());
                 // A28: `x |> f a` completes `f a x`, and `x |> f` into a unary `f` completes
                 // `f x`, so the facts of `f` select its arguments' loans as in `eval_call`.
@@ -14522,7 +14611,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     .then(|| self.piped_callee(expression, right))
                     .flatten();
                 let mut piped = None;
-                let callee = if owned_function {
+                let callee = if owned_function || anchor_create {
                     Value::default()
                 } else if let Some(id) = completed {
                     let (callee, values) = self.eval_piped_arguments(id, right, &during)?;

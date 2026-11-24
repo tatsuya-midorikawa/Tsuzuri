@@ -1,0 +1,15 @@
+@trusted
+extern "w06_gui_window" def make_window :: unit -> i64
+
+@trusted
+extern "w06_gui_wait" def wait_window :: i64 -> i64
+
+@trusted
+extern "w06_gui_post" def post_window :: i64 -> i64u -> i64
+
+def main :: unit -> i32 = \() ->
+    let w = make_window ()
+    tzroutine {
+        let _sent = post_window w 1i64u
+    }
+    (wait_window w) as i32

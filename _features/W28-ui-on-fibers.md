@@ -30,7 +30,7 @@ Win32 のアプリを Tsuzuri だけで書くとき（[GUIDE D-63](GUIDE.md#d-63
 
 ### 着手条件
 
-- [W06](W06-windows-gui-test-harness.md) が done（GUI を描かずに検査する段、C の補助の置き場、窓を自分で閉じる書き方、`timeout` の包み）。`node scripts/repo-kb.mjs brief W28`。
+- [W06](_completed/W06-windows-gui-test-harness.md) が done（GUI を描かずに検査する段、C の補助の置き場、窓を自分で閉じる書き方、`timeout` の包み）。`node scripts/repo-kb.mjs brief W28`。
 - Windows の開発機（MSVC の Developer PowerShell と LLVM の clang、および同梱の MinGW の `tsuzuri-clang`）。
 
 ### 停止条件
@@ -48,7 +48,7 @@ Win32 のアプリを Tsuzuri だけで書くとき（[GUIDE D-63](GUIDE.md#d-63
 3. **固定した G はずっと自分の Fiber の上にいる**: `with_locked_thread` は `src/llvm.rs` の `routine_builtin` で `tsuzuri_tz_lock_thread` → 関数の呼び出し → `tsuzuri_tz_unlock_thread` に下がる。固定した G の待ち（`tzr_park_locked`）と譲渡（`tzr_yield_locked`）は g0 へ切り替えず、その OS スレッドを眠らせる。コールバックの入口（`tsuzuri_tz_callback_enter`）も G を M に固定する。UI の処理はすべて G の Fiber の上で走る。M のスレッド自体は 256 KiB（`tzr_thread_start(tzr_mstart, m, 256 * 1024, …)`）で、g0 だけが使う。
 4. **`main` のスレッドのスタック**: `main` のトップレベルは擬似 G で、OS のスレッドの自前のスタックで走る（Fiber ではない。`tsuzuri_tz_callback_enter` は 0 を返して P を扱わない）。予約は実行ファイルの PE ヘッダーで決まり、driver は `/STACK` を渡さない。`Time.sleep` だけのプログラムを `llvm-readobj --file-headers` で見ると、`SizeOfStackReserve` は MSVC の link で 1048576（1 MiB）、同梱の MinGW（Zig）で 16777216（16 MiB）だった。**MSVC では `main` のスレッドも Fiber と同じ 1 MiB** で、「`main` で動かせばスタックに余裕がある」とは言えない。
 5. **Fiber で測れること**（起票時に Windows 11 Enterprise 10.0.26300、同梱の MinGW でビルドした小さな C で確認し、削除した）: Fiber の中の `GetCurrentThreadStackLimits` は Fiber の範囲（1024 KiB）を返し、局所変数のアドレスはその中にあった。`NT_TIB` の `StackBase − StackLimit`（コミット済みの大きさ）は最初 64 KiB で、256 KiB の再帰の後は 268 KiB に増えた（減らないので、最大の目安になる）。`SetThreadStackGuarantee` は Fiber ごとで、Fiber で 64 KiB にした後、元のスレッドの Fiber では 0 のまま、Fiber に戻ると 64 KiB だった。MSVC のビルドと Arm64 では未確認。
-6. **溢れたとき**: `async-tasks-and-lazy/tzroutine.md` は「Windows では理由なしで終わります」と書く（`src/runtime/stack.c` の報告は POSIX だけ）。Windows の報告は [W07](W07-windows-trap-fail-fast.md) の VEH が扱う予定。
+6. **溢れたとき**: `async-tasks-and-lazy/tzroutine.md` は「Windows では理由なしで終わります」と書く（`src/runtime/stack.c` の報告は POSIX だけ）。Windows の報告は [W07](_completed/W07-windows-trap-fail-fast.md) の VEH が扱う予定。
 7. **文書と検証**: `routine.md`（`Routine.with_locked_thread` の節）と `native-interop.md`（tzroutine の節）は、GUI の UI スレッドに `with_locked_thread` を勧めるが、Fiber のスタックの上で動くことは書いていない。UI の処理を Fiber の上で動かすテストはない（`tests/windows.mjs` に GUI の段はまだない。W06 が足す）。
 
 ## 仕様
@@ -95,8 +95,8 @@ C の補助は 1 つの関数 `int64_t tz_ui_scenario(int32_t which, int64_t (*w
 
 ## 前提とする他チケットのインターフェース
 
-- [W06](W06-windows-gui-test-harness.md) の仕様 4: `tests/windows.mjs` の GUI の段（`--stage gui` で単独でも回る）、`buildGui(fixture, flags = [])`（`tests/fixtures/windows_gui/<fixture>` を shim と `-l user32` 付きでビルドして exe のパスを返す）、`tests/windows_gui_shim.c` の `tz_gui_pump(int64_t (*on_message)(uint32_t, uint64_t, int64_t), int64_t expected)`（5 秒の見張りのタイマーで必ず終わる）、`vscode.yml` の「Windows GUI stage with the bundled toolchain」。W06 の実装で名前が変わっていたら、W06 に合わせる。
-- [W07](W07-windows-trap-fail-fast.md)（設計 4 だけ）: Windows の `STATUS_STACK_OVERFLOW` を報告する first-chance の VEH。
+- [W06](_completed/W06-windows-gui-test-harness.md) の仕様 4: `tests/windows.mjs` の GUI の段（`--stage gui` で単独でも回る）、`buildGui(fixture, flags = [])`（`tests/fixtures/windows_gui/<fixture>` を shim と `-l user32` 付きでビルドして exe のパスを返す）、`tests/windows_gui_shim.c` の `tz_gui_pump(int64_t (*on_message)(uint32_t, uint64_t, int64_t), int64_t expected)`（5 秒の見張りのタイマーで必ず終わる）、`vscode.yml` の「Windows GUI stage with the bundled toolchain」。W06 の実装で名前が変わっていたら、W06 に合わせる。
+- [W07](_completed/W07-windows-trap-fail-fast.md)（設計 4 だけ）: Windows の `STATUS_STACK_OVERFLOW` を報告する first-chance の VEH。
 
 ## 他チケットへ提供するインターフェース
 

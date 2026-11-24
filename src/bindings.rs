@@ -153,6 +153,7 @@ fn descriptor(ty: &Type, module: &CheckedModule) -> Value {
         Type::FixedArray(element, _) => {
             json!(["array", descriptor(element, module), fixed_length(ty)])
         }
+        Type::FnPtr(inner) => descriptor(inner, module),
         Type::Function(parameters, result) => json!([
             "callback",
             host_parameters(parameters)
@@ -178,9 +179,10 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
         match viewed.as_ref() {
             Type::Reference(inner, _) => visit(inner, module, records),
             ty @ Type::Record(id, arguments)
-                if records
-                    .insert(record_name(ty, module), ty.clone())
-                    .is_none() =>
+                if !crate::abi::zstring(ty, &module.types())
+                    && records
+                        .insert(record_name(ty, module), ty.clone())
+                        .is_none() =>
             {
                 for field in module.types().record_fields(*id, arguments) {
                     visit(&field, module, records);
@@ -212,6 +214,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
                 handles.insert(handle_c_name(name));
             }
             Type::Reference(inner, _) => visit(inner, types, handles),
+            Type::FnPtr(inner) => visit(inner, types, handles),
             Type::Function(parameters, result) => {
                 parameters.iter().for_each(|ty| visit(ty, types, handles));
                 visit(result, types, handles);
@@ -447,6 +450,7 @@ fn typescript_type_with(ty: &Type, module: &CheckedModule, input: bool, borrow: 
         Type::FixedArray(element, _) => {
             format!("readonly {}[]", typescript_type(element, module, input))
         }
+        Type::FnPtr(inner) => typescript_type(inner, module, input),
         Type::Function(parameters, result) => format!(
             "({}) => {}",
             host_parameters(parameters)
@@ -477,6 +481,9 @@ fn typed_array(buffer: Buffer) -> &'static str {
         Buffer::I64 => "BigInt64Array",
         Buffer::F64 => "Float64Array",
         Buffer::UByte => "Uint8Array",
+        Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+            unreachable!("native-only extern buffers are rejected on WASM")
+        }
         Buffer::String | Buffer::Utf8String => unreachable!("strings are JavaScript strings"),
     }
 }

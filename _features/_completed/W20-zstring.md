@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [W13](W13-extern-ref-mut-and-mutable-buffers.md) |
 | 後続 | [W21](W21-c-layout-records.md)（Phase 2: `ref ZString` の field）、[W27](W27-win32-package-from-winmd.md)（PCWSTR → `ref ZString`） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（D-17 の扱い、D-55）。決定事項 D1・D2 が要承認、ほかは既定案。方針は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
 | 手本にする既存実装 | `std/Timer.tz`（不透明な std の record と opt-in のモジュール。`src/stdlib.rs` の `opaque_record`・`OPT_IN`・`RESERVED_MODULES`）、TZ05 の組み込み `Time.after`（std の型を名指す組み込み）、`src/const_static.rs` と `src/llvm.rs` の `static_definition`・`static_operand`（読み取り専用の静的データと `Borrow(Static)`）、`std/String.tz` の `new [i16u](n, \index -> … text[index] …)`、`src/llvm_imports.rs` の `host_call` の共有バッファの経路 |

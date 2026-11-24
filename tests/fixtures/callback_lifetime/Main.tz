@@ -1,0 +1,86 @@
+@trusted
+extern "w12_register" def register :: (i64 -> i64) -> unit
+
+@trusted
+extern "w22_register_tagged" def register_tagged :: i64 -> FnPtr<(i64 -> i64)> -> unit
+
+@trusted
+extern "w12_fire" def fire :: i64 -> i64
+
+@trusted
+extern "w12_run_thread_sum" def run_thread_sum :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_run_thread_sum" def run_thread_sum_ptr :: FnPtr<(i64 -> i64)> -> i64 -> i64
+
+@trusted
+extern "w12_pool_submit_wait" def pool_submit_wait :: (i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w12_pool_submit_wait" def pool_submit_wait_ptr :: FnPtr<(i64 -> i64)> -> i64 -> i64
+
+@trusted
+extern "w12_host_mark" def host_mark :: i64 -> unit
+
+@trusted
+extern "w12_start_idle_host_thread" def start_idle_host_thread :: (i64 -> i64) -> unit
+
+@trusted
+extern "w12_register_atexit" def register_atexit :: (i64 -> i64) -> unit
+
+record HandlerEntry {
+    proc: FnPtr<(i64 -> i64)>,
+}
+
+def triple :: i64 -> i64 = \x -> x * 3
+
+pure def plus_ten :: i64 -> i64 = \x -> x + 10
+
+def on_pool :: i64 -> i64 = \x ->
+    tzroutine {
+        Time.sleep (15 * Time.millisecond())
+        host_mark (x * 10)
+    }
+    x + 1
+
+def anchor_bump :: i64 -> i64 = \tok ->
+    match Anchor.update (\(n: i64) -> n + 1) tok with
+    | Result.Ok () -> 1
+    | Result.Error Anchor.WrongThread -> 100
+    | Result.Error _ -> -1000
+
+def main :: Array<string> -> i32 = \args ->
+    let has_arg = Array.length args > 0
+    if has_arg && args[0] == "deadlock" then
+        start_idle_host_thread triple
+        let ch: Channel<i64> = Channel.make 0
+        let _r = Channel.recv ch
+        0
+    elif has_arg && args[0] == "after_main" then
+        register_atexit triple
+        42
+    else
+        register triple
+        let stored = fire 14
+        let threaded = run_thread_sum triple 1000
+        let marked = pool_submit_wait on_pool 7
+        // W22: store FnPtr in a record & array, partially apply extern taking FnPtr, and invoke across threads + tzroutine scope.
+        let entry = HandlerEntry { proc: FnPtr.of triple }
+        let reg = register_tagged 99
+        reg entry.proc
+        let via_record = fire 14
+        let table: [FnPtr<(i64 -> i64)>] = [FnPtr.of triple, FnPtr.of plus_ten]
+        let via_table = run_thread_sum_ptr table[1] 100
+        let via_pool = pool_submit_wait_ptr (FnPtr.of on_pool) 9
+        // W23: same-thread host callback updates Anchor; another host thread receives WrongThread.
+        let anchor = Anchor.create 0i64
+        let tok = Anchor.token (ref anchor)
+        register anchor_bump
+        let _b1 = fire tok
+        let _b2 = fire tok
+        let _b3 = fire tok
+        let same_thread_val = match Anchor.read (\(n: ref i64) -> deref n) tok with
+            | Result.Ok v -> v
+            | Result.Error _ -> -1
+        let other_thread_val = pool_submit_wait anchor_bump tok
+        if stored == 42 && via_record == 42 && threaded == 1501500 && via_table == 6050 && marked == 78 && via_pool == 100 && same_thread_val == 3 && other_thread_val == 100 then 42 else 1

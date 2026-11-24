@@ -6,10 +6,35 @@
 #if defined(_WIN32)
 #include <fcntl.h>
 #include <io.h>
+#include <stdlib.h>
 #define TZ_IO_API
+static void __cdecl tz_io_quiet(const wchar_t *expr, const wchar_t *func, const wchar_t *file, unsigned int line, uintptr_t reserved) {
+    (void)expr;
+    (void)func;
+    (void)file;
+    (void)line;
+    (void)reserved;
+}
+_invalid_parameter_handler __cdecl _set_thread_local_invalid_parameter_handler(_invalid_parameter_handler);
 #else
+#include <fcntl.h>
+#include <unistd.h>
 #define TZ_IO_API __attribute__((weak, visibility("hidden")))
 #endif
+
+/* W08: whether the standard stream `fd` does not exist, asked only after a read or write on it failed. */
+static int tz_io_absent(int fd) {
+#if defined(_WIN32)
+    errno = 0;
+    intptr_t handle = _get_osfhandle(fd); /* under tz_io_quiet: a closed descriptor gives -1 and EBADF */
+    return handle == -2 || (handle == -1 && errno == EBADF); /* -2 is _NO_CONSOLE_FILENO: no handle at startup */
+#else
+    int saved = errno;
+    int absent = fcntl(fd, F_GETFD) == -1 && errno == EBADF;
+    errno = saved;
+    return absent;
+#endif
+}
 
 extern void *tsuzuri_alloc(int64_t size);
 extern void tsuzuri_free(void *pointer);
@@ -44,11 +69,11 @@ __attribute__((weak, visibility("hidden"))) void (*_Atomic tsuzuri_blocking_exit
 #define TZ_BLOCKING_EXIT() TZ_BLOCKING_CALL(tsuzuri_blocking_exit_hook)
 #endif
 
-static int32_t tz_io_read_line_now(struct tz_io_buffer *output) {
+static int32_t tz_io_read_line_inner(struct tz_io_buffer *output) {
     output->data = NULL;
     output->length = 0;
 #if defined(_WIN32)
-    if (_setmode(0, _O_BINARY) == -1) return 2;
+    if (_setmode(0, _O_BINARY) == -1) return tz_io_absent(0) ? 3 : 2;
 #endif
     int64_t capacity = 0;
     for (;;) {
@@ -63,7 +88,7 @@ static int32_t tz_io_read_line_now(struct tz_io_buffer *output) {
                 tsuzuri_free(output->data);
                 output->data = NULL;
                 output->length = 0;
-                return 2;
+                return tz_io_absent(0) ? 3 : 2;
             }
             return output->length == 0 ? 1 : 0;
         }
@@ -91,6 +116,17 @@ static int32_t tz_io_read_line_now(struct tz_io_buffer *output) {
     }
 }
 
+static int32_t tz_io_read_line_now(struct tz_io_buffer *output) {
+#if defined(_WIN32)
+    _invalid_parameter_handler previous = _set_thread_local_invalid_parameter_handler(tz_io_quiet);
+    int32_t status = tz_io_read_line_inner(output);
+    _set_thread_local_invalid_parameter_handler(previous);
+    return status;
+#else
+    return tz_io_read_line_inner(output);
+#endif
+}
+
 // TZ08: a tzroutine in this call lets its P go.
 TZ_IO_API int32_t tsuzuri_io_read_line(struct tz_io_buffer *output) {
     TZ_BLOCKING_ENTER();
@@ -99,19 +135,32 @@ TZ_IO_API int32_t tsuzuri_io_read_line(struct tz_io_buffer *output) {
     return status;
 }
 
-static int32_t tz_io_write_now(int32_t destination, const unsigned char *data, int64_t length) {
+static int32_t tz_io_write_inner(int32_t destination, const unsigned char *data, int64_t length) {
     if ((destination != 1 && destination != 2) || length < 0) return 1;
 #if defined(_WIN32)
-    if (_setmode(destination, _O_BINARY) == -1) return 1;
+    if (_setmode(destination, _O_BINARY) == -1) return tz_io_absent(destination) ? 2 : 1;
+#else
+    if (length == 0 && tz_io_absent(destination)) return 2;
 #endif
     FILE *stream = destination == 1 ? stdout : stderr;
     int64_t offset = 0;
     while (offset < length) {
         size_t written = fwrite(data + offset, 1, (size_t)(length - offset), stream);
         offset += (int64_t)written;
-        if (ferror(stream) || written == 0) return 1;
+        if (ferror(stream) || written == 0) return tz_io_absent(destination) ? 2 : 1;
     }
-    return fflush(stream) == 0 ? 0 : 1;
+    return fflush(stream) == 0 ? 0 : (tz_io_absent(destination) ? 2 : 1);
+}
+
+static int32_t tz_io_write_now(int32_t destination, const unsigned char *data, int64_t length) {
+#if defined(_WIN32)
+    _invalid_parameter_handler previous = _set_thread_local_invalid_parameter_handler(tz_io_quiet);
+    int32_t status = tz_io_write_inner(destination, data, length);
+    _set_thread_local_invalid_parameter_handler(previous);
+    return status;
+#else
+    return tz_io_write_inner(destination, data, length);
+#endif
 }
 
 // TZ08: a tzroutine in this call lets its P go.

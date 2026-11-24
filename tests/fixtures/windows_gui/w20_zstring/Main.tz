@@ -1,0 +1,43 @@
+extern type copy Hwnd
+
+@trusted
+extern "w06_gui_window" def create_window :: unit -> Hwnd
+
+@trusted
+extern "w12_gui_destroy" def destroy_window :: ref Hwnd -> i64
+
+@trusted pure no_alloc
+extern "lstrlenW" def lstrlen :: ref ZString -> i32
+
+@trusted pure no_alloc
+extern "lstrlenW" def lstrlen_opt :: Maybe<ref ZString> -> i32
+
+@trusted
+extern "SetWindowTextW" def set_window_text :: ref Hwnd -> ref ZString -> i32
+
+@trusted
+@count(2, i32)
+extern "GetWindowTextW" def get_window_text :: ref Hwnd -> ref mut [i16u..] -> i32
+
+def rename :: ref Hwnd -> ref string -> Result<i32, ZString.Error> = \hwnd text ->
+    match ZString.of text with
+    | Result.Ok title -> Result.Ok (set_window_text hwnd (ref title))
+    | Result.Error error -> Result.Error error
+
+def read_title :: ref Hwnd -> string = \hwnd ->
+    let mut units: [i16u] = new [i16u](64, \_ -> 0i16u)
+    let n = get_window_text hwnd (ref mut units)
+    String.from_code_units (Array.truncate (n as i64) (ref units))
+
+def main :: unit -> i32 = \() ->
+    let hwnd = create_window ()
+    let n_static = lstrlen (ZString.literal "Tsuzuri")
+    let n_null = lstrlen_opt Maybe.None
+    let n_some = lstrlen_opt (Maybe.Some (ZString.literal "Win32"))
+    let dynamic_title = "Tsuzuri ZString 😀"
+    let renamed = match rename (ref hwnd) (ref dynamic_title) with
+        | Result.Ok ok -> ok != 0i32
+        | Result.Error _ -> false
+    let got = read_title (ref hwnd)
+    let _d = destroy_window (ref hwnd)
+    if n_static == 7i32 && n_null == 0i32 && n_some == 5i32 && renamed && got == dynamic_title then 42i32 else 1i32

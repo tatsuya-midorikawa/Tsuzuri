@@ -1,0 +1,13 @@
+@trusted
+extern "w07_gui_timer_proc" def run_timer_proc :: (i64u -> i64) -> i64 -> i64
+
+@trusted
+extern "w06_gui_mark" def mark :: ref string -> unit
+
+def on_tick :: i64u -> i64 = \id ->
+    10 / ((id as i64) - 9)
+
+def main :: Array<string> -> i32 = \args ->
+    let _r = run_timer_proc on_tick 1
+    if Array.length args > 0 then mark (ref args[0]) else ()
+    77

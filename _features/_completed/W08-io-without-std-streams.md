@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | – |
 | 後続 | [W09](W09-windows-gui-subsystem.md)、[W32](W32-silent-write-failures.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（意味の選択。決定事項 D1・D2。D2 の `IO.Error` への case の追加は、`docs/stability.md` の「既知の例外」の「std の union への case の追加」に当たり、別の承認が要る） |
 | 手本にする既存実装 | `src/runtime/io.c` の `tz_io_write_now`・`tz_io_read_line_now`（状態の数を返す形）、`std/IO.tc` の `try_output`・`try_readln`（状態の数から `Result` を作る形）、`src/llvm.rs` の `windows_abi`（Windows の出力だけ IR を書き換える後処理）、`tests/io.mjs` の閉じた標準出力の検査（読み取り専用の fd を標準出力に渡す） |

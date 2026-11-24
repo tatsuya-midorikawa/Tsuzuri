@@ -1,6 +1,6 @@
 record IO<'a> { work: unit -> 'a }
 
-union Error = ReadFailed | WriteFailed | InvalidEncoding
+union Error = ReadFailed | WriteFailed | InvalidEncoding | Unavailable
 
 /// An action that gives `value` and has no other effect.
 ///
@@ -81,8 +81,8 @@ def BindReturn :: own IO<'a> -> own ('a -> 'b) -> IO<'b>
 fn BindReturn action transform = map transform action
 
 /// An action that reads one line of standard input without its LF or CRLF: `Some` line, `None` at
-/// the end of the input, `Error ReadFailed` when the read fails, or `Error InvalidEncoding` for a
-/// line that is not valid UTF-8.
+/// the end of the input, `Error Unavailable` when standard input does not exist, `Error ReadFailed`
+/// when the read fails, or `Error InvalidEncoding` for a line that is not valid UTF-8.
 ///
 /// ```tsuzuri
 /// let! line = IO.try_readln ()
@@ -99,6 +99,7 @@ fn try_readln _unit = IO { work: \() ->
         | Maybe.Some text -> Result.Ok (Maybe.Some (String.from_utf8 (ref text)))
         | Maybe.None -> Result.Error InvalidEncoding
     | (1, _) -> Result.Ok Maybe.None
+    | (3, _) -> Result.Error Unavailable
     | _ -> Result.Error ReadFailed
 }
 
@@ -118,13 +119,16 @@ fn try_output destination newline value = IO { work: \() ->
     if String.is_well_formed (ref text) then
         let output = if newline then text + "\n" else text
         let bytes = Utf8String.from_string (ref output)
-        if IO.__write destination (ref bytes) == 0 then Result.Ok () else Result.Error WriteFailed
+        match IO.__write destination (ref bytes) with
+        | 0 -> Result.Ok ()
+        | 2 -> Result.Error Unavailable
+        | _ -> Result.Error WriteFailed
     else Result.Error InvalidEncoding
 }
 
 /// An action that writes the display form of `value` to standard output without a newline, giving
-/// `Error InvalidEncoding` for a text that is not well formed and `Error WriteFailed` when the
-/// write fails.
+/// `Error InvalidEncoding` for a text that is not well formed, `Error Unavailable` when standard
+/// output does not exist, and `Error WriteFailed` when the write fails.
 ///
 /// ```tsuzuri run=hi!
 /// let! written = IO.try_write "hi"

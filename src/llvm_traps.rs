@@ -437,6 +437,16 @@ const BACKTRACE_HEAD: &str =
 /// compile of IR follows, which lets `src/runtime/backtrace.c` walk the chain of frame records. It goes before the
 /// debug location, or else before the body's brace.
 pub(super) fn with_frame_pointers(ir: &str) -> String {
+    with_function_attribute(ir, " \"frame-pointer\"=\"all\"")
+}
+
+/// W07: adds `uwtable` to every function that Windows IR defines so COFF `.pdata`/`.xdata` unwind
+/// entries are emitted for debuggers, WER crash dumps, and future Windows trap boundaries (W35).
+pub fn with_unwind_tables(ir: &str) -> String {
+    with_function_attribute(ir, " uwtable")
+}
+
+fn with_function_attribute(ir: &str, attribute: &str) -> String {
     let mut output = String::with_capacity(ir.len() + ir.len() / 16);
     for line in ir.split_inclusive('\n') {
         let start = if line.starts_with("define ") {
@@ -447,18 +457,28 @@ pub(super) fn with_frame_pointers(ir: &str) -> String {
             None
         };
         let index = start.and_then(|start| {
-            line[start..]
-                .find(" !dbg ")
-                .or_else(|| line[start..].rfind(" {"))
-                .map(|index| start + index)
+            let after_params =
+                callable(&line[start..], true).map_or(start, |call| start + call.close + 1);
+            let rest = &line[after_params..];
+            [
+                rest.find(" section \""),
+                rest.find(" comdat"),
+                rest.find(" align "),
+                rest.find(" !dbg "),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .or_else(|| rest.rfind(" {"))
+            .map(|index| after_params + index)
         });
-        match index {
-            Some(index) => {
+        match (start, index) {
+            (Some(start), Some(index)) if !line[start..index].contains(attribute) => {
                 output.push_str(&line[..index]);
-                output.push_str(" \"frame-pointer\"=\"all\"");
+                output.push_str(attribute);
                 output.push_str(&line[index..]);
             }
-            None => output.push_str(line),
+            _ => output.push_str(line),
         }
     }
     output
@@ -503,11 +523,13 @@ pub(super) fn instrument_with(
         } else if let (Some(function), Some(call)) = (&current, callable(line, false)) {
             let entry = functions.get_mut(function).unwrap();
             if call.name == "@llvm.trap" {
-                entry.kinds.insert(
-                    marker
-                        .and_then(|(_, kind)| kind)
-                        .unwrap_or_else(|| runtime_kind(function)),
-                );
+                if function != "@tz.callback.after_main" {
+                    entry.kinds.insert(
+                        marker
+                            .and_then(|(_, kind)| kind)
+                            .unwrap_or_else(|| runtime_kind(function)),
+                    );
+                }
             } else if call.name.starts_with('%') {
                 entry.indirect = true;
             } else {
@@ -572,6 +594,7 @@ pub(super) fn instrument_with(
     // TZ05: a program with timers hands `@tz.free` to the runtime, which frees a channel's block with
     // it as `void (*)(void *)`; every other program keeps its instrumented `@tz.free`.
     let free_handed = ir.contains("ptr @tz.free,") || ir.contains("ptr @tz.free)");
+    let alloc_handed = ir.contains("ptr @tz.alloc,") || ir.contains("ptr @tz.alloc)");
     let managed: BTreeSet<_> = functions
         .keys()
         .filter(|name| {
@@ -582,11 +605,13 @@ pub(super) fn instrument_with(
                 // TZ02: the tzroutine runtime calls these as `void (*)(void *)`.
                 && !name.starts_with("@tz.tzroutine.start.")
                 && name.as_str() != "@tz.tzroutine.owned"
-                // TZ05 and TZ06: the timers and WaitGroup.go call these too.
+                // TZ05, TZ06 and W23: timers, WaitGroup.go and Anchor call these too.
                 && name.as_str() != "@tz.tzroutine.owned.drop"
                 && !name.starts_with("@tz.waitgroup.go")
+                && !name.starts_with("@tz.anchor.drop.")
                 // E12/NS01: host C and WASM callers invoke `@tz.callback.*` directly without `%tz.context`.
                 && !name.starts_with("@tz.callback.")
+                && !(alloc_handed && name.as_str() == "@tz.alloc")
                 && !(free_handed && name.as_str() == "@tz.free")
         })
         .cloned()
@@ -637,7 +662,7 @@ pub(super) fn instrument_with(
                     .map(|(span, _)| span)
                     .or_else(|| source.map(|(span, _)| *span))
                     .unwrap_or(fallback);
-                if call.name == "@llvm.trap" {
+                if call.name == "@llvm.trap" && function != "@tz.callback.after_main" {
                     let kind = marker
                         .and_then(|(_, kind)| kind)
                         .unwrap_or_else(|| runtime_kind(&function));
@@ -776,7 +801,9 @@ pub(super) fn instrument_with(
             );
         }
         output.push_str(report_done(backtrace));
-        output.push_str(TRAP_WRITE);
+        if !output.contains("define internal void @tz.trap.write(") {
+            output.push_str(TRAP_WRITE);
+        }
     } else {
         if !output.contains("declare i64 @write(") {
             output.push_str("\ndeclare i64 @write(i32, ptr, i64)\n");
@@ -826,7 +853,9 @@ pub(super) fn instrument_with(
             );
         }
         output.push_str(report_done(backtrace));
-        output.push_str(TRAP_WRITE);
+        if !output.contains("define internal void @tz.trap.write(") {
+            output.push_str(TRAP_WRITE);
+        }
     }
     // B10: `Domain.__message` reads the text of a site from a table that only a program that asks for it has.
     if output.contains("call ptr @tz.trap.text(") {
@@ -991,6 +1020,116 @@ emit:\n\
 exit:\n\
   ret void\n\
 }\n";
+
+/// W07: terminates the process via `RaiseFailFastException` with `STATUS_ILLEGAL_INSTRUCTION`
+/// (`0xC000001D`) and `site` in `ExceptionInformation[0]`, bypassing SEH exception filters.
+pub(crate) const TRAP_FAIL_WINDOWS: &str = "define internal void @tz.trap.fail(i32 %site) cold noreturn nounwind {\n\
+entry:\n\
+  %record = alloca [152 x i8], align 8\n\
+  store [152 x i8] zeroinitializer, ptr %record, align 8\n\
+  store i32 -1073741795, ptr %record, align 8\n\
+  %flags = getelementptr inbounds i8, ptr %record, i64 4\n\
+  store i32 1, ptr %flags, align 4\n\
+  %nparams = getelementptr inbounds i8, ptr %record, i64 24\n\
+  store i32 1, ptr %nparams, align 8\n\
+  %info0 = getelementptr inbounds i8, ptr %record, i64 32\n\
+  %site64 = zext i32 %site to i64\n\
+  store i64 %site64, ptr %info0, align 8\n\
+  call void @RaiseFailFastException(ptr %record, ptr null, i32 3)\n\
+  unreachable\n\
+}\n";
+
+/// W07: first-chance vectored exception handler and `tsuzuri_trap_install` for Windows executables.
+/// Promotes stack overflows (after writing `trap: stack overflow\n`) and trap instructions inside
+/// the executable image (`ud2` on x86-64, `brk #0x1` on Arm64) to non-continuable fail-fast.
+pub(crate) fn trap_veh_windows(aarch64: bool) -> String {
+    let (trap_size, insn_check) = if aarch64 {
+        (
+            4,
+            "  %insn = load i32, ptr %addr, align 1\n  %match = icmp eq i32 %insn, -736100320\n",
+        )
+    } else {
+        (
+            2,
+            "  %insn = load i16, ptr %addr, align 1\n  %match = icmp eq i16 %insn, 2831\n",
+        )
+    };
+    format!(
+        "@__ImageBase = external dso_local global i8\n\
+@tz.trap.overflow.msg = private unnamed_addr constant [21 x i8] c\"trap: stack overflow\\0A\"\n\
+define internal i32 @tz.trap.veh(ptr %info) nounwind {{\n\
+entry:\n\
+  %rec = load ptr, ptr %info, align 8\n\
+  %ctx_ptr = getelementptr inbounds i8, ptr %info, i64 8\n\
+  %ctx = load ptr, ptr %ctx_ptr, align 8\n\
+  %code = load i32, ptr %rec, align 4\n\
+  %is_overflow = icmp eq i32 %code, -1073741571\n\
+  br i1 %is_overflow, label %overflow, label %check_ud\n\
+overflow:\n\
+  call void @tz.trap.write(ptr @tz.trap.overflow.msg, i64 21)\n\
+  call void @RaiseFailFastException(ptr %rec, ptr %ctx, i32 0)\n\
+  ret i32 0\n\
+check_ud:\n\
+  %is_ud = icmp eq i32 %code, -1073741795\n\
+  br i1 %is_ud, label %check_range, label %pass\n\
+check_range:\n\
+  %addr_ptr = getelementptr inbounds i8, ptr %rec, i64 16\n\
+  %addr = load ptr, ptr %addr_ptr, align 8\n\
+  %addr_int = ptrtoint ptr %addr to i64\n\
+  %base_int = ptrtoint ptr @__ImageBase to i64\n\
+  %above = icmp uge i64 %addr_int, %base_int\n\
+  br i1 %above, label %check_end, label %pass\n\
+check_end:\n\
+  %lfanew_ptr = getelementptr inbounds i8, ptr @__ImageBase, i64 60\n\
+  %lfanew = load i32, ptr %lfanew_ptr, align 1\n\
+  %lfanew64 = sext i32 %lfanew to i64\n\
+  %size_ptr = getelementptr inbounds i8, ptr @__ImageBase, i64 %lfanew64\n\
+  %size_field = getelementptr inbounds i8, ptr %size_ptr, i64 80\n\
+  %img_size = load i32, ptr %size_field, align 1\n\
+  %img_size64 = zext i32 %img_size to i64\n\
+  %rva = sub i64 %addr_int, %base_int\n\
+  %end_rva = add i64 %rva, {trap_size}\n\
+  %in_image = icmp ule i64 %end_rva, %img_size64\n\
+  br i1 %in_image, label %check_insn, label %pass\n\
+check_insn:\n\
+{insn_check}  br i1 %match, label %fail_ud, label %pass\n\
+fail_ud:\n\
+  call void @RaiseFailFastException(ptr %rec, ptr %ctx, i32 0)\n\
+  ret i32 0\n\
+pass:\n\
+  ret i32 0\n\
+}}\n\
+define void @tsuzuri_trap_install() nounwind {{\n\
+entry:\n\
+  %guarantee = alloca i32, align 4\n\
+  store i32 65536, ptr %guarantee, align 4\n\
+  %ok = call i32 @SetThreadStackGuarantee(ptr %guarantee)\n\
+  %veh = call ptr @AddVectoredExceptionHandler(i32 1, ptr @tz.trap.veh)\n\
+  ret void\n\
+}}\n"
+    )
+}
+
+/// W04 / W07: ensures `@tz.trap.write` (Windows handle/debugger writer), `@tz.debugger.write`, and
+/// their Win32 declarations exist in `output` without duplicates.
+pub(crate) fn ensure_windows_report_writer(output: &mut String) {
+    if !output.contains("define internal void @tz.trap.write(") {
+        output.push_str(TRAP_WRITE_WINDOWS);
+    }
+    if !output.contains("define internal void @tz.debugger.write(") {
+        output.push_str(DEBUGGER_WRITE);
+    }
+    for declaration in [
+        "declare ptr @GetStdHandle(i32)",
+        "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+        "declare void @OutputDebugStringW(ptr)",
+        "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+    ] {
+        if !output.contains(declaration) {
+            let _ = writeln!(output, "{declaration}");
+        }
+    }
+}
 
 /// The module of each source file that has functions, by the index of the file.
 fn source_modules(module: &CheckedModule) -> BTreeMap<usize, String> {

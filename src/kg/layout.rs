@@ -57,6 +57,7 @@ fn collect_types(ty: &Type, found: &mut BTreeSet<Type>) {
             | Type::Utf8String
             | Type::Length(_)
             | Type::Handle(..)
+            | Type::FnPtr(_)
             | Type::Dyn(_) => {}
         }
     }

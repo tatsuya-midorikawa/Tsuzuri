@@ -1,0 +1,34 @@
+extern type local ThreadSlot
+
+@trusted
+extern "w19_open_local" def open_local :: unit -> ThreadSlot
+@trusted
+extern "w19_use_local" def use_local :: ref ThreadSlot -> i64 -> i64
+@trusted
+extern "w19_close_local" def close_local :: own ThreadSlot -> i64
+
+def work_pinned :: unit -> i64 = \() ->
+    let slot = open_local ()
+    for step = 1 to 16 do
+        Routine.yield ()
+        let _ = use_local (ref slot) (step as i64)
+        ()
+    close_local slot
+
+def run_all :: unit -> i64 = \() ->
+    let results: Channel<i64> = Channel.make 64
+    for _worker = 1 to 64 do
+        let out = Channel.share (ref results)
+        tzroutine {
+            let total = Routine.with_locked_thread work_pinned
+            Channel.send (ref out) total
+        }
+    let mut grand_total = 0
+    for _worker = 1 to 64 do
+        let v = match Channel.recv (ref results) with | Maybe.Some x -> x | Maybe.None -> 0
+        grand_total = grand_total + v
+    grand_total
+
+def main :: unit -> i32 = \() ->
+    do! IO.writeln (run_all ())
+    0

@@ -27,6 +27,7 @@ target
 *.ll
 !src/runtime/wasm.ll
 !src/runtime/i128-windows-x64.ll
+!src/runtime/debug-windows.ll
 !src/runtime/closure.ll
 !src/runtime/task-wasm.ll
 !src/runtime/sync.ll

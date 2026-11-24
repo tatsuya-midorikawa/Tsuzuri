@@ -3124,6 +3124,462 @@ static void test_preempt_async_edges(void) { printf("preempt async edges: not bu
 static void urgent_kick_pause(void) {}
 #endif
 
+/* ---------------------------------------------------------------- W12 callback scopes & pseudo-Gs */
+
+static _Atomic int w12_child_done;
+static void w12_slow_child(void *env) {
+    (void)env;
+    CHECK(tsuzuri_tz_sleep(15000000) == 0);
+    atomic_store(&w12_child_done, 1);
+}
+static void w12_host_thread_body(void) {
+    void *scope = tsuzuri_tz_callback_scope_enter();
+    CHECK(scope != NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(scope);
+    CHECK(atomic_load(&w12_child_done) == 1);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_host_thread_win(LPVOID p) { (void)p; w12_host_thread_body(); return 0; }
+#else
+static void *w12_host_thread_posix(void *p) { (void)p; w12_host_thread_body(); return NULL; }
+#endif
+static void test_callback_scope_host_thread(void) {
+    atomic_store(&w12_child_done, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_host_thread_win, NULL, 0, NULL);
+    CHECK(th != NULL && WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_host_thread_posix, NULL) == 0 && pthread_join(th, NULL) == 0);
+#endif
+    CHECK(atomic_load(&w12_child_done) == 1);
+    printf("callback scope host thread: ok\n");
+}
+
+static _Atomic int w12_m_nested_ok;
+static void w12_on_m_check(void *env) {
+    (void)env;
+    void *inner = tsuzuri_tz_callback_scope_enter();
+    CHECK(inner == NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(inner);
+    atomic_store(&w12_m_nested_ok, 1);
+}
+static void test_callback_scope_nested(void) {
+    atomic_store(&w12_child_done, 0);
+    atomic_store(&w12_m_nested_ok, 0);
+    void *outer = tsuzuri_tz_scope_enter();
+    void *nested = tsuzuri_tz_callback_scope_enter();
+    CHECK(nested == NULL);
+    tsuzuri_tz_go(w12_slow_child, NULL);
+    tsuzuri_tz_callback_scope_leave(nested);
+    tsuzuri_tz_boundary_leave(outer);
+    CHECK(atomic_load(&w12_child_done) == 1);
+
+    atomic_store(&w12_child_done, 0);
+    outer = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(w12_on_m_check, NULL);
+    tsuzuri_tz_boundary_leave(outer);
+    CHECK(atomic_load(&w12_m_nested_ok) == 1 && atomic_load(&w12_child_done) == 1);
+    printf("callback scope nested: ok\n");
+}
+
+static _Atomic int w12_outside_ready, w12_outside_exit;
+static void w12_outside_idler(void) {
+    void *scope = tsuzuri_tz_callback_scope_enter();
+    CHECK(scope != NULL);
+    tsuzuri_tz_callback_scope_leave(scope);
+    atomic_store(&w12_outside_ready, 1);
+    while (!atomic_load(&w12_outside_exit)) block_ms(5);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_outside_win(LPVOID p) { (void)p; w12_outside_idler(); return 0; }
+#else
+static void *w12_outside_posix(void *p) { (void)p; w12_outside_idler(); return NULL; }
+#endif
+static void pseudo_outside_body(void) {
+    start_watchdog();
+    atomic_store(&w12_outside_ready, 0);
+    atomic_store(&w12_outside_exit, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_outside_win, NULL, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_outside_posix, NULL) == 0);
+#endif
+    while (!atomic_load(&w12_outside_ready)) tzr_os_yield();
+    void *scope = tsuzuri_tz_scope_enter();
+    tzr_chan *c = chan_make(8, 0);
+    int64_t v = 0;
+    int status = tsuzuri_tz_chan_recv(c, &v, 1);
+    atomic_store(&w12_outside_exit, 1);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
+    (void)scope;
+    _exit(status == TZR_DEADLOCK ? 55 : 4);
+}
+static void test_pseudo_outside_detector(void) {
+    CHECK(exited_with(run_child("child-pseudo-outside"), 55));
+    printf("pseudo outside detector: ok\n");
+}
+
+static _Atomic int w12_unentered_ready;
+static void w12_unentered_sender(tzr_chan *c) {
+    (void)tsuzuri_tz_count();
+    (void)tzr_current(); /* registers a pseudo-G without entering a boundary */
+    atomic_store(&w12_unentered_ready, 1);
+    block_ms(15);
+    int64_t v = 99;
+    CHECK(tsuzuri_tz_chan_send(c, &v, 1) == TZR_OK);
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_unentered_win(LPVOID p) { w12_unentered_sender(p); return 0; }
+#else
+static void *w12_unentered_posix(void *p) { w12_unentered_sender(p); return NULL; }
+#endif
+static void test_pseudo_without_entry(void) {
+    atomic_store(&w12_unentered_ready, 0);
+    tzr_chan *c = chan_make(8, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_unentered_win, c, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_unentered_posix, c) == 0);
+#endif
+    while (!atomic_load(&w12_unentered_ready)) tzr_os_yield();
+    void *scope = tsuzuri_tz_scope_enter();
+    int64_t v = 0;
+    CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK && v == 99);
+    tsuzuri_tz_boundary_leave(scope);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
+    free(c);
+    printf("pseudo without entry: ok\n");
+}
+
+static _Atomic int w12_reenter_ready;
+static _Atomic int w12_reenter_go;
+static void w12_reenter_sender(tzr_chan *c) {
+    (void)tzr_current();
+    atomic_store(&w12_reenter_ready, 1);
+    while (!atomic_load(&w12_reenter_go)) tzr_os_yield();
+    for (int64_t i = 1; i <= 1000; i++) {
+        CHECK(tsuzuri_tz_chan_send(c, &i, 1) == TZR_OK);
+    }
+}
+#if defined(_WIN32)
+static DWORD WINAPI w12_reenter_win(LPVOID p) { w12_reenter_sender(p); return 0; }
+#else
+static void *w12_reenter_posix(void *p) { w12_reenter_sender(p); return NULL; }
+#endif
+static void test_pseudo_reenters_runtime(void) {
+    atomic_store(&w12_reenter_ready, 0);
+    atomic_store(&w12_reenter_go, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_boundary_leave(scope); /* main pseudo-G is now outside == 1 */
+    tzr_chan *c = chan_make(8, 0);
+#if defined(_WIN32)
+    HANDLE th = CreateThread(NULL, 0, w12_reenter_win, c, 0, NULL);
+    CHECK(th != NULL);
+#else
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, w12_reenter_posix, c) == 0);
+#endif
+    while (!atomic_load(&w12_reenter_ready)) tzr_os_yield();
+    (void)tzr_current(); /* re-enters runtime from outside == 1 before sender parks */
+    atomic_store(&w12_reenter_go, 1);
+    int64_t sum = 0;
+    for (int i = 0; i < 1000; i++) {
+        int64_t v = 0;
+        CHECK(tsuzuri_tz_chan_recv(c, &v, 1) == TZR_OK);
+        sum += v;
+    }
+    CHECK(sum == 500500);
+#if defined(_WIN32)
+    CHECK(WaitForSingleObject(th, INFINITE) == WAIT_OBJECT_0 && CloseHandle(th));
+#else
+    CHECK(pthread_join(th, NULL) == 0);
+#endif
+    tzr_mutex_lock(&tzr_sched.lock);
+    CHECK(tzr_sched.npseudo_running >= 0 && tzr_sched.npseudo_parked == 0);
+    tzr_mutex_unlock(&tzr_sched.lock);
+    free(c);
+    printf("pseudo reenters runtime: ok\n");
+}
+
+/* ---------------------------------------------------------------- anchors (W23) */
+
+static const uint8_t anchor_desc_i64 = 0;
+static const uint8_t anchor_desc_str = 0;
+static _Atomic int64_t anchor_live_allocs;
+static _Atomic int64_t anchor_drops;
+
+static void *anchor_test_alloc(int64_t size) {
+    void *p = malloc((size_t)(size > 0 ? size : 1));
+    CHECK(p != NULL);
+    atomic_fetch_add(&anchor_live_allocs, 1);
+    return p;
+}
+
+static void anchor_test_free(void *p) {
+    if (p == NULL) return;
+    atomic_fetch_sub(&anchor_live_allocs, 1);
+    free(p);
+}
+
+static void anchor_box_drop(void *box) {
+    atomic_fetch_add(&anchor_drops, 1);
+    anchor_test_free(box);
+}
+
+static int64_t anchor_new_i64(int64_t v) {
+    int64_t *box = anchor_test_alloc(sizeof(int64_t));
+    *box = v;
+    return tsuzuri_tz_anchor_create(box, &anchor_desc_i64, anchor_box_drop, anchor_test_alloc, anchor_test_free);
+}
+
+static void test_anchor_tokens(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    void *box = NULL;
+    CHECK(tsuzuri_tz_anchor_begin(0, &anchor_desc_i64, 0, &box) == 1);
+    CHECK(tsuzuri_tz_anchor_begin(-1, &anchor_desc_i64, 0, &box) == 1);
+    CHECK(tsuzuri_tz_anchor_begin(0x0001000001000001LL, &anchor_desc_i64, 0, &box) == 1);
+
+    int64_t tok = anchor_new_i64(42);
+    CHECK(tok > 0);
+    CHECK(tsuzuri_tz_anchor_begin(tok, &anchor_desc_str, 0, &box) == 2); /* WrongType */
+    CHECK(tsuzuri_tz_anchor_begin(tok, &anchor_desc_i64, 0, &box) == 0);
+    CHECK(*(int64_t *)box == 42);
+    CHECK(tsuzuri_tz_anchor_end(tok, 0) == 1);
+    tsuzuri_tz_anchor_release(tok);
+    CHECK(atomic_load(&anchor_drops) == 1);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    CHECK(tsuzuri_tz_anchor_begin(tok, &anchor_desc_i64, 0, &box) == 1); /* Stale */
+    printf("anchor tokens: ok\n");
+}
+
+static void test_anchor_nested(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    int64_t a = anchor_new_i64(10);
+    int64_t b = anchor_new_i64(20);
+    void *ba = NULL, *ba2 = NULL, *bb = NULL;
+    /* read inside read -> ok */
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 0, &ba) == 0);
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 0, &ba2) == 0);
+    /* update inside read -> Busy (4) */
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 1, &ba2) == 4);
+    /* different anchor update inside read -> ok */
+    CHECK(tsuzuri_tz_anchor_begin(b, &anchor_desc_i64, 1, &bb) == 0);
+    *(int64_t *)bb = 25;
+    CHECK(tsuzuri_tz_anchor_end(b, 1) == 1);
+    CHECK(tsuzuri_tz_anchor_end(a, 0) == 1);
+    CHECK(tsuzuri_tz_anchor_end(a, 0) == 1);
+
+    /* read/update inside update -> Busy (4) */
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 1, &ba) == 0);
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 0, &ba2) == 4);
+    CHECK(tsuzuri_tz_anchor_begin(a, &anchor_desc_i64, 1, &ba2) == 4);
+    CHECK(tsuzuri_tz_anchor_end(a, 1) == 1);
+
+    tsuzuri_tz_anchor_release(a);
+    tsuzuri_tz_anchor_release(b);
+    CHECK(atomic_load(&anchor_drops) == 2 && atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor nested: ok\n");
+}
+
+static int64_t g_reenter_tok;
+static int32_t g_reenter_status;
+static void anchor_reenter_drop(void *box) {
+    void *inner = NULL;
+    g_reenter_status = tsuzuri_tz_anchor_begin(g_reenter_tok, &anchor_desc_i64, 0, &inner);
+    atomic_fetch_add(&anchor_drops, 1);
+    anchor_test_free(box);
+}
+
+static void test_anchor_dying(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    /* (a) owner dropped during nested read: value survives until outer read ends */
+    int64_t rtok = anchor_new_i64(77);
+    void *r1 = NULL, *r2 = NULL;
+    CHECK(tsuzuri_tz_anchor_begin(rtok, &anchor_desc_i64, 0, &r1) == 0);
+    CHECK(tsuzuri_tz_anchor_begin(rtok, &anchor_desc_i64, 0, &r2) == 0);
+    tsuzuri_tz_anchor_release(rtok);
+    CHECK(atomic_load(&anchor_drops) == 0);
+    CHECK(*(int64_t *)r1 == 77);
+    void *r3 = NULL;
+    CHECK(tsuzuri_tz_anchor_begin(rtok, &anchor_desc_i64, 0, &r3) == 1); /* new read sees Stale */
+    CHECK(tsuzuri_tz_anchor_end(rtok, 0) == 0);
+    CHECK(atomic_load(&anchor_drops) == 0);
+    CHECK(tsuzuri_tz_anchor_end(rtok, 0) == 0);
+    CHECK(atomic_load(&anchor_drops) == 1 && atomic_load(&anchor_live_allocs) == 0);
+
+    /* (b) Drop re-entering on its own token sees Stale */
+    int64_t *rebox = anchor_test_alloc(sizeof(int64_t));
+    *rebox = 99;
+    g_reenter_status = -1;
+    g_reenter_tok = tsuzuri_tz_anchor_create(rebox, &anchor_desc_i64, anchor_reenter_drop, anchor_test_alloc, anchor_test_free);
+    tsuzuri_tz_anchor_release(g_reenter_tok);
+    CHECK(g_reenter_status == 1);
+    CHECK(atomic_load(&anchor_drops) == 2 && atomic_load(&anchor_live_allocs) == 0);
+
+    /* (c) owner dropped during update: end returns 0 without double-dropping box */
+    int64_t utok = anchor_new_i64(55);
+    void *ubox = NULL;
+    CHECK(tsuzuri_tz_anchor_begin(utok, &anchor_desc_i64, 1, &ubox) == 0);
+    tsuzuri_tz_anchor_release(utok);
+    CHECK(atomic_load(&anchor_drops) == 2); /* runtime must NOT drop moved-from box */
+    CHECK(tsuzuri_tz_anchor_end(utok, 1) == 0);
+    CHECK(atomic_load(&anchor_drops) == 2);
+    anchor_test_free(ubox);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor dying: ok\n");
+}
+
+static void test_anchor_reset_epoch(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    int64_t first = anchor_new_i64(1);
+    tsuzuri_tz_anchor_release(first);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    int64_t second = anchor_new_i64(2);
+    /* Same slot index (1), bumped table epoch: first token must be Stale! */
+    CHECK((first & 0xFFFFFF) == (second & 0xFFFFFF));
+    CHECK(first != second);
+    void *box = NULL;
+    CHECK(tsuzuri_tz_anchor_begin(first, &anchor_desc_i64, 0, &box) == 1);
+    CHECK(tsuzuri_tz_anchor_begin(second, &anchor_desc_i64, 0, &box) == 0 && *(int64_t *)box == 2);
+    CHECK(tsuzuri_tz_anchor_end(second, 0) == 1);
+    tsuzuri_tz_anchor_release(second);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor reset epoch: ok\n");
+}
+
+static void test_anchor_generation_retire(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    int64_t keep = anchor_new_i64(100); /* keep table alive so epoch stays fixed */
+    tzr_anchor_gen_max = 4;
+    int64_t old[4];
+    for (int i = 0; i < 4; i++) {
+        old[i] = anchor_new_i64(i);
+        CHECK((old[i] & 0xFFFFFF) == 2); /* slot index 1 -> idx+1 == 2 */
+        tsuzuri_tz_anchor_release(old[i]);
+    }
+    int64_t after_retire = anchor_new_i64(999);
+    CHECK((after_retire & 0xFFFFFF) == 3); /* slot 1 retired, so slot 2 (idx+1 == 3) is used */
+    void *box = NULL;
+    for (int i = 0; i < 4; i++) {
+        CHECK(tsuzuri_tz_anchor_begin(old[i], &anchor_desc_i64, 0, &box) == 1);
+    }
+    tzr_anchor_gen_max = 0xFFFFFFu;
+    tsuzuri_tz_anchor_release(after_retire);
+    tsuzuri_tz_anchor_release(keep);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor generation retire: ok\n");
+}
+
+enum { ANCHOR_THREADS = 8 };
+static _Atomic int64_t anchor_thread_tokens[ANCHOR_THREADS];
+static _Atomic int anchor_threads_ready;
+static _Atomic int anchor_threads_done;
+
+static void anchor_thread_body(int me) {
+    int64_t mine = anchor_new_i64(100 + me);
+    atomic_store(&anchor_thread_tokens[me], mine);
+    atomic_fetch_add(&anchor_threads_ready, 1);
+    while (atomic_load(&anchor_threads_ready) < ANCHOR_THREADS) tzr_os_yield();
+    for (int j = 0; j < ANCHOR_THREADS; j++) {
+        void *box = NULL;
+        int64_t tok = atomic_load(&anchor_thread_tokens[j]);
+        int32_t st = tsuzuri_tz_anchor_begin(tok, &anchor_desc_i64, 0, &box);
+        int32_t st_wrong_ty = tsuzuri_tz_anchor_begin(tok, &anchor_desc_str, 0, &box);
+        if (j == me) {
+            CHECK(st == 0 && *(int64_t *)box == 100 + me);
+            CHECK(tsuzuri_tz_anchor_end(tok, 0) == 1);
+            CHECK(st_wrong_ty == 2);
+        } else {
+            /* Spec 2 order: WrongThread (3) precedes WrongType (2)! */
+            CHECK(st == 3 && st_wrong_ty == 3);
+        }
+    }
+    atomic_fetch_add(&anchor_threads_done, 1);
+    while (atomic_load(&anchor_threads_done) < ANCHOR_THREADS) tzr_os_yield();
+    tsuzuri_tz_anchor_release(mine);
+}
+#if defined(_WIN32)
+static DWORD WINAPI anchor_thread_win(LPVOID p) { anchor_thread_body((int)(intptr_t)p); return 0; }
+#else
+static void *anchor_thread_posix(void *p) { anchor_thread_body((int)(intptr_t)p); return NULL; }
+#endif
+
+static void test_anchor_threads(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    atomic_store(&anchor_threads_ready, 0);
+    atomic_store(&anchor_threads_done, 0);
+#if defined(_WIN32)
+    HANDLE th[ANCHOR_THREADS];
+    for (int i = 0; i < ANCHOR_THREADS; i++) {
+        th[i] = CreateThread(NULL, 0, anchor_thread_win, (LPVOID)(intptr_t)i, 0, NULL);
+        CHECK(th[i] != NULL);
+    }
+    for (int i = 0; i < ANCHOR_THREADS; i++) {
+        CHECK(WaitForSingleObject(th[i], INFINITE) == WAIT_OBJECT_0 && CloseHandle(th[i]));
+    }
+#else
+    pthread_t th[ANCHOR_THREADS];
+    for (int i = 0; i < ANCHOR_THREADS; i++) {
+        CHECK(pthread_create(&th[i], NULL, anchor_thread_posix, (void *)(intptr_t)i) == 0);
+    }
+    for (int i = 0; i < ANCHOR_THREADS; i++) {
+        CHECK(pthread_join(th[i], NULL) == 0);
+    }
+#endif
+    CHECK(atomic_load(&anchor_drops) == ANCHOR_THREADS);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor threads: ok\n");
+}
+
+static void anchor_pin_worker(void *env) {
+    (void)env;
+    int64_t tok = anchor_new_i64(314);
+    thread_id home = this_thread();
+    for (int i = 0; i < 500; i++) {
+        tsuzuri_tz_yield();
+        CHECK(same_thread(home, this_thread()));
+        void *box = NULL;
+        CHECK(tsuzuri_tz_anchor_begin(tok, &anchor_desc_i64, 0, &box) == 0);
+        CHECK(*(int64_t *)box == 314);
+        CHECK(tsuzuri_tz_anchor_end(tok, 0) == 1);
+    }
+    CHECK(tzr_this_m()->curg->lockedm != NULL);
+    tsuzuri_tz_anchor_release(tok);
+    CHECK(tzr_this_m()->curg->lockedm == NULL);
+}
+
+static void test_anchor_pin(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    for (int i = 0; i < 4; i++) tsuzuri_tz_go(anchor_pin_worker, NULL);
+    join(scope);
+    CHECK(tzr_sched.nmlocked == 0);
+    CHECK(atomic_load(&anchor_drops) == 4 && atomic_load(&anchor_live_allocs) == 0);
+    printf("anchor pin: ok\n");
+}
+
 int main(int argc, char **argv) {
     const char *only = argc > 1 ? argv[1] : NULL;
     self_path = argv[0];
@@ -3134,6 +3590,7 @@ int main(int argc, char **argv) {
     if (only && strcmp(only, "child-timer-deadlock") == 0) timer_deadlock_body();
     if (only && strcmp(only, "child-recover") == 0) recover_body();
     if (only && strcmp(only, "child-report") == 0) report_body();
+    if (only && strcmp(only, "child-pseudo-outside") == 0) pseudo_outside_body();
 #if defined(TZR_ASYNC)
     if (only && strcmp(only, "child-urgent-ignored") == 0) urgent_ignored_body();
     if (only && strcmp(only, "child-urgent-forward") == 0) urgent_forward_body();
@@ -3234,6 +3691,18 @@ int main(int argc, char **argv) {
     RUN("preempt_async_forward", test_preempt_async_forward());
     RUN("preempt_async_edges", test_preempt_async_edges());
     RUN("preempt_idle", test_preempt_idle());
+    RUN("callback_scope_host_thread", test_callback_scope_host_thread());
+    RUN("callback_scope_nested", test_callback_scope_nested());
+    RUN("pseudo_outside_detector", test_pseudo_outside_detector());
+    RUN("pseudo_without_entry", test_pseudo_without_entry());
+    RUN("pseudo_reenters_runtime", test_pseudo_reenters_runtime());
+    RUN("anchor_tokens", test_anchor_tokens());
+    RUN("anchor_nested", test_anchor_nested());
+    RUN("anchor_dying", test_anchor_dying());
+    RUN("anchor_reset_epoch", test_anchor_reset_epoch());
+    RUN("anchor_generation_retire", test_anchor_generation_retire());
+    RUN("anchor_threads", test_anchor_threads());
+    RUN("anchor_pin", test_anchor_pin());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

@@ -1,0 +1,8 @@
+def main :: unit -> i32 = \() ->
+    let! res = IO.try_readln ()
+    match res with
+    | Result.Ok Maybe.None -> 20
+    | Result.Ok (Maybe.Some _) -> 21
+    | Result.Error IO.ReadFailed -> 22
+    | Result.Error IO.Unavailable -> 24
+    | Result.Error _ -> 23

@@ -278,6 +278,9 @@ pub(super) fn map_type(ty: &Type, f: &mut impl FnMut(&Type) -> Type) -> Type {
         Type::Shared(value, kind) => Type::Shared(Box::new(map_type(value, f)), *kind),
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(|ty| map_type(ty, f)).collect()),
         Type::Once(result) => Type::Once(Box::new(map_type(result, f))),
+        Type::FnPtr(inner) => {
+            Type::FnPtr(Box::new(Type::normalize_fnptr_inner(map_type(inner, f))))
+        }
         Type::Reference(value, mutable) => Type::Reference(Box::new(map_type(value, f)), *mutable),
         Type::Function(parameters, result) => Type::function_with_conventions(
             parameters.iter().map(|ty| map_type(ty, f)).collect(),
@@ -359,6 +362,7 @@ fn type_size(ty: &Type) -> Option<usize> {
             | Type::List(ty)
             | Type::Vec(ty)
             | Type::Once(ty)
+            | Type::FnPtr(ty)
             | Type::Shared(ty, _)
             | Type::Reference(ty, _) => visit(ty, depth + 1, count),
             Type::Function(parameters, result) => {
@@ -517,6 +521,9 @@ impl Inference {
                 Type::Tuple(elements.iter().map(|ty| self.resolve(ty)).collect())
             }
             Type::Once(result) => Type::Once(Box::new(self.resolve(result))),
+            Type::FnPtr(inner) => {
+                Type::FnPtr(Box::new(Type::normalize_fnptr_inner(self.resolve(inner))))
+            }
             Type::Reference(value, mutable) => {
                 Type::Reference(Box::new(self.resolve(value)), *mutable)
             }
@@ -622,6 +629,11 @@ impl Inference {
             | (Type::Vec(a), Type::Vec(b))
             | (Type::Once(a), Type::Once(b)) => {
                 return self.unify(a, b, types, span);
+            }
+            (Type::FnPtr(a), Type::FnPtr(b)) => {
+                let a = Type::normalize_fnptr_inner(self.resolve(a));
+                let b = Type::normalize_fnptr_inner(self.resolve(b));
+                return self.unify(&a, &b, types, span);
             }
             (Type::Reference(a, n), Type::Reference(b, m)) if n == m => {
                 return self.unify(a, b, types, span);
@@ -780,6 +792,7 @@ impl Inference {
             | Type::Vec(inner)
             | Type::Shared(inner, _)
             | Type::Once(inner)
+            | Type::FnPtr(inner)
             | Type::Reference(inner, _) => self.reaches(inner, open),
             Type::FixedArray(element, length) => {
                 self.reaches(element, open) || self.reaches(length, open)
@@ -3264,6 +3277,48 @@ impl Classes {
                     )
                 });
             }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_local_handle(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureUnsendableInFunctionValue,
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tzroutines or threads, and a thread-bound extern handle ('extern type local') must stay on its OS thread; pass it as an argument",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
+                        format!(
+                            "values that move to another tzroutine or thread must be Send; {} holds a thread-bound extern handle ('extern type local'), which must stay on the OS thread that received it; use it there, or do the work inside 'Routine.with_locked_thread'",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
+            if matches!(class, "Capture" | "Send") && constraint.ty.holds_thread_bound(types) {
+                return Err(if class == "Capture" {
+                    Diagnostic::of(
+                        DiagnosticKind::CaptureUnsendableInFunctionValue,
+                        format!(
+                            "cannot capture {} in a function value; function values may move to other tzroutines or threads, and the value is bound to the thread that created it",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                } else {
+                    Diagnostic::of(
+                        DiagnosticKind::TaskRequiresSend,
+                        format!(
+                            "values that move to another tzroutine or thread must be Send; {} is bound to the thread that created it",
+                            constraint.ty.display(types)
+                        ),
+                        constraint.span,
+                    )
+                });
+            }
             if class == "Capture" && constraint.ty.holds_cell(types) {
                 return Err(Diagnostic::of(
                     DiagnosticKind::CaptureSyncPrimitiveInFunctionValue,
@@ -3371,6 +3426,7 @@ fn head_constructor(ty: &Type) -> Option<HeadKey> {
         Type::Vec(_) => (13, 0),
         Type::Tuple(elements) => (14, elements.len()),
         Type::Once(_) => (15, 0),
+        Type::FnPtr(_) => (16, 0),
         _ => return None,
     })
 }
@@ -3667,6 +3723,14 @@ pub(super) fn type_expression(ty: &Type, types: &TypeContext<'_>, span: Span) ->
                 borrowed: dyn_type.borrowed,
             }))
         }
+        Type::FnPtr(inner) => TypeExprKind::Apply(
+            Box::new(Ident {
+                text: "FnPtr".into(),
+                span,
+                provenance: Provenance::Generated,
+            }),
+            vec![type_expression(inner, types, span)].into(),
+        ),
         Type::Infer(_) => unreachable!("instance types are concrete"),
         _ => TypeExprKind::Named(key_path(&key_name(ty, types))),
     };
@@ -3782,6 +3846,7 @@ impl Checker<'_> {
             Builtin::SyncMapReplace => Some("SyncMap"),
             // TZ07: every `Context` builtin is behind `std/Context.tz`.
             builtin if builtin.is_context() => Some("Context"),
+            Builtin::AnchorRelease => Some("Anchor"),
             _ => None,
         };
         if let Some(module) = sync_module
@@ -4033,6 +4098,9 @@ impl Checker<'_> {
             BuiltinType::ArrayView(ty) => Type::ArrayView(element(ty)?),
             BuiltinType::List(ty) => Type::List(element(ty)?),
             BuiltinType::Vec(ty) => Type::Vec(element(ty)?),
+            BuiltinType::FnPtr(ty) => Type::FnPtr(Box::new(Type::normalize_fnptr_inner(
+                self.builtin_type(ty, bindings, span)?,
+            ))),
             BuiltinType::Shared(ty, kind) => Type::Shared(element(ty)?, *kind),
             BuiltinType::Reference(ty, mutable) => Type::Reference(element(ty)?, *mutable),
             BuiltinType::Std { module, name, args } => {
@@ -4504,7 +4572,13 @@ impl Checker<'_> {
                 // A reference to a function (`f : ref (i64 -> i64)`, as an annotated parameter
                 // binds it, A32) is called through `deref`. The help names no callee or
                 // argument: the call may be a pipeline (`3 |> r`), whose callee is on the right.
-                let help = if matches!(&other, Type::Reference(target, _)
+                let help = if matches!(&other, Type::FnPtr(_)) {
+                    format!(
+                        "a value of type {} is a C function pointer and cannot be called from Tsuzuri; \
+                         call the target function by name instead",
+                        other.display(&self.types)
+                    )
+                } else if matches!(&other, Type::Reference(target, _)
                     if matches!(**target, Type::Function(..)))
                 {
                     format!(
@@ -5348,6 +5422,7 @@ pub(super) fn specialize(
         vtables,
         dyn_layouts,
         uses_dyn: module.uses_dyn,
+        thread_bound: module.thread_bound,
         gpu: module.gpu,
         statics: module.statics,
         effects: None,

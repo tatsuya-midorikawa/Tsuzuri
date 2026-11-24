@@ -119,6 +119,7 @@ pub(crate) fn type_id_text(
             elements.iter().map(nested).collect::<Vec<_>>().join(" * ")
         ),
         Type::Once(result) => format!("$once<{}>", type_id_text(result, types, modules)),
+        Type::FnPtr(inner) => format!("FnPtr<({})>", type_id_text(inner, types, modules)),
         Type::Shared(value, kind) => {
             format!("{}<{}>", kind.name(), type_id_text(value, types, modules))
         }

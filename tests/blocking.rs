@@ -77,7 +77,7 @@ fn a_callback_takes_the_p_back_for_its_body() {
         .find(|function| function.contains("@tz.callback.Main.twice("))
         .unwrap_or_else(|| panic!("{ir}"));
     assert!(
-        wrapper.contains("%tz.callback = call i32 @tsuzuri_tz_callback_enter()"),
+        wrapper.contains("%tz.callback = call i32 @tsuzuri_tz_callback_enter()\n  %tz.host = call ptr @tsuzuri_tz_callback_scope_enter()"),
         "{wrapper}"
     );
     let rets = wrapper
@@ -87,15 +87,26 @@ fn a_callback_takes_the_p_back_for_its_body() {
     assert!(rets > 0);
     assert_eq!(
         wrapper
+            .matches("call void @tsuzuri_tz_callback_scope_leave(ptr %tz.host)")
+            .count(),
+        rets,
+        "{wrapper}"
+    );
+    assert_eq!(
+        wrapper
             .matches("call void @tsuzuri_tz_callback_exit(i32 %tz.callback)")
             .count(),
         rets,
         "{wrapper}"
     );
-    // the callback goes back into the call before each return
+    // the callback leaves its scope first, then goes back into the blocking call before each return
     let lines: Vec<&str> = wrapper.lines().collect();
     for (at, line) in lines.iter().enumerate() {
         if line.trim_start().starts_with("ret ") {
+            assert_eq!(
+                lines[at - 2].trim(),
+                "call void @tsuzuri_tz_callback_scope_leave(ptr %tz.host)"
+            );
             assert_eq!(
                 lines[at - 1].trim(),
                 "call void @tsuzuri_tz_callback_exit(i32 %tz.callback)"
@@ -147,6 +158,10 @@ fn an_export_takes_the_p_back_as_a_callback_does() {
         "export def run :: own i64 -> i64\nfn run n =\n    tzroutine {\n        let _value = n\n    }\n    n\n",
     );
     assert!(!plain.contains("tsuzuri_tz_callback"), "{plain}");
+    assert!(
+        !wrapper.contains("tsuzuri_tz_callback_scope_enter"),
+        "{wrapper}"
+    );
 }
 
 #[test]

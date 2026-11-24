@@ -9,6 +9,7 @@ mod machine;
 mod rules;
 #[path = "const_static.rs"]
 mod statics;
+pub(super) use statics::{intern_zstring, total_static_bytes};
 
 use machine::{Machine, Value};
 pub(super) use rules::check_signature;
@@ -36,6 +37,21 @@ fn callee_name(callee: &Expr) -> Option<&str> {
     }
 }
 
+fn is_fnptr_of(callee: &Expr) -> bool {
+    match &callee.kind {
+        ExprKind::Field(base, name) if name.text == "of" => {
+            matches!(
+                &base.kind,
+                ExprKind::Name(ident) if matches!(ident.text.as_str(), "FnPtr" | "std::FnPtr")
+            )
+        }
+        ExprKind::Name(name) | ExprKind::QualifiedFunction(name) => {
+            matches!(name.text.as_str(), "FnPtr.of" | "std::FnPtr.of")
+        }
+        _ => false,
+    }
+}
+
 /// Checks the initializer of a constant as written: a call is allowed only when it names a
 /// `const def` (D11); whether the name resolves to one is decided after type checking.
 pub(super) fn validate(
@@ -43,6 +59,13 @@ pub(super) fn validate(
     const_names: &BTreeSet<String>,
 ) -> Result<(), Diagnostic> {
     use ExprKind as Expr;
+    if is_fnptr_of(expression) {
+        return Err(failure(
+            DiagnosticKind::ConstFnptr,
+            expression.span,
+            "FnPtr values cannot be used in const declarations; bind the function pointer with let at run time",
+        ));
+    }
     match &expression.kind {
         Expr::Integer(..)
         | Expr::Float(..)
@@ -77,6 +100,11 @@ pub(super) fn validate(
             .iter()
             .try_for_each(|(_, value)| validate(value, const_names)),
         Expr::Block { bindings, result } if bindings.is_empty() => validate(result, const_names),
+        Expr::Call(callee, _) if is_fnptr_of(callee) => Err(failure(
+            DiagnosticKind::ConstFnptr,
+            expression.span,
+            "FnPtr values cannot be used in const declarations; bind the function pointer with let at run time",
+        )),
         Expr::Call(callee, arguments)
             if callee_name(callee).is_some_and(|name| const_names.contains(name)) =>
         {

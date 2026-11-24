@@ -30,6 +30,10 @@ const cases = ["spawn", "tree", "pingpong", "mpmc", "select", "relay", "mutex", 
   "dchan_ring", "dchan_waits", "dchan_close", "dchan_lock", "dchan_deadlock",
   "preempt_flag", "preempt_sysmon", "preempt_async", "preempt_async_values", "preempt_async_sve", "preempt_async_runtime",
   "preempt_async_ignored", "preempt_async_forward", "preempt_async_edges", "preempt_idle",
+  "callback_scope_host_thread", "callback_scope_nested", "pseudo_outside_detector",
+  "pseudo_without_entry", "pseudo_reenters_runtime",
+  "anchor_tokens", "anchor_nested", "anchor_dying", "anchor_reset_epoch",
+  "anchor_generation_retire", "anchor_threads", "anchor_pin",
   "long_sleep"];
 const windows = process.platform === "win32";
 const platformFlags = windows

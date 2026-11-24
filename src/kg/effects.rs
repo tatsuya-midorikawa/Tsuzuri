@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 164;
+const IMPURE_BUILTINS: usize = 168;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -34,9 +34,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         RoutineWithLockedThread => Some("task"),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
-        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour => {
-            None
-        }
+        TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
+        | FnPtrOf | ZStringLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }
@@ -47,9 +46,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | CondBroadcast | CondShare | CondDrop | SemaphoreCreate | SemaphoreAcquire
         | SemaphoreTryAcquire | SemaphoreRelease | SemaphoreShare | SemaphoreDrop
         | ContextBackground | ContextWithCancel | ContextCancel | ContextDone | ContextErr
-        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter => {
-            Some("atomic")
-        }
+        | ContextDeadline | ContextShare | ContextRelease | ContextStopAfter | ContextFreeAfter
+        | AnchorCreate | AnchorRead | AnchorUpdate | AnchorRelease => Some("atomic"),
         SyncMapReplace => None,
         AtomicCreate
         | AtomicLoad

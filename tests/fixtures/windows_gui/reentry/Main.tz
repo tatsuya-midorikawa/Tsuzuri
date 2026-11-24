@@ -1,0 +1,12 @@
+@trusted
+extern "w06_gui_pump" def pump :: (i32u -> i64u -> i64 -> i64) -> i64 -> i64
+
+@trusted
+extern "w06_gui_send" def send :: i64 -> i32u -> i64u -> i64 -> i64
+
+def on_msg :: i32u -> i64u -> i64 -> i64 = \msg wparam lparam ->
+    if msg == 32768i32u then send lparam 32769i32u 1i64u 0
+    elif msg == 32769i32u then (wparam as i64) + 1
+    else 0
+
+def main :: unit -> i32 = \() -> (pump on_msg 2) as i32

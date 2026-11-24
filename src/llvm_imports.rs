@@ -45,17 +45,38 @@ impl FunctionEmitter<'_, '_> {
         } else {
             None
         };
-        // Compact strings that the host reads as UTF-16: where the pointer of each is in `values` (its
-        // length follows) and its descriptor.
-        let mut widen: Vec<(usize, String)> = Vec::new();
+        // Compact strings that the host reads as UTF-16: where the pointer of each is in `values`,
+        // optional `@count` length kind, and its descriptor.
+        let mut widen: Vec<(usize, Option<crate::syntax::CountLength>, String)> = Vec::new();
+        // `@count(..., i32 | i32u)`: `(slot_in_values_or_none_for_widen, length_ssa, max_limit)`.
+        let mut count_checks: Vec<(Option<usize>, String, u64)> = Vec::new();
+        // W13: `ref mut` records, scalars, and `copy` handles copied back immediately after the call.
+        enum CopyOut {
+            Record {
+                slot: String,
+                place: String,
+                ty: Type,
+            },
+            Scalar {
+                slot: String,
+                place: String,
+                ty: Type,
+                c_llvm_ty: &'static str,
+            },
+        }
+        let mut copy_outs: Vec<CopyOut> = Vec::new();
         // The widened copies of Latin-1 strings, with the length words that say which are copies.
         let mut copies: Vec<(String, String)> = Vec::new();
         let mut deferred_nullable_records: Vec<(usize, Type, String)> = Vec::new();
         let mut operands = Vec::new();
-        for argument in arguments {
+        for (arg_index, argument) in arguments.iter().enumerate() {
             if matches!(argument.ty, Type::Function(..)) {
                 // A callback reaches the host as the address of its C-ABI wrapper.
-                let TypedExprKind::Function(FunctionRef::User(id)) = &argument.kind else {
+                let mut target = argument;
+                while let TypedExprKind::Cast(inner) = &target.kind {
+                    target = inner;
+                }
+                let TypedExprKind::Function(FunctionRef::User(id)) = &target.kind else {
                     unreachable!("validated callback arguments name a function");
                 };
                 self.globals.callbacks.insert(*id);
@@ -76,7 +97,11 @@ impl FunctionEmitter<'_, '_> {
             }
             if let Some(nullable) = crate::abi::nullable(&argument.ty, &self.module.types()) {
                 types.push("ptr".into());
-                if matches!(nullable, crate::abi::Nullable::BorrowedRecord(_)) {
+                if matches!(
+                    nullable,
+                    crate::abi::Nullable::BorrowedRecord(_)
+                        | crate::abi::Nullable::BorrowedZString(_)
+                ) {
                     deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
                     values.push(String::new());
                 } else {
@@ -85,32 +110,125 @@ impl FunctionEmitter<'_, '_> {
                 }
                 continue;
             }
+            if let Type::Reference(inner, false) = &argument.ty
+                && crate::abi::zstring(inner, &self.module.types())
+            {
+                let rec = self.value(format!("load {}, ptr {value}", self.ty(inner)));
+                let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));
+                let ptr = self.value(format!("extractvalue %tz.array {arr}, 0"));
+                types.push("ptr".into());
+                values.push(format!("ptr {ptr}"));
+                continue;
+            }
+            if let Some((_, mutable)) = crate::abi::extern_buffer_parameter(&argument.ty) {
+                let Type::Reference(inner, _) = &argument.ty else {
+                    unreachable!("extern buffer parameter is a reference")
+                };
+                let count_len = import.count_at(arg_index);
+                let (descriptor, desc_ty) = match (inner.as_ref(), mutable) {
+                    (Type::Array(_), false) | (Type::ArrayView(_), true) => {
+                        (value, "%tz.array".to_owned())
+                    }
+                    (Type::Array(_), true) => (
+                        self.value(format!("load %tz.array, ptr {value}")),
+                        "%tz.array".to_owned(),
+                    ),
+                    _ => {
+                        let ty_str = self.ty(inner);
+                        (self.value(format!("load {ty_str}, ptr {value}")), ty_str)
+                    }
+                };
+                if **inner == Type::String && self.globals.strings == StringForm::Compact {
+                    if let Some(limit) = count_len.and_then(|len| len.max_length()) {
+                        let pre_len = self.string_length(&Type::String, &descriptor);
+                        count_checks.push((None, pre_len, limit));
+                    }
+                    widen.push((values.len(), count_len, descriptor));
+                    types.push("ptr".into());
+                    values.push(String::new());
+                    if let Some(len_llvm) =
+                        count_len.map_or(Some("i64"), crate::syntax::CountLength::llvm_type)
+                    {
+                        types.push(len_llvm.into());
+                        values.push(String::new());
+                    }
+                    continue;
+                }
+                let pointer = self.value(format!("extractvalue {desc_ty} {descriptor}, 0"));
+                let length = self.value(format!("extractvalue {desc_ty} {descriptor}, 1"));
+                types.push("ptr".into());
+                values.push(format!("ptr {pointer}"));
+                match count_len {
+                    Some(crate::syntax::CountLength::None) => {}
+                    Some(
+                        kind @ (crate::syntax::CountLength::I32 | crate::syntax::CountLength::I32U),
+                    ) => {
+                        let slot = values.len();
+                        types.push("i32".into());
+                        values.push(String::new());
+                        count_checks.push((
+                            Some(slot),
+                            length,
+                            kind.max_length().expect("32-bit count has limit"),
+                        ));
+                    }
+                    Some(crate::syntax::CountLength::I64 | crate::syntax::CountLength::I64U)
+                    | Option::None => {
+                        types.push("i64".into());
+                        values.push(format!("i64 {length}"));
+                    }
+                }
+                continue;
+            }
+            if let Type::Reference(inner, true) = &argument.ty {
+                if matches!(inner.as_ref(), Type::Record(..)) {
+                    let cur = self.value(format!("load {}, ptr {value}", self.ty(inner)));
+                    let slot = self.host_result_slot(inner);
+                    self.write_host_record(inner, &cur, &slot);
+                    types.push("ptr".into());
+                    values.push(format!("ptr {slot}"));
+                    copy_outs.push(CopyOut::Record {
+                        slot,
+                        place: value,
+                        ty: (**inner).clone(),
+                    });
+                    continue;
+                }
+                let (c_llvm_ty, align) = match inner.as_ref() {
+                    Type::Bool | Type::Integer(32, _) => ("i32", 4),
+                    Type::Integer(8, _) => ("i8", 1),
+                    Type::Integer(16, _) => ("i16", 2),
+                    Type::Integer(64, _) => ("i64", 8),
+                    Type::Binary(32) => ("float", 4),
+                    Type::Binary(64) => ("double", 8),
+                    Type::Handle(..) => ("ptr", 8),
+                    _ => unreachable!("validated mutable extern scalar: {inner:?}"),
+                };
+                let cur = self.value(format!("load {}, ptr {value}", self.ty(inner)));
+                let encoded = if **inner == Type::Bool {
+                    self.value(format!("zext i1 {cur} to i32"))
+                } else {
+                    cur
+                };
+                let slot = self.fresh();
+                self.allocas
+                    .push(format!("{slot} = alloca {c_llvm_ty}, align {align}"));
+                self.instruction(format!("store {c_llvm_ty} {encoded}, ptr {slot}"));
+                types.push("ptr".into());
+                values.push(format!("ptr {slot}"));
+                copy_outs.push(CopyOut::Scalar {
+                    slot,
+                    place: value,
+                    ty: (**inner).clone(),
+                    c_llvm_ty,
+                });
+                continue;
+            }
             let inner = if let Type::Reference(inner, false) = &argument.ty {
                 inner.as_ref()
             } else {
                 &argument.ty
             };
-            if Buffer::of(inner).is_some() {
-                let descriptor = if matches!(inner, Type::Array(_)) {
-                    value
-                } else {
-                    self.value(format!("load {}, ptr {value}", self.ty(inner)))
-                };
-                if *inner == Type::String && self.globals.strings == StringForm::Compact {
-                    // The copy is made once every argument is evaluated: an argument that raises
-                    // (`@checked`) leaves the call, and a copy made before it would be left behind.
-                    widen.push((values.len(), descriptor));
-                    types.extend(["ptr".into(), "i64".into()]);
-                    values.extend([String::new(), String::new()]);
-                    continue;
-                }
-                let pointer =
-                    self.value(format!("extractvalue {} {descriptor}, 0", self.ty(inner)));
-                let length = self.value(format!("extractvalue {} {descriptor}, 1", self.ty(inner)));
-                types.extend(["ptr".into(), "i64".into()]);
-                values.extend([format!("ptr {pointer}"), format!("i64 {length}")]);
-                continue;
-            }
             if matches!(inner, Type::Record(..)) {
                 let value = if matches!(argument.ty, Type::Reference(..)) {
                     self.value(format!("load {}, ptr {value}", self.ty(inner)))
@@ -142,9 +260,19 @@ impl FunctionEmitter<'_, '_> {
             types.push(abi.clone());
             values.push(format!("{abi} {value}"));
         }
+        // W13: validate `@count(..., i32 | i32u)` bounds after all arguments are evaluated and
+        // before widening compact strings so a trap never leaks a widened copy.
+        for (slot, length, limit) in count_checks {
+            let valid = self.value(format!("icmp ule i64 {length}, {limit}"));
+            self.guard(&valid, TrapKind::BoundsCheck);
+            if let Some(slot) = slot {
+                let narrowed = self.value(format!("trunc i64 {length} to i32"));
+                values[slot] = format!("i32 {narrowed}");
+            }
+        }
         // The host reads UTF-16 units; a Latin-1 string is widened into a copy that is freed after the
         // call. No argument is evaluated between a copy and the call that frees it.
-        for (position, descriptor) in widen {
+        for (position, count_len, descriptor) in widen {
             let word = self.string_word(&Type::String, &descriptor);
             let widened = self.value(format!(
                 "call %tz.string @tz.string.borrow_utf16(%tz.string {descriptor})"
@@ -152,7 +280,17 @@ impl FunctionEmitter<'_, '_> {
             let copy = self.value(format!("extractvalue %tz.string {widened}, 0"));
             let length = self.value(format!("extractvalue %tz.string {widened}, 1"));
             values[position] = format!("ptr {copy}");
-            values[position + 1] = format!("i64 {length}");
+            match count_len {
+                Some(crate::syntax::CountLength::None) => {}
+                Some(crate::syntax::CountLength::I32 | crate::syntax::CountLength::I32U) => {
+                    let narrowed = self.value(format!("trunc i64 {length} to i32"));
+                    values[position + 1] = format!("i32 {narrowed}");
+                }
+                Some(crate::syntax::CountLength::I64 | crate::syntax::CountLength::I64U)
+                | Option::None => {
+                    values[position + 1] = format!("i64 {length}");
+                }
+            }
             copies.push((copy, word));
         }
         for (position, ty, value) in deferred_nullable_records {
@@ -206,8 +344,43 @@ impl FunctionEmitter<'_, '_> {
             import.native_symbol,
             values.join(", ")
         );
+        let finish_copy_outs = |emitter: &mut Self, copy_outs: &[CopyOut]| {
+            for item in copy_outs {
+                match item {
+                    CopyOut::Record { slot, place, ty } => {
+                        let updated = emitter.read_host_record(ty, slot);
+                        emitter.instruction(format!(
+                            "store {} {updated}, ptr {place}",
+                            emitter.ty(ty)
+                        ));
+                    }
+                    CopyOut::Scalar {
+                        slot,
+                        place,
+                        ty,
+                        c_llvm_ty,
+                    } => {
+                        let raw = emitter.value(format!("load {c_llvm_ty}, ptr {slot}"));
+                        if !emitter.globals.wasm && matches!(ty, Type::Handle(..)) {
+                            let valid = emitter.value(format!("icmp ne ptr {raw}, null"));
+                            emitter.guard(&valid, TrapKind::NullHandle);
+                        }
+                        let decoded = if *ty == Type::Bool {
+                            emitter.value(format!("icmp ne i32 {raw}, 0"))
+                        } else {
+                            raw
+                        };
+                        emitter.instruction(format!(
+                            "store {} {decoded}, ptr {place}",
+                            emitter.ty(ty)
+                        ));
+                    }
+                }
+            }
+        };
         if *result == Type::Unit || out.is_some() {
             self.instruction(call);
+            finish_copy_outs(self, &copy_outs);
             self.free_copies(&copies);
             let output = if let Some(slot) = out {
                 self.read_host_result(result, &slot)
@@ -218,6 +391,7 @@ impl FunctionEmitter<'_, '_> {
             return output;
         }
         let value = self.value(call);
+        finish_copy_outs(self, &copy_outs);
         let value = if convert_ptr_result {
             self.value(format!("inttoptr i64 {value} to ptr"))
         } else {

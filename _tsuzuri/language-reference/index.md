@@ -94,6 +94,7 @@
 - [匿名共用体](./built-in-types-and-modules/anonymous-union.md) — `(i64 | string)`、期待される型での注入と拡大、型テストのパターン `:?` と絞り込み `:? (A | B)`、組み込みの比較・順序・ハッシュ・表示、JSON（`Encode`・`Decode`）
 - [Tuple](./built-in-types-and-modules/tuple.md)
 - [String](./built-in-types-and-modules/string.md)
+- [ZString](./built-in-types-and-modules/zstring.md) — NUL 終端 UTF-16 文字列（`LPCWSTR` 連携）
 - [Utf8String](./built-in-types-and-modules/utf8string.md)
 - [Char](./built-in-types-and-modules/char.md)
 - [Utf8Char](./built-in-types-and-modules/utf8char.md)
@@ -141,6 +142,8 @@
 - [Gpu](./built-in-types-and-modules/gpu.md)
 - [IO](./built-in-types-and-modules/io.md)
 - [Owned](./built-in-types-and-modules/owned.md)
+- [FnPtr](./built-in-types-and-modules/fnptr.md) — 静的 C ABI 関数ポインタの値
+- [Anchor](./built-in-types-and-modules/anchor.md) — 静的コールバックから状態へ届く世代つきトークン
 - [Routine](./built-in-types-and-modules/routine.md)
 - [File](./built-in-types-and-modules/file.md)
 - [Dir](./built-in-types-and-modules/dir.md)

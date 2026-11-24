@@ -12,7 +12,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 - 版の要求は、`[registry]` に書いた index（git リポジトリ）から最小版選択で解決します。Tsuzuri は公開の registry を運営しておらず、index は利用者や組織が置きます。
 - `tsuzuri fetch` が依存を取得し、内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。ほかのコマンドは `git` もネットワークも使いません。
 - `tsuzuri publish` は、パッケージを検査し、公開する commit の index の項目を出力します。公開の前に、`tsuzuri api-diff` で前の版との互換性を確かめられます。
-- `[wasm]` と `[native]` で、WebAssembly のメモリとネイティブのリンク入力を指定できます。
+- `[wasm]`・`[native]`・`[windows]` で、WebAssembly のメモリ、ネイティブのリンク入力、Windows の PE サブシステムを指定できます。
 - `[capabilities]` と依存の `capabilities = [...]` で、各パッケージがファイル・ネットワーク・環境・時計などに触れてよいかを宣言できます。違反はコンパイルの段階の `E1036` です。`tsuzuri audit` が使用を報告します。
 - `tsuzuri new <dir>` で、マニフェスト付きの雛形を作れます。
 
@@ -24,7 +24,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 
 - `#` の行コメント、空行、CRLF / LF
 - ダブルクォートの UTF-8 文字列と、エスケープ `\"`、`\\`、`\n`、`\r`、`\t`
-- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで <!-- rule: EDN-009 -->
+- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[windows]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで <!-- rule: EDN-009 -->
 
 <!-- rule: EDN-004 -->
 複数行の配列、未知のセクションやキー、対応していない TOML は `E0002` です。マニフェストは最大 1 MiB で、超えると `E1017` です（ソースの上限の 4 MiB を超えるファイルは、読み込みの `E0003` です）。シンボリックリンクのマニフェストは `E1011` です。
@@ -289,7 +289,7 @@ tsuzuri api-diff ../geometry-core-1.2.0 geometry-core
 
 `publish` は index を読まず、前の版のソースを取得する経路も持ちません。`api-diff` が読むのは宣言の署名だけで、関数の本体の挙動は比べられないので、公開を止める条件にはせず、版を上げる側の確認として使います。出力と判定の規則は [api-diff](../compiler/usage.md#api-diff) と [安定性と互換性の方針](../../../docs/stability.md#公開-api-の差分) にあります。
 
-## その他のセクション（[wasm] と [native]）
+## その他のセクション（[wasm]・[native]・[windows]）
 
 ビルド環境に応じた追加設定を記述できます。
 
@@ -321,6 +321,17 @@ search = ["libs"]
 - `search`: 探索ディレクトリの相対パス（`-L` に相当）。
 
 ルートの入力が先、`native = true` の依存があとです。`link`、`libraries`、`search` を合わせて 256 個までです。超えると `E2000` です。絶対パスは拒否されます。
+
+### [windows] セクション
+
+Windows の実行ファイルをビルド・実行するときの既定の PE サブシステムです。依存パッケージの `[windows]` は読みません。
+
+```toml
+[windows]
+subsystem = "windows"
+```
+
+値は `"console"` または `"windows"` です（それ以外は `E0002` `invalid_windows_setting`）。コマンドラインの `--subsystem` が優先されます。Windows 以外のターゲットや `--emit exe` 以外の出力では `[windows]` の設定は無視されます（コマンドラインで `--subsystem` を明示した場合は `console`・`windows` を問わず非 Windows ターゲット・非 `exe` 出力で `E2000` になります）。
 
 ## 権限（capabilities）
 

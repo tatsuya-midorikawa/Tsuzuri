@@ -375,7 +375,7 @@ fn domain_rejects_extern_callbacks_in_builds_and_runners() {
         assert_eq!(error.kind, Some("option_conflict"), "{what}");
         assert!(
             error.message
-                == "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+                == "Domain.run cannot be combined with extern callbacks or FnPtr values: a trap would unwind through the host's frames",
             "{what}: {}",
             error.message
         );

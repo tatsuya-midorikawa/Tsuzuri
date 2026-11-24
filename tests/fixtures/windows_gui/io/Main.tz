@@ -1,0 +1,8 @@
+def main :: unit -> i32 = \() ->
+    let! res = IO.try_writeln "hello"
+    match res with
+    | Result.Ok () -> 10
+    | Result.Error IO.WriteFailed -> 11
+    | Result.Error IO.Unavailable -> 13
+    | Result.Error _ -> 12
+

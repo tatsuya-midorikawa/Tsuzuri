@@ -50,6 +50,7 @@
 | `--allocator` | | ○ | ○（counting のみ） | ○（counting のみ） | | | | | |
 | `--freestanding` | | ○ | | | | | | | |
 | `--strip` | | ○ | | | | | | | |
+| `--subsystem` | | ○ | ○ | | | | | | |
 | `--wasm-opt` | | ○ | | | | | | | |
 | `--profile-generate DIR` / `--profile-use PATH` | | ○（native の `exe`・`object` と、wasm32 の `wasm`） | ○（native の target だけ） | | | | | | |
 | `--wasm-feature` | | ○ | | | | | | | |
@@ -436,6 +437,7 @@ tzroutine を起動する wasm32 のプログラムは、`.wasm` と `--emit bin
 | `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`counting` と `small` は実行ファイルにも使えます。`run`・`test` は `counting` だけを受けます |
 | `--allocs` | オフ | `bench` の時間測定後、別の counting 実行器で 1 反復あたりの `alloc_calls`・`alloc_bytes` を報告します（[Bench](../built-in-types-and-modules/bench.md#確保数を測る)） |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
+| `--subsystem console\|windows` | `[windows]` の値、なければ `console` | Windows の実行ファイル（`build` の `--emit exe` と `run`）の PE サブシステム。`windows` はコンソールを作らず `-Xlinker /subsystem:windows -Xlinker /entry:mainCRTStartup`（Zig では `-Wl,--subsystem,windows`）でリンクします。コマンドラインが `Tsuzuri.toml` の `[windows] subsystem` より優先され、Windows 以外のターゲットや `exe` 以外の `--emit` で `--subsystem` を指定すると `E2000` です（マニフェストの `[windows]` だけの場合は無視されます） |
 | `--no-cache` | キャッシュ有効 | `build`・`run`・`script` で、成果物・構文解析・ランタイム object のキャッシュを読まない、書かない。同梱 runtime object も使わずソースからビルドする。`repl` では成果物のキャッシュだけ（`repl` は構文解析の結果のキャッシュを使わない）。ほかのコマンドでは `E2000` |
 | `--no-server` | サーバーに尋ねる | `check` と `build` で、`tsuzuri serve` が動いていても、その要求を出さずにこのプロセスで実行する。出力は変わらない。ほかのコマンドでは `E2000`（`--no-server is only valid with check or build`）。2 回書くと `no-server specified more than once`（[serve](usage.md#serve)） |
 | `--kg` | プロジェクトなら書く | `check`・`build`・`run`・`test` で、プロジェクト（`Tsuzuri.toml` か `Main.tz` のある根）でない単独のファイルでも、知識グラフを書く（[知識グラフ](kg.md)） |

@@ -16,6 +16,7 @@ use tsuzuri::syntax::{Edition, Visibility};
 /// Each entry is the count when the module got its examples, and stays as a record.
 const FLOORS: &[(&str, usize)] = &[
     ("Alloc", 3),
+    ("Anchor", 1),
     ("Arena", 10),
     ("Array", 154),
     ("Atomic", 0),
@@ -82,6 +83,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Utf8String", 20),
     ("Vec", 68),
     ("WaitGroup", 1),
+    ("ZString", 2),
 ];
 
 /// Public functions that need no example, with the reason.

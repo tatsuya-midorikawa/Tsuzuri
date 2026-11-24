@@ -392,6 +392,7 @@ fn declare_module(
         cpu_attributes: _,
         effect_attributes: _,
         trusted: _,
+        extern_counts: _,
         noncanonical: _,
         aliases: _,
         declaration_starts: _,

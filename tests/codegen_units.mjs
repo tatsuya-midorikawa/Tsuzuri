@@ -616,6 +616,19 @@ test("C12 native object with the runtime", () => {
   }
 });
 
+// W23: Anchor type descriptors share one address across split codegen units.
+test("W23 Anchor across codegen units", () => {
+  const files = {
+    "A.tz": "record Boxed { count: i64, text: string }\ndef make :: i64 -> Anchor<Boxed>\nfn make n = Anchor.create (Boxed { count: n, text: \"ok\" })\n",
+    "B.tz": "def read_count :: i64 -> i64\nfn read_count tok =\n    match Anchor.read (\\(b: ref A.Boxed) -> b.count) tok with\n    | Result.Ok v -> v\n    | Result.Error _ -> -1\n",
+    "Main.tz": "def main :: unit -> i32 = \\() ->\n    let owner = A.make 42\n    let v = B.read_count (Anchor.token (ref owner))\n    if v == 42 then 0 else 1\n",
+  };
+  const space = workspace(0, files);
+  const split = space.build(["--no-cache"], { output: "anchor-split" });
+  assert.ok(space.compiled().units.length >= 3, "Anchor multi-module build is split");
+  execute(split.out, []);
+});
+
 // C13: the programs of examples/ behave the same from units and from one module: output, error output and exit status.
 test("C13 examples", () => {
   const examples = resolve("examples");

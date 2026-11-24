@@ -167,11 +167,13 @@ pub fn emit_with_export_style(
     }
     let ir = emit_with_options(module, options)?;
     Ok(if style == ExportStyle::Dllexport {
-        windows_abi(ir, module)
+        windows_abi(ir, module, false)
     } else {
         ir
     })
 }
+
+pub use traps::with_unwind_tables;
 
 /// W42: the 128-bit routines that `windows_abi` appends. x86-64 Windows calls them with each i128
 /// operand in a temporary passed by pointer and takes the result in XMM0, the C ABI of `__int128`
@@ -190,7 +192,51 @@ pub fn windows_i128_helpers(aarch64: bool) -> String {
     output
 }
 
-pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
+fn replace_windows_debug_write(mut ir: String) -> (String, bool) {
+    if ir.contains("\r\n") {
+        ir = ir.replace("\r\n", "\n");
+    }
+    let Some(start) = ir.find("define internal void @tz.debug.write(") else {
+        return (ir, false);
+    };
+    let rest = &ir[start..];
+    let end_offset = rest
+        .find("\n}\n")
+        .map(|index| index + 3)
+        .expect("unexpected @tz.debug.write definition in Windows IR");
+    let original = &rest[..end_offset];
+    let header_line = original.lines().next().unwrap_or_default();
+    let has_context = header_line.contains(", i32 %tz.context)");
+    let mut replacement = include_str!("runtime/debug-windows.ll").replace("\r\n", "\n");
+    if has_context {
+        let updated = replacement.replacen(
+            "define internal void @tz.debug.write(%tz.utf8string %text) nounwind {",
+            "define internal void @tz.debug.write(%tz.utf8string %text, i32 %tz.context) nounwind {",
+            1,
+        );
+        assert_ne!(
+            updated, replacement,
+            "unexpected @tz.debug.write header in debug-windows.ll"
+        );
+        replacement = updated;
+        if let Some(bad_idx) = original.find("\nbad:\n") {
+            let rep_bad_idx = replacement
+                .find("\nbad:\n")
+                .expect("missing bad: block in debug-windows.ll");
+            replacement.truncate(rep_bad_idx + 1);
+            replacement.push_str(&original[bad_idx + 1..]);
+        }
+    }
+    let mut out = String::with_capacity(ir.len() + replacement.len());
+    out.push_str(&ir[..start]);
+    out.push_str(&replacement);
+    out.push_str(&rest[end_offset..]);
+    (out, true)
+}
+
+pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) -> String {
+    let aarch64 = crate::target::current_platform().aarch64();
+    let (ir, has_debug_write) = replace_windows_debug_write(ir);
     let has_trap_write = ir.contains("define internal void @tz.trap.write(");
     let ir = if has_trap_write {
         assert_eq!(
@@ -202,7 +248,10 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     } else {
         ir
     };
-    let mut output = String::with_capacity(ir.len());
+    let mut ir_with_i128 = ir;
+    ir_with_i128.push_str(&windows_i128_helpers(aarch64));
+
+    let mut output = String::with_capacity(ir_with_i128.len() + 2048);
     let mut exports: BTreeSet<_> = module
         .functions
         .iter()
@@ -212,12 +261,34 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
     if io_entry(module) || main_entry(module) {
         exports.insert("tsuzuri_main".into());
     }
-    let has_write = ir.contains("call i64 @write(");
-    let has_console = ir.contains("define internal i32 @tz.console.write(");
+    let has_write = ir_with_i128.contains("call i64 @write(");
+    let has_console = ir_with_i128.contains("define internal i32 @tz.console.write(");
     let mut console = false;
-    for line in ir.lines() {
+    let mut main_entry_block = false;
+    let mut in_trap_report = false;
+    let mut needs_trap_fail = false;
+    for line in ir_with_i128.lines() {
         if line == "declare i64 @write(i32, ptr, i64)" {
             continue;
+        }
+        if line.starts_with("define internal void @tz.trap.report(i32 %site)") {
+            in_trap_report = true;
+        } else if in_trap_report && line == "}" {
+            in_trap_report = false;
+        } else if in_trap_report && line == "  ret void" {
+            output.push_str("  call void @tz.trap.fail(i32 %site)\n  unreachable\n");
+            needs_trap_fail = true;
+            continue;
+        }
+        if !executable {
+            if let Some(suffix) = line
+                .strip_prefix("  call void @llvm.trap()")
+                .or_else(|| line.strip_prefix("  tail call void @llvm.trap()"))
+            {
+                let _ = writeln!(output, "  call void @tz.trap.fail(i32 0){suffix}");
+                needs_trap_fail = true;
+                continue;
+            }
         }
         if line.starts_with("define ")
             && line
@@ -231,19 +302,24 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
         }
         if line.starts_with("define internal i32 @tz.console.write(") {
             console = true;
-        }
-        if console && line == "entry:" {
+        } else if console && line == "entry:" {
             output.push_str("  %binary_mode = call i32 @_setmode(i32 1, i32 32768)\n");
             console = false;
         }
+        if executable && line.starts_with("define i32 @main(") {
+            main_entry_block = true;
+        } else if main_entry_block && line == "entry:" {
+            output.push_str("  call void @tsuzuri_trap_install()\n");
+            main_entry_block = false;
+        }
     }
-    if has_trap_write {
+    if has_trap_write || executable {
+        traps::ensure_windows_report_writer(&mut output);
+    } else if has_debug_write {
         if !output.contains("define internal void @tz.debugger.write(") {
             output.push_str(traps::DEBUGGER_WRITE);
         }
         for declaration in [
-            "declare ptr @GetStdHandle(i32)",
-            "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
             "declare void @OutputDebugStringW(ptr)",
             "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
         ] {
@@ -252,16 +328,44 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule) -> String {
             }
         }
     }
+    if has_debug_write {
+        for declaration in [
+            "declare ptr @GetStdHandle(i32)",
+            "declare i64 @_get_osfhandle(i32)",
+            "declare ptr @_set_thread_local_invalid_parameter_handler(ptr)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
+    }
+    if needs_trap_fail {
+        output.push_str(traps::TRAP_FAIL_WINDOWS);
+    }
+    if executable {
+        output.push_str(&traps::trap_veh_windows(aarch64));
+        for declaration in [
+            "declare void @RaiseFailFastException(ptr, ptr, i32)",
+            "declare ptr @AddVectoredExceptionHandler(i32, ptr)",
+            "declare i32 @SetThreadStackGuarantee(ptr)",
+        ] {
+            if !output.contains(declaration) {
+                let _ = writeln!(output, "{declaration}");
+            }
+        }
+    } else if needs_trap_fail {
+        let declaration = "declare void @RaiseFailFastException(ptr, ptr, i32)";
+        if !output.contains(declaration) {
+            let _ = writeln!(output, "{declaration}");
+        }
+    }
     if has_console || has_write {
         output.push_str("declare i32 @_setmode(i32, i32)\n");
     }
     if has_write {
         output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
-    output.push_str(&windows_i128_helpers(
-        crate::target::current_platform().aarch64(),
-    ));
-    output
+    traps::with_unwind_tables(&output)
 }
 
 /// Lowers the standard IO to the WASI host: its `declare`s lose the `tsuzuri_io` import attributes,
@@ -523,6 +627,8 @@ pub(crate) fn with_stack_checks(ir: String, bounds: StackBounds) -> String {
     output
 }
 
+#[path = "llvm_anchor.rs"]
+mod anchor;
 #[path = "llvm_bulk.rs"]
 mod bulk;
 #[path = "llvm_channel.rs"]
@@ -1440,7 +1546,7 @@ fn domain_without_callbacks(module: &CheckedModule, ir: &str) -> Result<(), Diag
     if ir.contains("@tz.callback.") {
         return Err(Diagnostic::of(
             DiagnosticKind::OptionConflict,
-            "Domain.run cannot be combined with extern callbacks: a trap would unwind through the host's frames",
+            "Domain.run cannot be combined with extern callbacks or FnPtr values: a trap would unwind through the host's frames",
             crate::check::domain_calls(module)
                 .first()
                 .copied()
@@ -1740,12 +1846,15 @@ pub(crate) fn with_blocking_externs(
     let mut output = String::with_capacity(ir.len() + 256);
     let mut calls = false;
     let mut callbacks = false;
+    let mut callback_scopes = false;
     let mut lines = ir.split_inclusive('\n');
     while let Some(line) = lines.next() {
         let header = line.trim_end();
+        let is_callback =
+            header.contains(" @tz.callback.") && !header.contains(" @tz.callback.after_main(");
         if header.starts_with("define ")
             && header.ends_with('{')
-            && (header.contains(" @tz.callback.")
+            && (is_callback
                 || header
                     .split_once(" @")
                     .and_then(|(_, name)| name.split_once('('))
@@ -1756,9 +1865,18 @@ pub(crate) fn with_blocking_externs(
             let Some(label) = lines.next() else { break };
             output.push_str(label);
             output.push_str("  %tz.callback = call i32 @tsuzuri_tz_callback_enter()\n");
+            if is_callback {
+                callback_scopes = true;
+                output.push_str("  %tz.host = call ptr @tsuzuri_tz_callback_scope_enter()\n");
+            }
             for line in lines.by_ref() {
                 let body = line.trim_start();
                 if body.starts_with("ret ") || body.trim_end() == "ret void" {
+                    if is_callback {
+                        output.push_str(
+                            "  call void @tsuzuri_tz_callback_scope_leave(ptr %tz.host)\n",
+                        );
+                    }
                     output.push_str("  call void @tsuzuri_tz_callback_exit(i32 %tz.callback)\n");
                 }
                 output.push_str(line);
@@ -1787,6 +1905,9 @@ pub(crate) fn with_blocking_externs(
     }
     if callbacks {
         output.push_str("declare i32 @tsuzuri_tz_callback_enter()\ndeclare void @tsuzuri_tz_callback_exit(i32)\n");
+    }
+    if callback_scopes {
+        output.push_str("declare ptr @tsuzuri_tz_callback_scope_enter()\ndeclare void @tsuzuri_tz_callback_scope_leave(ptr)\n");
     }
     output
 }
@@ -2007,6 +2128,7 @@ fn emit_program_in(
         strings: string_form,
         overflow: crate::overflow::active().map(overflow_emit::Report::new),
         user_drops: std::rc::Rc::new(identity_drops(module, &emitted)),
+        guard_callbacks_after_main: !wasm && entry == Entry::Console,
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -2110,7 +2232,32 @@ fn emit_program_in(
     );
     *exhausted = specializations.exhausted();
     // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
-    for id in std::mem::take(&mut globals.callbacks) {
+    let callback_ids = std::mem::take(&mut globals.callbacks);
+    let mark_main_done = !callback_ids.is_empty() && globals.guard_callbacks_after_main;
+    if mark_main_done {
+        const AFTER_MAIN_MSG: &str = "Tsuzuri runtime: a callback was called after main returned; stop the timers, threads and windows that call it before main returns\n";
+        let bytes: String = AFTER_MAIN_MSG
+            .bytes()
+            .map(|byte| format!("\\{byte:02X}"))
+            .collect();
+        let len = AFTER_MAIN_MSG.len();
+        let _ = write!(
+            output,
+            "@tz.main.done = internal global i32 0, align 4\n\
+@tz.callback.after_main.msg = private unnamed_addr constant [{len} x i8] c\"{bytes}\"\n\
+define internal void @tz.callback.after_main() cold noreturn nounwind {{\n\
+entry:\n\
+  call void @tz.trap.write(ptr @tz.callback.after_main.msg, i64 {len})\n\
+  call void @llvm.trap()\n\
+  unreachable\n\
+}}\n"
+        );
+        if !instrumentation.traps {
+            output.push_str(traps::TRAP_WRITE);
+            intrinsics.insert("declare i64 @write(i32, ptr, i64)".into());
+        }
+    }
+    for id in callback_ids {
         let function = &module.functions[id];
         let wrapper = host_abi::wrapper(
             module,
@@ -2194,7 +2341,7 @@ fn emit_program_in(
     }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
-            console_main(module, uses_args, spawns(module)),
+            console_main(module, uses_args, spawns(module), mark_main_done),
             module,
             &module.functions[module.entry.unwrap()],
             "@main",
@@ -2811,10 +2958,14 @@ struct Globals {
     /// The values of the deferred shared blocks that the program drops, with whether they
     /// count atomically (C10).
     shared_types: BTreeSet<(Type, bool)>,
+    /// W23: anchored value types whose `@tz.anchor.type.*` and `@tz.anchor.drop.*` helpers are emitted.
+    anchor_types: BTreeSet<Type>,
     /// The user drop of each Drop type's `codegen_identity`, `identity_drops` (A29).
     user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
+    guard_callbacks_after_main: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
     coverage: Option<crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
@@ -2874,8 +3025,10 @@ impl Default for Globals {
             parallel_kernels: 0,
             recursive_types: BTreeSet::new(),
             shared_types: BTreeSet::new(),
+            anchor_types: BTreeSet::new(),
             user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
+            guard_callbacks_after_main: false,
             coverage: None,
             seed: None,
             #[cfg(debug_assertions)]
@@ -3424,7 +3577,7 @@ fn llvm_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Function(..) | Type::Once(_) => "%tz.closure".into(),
         Type::Dyn(_) => "%tz.dyn".into(),
         Type::Reference(..) if ty.slice_element().is_some() => "%tz.array".into(),
-        Type::Reference(..) | Type::Handle(..) | Type::Shared(..) => "ptr".into(),
+        Type::Reference(..) | Type::Handle(..) | Type::FnPtr(_) | Type::Shared(..) => "ptr".into(),
         Type::FixedArray(element, _) => {
             format!("[{} x {}]", fixed_length(ty), llvm_type(element, module))
         }
@@ -3523,6 +3676,26 @@ fn static_constant(value: &TypedExpr, module: &CheckedModule) -> String {
 /// elements in `@tz.static.N.data`, which its header points at, and has no global when it is
 /// empty; any other value is `@tz.static.N` itself. Both are private, unnamed, and constant.
 fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Option<String> {
+    if crate::abi::zstring(&value.ty, &module.types())
+        && let TypedExprKind::Record(fields) = &value.kind
+        && let [(_, array_expr)] = fields.as_slice()
+        && let TypedExprKind::Array(elements) = &array_expr.kind
+    {
+        let items = elements
+            .iter()
+            .map(|el| match el.kind {
+                TypedExprKind::Int(n) => format!("i16 {}", n as u16),
+                _ => unreachable!("ZString literal elements are u16"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let len = elements.len();
+        let rec_ty = llvm_type(&value.ty, module);
+        return Some(format!(
+            "@tz.static.{id}.data = private unnamed_addr constant [{len} x i16] [{items}], align 2\n\
+             @tz.static.{id} = private unnamed_addr constant {rec_ty} {{ %tz.array {{ ptr @tz.static.{id}.data, i64 {len} }} }}"
+        ));
+    }
     let (Type::Array(element), TypedExprKind::Array(elements)) = (&value.ty, &value.kind) else {
         return Some(format!(
             "@tz.static.{id} = private unnamed_addr constant {} {}",
@@ -3824,6 +3997,7 @@ pub(crate) fn codegen_identity(ty: &Type) -> Type {
             | Type::List(inner)
             | Type::Vec(inner)
             | Type::Once(inner)
+            | Type::FnPtr(inner)
             | Type::Reference(inner, _)
             | Type::Shared(inner, _) => erase(inner),
             Type::Partial(partial) => partial.trailing.iter_mut().for_each(erase),
@@ -3922,6 +4096,7 @@ fn canonical_type(ty: &Type, module: &CheckedModule) -> String {
         Type::Reference(value, false) => format!("ref[{}]", canonical_type(value, module)),
         Type::Reference(value, true) => format!("refmut[{}]", canonical_type(value, module)),
         Type::Once(result) => format!("once[{}]", canonical_type(result, module)),
+        Type::FnPtr(inner) => format!("fnptr[{}]", canonical_type(inner, module)),
         Type::Shared(value, kind) => format!(
             "{}[{}]",
             match kind {
@@ -3983,13 +4158,60 @@ pub(crate) fn validate_wasm_externs(
     module: &CheckedModule,
     reachable: &BTreeSet<usize>,
 ) -> Result<(), Diagnostic> {
+    fn find_fnptr_of(expression: &TypedExpr) -> Option<Span> {
+        if let TypedExprKind::Call(callee, _) = &expression.kind
+            && matches!(
+                &callee.kind,
+                TypedExprKind::Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::FnPtrOf
+            )
+        {
+            return Some(expression.span);
+        }
+        let mut found = None;
+        let _ = expression.try_for_each_child(&mut |child| {
+            if found.is_none() {
+                found = find_fnptr_of(child);
+            }
+            Ok(())
+        });
+        found
+    }
+
     let types = module.types();
     let mut seen: BTreeMap<&str, (Type, Span)> = BTreeMap::new();
     for &id in reachable {
         let function = &module.functions[id];
+        if let Some(span) = find_fnptr_of(&function.body) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'FnPtr.of' produces a native C function pointer, which only native targets support; build for a native target",
+                span,
+            ));
+        }
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if function
+            .signature
+            .parameters
+            .iter()
+            .any(|ty| matches!(ty, Type::FnPtr(_)))
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'FnPtr' at the C ABI passes a native code pointer, which only native targets support; build for a native target",
+                function.span,
+            ));
+        }
+        if crate::abi::uses_w13_native_only(&function.signature.parameters, &import.counts, &types)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "extern 'ref mut' parameters, i16u/i32/i32u buffers, 'ref ZString', and '@count' are supported only on native targets; build for a native target",
+                function.span,
+            ));
+        }
         if crate::abi::uses_nullable_abi(
             &function.signature.parameters,
             &function.signature.result,
@@ -4477,7 +4699,7 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(32) => "float".into(),
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
-        Type::Handle(..) => "ptr".into(),
+        Type::Handle(..) | Type::FnPtr(_) => "ptr".into(),
         Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => "ptr".into(),
         _ => unreachable!("the type checker enforces scalar exports"),
     }
@@ -4589,6 +4811,27 @@ pub fn uses_tzroutine(module: &CheckedModule) -> bool {
         (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
             && expression_uses_tzroutine(&function.body)
     })
+}
+
+/// W23: whether the program reaches any `Anchor` builtin.
+pub fn uses_anchor(module: &CheckedModule) -> bool {
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && expression_uses_anchor(&function.body)
+    })
+}
+
+fn expression_uses_anchor(expression: &TypedExpr) -> bool {
+    match &expression.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.is_anchor() => {
+            true
+        }
+        _ => expression
+            .children()
+            .into_iter()
+            .any(expression_uses_anchor),
+    }
 }
 
 fn expression_uses_tzroutine(expression: &TypedExpr) -> bool {
@@ -6606,7 +6849,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
             Type::Handle(_, HandleKind::Copy) => value.to_owned(),
-            Type::Handle(_, HandleKind::Owned) => unreachable!("extern handles cannot be cloned"),
+            Type::Handle(_, HandleKind::Owned | HandleKind::Local) => {
+                unreachable!("extern handles cannot be cloned")
+            }
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
             Type::Dyn(dyn_type) => {
                 assert!(dyn_type.copy, "dyn values without Copy cannot be cloned");
@@ -7277,6 +7522,24 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             && let [value] = arguments
         {
             return self.dyn_of(instance, value);
+        }
+        // W22: `FnPtr.of target` produces the static C callback wrapper address of `target`.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && instance.builtin == Builtin::FnPtrOf
+            && let [target] = arguments
+        {
+            let mut target = target;
+            while let TypedExprKind::Cast(inner) = &target.kind {
+                target = inner;
+            }
+            let TypedExprKind::Function(FunctionRef::User(id)) = target.kind else {
+                unreachable!("validate_callbacks checked FnPtr.of argument");
+            };
+            self.globals.callbacks.insert(id);
+            return format!(
+                "@tz.callback.{}",
+                self.module.functions[id].qualified_name()
+            );
         }
         // A16: a direct `FixedArray.init f` fills the array in place, calling a known `f` directly.
         if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
@@ -8317,7 +8580,8 @@ fn emit_builtin(
                 || builtin.is_channel()
                 || builtin.is_timer()
                 || builtin.is_wait()
-                || builtin.is_context() =>
+                || builtin.is_context()
+                || builtin.is_anchor() =>
         {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
@@ -8553,6 +8817,8 @@ fn emit_typed_builtin(
         emitter.vector_builtin(instance, ty)
     } else if instance.builtin.shared_kind().is_some() {
         emitter.shared_builtin(instance, ty)
+    } else if instance.builtin.is_anchor() {
+        emitter.anchor_builtin(instance, ty)
     } else if instance.builtin.is_atomic()
         || instance.builtin.is_data_channel()
         || matches!(
@@ -8697,6 +8963,9 @@ fn emit_typed_builtin(
         shared_globals
             .shared_types
             .append(&mut local_globals.shared_types);
+        shared_globals
+            .anchor_types
+            .append(&mut local_globals.anchor_types);
     }
     definition
 }
@@ -9528,7 +9797,12 @@ fn test_builtin(
 /// `Array<string> -> i32` receives the arguments that `src/runtime/arguments.c` reads.
 /// `@main` for a `def main`. When the program spawns (TZ02), it waits for the tzroutines spawned
 /// during `main` before it returns the exit code.
-fn console_def_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
+fn console_def_main(
+    module: &CheckedModule,
+    uses_args: bool,
+    spawns: bool,
+    mark_main_done: bool,
+) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut body = String::new();
     if uses_args {
@@ -9554,9 +9828,14 @@ fn console_def_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> St
     } else {
         ("", "")
     };
+    let done = if mark_main_done {
+        "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
+    } else {
+        ""
+    };
     let _ = write!(
         output,
-        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}  ret i32 %code\n}}\n",
+        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}{done}  ret i32 %code\n}}\n",
         main.qualified_name()
     );
     if spawns {
@@ -9605,15 +9884,29 @@ fn library_def_main(module: &CheckedModule, wasm: bool) -> String {
     output
 }
 
-fn console_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String {
+fn console_main(
+    module: &CheckedModule,
+    uses_args: bool,
+    spawns: bool,
+    mark_main_done: bool,
+) -> String {
+    let done = if mark_main_done {
+        "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
+    } else {
+        ""
+    };
     if main_entry(module) {
-        return console_def_main(module, uses_args, spawns);
+        return console_def_main(module, uses_args, spawns, mark_main_done);
     }
     if io_entry(module) {
         if uses_args {
-            return "define i32 @main(i32 %argc, ptr %argv) {\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+            return format!(
+                "define i32 @main(i32 %argc, ptr %argv) {{\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+            );
         }
-        return "define i32 @main() {\nentry:\n  %result = call i32 @tsuzuri_main()\n  ret i32 %result\n}\n".into();
+        return format!(
+            "define i32 @main() {{\nentry:\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+        );
     }
     let main = &module.functions[module.entry.unwrap()];
     let ty = &main.signature.result;
@@ -9642,6 +9935,7 @@ fn console_main(module: &CheckedModule, uses_args: bool, spawns: bool) -> String
     if spawns {
         output.push_str(TZROUTINE_SCOPE_LEAVE);
     }
+    output.push_str(done);
     match ty {
         Type::Char | Type::Utf8Char => {
             output.push_str("  %buffer = alloca [4 x i8], align 4\n");
@@ -10951,8 +11245,19 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                     };
                     assert!(!base.contains("@GetStdHandle"));
                     assert!(!base.contains("@tz.debugger.write("));
-                    let win = windows_abi(base.clone(), &module);
-                    assert_eq!(win, windows_abi(base, &module));
+                    let win = windows_abi(base.clone(), &module, true);
+                    assert_eq!(win, windows_abi(base.clone(), &module, true));
+                    assert_eq!(win, windows_abi(base.replace('\n', "\r\n"), &module, true));
+                    let win_obj = windows_abi(base.clone(), &module, false);
+                    assert_eq!(win_obj, windows_abi(base, &module, false));
+                    assert!(win.contains("call void @tsuzuri_trap_install()"));
+                    assert!(win.contains("define internal i32 @tz.trap.veh(ptr %info)"));
+                    assert!(win.contains("call void @llvm.trap()"));
+                    assert!(!win_obj.contains("call void @llvm.trap()"));
+                    assert!(win_obj.contains("call void @tz.trap.fail(i32 0)"));
+                    for line in win.lines().filter(|line| line.starts_with("define ")) {
+                        assert!(line.contains(" uwtable"), "missing uwtable: {line}");
+                    }
                     assert!(win.contains("call ptr @GetStdHandle(i32 -12)"));
                     assert!(!win.contains("call i64 @write("));
                     assert!(!win.contains("define internal i64 @write("));
@@ -10966,6 +11271,9 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                         "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
                         "declare void @OutputDebugStringW(ptr)",
                         "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+                        "declare void @RaiseFailFastException(ptr, ptr, i32)",
+                        "declare ptr @AddVectoredExceptionHandler(i32, ptr)",
+                        "declare i32 @SetThreadStackGuarantee(ptr)",
                     ] {
                         assert_eq!(win.matches(declaration).count(), 1, "{declaration}");
                     }
@@ -10976,10 +11284,9 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
 
     #[test]
     fn windows_write_shim_reports_a_failed_setmode() {
-        let module = analyze(
-            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }",
-        )
-        .unwrap();
+        let source =
+            "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }";
+        let module = analyze(source).unwrap();
         let options = EmitOptions {
             entry: Entry::Library,
             wasm: false,
@@ -10993,5 +11300,24 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
         assert!(win.contains("define internal i64 @write("));
         assert!(win.contains("%bad_mode = icmp eq i32 %mode, -1"));
         assert!(win.contains("ret i64 -1"));
+        let posix = emit_with_options(&module, options).unwrap();
+        assert_eq!(
+            windows_abi(posix.replace('\n', "\r\n"), &module, false),
+            win
+        );
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        let trap_posix =
+            emit_with_trap_info_numbered(&module, options, &sources, &|_| TrapNumbering::Dense)
+                .unwrap()
+                .ir;
+        let trap_win = windows_abi(trap_posix.clone(), &module, true);
+        assert!(trap_win.contains("call void @tz.debugger.write("));
+        assert_eq!(
+            windows_abi(trap_posix.replace('\n', "\r\n"), &module, true),
+            trap_win
+        );
     }
 }

@@ -1,0 +1,29 @@
+/// An owner of a value stored in the runtime's anchor table, reachable on the creating OS thread
+/// through an `i64` token (`Anchor.create`, `Anchor.token`, `Anchor.read`, `Anchor.update`, W23).
+record Anchor<'a> { token: i64 }
+
+instance Drop<Anchor<'a>> {
+    fn drop anchor = Anchor.__release anchor.token
+}
+
+/// Why `Anchor.read` or `Anchor.update` did not access the anchored value.
+union Error = Stale | WrongType | WrongThread | Busy deriving (Eq)
+
+instance Display<Error> {
+    fn display error =
+        match error with
+        | Stale -> "stale anchor token"
+        | WrongType -> "anchor token has a different value type"
+        | WrongThread -> "anchor token belongs to another thread"
+        | Busy -> "anchor value is already borrowed"
+}
+
+/// The `i64` token for `anchor`, valid until `anchor` is dropped and never `0`.
+///
+/// ```tsuzuri run=true
+/// let state = Anchor.create 42
+/// let key = Anchor.token (ref state)
+/// key > 0
+/// ```
+def token :: ref Anchor<'a> -> i64
+fn token anchor = anchor.token

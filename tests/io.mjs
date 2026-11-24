@@ -7,7 +7,9 @@ import { join, resolve } from "node:path";
 const compiler = resolve(process.argv[2] ?? "target/release/tsuzuri");
 const clang = process.env.TSUZURI_CLANG ?? "clang";
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-io-"));
+const probeRoot = mkdtempSync(join(tmpdir(), "tsuzuri-io-probe-"));
 const source = join(root, "Main.tz");
+const probeSource = join(probeRoot, "Main.tz");
 function execute(program, args, options = {}, success = true) {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024, ...options });
   assert.ifError(result.error);
@@ -15,7 +17,7 @@ function execute(program, args, options = {}, success = true) {
   return result;
 }
 
-function host(module, lines = [], { readFailure = false, writeFailure = false, invalid } = {}) {
+function host(module, lines = [], { readFailure = false, readUnavailable = false, writeFailure = false, writeUnavailable = false, invalid } = {}) {
   let instance;
   let reads = 0;
   const writes = [[], []];
@@ -29,10 +31,12 @@ function host(module, lines = [], { readFailure = false, writeFailure = false, i
       view.setUint32(out, pointer, true);
       view.setBigInt64(out + 8, BigInt(bytes.length), true);
       if (invalid) return invalid(view, out);
+      if (readUnavailable) return 3;
       return readFailure ? 2 : line === undefined ? 1 : 0;
     },
     write(destination, pointer, length) {
       assert.ok(destination === 1 || destination === 2);
+      if (writeUnavailable && destination === 1) return 2;
       if (writeFailure && destination === 1) return 1;
       writes[destination - 1].push(Buffer.from(new Uint8Array(instance.exports.memory.buffer, pointer, Number(length))));
       return 0;
@@ -127,7 +131,7 @@ IO {
     assert.equal(wasmHost.instance.exports.memory.buffer.byteLength, memorySize);
     for (const invalid of [
       () => -1,
-      () => 3,
+      () => 4,
       (view, out) => { view.setBigInt64(out + 8, -1n, true); return 0; },
       (view, out) => { view.setBigInt64(out + 8, 1n, true); return 0; },
       (view, out) => { view.setUint32(out, view.byteLength - 1, true); view.setBigInt64(out + 8, 8n, true); return 0; },
@@ -219,12 +223,14 @@ fn report result = match result with
     | Result.Error IO.InvalidEncoding -> "encoding"
     | Result.Error IO.WriteFailed -> "write-failed"
     | Result.Error IO.ReadFailed -> "read-failed"
+    | Result.Error IO.Unavailable -> "unavailable"
 IO {
     let! input = IO.try_readln ()
     do! IO.write_errln (match input with
         | Result.Ok Maybe.None -> "eof"
         | Result.Ok (Maybe.Some text) -> "line:" + text
         | Result.Error IO.InvalidEncoding -> "encoding"
+        | Result.Error IO.Unavailable -> "unavailable"
         | Result.Error _ -> "read-failed")
     let! invalid = IO.try_write "\\uD800"
     do! IO.write_errln (report invalid)
@@ -264,6 +270,40 @@ IO {
       closeSync(writeOnly);
       closeSync(readOnly);
     }
+    if (process.platform !== "win32") {
+      // W08: truly closed POSIX file descriptors (`>&-`, `<&-`, `2>&-`) report `Unavailable` rather than `WriteFailed`/`ReadFailed`.
+      const closedOut = execute("sh", ["-c", 'exec "$1" >&-', "sh", executable], { input: "" });
+      assert.equal(closedOut.stderr, reports("eof", "unavailable"));
+      const closedIn = execute("sh", ["-c", 'exec "$1" <&-', "sh", executable]);
+      assert.equal(closedIn.stderr, reports("unavailable", "written"));
+
+      writeFileSync(probeSource, `let! r1 = IO.try_write_errln "x"
+let! r2 = IO.try_write_err ""
+do! IO.writeln (match (r1, r2) with | (Result.Error IO.Unavailable, Result.Error IO.Unavailable) -> "unavailable" | _ -> "other")
+`);
+      const errProbeExe = join(probeRoot, `err-probe${optimization}.bin`);
+      execute(compiler, ["build", probeSource, optimization, "-o", errProbeExe]);
+      assert.equal(execute("sh", ["-c", 'exec "$1" 2>&-', "sh", errProbeExe]).stdout, "unavailable\n");
+
+      writeFileSync(probeSource, `let! r = IO.try_write ""
+do! IO.write_errln (match r with | Result.Error IO.Unavailable -> "unavailable" | _ -> "other")
+`);
+      const emptyOutExe = join(probeRoot, `empty-out${optimization}.bin`);
+      execute(compiler, ["build", probeSource, optimization, "-o", emptyOutExe]);
+      assert.equal(execute("sh", ["-c", 'exec "$1" >&-', "sh", emptyOutExe]).stderr, "unavailable\n");
+
+      writeFileSync(probeSource, 'IO {\n    do! IO.writeln "x"\n    do! IO.write_err "after"\n}\n');
+      const trapClosedExe = join(probeRoot, `trap-closed${optimization}.bin`);
+      execute(compiler, ["build", probeSource, optimization, "-o", trapClosedExe]);
+      const trappedClosed = execute("sh", ["-c", 'exec "$1" >&-', "sh", trapClosedExe], {}, false);
+      assert.notEqual(trappedClosed.status, 0);
+      assert.equal(trappedClosed.stderr, "");
+
+      writeFileSync(probeSource, 'let s = "note"\nDebug.print (ref s)\n0\n');
+      const dbgClosedExe = join(probeRoot, `dbg-closed${optimization}.bin`);
+      execute(compiler, ["build", probeSource, optimization, "-o", dbgClosedExe]);
+      assert.notEqual(execute("sh", ["-c", 'exec "$1" 2>&-', "sh", dbgClosedExe], {}, false).status, 0);
+    }
     const wasm = join(root, `errors${optimization}.wasm`);
     execute(compiler, ["build", source, "--target", "wasm32", optimization, "-o", wasm]);
     const module = new WebAssembly.Module(readFileSync(wasm));
@@ -272,6 +312,7 @@ IO {
       [["fine"], {}, "ok!\n", reports("line:fine", "written")],
       [[Buffer.from([0x80])], {}, "ok!\n", reports("encoding", "written")],
       [[], { readFailure: true, writeFailure: true }, "", reports("read-failed", "write-failed")],
+      [[], { readUnavailable: true, writeUnavailable: true }, "", reports("unavailable", "unavailable")],
     ]) {
       const result = host(module, lines, options);
       assert.equal(result.instance.exports.tsuzuri_main(), 0);
@@ -523,4 +564,5 @@ do! IO.writeln (Helpers.functions())
   console.log("IO: EOF/CRLF/long lines, encoding/errors, ABI guards, composition, interactive prompts, object linking and ASan/UBSan zero-live allocations passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
+  rmSync(probeRoot, { recursive: true, force: true });
 }

@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [W08](W08-io-without-std-streams.md) |
 | 後続 | [W10](W10-windows-resources.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（D-55 への登録: CLI の `--subsystem console\|windows`、マニフェストの節 `[windows]` とキー `subsystem`。決定事項 D1） |
 | 手本にする既存実装 | `src/driver.rs` の `BuildOptions::with_manifest_wasm`（マニフェストの設定を、それが効く出力にだけ移す）、`src/main.rs` の `links_apply`（マニフェストの `[native]` が効くコマンド）と `--strip` の解析とコマンドごとの検査、`src/driver.rs` の `pdb_link_args`（`-Xlinker` で MSVC のリンカーに渡す）と `msvc_linker_for`、`src/package.rs` の `parse_manifest` の `[wasm]` 節 |

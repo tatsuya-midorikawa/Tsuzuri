@@ -124,6 +124,102 @@ int32_t ns01_call_null(int32_t (*callback)(void *)) {
     return callback(NULL);
 }
 
+typedef struct {
+    int32_t left;
+    int32_t top;
+    int32_t right;
+    int32_t bottom;
+} w13_rect;
+
+typedef struct {
+    int32_t a;
+    uint32_t w;
+    int32_t b;
+} w13_narrow;
+
+int32_t w13_inflate_rect(w13_rect *rc, int32_t dx, int32_t dy) {
+    int32_t sum_in = rc->left + rc->top + rc->right + rc->bottom;
+    rc->left -= dx;
+    rc->top -= dy;
+    rc->right += dx;
+    rc->bottom += dy;
+    return sum_in;
+}
+
+int32_t w13_mut_narrow(w13_narrow *rec, uint16_t *word, int32_t *flag) {
+    int32_t initial = (int32_t)rec->a + (int32_t)rec->w + (rec->b ? 100 : 0) + (int32_t)(*word) + (*flag ? 1000 : 0);
+    rec->a = -7;
+    rec->w = 50000u;
+    rec->b = 3; /* non-zero -> decoded to true */
+    *word = (uint16_t)(*word + 1000u);
+    *flag = 2;  /* non-zero -> decoded to true */
+    return initial;
+}
+
+void w13_noop_rect(w13_rect *rc, int32_t *scalar) {
+    (void)rc;
+    (void)scalar;
+}
+
+int32_t w13_fill_window(uint16_t *ptr, int64_t len, uint16_t base) {
+    if (len == 0) return ptr == NULL || ptr != NULL ? 0 : -1;
+    for (int64_t i = 0; i < len; i++) {
+        ptr[i] = (uint16_t)(base + (uint16_t)(i * 10));
+    }
+    return (int32_t)len;
+}
+
+int64_t w13_sum_counts(const int32_t *a, int32_t a_len, const uint32_t *b, uint32_t b_len) {
+    int64_t s = 0;
+    for (int32_t i = 0; i < a_len; i++) s += a[i];
+    for (uint32_t j = 0; j < b_len; j++) s += (int64_t)b[j];
+    return s;
+}
+
+void w13_write_counted_none(int32_t n, int32_t *buf) {
+    for (int32_t i = 0; i < n; i++) {
+        buf[i] = (i + 1) * 11;
+    }
+}
+
+int64_t w20_zlen(const uint16_t *s) {
+    if (s == NULL) return -1;
+    int64_t n = 0;
+    while (s[n] != 0) n++;
+    return n;
+}
+
+typedef struct {
+    pthread_t owner;
+    int64_t total;
+    uint64_t magic;
+} w19_thread_slot;
+
+void *w19_open_local(void) {
+    w19_thread_slot *slot = malloc(sizeof *slot);
+    assert(slot != NULL);
+    slot->owner = pthread_self();
+    slot->total = 0;
+    slot->magic = UINT64_C(0x571910ca1);
+    return slot;
+}
+
+int64_t w19_use_local(w19_thread_slot *slot, int64_t delta) {
+    assert(slot != NULL && slot->magic == UINT64_C(0x571910ca1));
+    assert(pthread_equal(slot->owner, pthread_self()) != 0);
+    slot->total += delta;
+    return slot->total;
+}
+
+int64_t w19_close_local(w19_thread_slot *slot) {
+    assert(slot != NULL && slot->magic == UINT64_C(0x571910ca1));
+    assert(pthread_equal(slot->owner, pthread_self()) != 0);
+    int64_t out = slot->total;
+    slot->magic = 0;
+    free(slot);
+    return out;
+}
+
 // The callback runs on a thread the host started and joins before it returns.
 struct threaded_call {
     int64_t (*callback)(int64_t);

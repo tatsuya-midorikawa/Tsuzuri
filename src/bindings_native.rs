@@ -328,6 +328,7 @@ fn csharp_owned(buffer: Buffer) -> &'static str {
         Buffer::UByte => "OwnedBuffer<byte>",
         Buffer::String => "OwnedString",
         Buffer::Utf8String => "OwnedUtf8String",
+        Buffer::I16U | Buffer::I32 | Buffer::I32U => unreachable!("export buffers are checked"),
     }
 }
 
@@ -337,6 +338,7 @@ fn csharp_element(buffer: Buffer) -> &'static str {
         Buffer::F64 => "double",
         Buffer::UByte | Buffer::Utf8String => "byte",
         Buffer::String => "char",
+        Buffer::I16U | Buffer::I32 | Buffer::I32U => unreachable!("export buffers are checked"),
     }
 }
 
@@ -1260,6 +1262,9 @@ fn python_export(
                     ),
                     Buffer::String => ("_ctypes.c_uint16", format!("_utf16({argument}, {at})")),
                     Buffer::Utf8String => ("_ctypes.c_uint8", format!("_utf8({argument}, {at})")),
+                    Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+                        unreachable!("export buffers are checked")
+                    }
                 };
                 argtypes.push(format!("_ctypes.POINTER({ctype})"));
                 argtypes.push("_ctypes.c_int64".to_owned());
@@ -1300,6 +1305,9 @@ fn python_export(
                 Buffer::UByte => "B",
                 Buffer::String => "string",
                 Buffer::Utf8String => "utf8string",
+                Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+                    unreachable!("export buffers are checked")
+                }
             };
             format!("return _take(library, out, \"{kind}\")")
         }
@@ -1647,6 +1655,9 @@ fn cpp_export(
                         "std::string_view",
                         format!("reinterpret_cast<const std::uint8_t *>({argument}.data())"),
                     ),
+                    Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+                        unreachable!("export buffers are checked")
+                    }
                 };
                 if buffer == Buffer::Utf8String {
                     guards.push(format!(
@@ -1675,6 +1686,9 @@ fn cpp_export(
                 Buffer::UByte => ("buffer<std::uint8_t>", "tsuzuri_ubyte_buffer"),
                 Buffer::String => ("string_buffer", "tsuzuri_string_buffer"),
                 Buffer::Utf8String => ("utf8string_buffer", "tsuzuri_utf8string_buffer"),
+                Buffer::I16U | Buffer::I32 | Buffer::I32U => {
+                    unreachable!("export buffers are checked")
+                }
             };
             (
                 owner.to_owned(),

@@ -112,6 +112,9 @@ pub enum Buffer {
     I64,
     F64,
     UByte,
+    I16U,
+    I32,
+    I32U,
     String,
     Utf8String,
 }
@@ -131,11 +134,45 @@ impl Buffer {
         }
     }
 
+    fn of_element(element: &Type) -> Option<Self> {
+        match element {
+            Type::Integer(64, true) => Some(Self::I64),
+            Type::Binary(64) => Some(Self::F64),
+            Type::Integer(8, false) => Some(Self::UByte),
+            Type::Integer(16, false) => Some(Self::I16U),
+            Type::Integer(32, true) => Some(Self::I32),
+            Type::Integer(32, false) => Some(Self::I32U),
+            _ => None,
+        }
+    }
+
+    /// W13: shared buffer targets accepted on native `extern` parameters (the 5 portable buffers plus
+    /// `[i16u]`, `[i32]`, and `[i32u]`).
+    pub fn of_extern(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Array(element) => Self::of_element(element),
+            Type::String => Some(Self::String),
+            Type::Utf8String => Some(Self::Utf8String),
+            _ => None,
+        }
+    }
+
+    /// W13: mutable buffer targets (`[T]` and `[T..]`) accepted on native `extern` `ref mut` parameters.
+    pub fn of_extern_mutable(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Array(element) | Type::ArrayView(element) => Self::of_element(element),
+            _ => None,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::I64 => "i64",
             Self::F64 => "f64",
             Self::UByte => "ubyte",
+            Self::I16U => "i16u",
+            Self::I32 => "i32",
+            Self::I32U => "i32u",
             Self::String => "string",
             Self::Utf8String => "utf8string",
         }
@@ -146,14 +183,17 @@ impl Buffer {
             Self::I64 => "int64_t",
             Self::F64 => "double",
             Self::UByte | Self::Utf8String => "uint8_t",
-            Self::String => "uint16_t",
+            Self::I16U | Self::String => "uint16_t",
+            Self::I32 => "int32_t",
+            Self::I32U => "uint32_t",
         }
     }
 
     pub fn width(self) -> usize {
         match self {
             Self::I64 | Self::F64 => 8,
-            Self::String => 2,
+            Self::I32 | Self::I32U => 4,
+            Self::I16U | Self::String => 2,
             Self::UByte | Self::Utf8String => 1,
         }
     }
@@ -231,12 +271,24 @@ pub fn std_maybe_payload<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<&'
         .then(|| &arguments[0])
 }
 
-/// W15: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
+/// W20: whether `ty` is the standard `ZString` opaque record.
+pub fn zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Record(id, args)
+            if args.is_empty()
+                && types.records[*id].origin == crate::check::ModuleOrigin::Std
+                && types.records[*id].name == "ZString.ZString"
+    )
+}
+
+/// W15 / W20: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nullable<'a> {
     Handle(&'a Type),
     BorrowedHandle(&'a Type),
     BorrowedRecord(&'a Type),
+    BorrowedZString(&'a Type),
 }
 
 pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a>> {
@@ -244,6 +296,9 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
     match payload {
         Type::Handle(..) => Some(Nullable::Handle(payload)),
         Type::Reference(inner, false) if is_handle(inner) => Some(Nullable::BorrowedHandle(inner)),
+        Type::Reference(inner, false) if zstring(inner, types) => {
+            Some(Nullable::BorrowedZString(inner))
+        }
         Type::Reference(inner, false) if scalar_record(inner, types) => {
             Some(Nullable::BorrowedRecord(inner))
         }
@@ -252,18 +307,29 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
 }
 
 /// The type as the C side sees it: `Maybe<H>` -> `H`, `Maybe<ref H>` -> `ref H`,
-/// `Maybe<ref R>` -> `ref R`, and any other type unchanged (W15).
+/// `Maybe<ref R>` -> `ref R`, `Maybe<ref ZString>` -> `ref ZString`, and any other type unchanged.
 pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> std::borrow::Cow<'a, Type> {
     match nullable(ty, types) {
         Some(Nullable::Handle(handle)) => std::borrow::Cow::Borrowed(handle),
         Some(Nullable::BorrowedHandle(handle)) => {
             std::borrow::Cow::Owned(Type::Reference(Box::new(handle.clone()), false))
         }
-        Some(Nullable::BorrowedRecord(record)) => {
+        Some(Nullable::BorrowedRecord(record) | Nullable::BorrowedZString(record)) => {
             std::borrow::Cow::Owned(Type::Reference(Box::new(record.clone()), false))
         }
         None => std::borrow::Cow::Borrowed(ty),
     }
+}
+
+/// W22: whether `ty` is `FnPtr<F>` for a C-callable function type `F`.
+pub fn fnptr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(ty, Type::FnPtr(inner) if callback(inner, types))
+}
+
+/// W22: whether `ty` contains `FnPtr` in a position that receives values from the host.
+pub fn reaches_fnptr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    types.reaches(ty, |part| matches!(part, Type::FnPtr(_)))
+        || matches!(ty, Type::Function(params, res) if params.iter().any(|p| reaches_fnptr(p, types)) || reaches_fnptr(res, types))
 }
 
 pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -274,10 +340,56 @@ pub fn extern_scalar(ty: &Type, types: &TypeContext<'_>) -> bool {
         )
 }
 
+/// W13: whether `inner` may be passed as `ref mut inner` with copy-in/copy-out on a native `extern`.
+pub fn mutable_extern_scalar(inner: &Type) -> bool {
+    inner.exportable() || matches!(inner, Type::Handle(_, crate::syntax::HandleKind::Copy))
+}
+
+/// W13: returns `(buffer, mutable)` when `ty` is a shared or mutable `extern` buffer parameter.
+pub fn extern_buffer_parameter(ty: &Type) -> Option<(Buffer, bool)> {
+    match ty {
+        Type::Reference(inner, false) => Buffer::of_extern(inner).map(|b| (b, false)),
+        Type::Reference(inner, true) => Buffer::of_extern_mutable(inner).map(|b| (b, true)),
+        _ => None,
+    }
+}
+
+/// W13 / W20: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers,
+/// `ref ZString`, or `@count`.
+pub fn uses_w13_native_only(
+    parameters: &[Type],
+    counts: &[(usize, crate::syntax::CountLength)],
+    types: &TypeContext<'_>,
+) -> bool {
+    !counts.is_empty()
+        || parameters.iter().any(|ty| match ty {
+            Type::Reference(_, true) => true,
+            Type::Reference(inner, false) => {
+                zstring(inner, types)
+                    || matches!(
+                        Buffer::of_extern(inner),
+                        Some(Buffer::I16U | Buffer::I32 | Buffer::I32U)
+                    )
+            }
+            _ => false,
+        })
+}
+
 pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     parameter(ty, types)
         || extern_scalar(ty, types)
-        || matches!(nullable(ty, types), Some(Nullable::BorrowedRecord(_)))
+        || fnptr(ty, types)
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::BorrowedRecord(_) | Nullable::BorrowedZString(_))
+        )
+        || matches!(ty, Type::Reference(inner, false) if zstring(inner, types))
+        || extern_buffer_parameter(ty).is_some()
+        || matches!(
+            ty,
+            Type::Reference(inner, true)
+                if scalar_record(inner, types) || mutable_extern_scalar(inner)
+        )
 }
 
 pub fn extern_result(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -313,6 +425,10 @@ pub fn has_invalid_extern_maybe(
 pub fn uses_nullable_abi(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> bool {
     parameters.iter().any(|param| match param {
         Type::Function(cb_params, _) => cb_params.iter().any(|p| nullable(p, types).is_some()),
+        Type::FnPtr(inner) => match inner.as_ref() {
+            Type::Function(cb_params, _) => cb_params.iter().any(|p| nullable(p, types).is_some()),
+            _ => false,
+        },
         _ => nullable(param, types).is_some(),
     }) || nullable(result, types).is_some()
 }
@@ -456,23 +572,49 @@ fn c_scalar(ty: &Type) -> CType {
         Type::Integer(64, _) => CType::I64,
         Type::Binary(32) => CType::F32,
         Type::Binary(64) => CType::F64,
-        Type::Handle(..) => CType::Ptr,
+        Type::Handle(..) | Type::FnPtr(_) => CType::Ptr,
         Type::Reference(inner, false) if is_handle(inner) => CType::Ptr,
         _ => unreachable!("checked ABI scalar: {ty:?}"),
     }
 }
 
-pub fn c_signature(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> CSignature {
+pub fn c_signature(
+    parameters: &[Type],
+    result: &Type,
+    counts: &[(usize, crate::syntax::CountLength)],
+    types: &TypeContext<'_>,
+) -> CSignature {
     let mut lowered = Vec::new();
     let viewed_result = c_view(result, types);
     if out_result(&viewed_result) {
         lowered.push(CType::Ptr);
     }
-    for parameter in parameters {
+    for (index, parameter) in parameters.iter().enumerate() {
         if *parameter == Type::Unit {
             continue;
         }
-        if matches!(parameter, Type::Function(..)) {
+        if matches!(parameter, Type::Function(..) | Type::FnPtr(_)) {
+            lowered.push(CType::Ptr);
+            continue;
+        }
+        if extern_buffer_parameter(parameter).is_some() {
+            lowered.push(CType::Ptr);
+            match counts
+                .iter()
+                .find_map(|(pos, len)| (*pos == index).then_some(*len))
+            {
+                Some(crate::syntax::CountLength::None) => {}
+                Some(crate::syntax::CountLength::I32 | crate::syntax::CountLength::I32U) => {
+                    lowered.push(CType::I32);
+                }
+                Some(crate::syntax::CountLength::I64 | crate::syntax::CountLength::I64U)
+                | Option::None => {
+                    lowered.push(CType::I64);
+                }
+            }
+            continue;
+        }
+        if matches!(parameter, Type::Reference(_, true)) {
             lowered.push(CType::Ptr);
             continue;
         }
@@ -635,6 +777,7 @@ mod tests {
             include_str!("runtime/character.ll"),
             include_str!("runtime/closure.ll"),
             include_str!("runtime/console.ll"),
+            include_str!("runtime/debug-windows.ll"),
             include_str!("runtime/debug.ll"),
             include_str!("runtime/display.ll"),
             include_str!("runtime/heap-native.ll"),

@@ -1,0 +1,13 @@
+@trusted
+extern "w06_gui_create" def run_create :: (i32u -> i64u -> i64 -> i64) -> i64
+
+@trusted
+extern "w06_gui_mark" def mark :: ref string -> unit
+
+def on_create :: i32u -> i64u -> i64 -> i64 = \msg _wparam _lparam ->
+    10 / ((msg as i64) - 1)
+
+def main :: Array<string> -> i32 = \args ->
+    let _r = run_create on_create
+    if Array.length args > 0 then mark (ref args[0]) else ()
+    77

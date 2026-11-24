@@ -336,24 +336,24 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
 | W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](_completed/W04-windows-trap-report-lost.md) | P1 | S | – | done（Windows の `--trap-info` と tzroutine ランタイムの報告を `GetStdHandle`・`WriteFile` で直接書き、標準エラーが無い・書けないときは `OutputDebugStringW` へ送る） |
 | W05 | [Windows の `--emit shared`（DLL）を実装する](W05-windows-shared-library.md) | P2 | L | – | todo |
-| W06 | [Windows の GUI をヘッドレスに検査するテスト基盤](W06-windows-gui-test-harness.md) | P1 | M | – | todo |
-| W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | todo |
-| W08 | [標準ストリームが無いときの IO の意味を決めて実装する](W08-io-without-std-streams.md) | P1 | S | – | todo |
-| W09 | [GUI サブシステムの実行ファイル（`--subsystem windows` と `[windows] subsystem`）](W09-windows-gui-subsystem.md) | P1 | M | W08 | todo |
+| W06 | [Windows の GUI をヘッドレスに検査するテスト基盤](_completed/W06-windows-gui-test-harness.md) | P1 | M | – | done |
+| W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](_completed/W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | done |
+| W08 | [標準ストリームが無いときの IO の意味を決めて実装する](_completed/W08-io-without-std-streams.md) | P1 | S | – | done |
+| W09 | [GUI サブシステムの実行ファイル（`--subsystem windows` と `[windows] subsystem`）](_completed/W09-windows-gui-subsystem.md) | P1 | M | W08 | done |
 | W10 | [Windows のリソース（マニフェスト・アイコン・版情報・`.rc`）を埋め込む](W10-windows-resources.md) | P2 | M | W09 | todo |
 | W11 | [Windows の OS API（`File`・`Dir`・`Env`・`Random`・`Process`・`Time` の OS 時計）](W11-windows-os-api.md) | P1 | L | – | todo |
-| W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](W12-static-callback-lifetime.md) | P1 | M | W06, W07 | todo |
-| W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | todo |
+| W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](_completed/W12-static-callback-lifetime.md) | P1 | M | W06, W07 | done |
+| W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](_completed/W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | done |
 | W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](_completed/W14-extern-multiple-declarations.md) | P1 | S | – | done |
 | W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](_completed/W15-abi-nullable-handles.md) | P1 | M | – | done |
 | W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
 | W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |
 | W18 | [`extern type copy`（所有しない識別子のハンドル）](_completed/W18-copy-extern-type.md) | P1 | M | – | done |
-| W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](W19-thread-bound-handles.md) | P1 | M | W18 | todo |
-| W20 | [NUL 終端の UTF-16 文字列 `ZString`](W20-zstring.md) | P1 | M | W13 | todo |
+| W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](_completed/W19-thread-bound-handles.md) | P1 | M | W18 | done |
+| W20 | [NUL 終端の UTF-16 文字列 `ZString`](_completed/W20-zstring.md) | P1 | M | W13 | done |
 | W21 | [C レイアウトの record（`@c_layout`）](W21-c-layout-records.md) | P1 | XL | W13, W15, W18（Phase 2: W20, W22） | todo |
-| W22 | [静的な関数ポインターの値 `FnPtr<F>`](W22-fnptr-values.md) | P1 | M | W12 | todo |
-| W23 | [コールバックから届くアプリの状態 `Anchor`](W23-anchor-state.md) | P1 | L | W12 | todo |
+| W22 | [静的な関数ポインターの値 `FnPtr<F>`](_completed/W22-fnptr-values.md) | P1 | M | W12 | done |
+| W23 | [コールバックから届くアプリの状態 `Anchor`](_completed/W23-anchor-state.md) | P1 | L | W12 | done |
 | W24 | [`extern view`（ホストが渡したアドレスと C レイアウトの record の型付きの複写）](W24-extern-view.md) | P1 | M | W15（Phase 2: W21） | todo |
 | W25 | [`extern interface`（COM の vtable のスロット呼び出し）](W25-extern-interface-com.md) | P2 | XL | W19, W21, W24 | todo |
 | W26 | [COM オブジェクトを Tsuzuri で実装する（UI Automation・TSF・ドラッグ＆ドロップのため）](W26-com-objects-in-tsuzuri.md) | P2 | XL | W22, W23, W25 | todo |
