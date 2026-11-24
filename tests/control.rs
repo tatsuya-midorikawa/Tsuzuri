@@ -1218,7 +1218,7 @@ fn recursion_checks_include_class_methods_and_operators() {
         "E1019",
     );
     rejects(
-        "record R { x: i64 }\ninstance Add<R> { fn add x y = x + y }",
+        "record R { x: i64 }\ninstance Add<R> { fn add x y = deref x + deref y }",
         "E1019",
     );
     accepts(

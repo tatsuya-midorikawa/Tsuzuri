@@ -232,7 +232,7 @@ fn class_and_instance_purity_are_contracts_even_when_unused() {
     );
     rejected(
         "record R { value: i64 }\n\
-         instance Add<R> { pure fn add left right = { Debug.print (ref left.value); left } }\n",
+         instance Add<R> { pure fn add left right = { Debug.print (ref left.value); deref left } }\n",
         "debug output",
     );
 }
@@ -621,7 +621,7 @@ fn generic_pure_specializations_preserve_contracts_and_plain_data_obligations() 
     );
     rejected(
         "record R { value: i64 }\n\
-         instance Add<R> { fn add left right = { Debug.print (ref left.value); left } }\n\
+         instance Add<R> { fn add left right = { Debug.print (ref left.value); deref left } }\n\
          pure def plus :: Add<'a> => own 'a -> own 'a -> 'a = \\left right -> left + right\n\
          def bad :: unit -> R = \\() -> plus (R { value: 1 }) (R { value: 2 })\n",
         "debug output",

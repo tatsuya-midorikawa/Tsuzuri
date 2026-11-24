@@ -912,6 +912,14 @@ pub(super) fn binary_class(operator: BinaryOp) -> &'static str {
     }
 }
 
+/// NC03 (D1-A): arithmetic operator classes whose user/std instances take shared references
+/// (`ref 'a`) so non-Copy types (`BigInt`, `Tensor`, user records) can be used in expressions
+/// without moving operands, while intrinsic scalar/SIMD/string operations keep their existing IR
+/// and `Add.add` method-value signatures.
+fn borrowed_arithmetic_class(name: &str) -> bool {
+    matches!(name, "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" | "Neg")
+}
+
 /// Built-in class names; they share the type namespace with record types.
 pub(super) const BUILTIN_CLASSES: [&str; 34] = [
     "SimdVector",
@@ -2259,7 +2267,14 @@ impl Classes {
                             parameters: signature
                                 .parameters
                                 .iter()
-                                .map(|ty| substitute(ty, &renamed))
+                                .map(|ty| {
+                                    let param = substitute(ty, &renamed);
+                                    if borrowed_arithmetic_class(&class.name) {
+                                        Type::Reference(Box::new(param), false)
+                                    } else {
+                                        param
+                                    }
+                                })
                                 .collect(),
                             result: substitute(&signature.result, &renamed),
                         };
@@ -5294,6 +5309,7 @@ pub(super) fn specialize(
         requests: Vec::with_capacity(base_count),
         functions: Vec::with_capacity(base_count),
         intrinsics: BTreeMap::new(),
+        arithmetic_adapters: BTreeMap::new(),
         to_strings: BTreeMap::new(),
         quoted_displays: BTreeMap::new(),
         vtables: BTreeMap::new(),
@@ -5529,6 +5545,7 @@ struct Specializer<'a> {
     requests: Vec<(usize, Vec<Type>)>,
     functions: Vec<CheckedFunction>,
     intrinsics: BTreeMap<(usize, usize, Type), usize>,
+    arithmetic_adapters: BTreeMap<(usize, usize, Type), usize>,
     to_strings: BTreeMap<Type, usize>,
     /// A26: the function that shows each anonymous union inside a collection, with quoted members.
     quoted_displays: BTreeMap<Type, usize>,
@@ -5702,7 +5719,7 @@ impl Specializer<'_> {
             )?;
         }
         self.current = function.origin.generated(instance);
-        walk(&mut function.body, &mut |expression| self.lower(expression))?;
+        self.lower_tree(&mut function.body)?;
         function.type_parameters.clear();
         function.constraints.clear();
         function.members.clear();
@@ -5753,6 +5770,34 @@ impl Specializer<'_> {
         Ok((id, types))
     }
 
+    fn lower_tree(&mut self, expression: &mut TypedExpr) -> Result<(), Diagnostic> {
+        // NC03 (D1-A): a direct full-argument call such as `Add.add a b` on a non-intrinsic type
+        // borrows its operands directly via `operator_call`, matching `a + b` without a value
+        // adapter wrapper or moving `a` and `b`.
+        if let TypedExprKind::Call(callee, arguments) = &mut expression.kind
+            && let TypedExprKind::Method(class, method, ty) = &callee.kind
+            && borrowed_arithmetic_class(&self.classes.declarations[*class].name)
+            && !self.classes.intrinsic(*class, ty, &self.types)
+            && arguments.len()
+                == self.classes.declarations[*class].methods[*method]
+                    .signature(expression.span)?
+                    .parameters
+                    .len()
+        {
+            let class = *class;
+            let method = *method;
+            let ty = ty.clone();
+            for argument in arguments.iter_mut() {
+                self.lower_tree(argument)?;
+            }
+            let args = std::mem::take(arguments);
+            expression.kind = self.operator_call(class, method, &ty, args, expression.span)?;
+            return Ok(());
+        }
+        expression.try_for_each_child_mut(&mut |child| self.lower_tree(child))?;
+        self.lower(expression)
+    }
+
     fn lower(&mut self, expression: &mut TypedExpr) -> Result<(), Diagnostic> {
         use TypedExprKind::*;
         let replacement =
@@ -5800,11 +5845,23 @@ impl Specializer<'_> {
                         } else {
                             arguments
                         };
-                        Some(Function(FunctionRef::User(self.request(
-                            function,
-                            arguments,
-                            expression.span,
-                        )?)))
+                        if borrowed_arithmetic_class(&self.classes.declarations[*class].name) {
+                            let id = self.borrowed_arithmetic_adapter(
+                                *class,
+                                *method,
+                                ty,
+                                function,
+                                arguments,
+                                expression.span,
+                            )?;
+                            Some(Function(FunctionRef::User(id)))
+                        } else {
+                            Some(Function(FunctionRef::User(self.request(
+                                function,
+                                arguments,
+                                expression.span,
+                            )?)))
+                        }
                     } else {
                         // Intrinsic method values get ordinary monomorphic wrappers as well.
                         let id = self.intrinsic_function(*class, *method, ty, expression.span)?;
@@ -5995,10 +6052,22 @@ impl Specializer<'_> {
         span: Span,
     ) -> Result<TypedExprKind, Diagnostic> {
         let declaration = &self.classes.declarations[class];
-        let signature = substitute(
-            &declaration.methods[method].signature(span)?.as_type(),
-            &BTreeMap::from([(declaration.variable.clone(), ty.clone())]),
-        );
+        let borrowed_arith = borrowed_arithmetic_class(&declaration.name)
+            && !self.classes.intrinsic(class, ty, &self.types);
+        let template_sig = declaration.methods[method].signature(span)?;
+        let subs = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
+        let signature = if borrowed_arith {
+            Type::function(
+                template_sig
+                    .parameters
+                    .iter()
+                    .map(|p| Type::Reference(Box::new(substitute(p, &subs)), false))
+                    .collect(),
+                substitute(&template_sig.result, &subs),
+            )
+        } else {
+            substitute(&template_sig.as_type(), &subs)
+        };
         let id = if self.classes.structural(class, ty) {
             self.intrinsic_function(class, method, ty, span)?
         } else {
@@ -6014,7 +6083,7 @@ impl Specializer<'_> {
                 })?;
             self.request(function, types, span)?
         };
-        let arguments = if matches!(self.classes.declarations[class].name.as_str(), "Eq" | "Ord") {
+        let arguments = if matches!(declaration.name.as_str(), "Eq" | "Ord") || borrowed_arith {
             arguments
                 .into_iter()
                 .map(|argument| TypedExpr {
@@ -6034,6 +6103,115 @@ impl Specializer<'_> {
             }),
             arguments,
         ))
+    }
+
+    /// Value-taking adapter for first-class method values (`let f = Add.add`, partial applications)
+    /// of a non-intrinsic borrowed arithmetic instance: receives owned values, borrows them into
+    /// the instance method, and drops them on return.
+    fn borrowed_arithmetic_adapter(
+        &mut self,
+        class: usize,
+        method: usize,
+        ty: &Type,
+        target_template: usize,
+        target_args: Vec<Type>,
+        span: Span,
+    ) -> Result<usize, Diagnostic> {
+        let key = (class, method, ty.clone());
+        if let Some(id) = self.arithmetic_adapters.get(&key) {
+            return self.request(*id, Vec::new(), span);
+        }
+        let declaration = &self.classes.declarations[class];
+        let method_decl = &declaration.methods[method];
+        let template_sig = method_decl.signature(span)?;
+        let subs = BTreeMap::from([(declaration.variable.clone(), ty.clone())]);
+        let signature = Signature {
+            parameters: template_sig
+                .parameters
+                .iter()
+                .map(|p| substitute(p, &subs))
+                .collect(),
+            result: substitute(&template_sig.result, &subs),
+        };
+        let parameters: Vec<_> = signature
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(id, p)| Local {
+                id,
+                ty: p.clone(),
+                name: format!("arg{id}"),
+                mutable: false,
+                span,
+                provenance: Provenance::Generated,
+            })
+            .collect();
+        let borrowed_sig = Type::function(
+            signature
+                .parameters
+                .iter()
+                .map(|p| Type::Reference(Box::new(p.clone()), false))
+                .collect(),
+            signature.result.clone(),
+        );
+        let callee_kind = if target_args.is_empty() {
+            TypedExprKind::Function(FunctionRef::User(target_template))
+        } else {
+            TypedExprKind::GenericFunction(target_template, target_args)
+        };
+        let call_args: Vec<_> = parameters
+            .iter()
+            .map(|local| TypedExpr {
+                ty: Type::Reference(Box::new(local.ty.clone()), false),
+                span,
+                kind: TypedExprKind::BorrowOperand(Box::new(TypedExpr {
+                    kind: TypedExprKind::Local(local.id),
+                    ty: local.ty.clone(),
+                    span,
+                })),
+            })
+            .collect();
+        let pure = self.templates[target_template].origin.pure;
+        let id = self.templates.len();
+        let body = TypedExpr {
+            kind: TypedExprKind::Call(
+                Box::new(TypedExpr {
+                    kind: callee_kind,
+                    ty: borrowed_sig,
+                    span,
+                }),
+                call_args,
+            ),
+            ty: signature.result.clone(),
+            span,
+        };
+        self.templates.push(CheckedFunction {
+            read_by_default: Vec::new(),
+            module: "$intrinsic".into(),
+            region_sources: None,
+            callback_contracts: Vec::new(),
+            region_slots: None,
+            origin: FunctionOrigin {
+                pure,
+                ..self.current
+            },
+            name: format!("{}.{}.adapter.{id}", declaration.name, method_decl.name),
+            visibility: Visibility::Public,
+            exported: false,
+            parameters,
+            signature,
+            body,
+            span,
+            type_parameters: Vec::new(),
+            constraints: Vec::new(),
+            members: Vec::new(),
+            capture_count: 0,
+            is_once: false,
+            owned_captures: false,
+            contracts: Default::default(),
+        });
+        self.arithmetic_adapters.insert(key, id);
+        self.request(id, Vec::new(), span)
     }
 
     fn intrinsic_function(

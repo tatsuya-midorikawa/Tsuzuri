@@ -14570,7 +14570,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                         | BinaryOp::LessEqual
                         | BinaryOp::Greater
                         | BinaryOp::GreaterEqual
-                ) {
+                ) || (matches!(
+                    operator,
+                    BinaryOp::Add
+                        | BinaryOp::Subtract
+                        | BinaryOp::Multiply
+                        | BinaryOp::Divide
+                        | BinaryOp::Remainder
+                        | BinaryOp::Power
+                ) && !matches!(
+                    left.ty,
+                    Type::Integer(..)
+                        | Type::Binary(_)
+                        | Type::Decimal(_)
+                        | Type::Simd(_)
+                        | Type::String
+                        | Type::Utf8String
+                )) {
                     Use::Read
                 } else {
                     Use::Consume
@@ -14794,6 +14810,14 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             E::Cast(value) if expression.ty.function_purity().is_some() => {
                 result = self.eval(value, Use::Consume, &during)?;
+            }
+            E::Unary(crate::syntax::UnaryOp::Negate, value)
+                if !matches!(
+                    value.ty,
+                    Type::Integer(..) | Type::Binary(_) | Type::Decimal(_) | Type::Simd(_)
+                ) =>
+            {
+                self.eval(value, Use::Read, &during)?;
             }
             E::Unary(_, value) | E::Cast(value) | E::SaturatingIndex(value) => {
                 self.eval(value, Use::Consume, &during)?;
