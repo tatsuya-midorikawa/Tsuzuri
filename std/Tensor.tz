@@ -1747,7 +1747,7 @@ fn resolve_infer_shape spec total =
 /// ```tsuzuri run=[3,%202]
 /// let t = Tensor.reshape_infer [-1, 2] (Tensor.init [2, 3] (\i -> i))
 /// let v = Tensor.view (ref t)
-/// Tensor.shape (ref v)
+/// Array.copy (Tensor.shape (ref v))
 /// ```
 def reshape_infer :: own [i64] -> own Tensor<'a> -> Tensor<'a>
 fn reshape_infer spec tensor =
@@ -1795,7 +1795,7 @@ fn transpose view =
 /// let t = Tensor.init [2, 3, 4] (\i -> i)
 /// let v = Tensor.view (ref t)
 /// let s = Tensor.swapaxes 0 (-1) (ref v)
-/// Tensor.shape (ref s)
+/// Array.copy (Tensor.shape (ref s))
 /// ```
 def swapaxes { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn swapaxes axis1 axis2 view =
@@ -1811,7 +1811,7 @@ fn swapaxes axis1 axis2 view =
 /// let t = Tensor.init [2, 3, 4] (\i -> i)
 /// let v = Tensor.view (ref t)
 /// let m = Tensor.moveaxis 0 (-1) (ref v)
-/// Tensor.shape (ref m)
+/// Array.copy (Tensor.shape (ref m))
 /// ```
 def moveaxis { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn moveaxis source destination view =
@@ -1834,7 +1834,7 @@ fn moveaxis source destination view =
 /// let t = Tensor.init [1, 2, 1, 3, 1] (\i -> i)
 /// let v = Tensor.view (ref t)
 /// let s = Tensor.squeeze (ref v)
-/// Tensor.shape (ref s)
+/// Array.copy (Tensor.shape (ref s))
 /// ```
 def squeeze { r } :: ref View<'a> { r } -> View<'a> { r }
 fn squeeze view =
@@ -1852,7 +1852,7 @@ fn squeeze view =
 /// let t = Tensor.init [2, 1, 3] (\i -> i)
 /// let v = Tensor.view (ref t)
 /// let s = Tensor.squeeze_axis 1 (ref v)
-/// Tensor.shape (ref s)
+/// Array.copy (Tensor.shape (ref s))
 /// ```
 def squeeze_axis { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn squeeze_axis axis view =
@@ -1867,7 +1867,7 @@ fn squeeze_axis axis view =
 /// let t = Tensor.init [2, 3] (\i -> i)
 /// let v = Tensor.view (ref t)
 /// let e = Tensor.expand_dims 1 (ref v)
-/// Tensor.shape (ref e)
+/// Array.copy (Tensor.shape (ref e))
 /// ```
 def expand_dims { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
 fn expand_dims axis view =
@@ -1892,7 +1892,8 @@ fn expand_dims axis view =
 /// ```tsuzuri run=[1]
 /// let s = Tensor.scalar 5
 /// let v = Tensor.view (ref s)
-/// Tensor.shape (ref (Tensor.atleast_1d (ref v)))
+/// let w = Tensor.atleast_1d (ref v)
+/// Array.copy (Tensor.shape (ref w))
 /// ```
 def atleast_1d { r } :: ref View<'a> { r } -> View<'a> { r }
 fn atleast_1d view =
@@ -1906,7 +1907,8 @@ fn atleast_1d view =
 /// ```tsuzuri run=[1,%203]
 /// let a = Tensor.of_array [3] [1, 2, 3]
 /// let v = Tensor.view (ref a)
-/// Tensor.shape (ref (Tensor.atleast_2d (ref v)))
+/// let w = Tensor.atleast_2d (ref v)
+/// Array.copy (Tensor.shape (ref w))
 /// ```
 def atleast_2d { r } :: ref View<'a> { r } -> View<'a> { r }
 fn atleast_2d view =
@@ -1922,7 +1924,8 @@ fn atleast_2d view =
 /// ```tsuzuri run=[2,%203,%201]
 /// let a = Tensor.init [2, 3] (\i -> i)
 /// let v = Tensor.view (ref a)
-/// Tensor.shape (ref (Tensor.atleast_3d (ref v)))
+/// let w = Tensor.atleast_3d (ref v)
+/// Array.copy (Tensor.shape (ref w))
 /// ```
 def atleast_3d { r } :: ref View<'a> { r } -> View<'a> { r }
 fn atleast_3d view =
@@ -2369,9 +2372,12 @@ fn stack axis views =
 /// let a = Tensor.of_array [2] [1, 2]
 /// let b = Tensor.of_array [2] [3, 4]
 /// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// let empty: [i64] = []
 /// match Tensor.vstack (ref vs) with
-/// | Result.Ok t -> Tensor.shape (ref (Tensor.view (ref t)))
-/// | Result.Error _ -> []
+/// | Result.Ok t ->
+///     let tv = Tensor.view (ref t)
+///     Array.copy (Tensor.shape (ref tv))
+/// | Result.Error _ -> empty
 /// ```
 def vstack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
 fn vstack views =
@@ -2404,9 +2410,12 @@ fn hstack views =
 /// let a = Tensor.init [2, 2] (\i -> i)
 /// let b = Tensor.init [2, 2] (\i -> i + 10)
 /// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// let empty: [i64] = []
 /// match Tensor.dstack (ref vs) with
-/// | Result.Ok t -> Tensor.shape (ref (Tensor.view (ref t)))
-/// | Result.Error _ -> []
+/// | Result.Ok t ->
+///     let tv = Tensor.view (ref t)
+///     Array.copy (Tensor.shape (ref tv))
+/// | Result.Error _ -> empty
 /// ```
 def dstack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
 fn dstack views =
@@ -2654,7 +2663,8 @@ fn nonzero view =
 /// ```tsuzuri run=[2,%202]%20[0,%201,%201,%201]
 /// let t = Tensor.of_array [2, 2] [0, 5, 0, 9]
 /// let idx = Tensor.argwhere (Tensor.view t)
-/// $"{Tensor.shape (ref (Tensor.view (ref idx)))} {Tensor.as_array (ref idx)}"
+/// let iv = Tensor.view (ref idx)
+/// $"{Tensor.shape (ref iv)} {Tensor.as_array (ref idx)}"
 /// ```
 def argwhere :: (Eq<'a>, Default<'a>) => ref View<'a> -> Tensor<i64>
 fn argwhere view =
@@ -2771,7 +2781,8 @@ fn clip lo hi view =
 /// let t = Tensor.of_array [2, 2] [10, 20, 30, 40]
 /// let idx = Tensor.of_array [2] [-1, 0]
 /// let r = Tensor.take 0 (Tensor.view idx) (Tensor.view t)
-/// $"{Tensor.shape (ref (Tensor.view (ref r)))} {Tensor.as_array (ref r)}"
+/// let rv = Tensor.view (ref r)
+/// $"{Tensor.shape (ref rv)} {Tensor.as_array (ref r)}"
 /// ```
 def take :: Copy<'a> => own i64 -> ref View<i64> -> ref View<'a> -> Tensor<'a>
 fn take axis indices view =

@@ -420,7 +420,9 @@ fn validate_2d_axis len axis =
 /// ```tsuzuri run=[4,%206]
 /// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
 /// let v = MatrixView.of_matrix m
-/// let sub = MatrixView.slice (Slice.at 1) (Slice.every 2) v
+/// let r = Slice.at 1
+/// let c = Slice.every 2
+/// let sub = MatrixView.slice (ref r) (ref c) v
 /// Matrix.to_array (MatrixView.to_matrix sub)
 /// ```
 def slice { r } :: ref Slice.Axis -> ref Slice.Axis -> MatrixView<'a> { r } -> MatrixView<'a> { r }
