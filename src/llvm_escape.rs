@@ -22,7 +22,8 @@ pub(crate) fn staying_locals(body: &TypedExpr) -> BTreeSet<usize> {
         match &expression.kind {
             TypedExprKind::Length(value)
             | TypedExprKind::StringLength(value)
-            | TypedExprKind::Borrow(value, false) => pending.push((value, true)),
+            | TypedExprKind::Borrow(value, false)
+            | TypedExprKind::ReferenceOperand(value) => pending.push((value, true)),
             TypedExprKind::Index(value, index) => {
                 pending.push((value, true));
                 pending.push((index, false));

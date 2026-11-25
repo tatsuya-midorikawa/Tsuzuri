@@ -3098,6 +3098,19 @@ const suites = {
       ["chained_view_order", [0n], 12312n],
     ],
   },
+  // A40: reference operands on operators (`string`, `BigInt`, non-Copy records, and explicit scalar/bool refs).
+  reference_operands: {
+    cases: [
+      ["text_concat", [], 51n],
+      ["text_concat_loop", [0n], 5n],
+      ["text_concat_loop", [1n], 10n],
+      ["text_concat_loop", [10000n], 50005n],
+      ["text_concat_frame", [], 44n],
+      ["bigint_sum", [], 235n],
+      ["record_sum", [], 51n],
+      ["scalar_refs", [], 41n],
+    ],
+  },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative
   // updates and results in index order. WebAssembly builds the part of the fixture above its "native only"

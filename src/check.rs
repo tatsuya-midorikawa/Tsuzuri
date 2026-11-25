@@ -5611,6 +5611,11 @@ pub enum TypedExprKind {
     Borrow(Box<TypedExpr>, bool),
     BorrowOperand(Box<TypedExpr>),
     Dereference(Box<TypedExpr>),
+    /// A40: a `ref T` or `ref mut T` operand stripped to `T` for an operator; `Specializer::lower`
+    /// rewrites it to `Borrow(Dereference(..), false)` on borrowing operator calls and
+    /// `Dereference(..)` on value-taking operators, leaving `ReferenceOperand` only on borrowed
+    /// `string` / `utf8string` `+` operands so concatenation reads them without consuming.
+    ReferenceOperand(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
     /// An index, a slice bound or an array length of a 128-bit integer type or a type parameter,
@@ -5720,7 +5725,9 @@ impl TypedExpr {
     /// Whether code generation can address the value in place.
     pub(crate) fn is_place(&self) -> bool {
         match &self.kind {
-            TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
+            TypedExprKind::Local(_)
+            | TypedExprKind::Dereference(_)
+            | TypedExprKind::ReferenceOperand(_) => true,
             TypedExprKind::Field(value, _)
             | TypedExprKind::ListTail(value, _)
             | TypedExprKind::UnionPayload { value, .. } => value.is_place(),
@@ -5850,6 +5857,7 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
             | Field(value, _)
@@ -5951,6 +5959,7 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
             | Field(value, _)
@@ -6104,6 +6113,7 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
             | Field(value, _)
@@ -13094,6 +13104,35 @@ struct PendingHint {
     span: Span,
 }
 
+struct CheckerWatermark {
+    inference: polymorph::InferenceWatermark,
+    constraints_len: usize,
+    members_len: usize,
+    scopes_len: usize,
+    old_locals_len: usize,
+    open_locals_len: usize,
+    next_local: usize,
+    normal_loop_depth: usize,
+    computation_depth: usize,
+    undecided_borrows_len: usize,
+    symbolic_borrows_len: usize,
+    reference_borrows_len: usize,
+    format_specs_len: usize,
+    use_bindings_len: usize,
+    operand_len: usize,
+    integer_literals_len: usize,
+    families_len: usize,
+    coverage_len: usize,
+    shadowing_warnings_len: usize,
+    contract_warnings_len: usize,
+    poisoned: bool,
+    recovering: bool,
+    recovered_len: usize,
+    name_uses_len: usize,
+    holes_searched: usize,
+    call_constraints_len: usize,
+}
+
 #[derive(Clone, Copy)]
 struct RecoveryMark {
     scopes: usize,
@@ -13187,6 +13226,9 @@ struct Checker<'a> {
     /// The declared constraints of the generic functions that this body instantiated, over their
     /// fresh variables. Specialization checks them; only typed holes read them here (G25).
     call_constraints: Vec<(usize, Type)>,
+    /// A40: inside the outermost operator tree on today's path, or inside the A40 reference-stripping trial.
+    in_a40_tree: bool,
+    in_a40_trial: bool,
 }
 
 impl<'a> Checker<'a> {
@@ -13243,6 +13285,8 @@ impl<'a> Checker<'a> {
             function: None,
             holes_searched: 0,
             call_constraints: Vec::new(),
+            in_a40_tree: false,
+            in_a40_trial: false,
         }
     }
 
@@ -14349,6 +14393,24 @@ impl<'a> Checker<'a> {
         expression: &Expr,
         expected: Option<&Type>,
     ) -> Result<TypedExpr, Diagnostic> {
+        let ExprKind::Binary(operator, _, _) = &expression.kind else {
+            unreachable!("binary expressions only")
+        };
+        if *operator != BinaryOp::Pipe && !self.in_a40_tree && !self.in_a40_trial {
+            return self.try_operator_with_a40(expression, expected, true);
+        }
+        if *operator != BinaryOp::Pipe && self.in_a40_trial {
+            let (expr, _sibling_strip) = self.a40_binary_inner(expression, expected, false)?;
+            return Ok(expr);
+        }
+        self.binary_expression_today(expression, expected)
+    }
+
+    fn binary_expression_today(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
         let ExprKind::Binary(operator, left, right) = &expression.kind else {
             unreachable!("binary expressions only")
         };
@@ -14612,27 +14674,15 @@ impl<'a> Checker<'a> {
                 self.integer(*value, suffix.as_deref(), expected, true, expression.span)?
             }
             ExprKind::Unary(operator, operand) => {
-                let operand = self.expression(operand, expected)?;
-                if *operator == UnaryOp::Not {
-                    self.same(&operand.ty, &Type::Bool, expression.span)?;
-                } else {
-                    self.require(
-                        if *operator == UnaryOp::Negate {
-                            "Neg"
-                        } else {
-                            "Bits"
-                        },
-                        operand.ty.clone(),
-                        expression.span,
-                    )?;
+                if !self.in_a40_tree && !self.in_a40_trial {
+                    return self.try_operator_with_a40(expression, expected, false);
                 }
-                let ty = operand.ty.clone();
-                let kind = TypedExprKind::Unary(*operator, Box::new(operand));
-                if *operator == UnaryOp::Negate && self.checked_arithmetic {
-                    Self::checked_kind(kind, &ty, expression.span)
-                } else {
-                    (kind, ty)
+                if self.in_a40_trial {
+                    let (expr, _sibling_strip) =
+                        self.a40_unary_inner(expression, expected, false)?;
+                    return Ok(expr);
                 }
+                return self.unary_expression_today(*operator, operand, expected, expression.span);
             }
             ExprKind::If {
                 condition,
@@ -16519,6 +16569,717 @@ impl<'a> Checker<'a> {
     /// Types `$"a{x}b"`: every hole is borrowed, never consumed, and shown
     /// by `Display.display`; the pieces are joined into one string at run time.
     #[inline(never)]
+    fn unary_expression_today(
+        &mut self,
+        operator: UnaryOp,
+        operand: &Expr,
+        expected: Option<&Type>,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let operand = self.expression(operand, expected)?;
+        if operator == UnaryOp::Not {
+            self.same(&operand.ty, &Type::Bool, span)?;
+        } else {
+            self.require(
+                if operator == UnaryOp::Negate {
+                    "Neg"
+                } else {
+                    "Bits"
+                },
+                operand.ty.clone(),
+                span,
+            )?;
+        }
+        let ty = operand.ty.clone();
+        let kind = TypedExprKind::Unary(operator, Box::new(operand));
+        let (kind, ty) = if operator == UnaryOp::Negate && self.checked_arithmetic {
+            Self::checked_kind(kind, &ty, span)
+        } else {
+            (kind, ty)
+        };
+        self.finish_expression(kind, ty, expected, span)
+    }
+
+    /// A40: `Some(T)` when `ty` resolves to `ref T` or `ref mut T` and the head of `T` is known
+    /// (neither a type variable nor an unresolved inference variable / open application). Strips
+    /// at most one reference level.
+    pub(crate) fn reference_operand(&self, ty: &Type) -> Option<Type> {
+        let resolved = self.inference.resolve(ty);
+        let Type::Reference(inner, _) = resolved else {
+            return None;
+        };
+        let inner = self.inference.resolve(&inner);
+        if matches!(
+            inner,
+            Type::Variable(_) | Type::Infer(_) | Type::Application(..) | Type::Partial(_)
+        ) {
+            return None;
+        }
+        Some(inner)
+    }
+
+    fn begin_watermark(&mut self) -> CheckerWatermark {
+        CheckerWatermark {
+            inference: self.inference.begin_watermark(),
+            constraints_len: self.constraints.len(),
+            members_len: self.members.len(),
+            scopes_len: self.scopes.len(),
+            old_locals_len: self.old_locals.len(),
+            open_locals_len: self.open_locals.len(),
+            next_local: self.next_local,
+            normal_loop_depth: self.normal_loop_depth,
+            computation_depth: self.computation_depth,
+            undecided_borrows_len: self.undecided_borrows.len(),
+            symbolic_borrows_len: self.symbolic_borrows.len(),
+            reference_borrows_len: self.reference_borrows.len(),
+            format_specs_len: self.format_specs.len(),
+            use_bindings_len: self.use_bindings.len(),
+            operand_len: self.operand.len(),
+            integer_literals_len: self.integer_literals.len(),
+            families_len: self.families.len(),
+            coverage_len: self.coverage.len(),
+            shadowing_warnings_len: self.shadowing_warnings.len(),
+            contract_warnings_len: self.contract_warnings.len(),
+            poisoned: self.poisoned,
+            recovering: self.recovering,
+            recovered_len: self.recovered.len(),
+            name_uses_len: self.name_uses.len(),
+            holes_searched: self.holes_searched,
+            call_constraints_len: self.call_constraints.len(),
+        }
+    }
+
+    fn commit_watermark(&mut self, mark: CheckerWatermark) {
+        self.inference.commit_watermark(mark.inference);
+    }
+
+    fn rollback_watermark(&mut self, mark: CheckerWatermark) {
+        self.inference.rollback_watermark(mark.inference);
+        self.constraints.truncate(mark.constraints_len);
+        self.members.truncate(mark.members_len);
+        self.scopes.truncate(mark.scopes_len);
+        self.old_locals.truncate(mark.old_locals_len);
+        self.open_locals.truncate(mark.open_locals_len);
+        if self.next_local > mark.next_local {
+            let limit = mark.next_local;
+            self.borrowed.retain(|&id| id < limit);
+            self.mutable_locals.retain(|&id| id < limit);
+            self.next_local = limit;
+        }
+        self.normal_loop_depth = mark.normal_loop_depth;
+        self.computation_depth = mark.computation_depth;
+        self.undecided_borrows.truncate(mark.undecided_borrows_len);
+        self.symbolic_borrows.truncate(mark.symbolic_borrows_len);
+        self.reference_borrows.truncate(mark.reference_borrows_len);
+        self.format_specs.truncate(mark.format_specs_len);
+        self.use_bindings.truncate(mark.use_bindings_len);
+        self.operand.truncate(mark.operand_len);
+        self.integer_literals.truncate(mark.integer_literals_len);
+        self.families.truncate(mark.families_len);
+        self.coverage.truncate(mark.coverage_len);
+        self.shadowing_warnings
+            .truncate(mark.shadowing_warnings_len);
+        self.contract_warnings.truncate(mark.contract_warnings_len);
+        self.poisoned = mark.poisoned;
+        self.recovering = mark.recovering;
+        self.recovered.truncate(mark.recovered_len);
+        self.name_uses.truncate(mark.name_uses_len);
+        self.holes_searched = mark.holes_searched;
+        self.call_constraints.truncate(mark.call_constraints_len);
+    }
+
+    fn has_dead_ref_constraint(&self, from: usize) -> bool {
+        self.constraints[from..].iter().any(|c| {
+            let resolved = self.inference.resolve(&c.ty);
+            self.reference_operand(&resolved).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(c.class, &resolved, &self.types)
+        })
+    }
+
+    fn has_unsatisfied_trial_constraint(&self, from: usize) -> bool {
+        self.constraints[from..].iter().any(|c| {
+            let resolved = self.inference.resolve(&c.ty);
+            let resolved = self
+                .inference
+                .numeric_default(&resolved)
+                .unwrap_or(resolved);
+            if matches!(resolved, Type::Infer(_) | Type::Variable(_) | Type::Error) {
+                return false;
+            }
+            !self
+                .classes
+                .has_direct_candidate(c.class, &resolved, &self.types)
+        })
+    }
+
+    fn try_operator_with_a40(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        is_binary: bool,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let mark = self.begin_watermark();
+        self.in_a40_tree = true;
+        let today_res = if is_binary {
+            self.binary_expression_today(expression, expected)
+        } else {
+            let ExprKind::Unary(op, operand) = &expression.kind else {
+                unreachable!()
+            };
+            self.unary_expression_today(*op, operand, expected, expression.span)
+        };
+        self.in_a40_tree = false;
+
+        let failed_e1003_e1005 = match &today_res {
+            Err(e) => matches!(e.code, "E1003" | "E1005"),
+            Ok(_) => {
+                self.recovered.len() > mark.recovered_len
+                    && self.recovered[mark.recovered_len..]
+                        .iter()
+                        .any(|e| matches!(e.code, "E1003" | "E1005"))
+            }
+        };
+        let dead_ref = today_res.is_ok()
+            && self.recovered.len() == mark.recovered_len
+            && self.has_dead_ref_constraint(mark.constraints_len);
+        if !failed_e1003_e1005 && !dead_ref {
+            self.commit_watermark(mark);
+            return today_res;
+        }
+
+        self.rollback_watermark(mark);
+        let trial_mark = self.begin_watermark();
+        self.in_a40_trial = true;
+        self.recovering = false;
+        self.inference.set_quiet(true);
+        let a40_res = if is_binary {
+            self.a40_binary_inner(expression, expected, false)
+                .map(|(e, _)| e)
+        } else {
+            self.a40_unary_inner(expression, expected, false)
+                .map(|(e, _)| e)
+        };
+        self.in_a40_trial = false;
+
+        if let Ok(a40_expr) = a40_res
+            && self.recovered.len() == trial_mark.recovered_len
+            && !self.has_unsatisfied_trial_constraint(trial_mark.constraints_len)
+        {
+            self.commit_watermark(trial_mark);
+            return Ok(a40_expr);
+        }
+
+        self.rollback_watermark(trial_mark);
+        self.in_a40_tree = true;
+        let replay = if is_binary {
+            self.binary_expression_today(expression, expected)
+        } else {
+            let ExprKind::Unary(op, operand) = &expression.kind else {
+                unreachable!()
+            };
+            self.unary_expression_today(*op, operand, expected, expression.span)
+        };
+        self.in_a40_tree = false;
+        replay
+    }
+
+    fn constraints_mention(&self, root: usize) -> bool {
+        self.constraints
+            .iter()
+            .any(|c| self.inference.mentions(&c.ty, root))
+            || self
+                .members
+                .iter()
+                .any(|m| self.inference.mentions(&m.receiver, root))
+    }
+
+    fn is_isolated_open_expected(&mut self, expected: Option<&Type>) -> bool {
+        let Some(exp) = expected else {
+            return false;
+        };
+        let resolved = self.inference.resolve(exp);
+        let Type::Infer(root) = resolved else {
+            return false;
+        };
+        !self.inference.is_numeric_literal(&resolved)
+            && !self.locals_mention(root)
+            && !self.constraints_mention(root)
+    }
+
+    fn is_a40_nested_operator(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Binary(op, _, _) => *op != BinaryOp::Pipe,
+            ExprKind::Unary(UnaryOp::Negate, inner) => {
+                !matches!(inner.kind, ExprKind::Integer(..) | ExprKind::BigInt(_))
+            }
+            ExprKind::Unary(UnaryOp::Not | UnaryOp::BitNot, _) => true,
+            _ => false,
+        }
+    }
+
+    fn is_a40_literal(expr: &Expr) -> bool {
+        if Self::untyped_number(expr) {
+            return true;
+        }
+        match &expr.kind {
+            ExprKind::Integer(..)
+            | ExprKind::Float(..)
+            | ExprKind::BigInt(_)
+            | ExprKind::String(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_)
+            | ExprKind::Utf8Char(_) => true,
+            ExprKind::Unary(UnaryOp::Negate, inner) => {
+                matches!(inner.kind, ExprKind::Integer(..) | ExprKind::BigInt(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// Checks one operand in the A40 trial. Returns `(typed_operand, self_stripped, sibling_stripped)`.
+    fn a40_check_operand(
+        &mut self,
+        expr: &Expr,
+        hint: Option<&Type>,
+        hint_is_sibling: bool,
+    ) -> Result<(TypedExpr, bool, bool), Diagnostic> {
+        if Self::is_a40_nested_operator(expr) {
+            let (typed, sib_stripped) = match &expr.kind {
+                ExprKind::Binary(..) => self.a40_binary_inner(expr, hint, hint_is_sibling)?,
+                ExprKind::Unary(..) => self.a40_unary_inner(expr, hint, hint_is_sibling)?,
+                _ => unreachable!(),
+            };
+            return Ok((typed, false, sib_stripped));
+        }
+
+        if Self::is_a40_literal(expr) {
+            if let Some(h) = hint {
+                let h_res = self.inference.resolve(h);
+                if (hint_is_sibling || Self::untyped_number(expr))
+                    && let Some(stripped_h) = self.reference_operand(&h_res)
+                    && hint_is_sibling
+                {
+                    let typed = self.expression(expr, Some(&stripped_h))?;
+                    return Ok((typed, false, true));
+                }
+            }
+            let typed = self.expression(expr, hint)?;
+            return Ok((typed, false, false));
+        }
+
+        if matches!(
+            expr.kind,
+            ExprKind::If { .. }
+                | ExprKind::Match { .. }
+                | ExprKind::Try(_)
+                | ExprKind::Block { .. }
+                | ExprKind::Lambda(..)
+        ) {
+            let typed = self.expression(expr, hint)?;
+            return Ok((typed, false, false));
+        }
+
+        // Value / place / call expression: check without hint first (or for calls, try with hint
+        // first if not an isolated open var / ref sibling, falling back to `None` on mismatch).
+        let typed = if matches!(expr.kind, ExprKind::Call(..))
+            && let Some(h) = hint
+            && !(hint_is_sibling && self.reference_operand(h).is_some())
+        {
+            let sub = self.begin_watermark();
+            match self.expression(expr, Some(h)) {
+                Ok(ok) if !self.has_dead_ref_constraint(sub.constraints_len) => {
+                    self.commit_watermark(sub);
+                    return Ok((ok, false, false));
+                }
+                _ => {
+                    self.rollback_watermark(sub);
+                    self.expression(expr, None)?
+                }
+            }
+        } else {
+            self.expression(expr, None)?
+        };
+
+        let Some(h) = hint else {
+            return Ok((typed, false, false));
+        };
+        let actual = self.inference.resolve(&typed.ty);
+        let h_res = self.inference.resolve(h);
+
+        // Defer isolated open expected type on reference operands (`Some (a + b)`).
+        if !hint_is_sibling
+            && self.reference_operand(&actual).is_some()
+            && self.is_isolated_open_expected(Some(&h_res))
+        {
+            return Ok((typed, false, false));
+        }
+
+        if self
+            .inference
+            .unifies(&actual, &h_res, &self.types, |_| true)
+        {
+            self.same(&actual, &h_res, typed.span)?;
+            return Ok((typed, false, false));
+        }
+
+        // (1-a): strip `actual` (`ref T` -> `T`) against `h_res`.
+        if let Some(sa) = self.reference_operand(&actual)
+            && self.inference.unifies(&sa, &h_res, &self.types, |_| true)
+        {
+            self.same(&sa, &h_res, typed.span)?;
+            return Ok((typed, true, false));
+        }
+
+        // (1-b): strip sibling `h_res` (`ref S` -> `S`) against `actual` or stripped `actual`.
+        if hint_is_sibling && let Some(sh) = self.reference_operand(&h_res) {
+            if self.inference.unifies(&actual, &sh, &self.types, |_| true) {
+                self.same(&actual, &sh, typed.span)?;
+                return Ok((typed, false, true));
+            }
+            if let Some(sa) = self.reference_operand(&actual)
+                && self.inference.unifies(&sa, &sh, &self.types, |_| true)
+            {
+                self.same(&sa, &sh, typed.span)?;
+                return Ok((typed, true, true));
+            }
+        }
+
+        self.same(&actual, &h_res, typed.span)?;
+        Ok((typed, false, false))
+    }
+
+    fn wrap_stripped_operand(operand: TypedExpr, target_ty: Type, direct_deref: bool) -> TypedExpr {
+        let span = operand.span;
+        TypedExpr {
+            kind: if direct_deref {
+                TypedExprKind::Dereference(Box::new(operand))
+            } else {
+                TypedExprKind::ReferenceOperand(Box::new(operand))
+            },
+            ty: target_ty,
+            span,
+        }
+    }
+
+    fn a40_binary_inner(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        expected_is_sibling: bool,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let ExprKind::Binary(operator, left_ast, right_ast) = &expression.kind else {
+            unreachable!()
+        };
+        let op = *operator;
+        let resolved_expected = expected.map(|ty| self.inference.resolve(ty));
+        let mut parent_sibling_stripped = false;
+        let adjusted_expected = if expected_is_sibling
+            && let Some(ref exp) = resolved_expected
+            && let Some(stripped_exp) = self.reference_operand(exp)
+        {
+            let keep_ref = matches!(
+                op,
+                BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::ShiftLeft
+                    | BinaryOp::ShiftRight
+                    | BinaryOp::ShiftRightUnsigned
+            ) && self.classes.has_direct_candidate(
+                self.classes.class_id("Bits").unwrap(),
+                exp,
+                &self.types,
+            );
+            if !keep_ref {
+                parent_sibling_stripped = true;
+                Some(stripped_exp)
+            } else {
+                Some(exp.clone())
+            }
+        } else {
+            resolved_expected.clone()
+        };
+
+        let pass_down = !matches!(
+            op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+                | BinaryOp::And
+                | BinaryOp::Or
+        );
+        let isolated_open = pass_down && self.is_isolated_open_expected(adjusted_expected.as_ref());
+        let child_hint = if pass_down && !isolated_open {
+            adjusted_expected.as_ref()
+        } else {
+            None
+        };
+
+        let (mut left, mut left_stripped, mut right, mut right_stripped) =
+            if Self::untyped_number(left_ast) && !Self::untyped_number(right_ast) {
+                let (right, mut r_strip, from_parent) =
+                    self.a40_check_operand(right_ast, child_hint, expected_is_sibling)?;
+                parent_sibling_stripped |= from_parent;
+                let r_eff = if r_strip {
+                    self.reference_operand(&right.ty).unwrap()
+                } else {
+                    self.inference.resolve(&right.ty)
+                };
+                let (left, l_strip, strip_r) =
+                    self.a40_check_operand(left_ast, Some(&r_eff), true)?;
+                r_strip |= strip_r;
+                (left, l_strip, right, r_strip)
+            } else {
+                let (left, mut l_strip, from_parent) =
+                    self.a40_check_operand(left_ast, child_hint, expected_is_sibling)?;
+                parent_sibling_stripped |= from_parent;
+                let l_eff = if l_strip {
+                    self.reference_operand(&left.ty).unwrap()
+                } else {
+                    self.inference.resolve(&left.ty)
+                };
+                let marked = self.operand_results(right_ast);
+                let res = self.a40_check_operand(right_ast, Some(&l_eff), true);
+                self.operand.truncate(marked);
+                let (right, r_strip, strip_l) = res?;
+                l_strip |= strip_l;
+                (left, l_strip, right, r_strip)
+            };
+
+        let mut left_eff = if left_stripped {
+            self.reference_operand(&left.ty).unwrap()
+        } else {
+            self.inference.resolve(&left.ty)
+        };
+        let mut right_eff = if right_stripped {
+            self.reference_operand(&right.ty).unwrap()
+        } else {
+            self.inference.resolve(&right.ty)
+        };
+
+        // Stage 2: unify right and left.
+        if self
+            .inference
+            .unifies(&right_eff, &left_eff, &self.types, |_| true)
+        {
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !left_stripped
+            && let Some(sl) = self.reference_operand(&left_eff)
+            && self
+                .inference
+                .unifies(&right_eff, &sl, &self.types, |_| true)
+        {
+            left_stripped = true;
+            left_eff = sl;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !right_stripped
+            && let Some(sr) = self.reference_operand(&right_eff)
+            && self
+                .inference
+                .unifies(&sr, &left_eff, &self.types, |_| true)
+        {
+            right_stripped = true;
+            right_eff = sr;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !left_stripped
+            && !right_stripped
+            && let (Some(sl), Some(sr)) = (
+                self.reference_operand(&left_eff),
+                self.reference_operand(&right_eff),
+            )
+            && self.inference.unifies(&sr, &sl, &self.types, |_| true)
+        {
+            left_stripped = true;
+            right_stripped = true;
+            left_eff = sl;
+            right_eff = sr;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else {
+            self.same(&right_eff, &left_eff, right.span)?;
+        }
+
+        left_eff = self.inference.resolve(&left_eff);
+        right_eff = self.inference.resolve(&right_eff);
+
+        // Stage 2 (And/Or) & Stage 3 (Class check).
+        let result_ty = if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            if !self
+                .inference
+                .unifies(&left_eff, &Type::Bool, &self.types, |_| true)
+                && !left_stripped
+                && let Some(sl) = self.reference_operand(&left_eff)
+                && self
+                    .inference
+                    .unifies(&sl, &Type::Bool, &self.types, |_| true)
+            {
+                left_stripped = true;
+                left_eff = sl;
+            }
+            if !self
+                .inference
+                .unifies(&right_eff, &Type::Bool, &self.types, |_| true)
+                && !right_stripped
+                && let Some(sr) = self.reference_operand(&right_eff)
+                && self
+                    .inference
+                    .unifies(&sr, &Type::Bool, &self.types, |_| true)
+            {
+                right_stripped = true;
+                right_eff = sr;
+            }
+            self.same(&left_eff, &Type::Bool, expression.span)?;
+            self.same(&right_eff, &Type::Bool, expression.span)?;
+            Type::Bool
+        } else {
+            let class_name = polymorph::binary_class(op);
+            let class_id = self.classes.class_id(class_name).unwrap();
+            if self.reference_operand(&left_eff).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(class_id, &left_eff, &self.types)
+                && !left_stripped
+                && !right_stripped
+                && let (Some(sl), Some(sr)) = (
+                    self.reference_operand(&left_eff),
+                    self.reference_operand(&right_eff),
+                )
+            {
+                self.same(&sr, &sl, right.span)?;
+                left_stripped = true;
+                right_stripped = true;
+                left_eff = self.inference.resolve(&sl);
+                right_eff = self.inference.resolve(&sr);
+            }
+            self.require(class_name, left_eff.clone(), expression.span)?;
+            match op {
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => Type::Bool,
+                _ => left_eff.clone(),
+            }
+        };
+
+        let is_logic = matches!(op, BinaryOp::And | BinaryOp::Or);
+        if left_stripped {
+            left = Self::wrap_stripped_operand(left, self.inference.resolve(&left_eff), is_logic);
+        }
+        if right_stripped {
+            right =
+                Self::wrap_stripped_operand(right, self.inference.resolve(&right_eff), is_logic);
+        }
+
+        let finished = self.finish_binary(
+            op,
+            left,
+            right,
+            result_ty,
+            adjusted_expected.as_ref(),
+            expression.span,
+        )?;
+        Ok((finished, parent_sibling_stripped))
+    }
+
+    fn a40_unary_inner(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        expected_is_sibling: bool,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let ExprKind::Unary(operator, operand_ast) = &expression.kind else {
+            unreachable!()
+        };
+        let op = *operator;
+        let resolved_expected = expected.map(|ty| self.inference.resolve(ty));
+        let mut parent_sibling_stripped = false;
+        let adjusted_expected = if expected_is_sibling
+            && let Some(ref exp) = resolved_expected
+            && let Some(stripped_exp) = self.reference_operand(exp)
+        {
+            let keep_ref = op == UnaryOp::BitNot
+                && self.classes.has_direct_candidate(
+                    self.classes.class_id("Bits").unwrap(),
+                    exp,
+                    &self.types,
+                );
+            if !keep_ref {
+                parent_sibling_stripped = true;
+                Some(stripped_exp)
+            } else {
+                Some(exp.clone())
+            }
+        } else {
+            resolved_expected.clone()
+        };
+
+        let isolated_open = self.is_isolated_open_expected(adjusted_expected.as_ref());
+        let child_hint = if !isolated_open {
+            adjusted_expected.as_ref()
+        } else {
+            None
+        };
+
+        let (mut operand, mut op_stripped, from_parent) =
+            self.a40_check_operand(operand_ast, child_hint, expected_is_sibling)?;
+        parent_sibling_stripped |= from_parent;
+        let mut op_eff = if op_stripped {
+            self.reference_operand(&operand.ty).unwrap()
+        } else {
+            self.inference.resolve(&operand.ty)
+        };
+
+        if op == UnaryOp::Not {
+            if !self
+                .inference
+                .unifies(&op_eff, &Type::Bool, &self.types, |_| true)
+                && !op_stripped
+                && let Some(so) = self.reference_operand(&op_eff)
+                && self
+                    .inference
+                    .unifies(&so, &Type::Bool, &self.types, |_| true)
+            {
+                op_stripped = true;
+                op_eff = so;
+            }
+            self.same(&op_eff, &Type::Bool, expression.span)?;
+        } else {
+            let class_name = if op == UnaryOp::Negate { "Neg" } else { "Bits" };
+            let class_id = self.classes.class_id(class_name).unwrap();
+            if self.reference_operand(&op_eff).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(class_id, &op_eff, &self.types)
+                && !op_stripped
+                && let Some(so) = self.reference_operand(&op_eff)
+            {
+                op_stripped = true;
+                op_eff = so;
+            }
+            self.require(class_name, op_eff.clone(), expression.span)?;
+        }
+
+        op_eff = self.inference.resolve(&op_eff);
+        if op_stripped {
+            operand = Self::wrap_stripped_operand(operand, op_eff.clone(), op == UnaryOp::Not);
+        }
+        let kind = TypedExprKind::Unary(op, Box::new(operand));
+        let (kind, ty) = if op == UnaryOp::Negate && self.checked_arithmetic {
+            Self::checked_kind(kind, &op_eff, expression.span)
+        } else {
+            (kind, op_eff)
+        };
+        let finished =
+            self.finish_expression(kind, ty, adjusted_expected.as_ref(), expression.span)?;
+        Ok((finished, parent_sibling_stripped))
+    }
+
     fn interpolation(
         &mut self,
         interpolation: &Interpolation,

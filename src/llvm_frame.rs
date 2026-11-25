@@ -421,8 +421,18 @@ impl FunctionEmitter<'_, '_> {
         self.allocas.push(format!(
             "{buffer} = alloca [{STRING_BUFFER_BYTES} x i8], align 16"
         ));
-        let (lhs, left_frames) = self.take_operand(left);
-        let (rhs, right_frames) = self.take_operand(right);
+        let left_borrowed = matches!(left.kind, TypedExprKind::ReferenceOperand(_));
+        let right_borrowed = matches!(right.kind, TypedExprKind::ReferenceOperand(_));
+        let (lhs, left_frames) = if left_borrowed {
+            self.read_operand(left)
+        } else {
+            self.take_operand(left)
+        };
+        let (rhs, right_frames) = if right_borrowed {
+            self.read_operand(right)
+        } else {
+            self.take_operand(right)
+        };
         let ty = self.ty(&left.ty);
         let capacity = if left.ty == Type::String {
             STRING_BUFFER_BYTES / 2
@@ -433,14 +443,32 @@ impl FunctionEmitter<'_, '_> {
             "call {ty} @{}.concat_into(ptr {buffer}, i64 {capacity}, {ty} {lhs}, {ty} {rhs})",
             &ty[1..],
         ));
-        self.drop_framed(&left.ty, &lhs, &left_frames);
-        self.drop_framed(&right.ty, &rhs, &right_frames);
+        if left_borrowed {
+            self.release_operand(left, &lhs, &left_frames);
+        } else {
+            self.drop_framed(&left.ty, &lhs, &left_frames);
+        }
+        if right_borrowed {
+            self.release_operand(right, &rhs, &right_frames);
+        } else {
+            self.drop_framed(&right.ty, &rhs, &right_frames);
+        }
         (value, vec![Frame::Buffer { buffer }])
     }
 
     pub(super) fn concat_length(&mut self, left: &TypedExpr, right: &TypedExpr) -> String {
-        let (lhs, left_frames) = self.take_operand(left);
-        let (rhs, right_frames) = self.take_operand(right);
+        let left_borrowed = matches!(left.kind, TypedExprKind::ReferenceOperand(_));
+        let right_borrowed = matches!(right.kind, TypedExprKind::ReferenceOperand(_));
+        let (lhs, left_frames) = if left_borrowed {
+            self.read_operand(left)
+        } else {
+            self.take_operand(left)
+        };
+        let (rhs, right_frames) = if right_borrowed {
+            self.read_operand(right)
+        } else {
+            self.take_operand(right)
+        };
         let a = self.string_length(&left.ty, &lhs);
         let b = self.string_length(&left.ty, &rhs);
         let length = self.value(format!("add i64 {a}, {b}"));
@@ -451,8 +479,16 @@ impl FunctionEmitter<'_, '_> {
             let fits = self.value(format!("icmp ule i64 {length}, 9007199254740991"));
             self.guard(&fits, TrapKind::AllocationSize);
         }
-        self.drop_framed(&left.ty, &lhs, &left_frames);
-        self.drop_framed(&right.ty, &rhs, &right_frames);
+        if left_borrowed {
+            self.release_operand(left, &lhs, &left_frames);
+        } else {
+            self.drop_framed(&left.ty, &lhs, &left_frames);
+        }
+        if right_borrowed {
+            self.release_operand(right, &rhs, &right_frames);
+        } else {
+            self.drop_framed(&right.ty, &rhs, &right_frames);
+        }
         length
     }
 

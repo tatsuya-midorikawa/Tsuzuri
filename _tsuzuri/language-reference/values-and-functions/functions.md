@@ -33,6 +33,17 @@ edition 2027 の通常の `def` では、無印の
 `string`・配列・リスト・`Vec`・解放が必要な record／union／tuple などは共有借用になります。
 `def length :: string -> i64` は、引数を `ref string` と書いた場合と同じです。
 読み取りは複製も移動も起こさず、実引数は呼び出し後も使えます。返すために所有権が必要なら `own` を書きます。
+読み取り引数は算術・比較・ビット・論理演算子の被演算子にもそのまま書けます（`a + b`、`a == b`、`-a`）。
+`string`（および `utf8string`）の `+` は参照の被演算子を消費せず新しい文字列を作り、`deref a == deref b` のように明示で外す書き方も引き続き使えます（[演算子と式の評価](./op-and-expressions.md#参照の被演算子)）。
+
+```tsuzuri run=12
+def greet :: string -> string -> string = \a b -> a + b
+def same :: string -> string -> bool = \a b -> a == b
+let left = "hello"
+let right = "!"
+let joined = greet left right
+if same left "hello" then joined.length + left.length + right.length else 0
+```
 
 裸の型変数と関数型も共有借用です。本体では値の読み取り view を使うため、引数を読むたびに
 `*` を書く必要はありません。借用した型変数の値を返す場合は `Copy` が必要です。
@@ -166,7 +177,7 @@ total values + values[0] + values[1]
 ```
 
 無印の解放が必要な引数は共有借用です。上の `[i64]` は `ref [i64]` と同じで、
-呼び出し後も元の値を使えます。数値、`bool`、`unit`、解放不要な Copy record などは値渡しのままです。
+呼び出し後も元の値を使えます。借用した引数も、通常の読み取り引数と同様に演算子の被演算子（`a == b`、`a + b` など）へそのまま渡せます。数値、`bool`、`unit`、解放不要な Copy record などは値渡しのままです。
 明示の `ref T` はそのままです。引数を書き換える `ref mut` と可変束縛引数は使えません。
 本体の局所変数の変更、配列の生成や複製は許されます。
 借用した値そのものを返すには所有権がないので、文字列は `clone_string`、

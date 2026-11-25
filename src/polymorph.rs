@@ -447,6 +447,12 @@ fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
     .expected_found(expected, found)
 }
 
+pub(super) struct InferenceWatermark {
+    solutions_len: usize,
+    outer_trial: Option<Vec<usize>>,
+    was_quiet: bool,
+}
+
 impl Inference {
     /// An inference whose mismatches have no message (PB08 O3).
     fn quiet() -> Self {
@@ -732,6 +738,42 @@ impl Inference {
             self.solutions[id] = None;
         }
         accepted
+    }
+
+    pub(super) fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+
+    pub(super) fn begin_watermark(&mut self) -> InferenceWatermark {
+        InferenceWatermark {
+            solutions_len: self.solutions.len(),
+            outer_trial: self.trial.replace(Vec::new()),
+            was_quiet: self.quiet,
+        }
+    }
+
+    pub(super) fn commit_watermark(&mut self, mark: InferenceWatermark) {
+        let solved = std::mem::replace(&mut self.trial, mark.outer_trial).unwrap_or_default();
+        if let Some(outer) = &mut self.trial {
+            for id in solved {
+                if id < mark.solutions_len {
+                    outer.push(id);
+                }
+            }
+        }
+        self.quiet = mark.was_quiet;
+    }
+
+    pub(super) fn rollback_watermark(&mut self, mark: InferenceWatermark) {
+        let solved = std::mem::replace(&mut self.trial, mark.outer_trial).unwrap_or_default();
+        for id in solved {
+            if id < mark.solutions_len {
+                self.solutions[id] = None;
+            }
+        }
+        self.solutions.truncate(mark.solutions_len);
+        self.defaults.retain(|&id, _| id < mark.solutions_len);
+        self.quiet = mark.was_quiet;
     }
 
     /// The open variables that occur in `ty` once its solved variables are followed (A32).
@@ -3788,6 +3830,61 @@ impl Classes {
         self.normalize(constraint, types).map(|_| ())
     }
 
+    /// A40: whether `ty` (typically `ref T` with a known referent head) has any direct built-in,
+    /// structural, or declared `instance` candidate for `class` without stripping its outer reference.
+    pub(super) fn has_direct_candidate(
+        &self,
+        class: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        if self.intrinsic(class, ty, types) || self.structural(class, ty) {
+            return true;
+        }
+        let mut inf = Inference::quiet();
+        let mut ty_vars = BTreeMap::new();
+        let open_ty = map_type(ty, &mut |part| match part {
+            Type::Variable(name) => ty_vars
+                .entry(name.clone())
+                .or_insert_with(|| inf.fresh())
+                .clone(),
+            _ => part.clone(),
+        });
+        let has_matching = self.instances.iter().any(|inst| {
+            if inst.class != class {
+                return false;
+            }
+            let subs: BTreeMap<String, Type> = inst
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inf.fresh()))
+                .collect();
+            let head = substitute(&inst.head, &subs);
+            inf.unifies(&open_ty, &head, types, |_| true)
+        });
+        if !has_matching {
+            return false;
+        }
+        let mut has_unknown = false;
+        map_type(ty, &mut |part| {
+            if is_unknown(part) {
+                has_unknown = true;
+            }
+            part.clone()
+        });
+        has_unknown
+            || self
+                .validate(
+                    &Constraint {
+                        class,
+                        ty: ty.clone(),
+                        span: Span::default(),
+                    },
+                    types,
+                )
+                .is_ok()
+    }
+
     fn validate_instance(
         &self,
         constraint: &Constraint,
@@ -6776,7 +6873,29 @@ impl Specializer<'_> {
                 {
                     let (class, method) = self.classes.operation(Operation::Binary(*operator));
                     if self.classes.intrinsic(class, &left.ty, &self.types) {
-                        None
+                        if !(*operator == BinaryOp::Add && left.ty.is_string())
+                            && (matches!(left.kind, TypedExprKind::ReferenceOperand(_))
+                                || matches!(right.kind, TypedExprKind::ReferenceOperand(_)))
+                        {
+                            let unwrap_ref_op = |op: &TypedExpr| {
+                                if let TypedExprKind::ReferenceOperand(inner) = &op.kind {
+                                    TypedExpr {
+                                        kind: TypedExprKind::Dereference(inner.clone()),
+                                        ty: op.ty.clone(),
+                                        span: op.span,
+                                    }
+                                } else {
+                                    op.clone()
+                                }
+                            };
+                            Some(Binary(
+                                *operator,
+                                Box::new(unwrap_ref_op(left)),
+                                Box::new(unwrap_ref_op(right)),
+                            ))
+                        } else {
+                            None
+                        }
                     } else {
                         Some(self.operator_call(
                             class,
@@ -6790,7 +6909,18 @@ impl Specializer<'_> {
                 Unary(operator, operand) if *operator != UnaryOp::Not => {
                     let (class, method) = self.classes.operation(Operation::Unary(*operator));
                     if self.classes.intrinsic(class, &operand.ty, &self.types) {
-                        None
+                        if let TypedExprKind::ReferenceOperand(inner) = &operand.kind {
+                            Some(Unary(
+                                *operator,
+                                Box::new(TypedExpr {
+                                    kind: TypedExprKind::Dereference(inner.clone()),
+                                    ty: operand.ty.clone(),
+                                    span: operand.span,
+                                }),
+                            ))
+                        } else {
+                            None
+                        }
                     } else {
                         Some(self.operator_call(
                             class,
@@ -6934,14 +7064,46 @@ impl Specializer<'_> {
         let arguments = if matches!(declaration.name.as_str(), "Eq" | "Ord") || borrowed_arith {
             arguments
                 .into_iter()
-                .map(|argument| TypedExpr {
-                    ty: Type::Reference(Box::new(argument.ty.clone()), false),
-                    span: argument.span,
-                    kind: TypedExprKind::BorrowOperand(Box::new(argument)),
+                .map(|argument| {
+                    let arg_ty = argument.ty.clone();
+                    let arg_span = argument.span;
+                    if let TypedExprKind::ReferenceOperand(inner) = argument.kind {
+                        TypedExpr {
+                            ty: Type::Reference(Box::new(arg_ty.clone()), false),
+                            span: arg_span,
+                            kind: TypedExprKind::Borrow(
+                                Box::new(TypedExpr {
+                                    kind: TypedExprKind::Dereference(inner),
+                                    ty: arg_ty,
+                                    span: arg_span,
+                                }),
+                                false,
+                            ),
+                        }
+                    } else {
+                        TypedExpr {
+                            ty: Type::Reference(Box::new(arg_ty), false),
+                            span: arg_span,
+                            kind: TypedExprKind::BorrowOperand(Box::new(argument)),
+                        }
+                    }
                 })
                 .collect()
         } else {
             arguments
+                .into_iter()
+                .map(|argument| {
+                    if let TypedExprKind::ReferenceOperand(inner) = argument.kind {
+                        TypedExpr {
+                            kind: TypedExprKind::Dereference(inner),
+                            ty: argument.ty,
+                            span: argument.span,
+                        }
+                    } else {
+                        argument
+                    }
+                })
+                .collect()
         };
         Ok(TypedExprKind::Call(
             Box::new(TypedExpr {

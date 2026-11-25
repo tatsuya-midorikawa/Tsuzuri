@@ -6163,6 +6163,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Local(_)
             | TypedExprKind::Dereference(_)
+            | TypedExprKind::ReferenceOperand(_)
             | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
             }
@@ -6665,11 +6666,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     operand
                 }
             }
-            TypedExprKind::Dereference(value) if value.ty.slice_element().is_some() => {
+            TypedExprKind::Dereference(value) | TypedExprKind::ReferenceOperand(value)
+                if value.ty.slice_element().is_some() =>
+            {
                 let view = self.expression_mode(value, false);
                 self.spill(&expression.ty, &view)
             }
-            TypedExprKind::Dereference(value) => self.expression_mode(value, false),
+            TypedExprKind::Dereference(value) | TypedExprKind::ReferenceOperand(value) => {
+                self.expression_mode(value, false)
+            }
             TypedExprKind::Field(value, index) => {
                 let slot = self.place(value);
                 let position = self.field_slot(&value.ty, *index);
@@ -8073,14 +8078,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     });
                 }
             }
-            let take = operator == Add;
-            // Concatenation reads both operands and then destroys them, so stack strings stay put.
-            let (lhs, left_frames) = if take {
+            let left_borrowed = matches!(left.kind, TypedExprKind::ReferenceOperand(_));
+            let right_borrowed = matches!(right.kind, TypedExprKind::ReferenceOperand(_));
+            let take_left = operator == Add && !left_borrowed;
+            let take_right = operator == Add && !right_borrowed;
+            // Concatenation reads both operands and then destroys owned ones; borrowed reference
+            // operands (`ReferenceOperand`) are read in place and never appended into or freed (A40).
+            let (lhs, left_frames) = if take_left {
                 self.take_operand(left)
             } else {
                 self.read_operand(left)
             };
-            let (rhs, right_frames) = if take {
+            let (rhs, right_frames) = if take_right {
                 self.take_operand(right)
             } else {
                 self.read_operand(right)
@@ -8089,7 +8098,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let runtime = &ty[1..];
             let result = match operator {
                 Add => {
-                    let operation = if left_frames.is_empty() {
+                    let operation = if take_left && left_frames.is_empty() {
                         "append"
                     } else {
                         "concat"
@@ -8116,15 +8125,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 _ => unreachable!("string operator checked"),
             };
-            if take {
+            if take_left {
                 if left_frames.is_empty() {
                     self.forget_temporary(&lhs);
                 } else {
                     self.drop_framed(&left.ty, &lhs, &left_frames);
                 }
-                self.drop_framed(&right.ty, &rhs, &right_frames);
             } else {
                 self.release_operand(left, &lhs, &left_frames);
+            }
+            if take_right {
+                self.drop_framed(&right.ty, &rhs, &right_frames);
+            } else {
                 self.release_operand(right, &rhs, &right_frames);
             }
             return if operator == NotEqual {

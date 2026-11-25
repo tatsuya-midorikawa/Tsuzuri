@@ -253,6 +253,7 @@ fn collect_locals<'a>(
         | Borrow(..)
         | BorrowOperand(_)
         | Dereference(_)
+        | ReferenceOperand(_)
         | Assign(..)
         | Cast(_)
         | SaturatingIndex(_)

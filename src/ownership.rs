@@ -3659,6 +3659,7 @@ fn partial_results(module: &CheckedModule) -> BTreeSet<Type> {
                 | E::Borrow(..)
                 | E::BorrowOperand(_)
                 | E::Dereference(_)
+                | E::ReferenceOperand(_)
                 | E::Assign(..)
                 | E::Cast(_)
                 | E::SaturatingIndex(_)
@@ -8057,7 +8058,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 }
                 Ok(places)
             }
-            E::Dereference(reference) => {
+            E::Dereference(reference) | E::ReferenceOperand(reference) => {
                 let value = self.eval(reference, Use::Read, live)?;
                 let mut places = Vec::new();
                 // A34 (`loopplace`): loans in `value.through` represent borrows stored into cells
@@ -12381,7 +12382,7 @@ impl<'a, 'run> Checker<'a, 'run> {
 
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
-            E::Local(_) | E::Dereference(_) => true,
+            E::Local(_) | E::Dereference(_) | E::ReferenceOperand(_) => true,
             E::Field(value, _) | E::ListTail(value, _) | E::UnionPayload { value, .. } => {
                 Self::is_place(value)
             }
@@ -15629,8 +15630,24 @@ impl<'a, 'run> Checker<'a, 'run> {
                 } else {
                     Use::Consume
                 };
+                let left_usage = if *operator == BinaryOp::Add
+                    && left.ty.is_string()
+                    && matches!(left.kind, E::ReferenceOperand(_))
+                {
+                    Use::Read
+                } else {
+                    usage
+                };
+                let right_usage = if *operator == BinaryOp::Add
+                    && right.ty.is_string()
+                    && matches!(right.kind, E::ReferenceOperand(_))
+                {
+                    Use::Read
+                } else {
+                    usage
+                };
                 let mark = self.events.as_ref().map_or(0, |events| events.len());
-                let value = self.eval(left, usage, &during)?;
+                let value = self.eval(left, left_usage, &during)?;
                 if *operator == BinaryOp::Pipe {
                     // `text |> consume` gives its argument to `consume`, as `consume text` does.
                     self.event_targets(mark, left.span, right);
@@ -15674,7 +15691,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 } else {
                     // A31: a function value read from a place is called where it is.
                     self.bound_next = Self::is_place(right);
-                    self.eval(right, usage, &during)?
+                    self.eval(right, right_usage, &during)?
                 };
                 self.held.pop();
                 if *operator == BinaryOp::Pipe && !owned_function && self.tracks_stores() {
@@ -15887,7 +15904,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             | E::GenericFloat(_)
             // A dispatch passes its parameters on; `closed` keeps its result tied to them (A14).
             | E::DynDispatch { .. } => {}
-            E::Local(_) | E::Dereference(_) | E::ListTail(..) => {
+            E::Local(_) | E::Dereference(_) | E::ReferenceOperand(_) | E::ListTail(..) => {
                 unreachable!("places handled above")
             }
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {

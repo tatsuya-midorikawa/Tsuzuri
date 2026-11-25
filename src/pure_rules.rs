@@ -1098,6 +1098,7 @@ impl<'a> Scanner<'a> {
                     | K::Borrow(..)
                     | K::BorrowOperand(_)
                     | K::Dereference(_)
+                    | K::ReferenceOperand(_)
                     | K::Assign(..)
                     | K::Cast(_)
                     | K::SaturatingIndex(_)

@@ -517,9 +517,10 @@ impl<'a> Translator<'a> {
                 Value::Tuple(mut values) if *index < values.len() => Ok(values.swap_remove(*index)),
                 _ => Err(unsupported("an unresolved expression", span)),
             },
-            K::Borrow(value, false) | K::BorrowOperand(value) | K::Dereference(value) => {
-                self.translate(value, path)
-            }
+            K::Borrow(value, false)
+            | K::BorrowOperand(value)
+            | K::Dereference(value)
+            | K::ReferenceOperand(value) => self.translate(value, path),
             K::Borrow(_, true) => Err(unsupported("a mutable reference", span)),
             K::Cast(value) => {
                 let (Type::Integer(to, _), Type::Integer(from, signed)) =

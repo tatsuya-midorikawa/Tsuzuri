@@ -468,6 +468,7 @@ impl<'a> Run<'a, '_> {
             | K::Borrow(..)
             | K::BorrowOperand(_)
             | K::Dereference(_)
+            | K::ReferenceOperand(_)
             | K::CaseConstructor { .. }
             | K::Checked(_)
             | K::Try(_)
@@ -1136,7 +1137,10 @@ impl<'a> Run<'a, '_> {
                     steps.push(Step::Index(index));
                     current = base;
                 }
-                K::Borrow(base, false) | K::BorrowOperand(base) | K::Dereference(base) => {
+                K::Borrow(base, false)
+                | K::BorrowOperand(base)
+                | K::Dereference(base)
+                | K::ReferenceOperand(base) => {
                     current = base;
                 }
                 _ => return None,

@@ -261,6 +261,7 @@ impl Analysis<'_> {
             | UnionPayload { .. }
             | ListTail(..)
             | Dereference(_)
+            | ReferenceOperand(_)
             | Index(..) => self.opaque(expression, live, depth),
             Binary(BinaryOp::And | BinaryOp::Or, a, b) => {
                 let mut conditional = live.clone();

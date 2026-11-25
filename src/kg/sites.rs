@@ -89,6 +89,7 @@ pub(crate) fn bears_facts(kind: &TypedExprKind) -> bool {
         | Borrow(..)
         | BorrowOperand(_)
         | Dereference(_)
+        | ReferenceOperand(_)
         | Assign(..)
         | Cast(_)
         | SaturatingIndex(_)

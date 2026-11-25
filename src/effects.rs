@@ -2168,6 +2168,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::Dereference(_)
+            | K::ReferenceOperand(_)
             | K::Assign(..)
             | K::Cast(_)
             | K::SaturatingIndex(_)
