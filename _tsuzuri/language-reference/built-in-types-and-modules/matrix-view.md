@@ -151,6 +151,7 @@ $"{buffer[0]},{buffer[1]},{buffer[2]},{buffer[3]},{buffer[4]},{buffer[5]}"
 書き込める窓の配置は、2 つの形に限られます。`of_array_mut` と `sub_mut` が作る行優先の窓（`col_stride` が 1 で `row_stride` が列数以上）と、`transpose_mut` がそれを入れ替えた窓です。どちらも、異なる要素が同じ場所を指すことはありません。ストライドが 0 の窓を書き込める窓にすることはできません。
 
 行列の中身を書き換えるには、`Matrix.to_array` で配列を取り出し、書き込める窓で更新して、`Matrix.of_array` で戻します。
+要素が Copy 型なら、今のコンパイラは `Matrix.to_array` で要素を 1 回複製します（[Matrix の既知の制限](./matrix.md#要素を置き換える)）。
 
 ```tsuzuri run=105
 let m = Matrix.init 2 3 (\row col -> row * 3 + col)

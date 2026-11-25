@@ -90,7 +90,8 @@ fn row index matrix =
 def as_array :: ref Matrix<'a> -> ref ['a]
 fn as_array matrix = ref matrix.data
 
-/// Consumes the matrix and returns its row-major buffer without copying.
+/// Consumes the matrix and returns its row-major buffer. The current compiler copies the elements
+/// when the element type is `Copy`.
 ///
 /// ```tsuzuri run=[0,%201,%201,%202]
 /// Matrix.to_array (Matrix.init 2 2 (\row col -> row + col))
@@ -98,7 +99,8 @@ fn as_array matrix = ref matrix.data
 def to_array :: own Matrix<'a> -> ['a]
 fn to_array matrix = matrix.data
 
-/// Consumes the matrix and replaces one element in place; traps when the row or the column is out of range.
+/// Consumes the matrix and returns it with one element replaced; traps when the row or the column is
+/// out of range. The current compiler copies the buffer when the element type is `Copy`.
 ///
 /// ```tsuzuri run=[1,%209,%203,%204]
 /// let m = Matrix.set 0 1 9 (Matrix.of_array 2 2 [1, 2, 3, 4])

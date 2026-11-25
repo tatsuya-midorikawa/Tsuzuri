@@ -158,6 +158,10 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A34 | [`main` が受理する安全なプログラムを、A31 の格納と破棄の順序の検査が `E1013`・`E1014` で拒否する（フィールドや要素の `Rc.get` を束縛した変数、受け取った関数値を持つ値の破棄、書き込む部分の側の参照の変数、使い終えた共有の型の判定、`Rc.get (ref r)` の持ち主、参照の仮引数から作った共有、ループの中の置き換えの後の写し、セルへ書き込んだ複数 region のレコード）か、検査が収束せず `E1017` で打ち切る（参照の仮引数の先の借用をセルを所有する関数値へ渡すループ）](_completed/A34-store-check-safe-rejections.md) | P1 | L | A31 | done（9 項目すべて — `rcgetpart`・`fvdrop`・`refsrc`・`sharetype`・`rcgetowner`・`shareparam`・`replcopy`・`cellslots`・`loopplace` — の安全な形を受理しつつ対応する不安全な双子を引き続き拒否） |
 | A35 | [実際のプログラムの収束するループの借用の増え方が A31 のループの打ち切り（`LoanGrowth`）の上限に近づいたら、テストを失敗させる（収束したループの増え方の統計をテストだけに見せ、`tests/` のプログラム・`examples/`・std の例の最大を、増え方の連続の上限の 1/2 と比べる。`LOOP_GROWING_LARGE` の借用の数は 1/8 で数える）](A35-loop-growth-margin-check.md) | P2 | M | A31 | todo |
 | A36 | [edition 2027 で、ペイロードを持つジェネリックな複数ケースのアクティブパターンを誤って拒否する](_completed/A36-active-result-default-reads.md) | P2 | S | G44 | done（関数本体の引数の準備を `bind_function_parameters` にまとめ、複数ケースのアクティブパターンの結果の推論でも使う。`pure def` の形も直った。非 Copy の入力をそのままペイロードにするときは、関数本体と同じく `Copy` か `ref 'a` が要る） |
+| A37 | [`Index` が土台の場所を借りないため、一時値の土台の窓が解放後のメモリを読み、`Tensor.Mut` から取った窓が書き込み中も生きる不具合の修正](A37-index-base-place-borrow.md) | P0 | M | – | todo |
+| A38 | [添字の評価順を組み込みの添字にそろえる（土台、キーの成分を左から右。`IndexMut` の `=` は右辺が先）](A38-index-evaluation-order.md) | P0 | M | A37 | todo |
+| A39 | [レコードのフィールドの経路の排他借用（`ref mut b.f`・`ref mut b.data[a..b]`。edition 2027 以降）](A39-field-exclusive-borrow.md) | P1 | M | – | todo |
+| A40 | [演算子の被演算子に参照 `ref T`・`ref mut T`（edition 2027 の読み取り引数を含む）を直接書けるようにする](A40-reference-operands.md) | P1 | M | – | todo |
 
 ### B. エラー処理・制御
 
@@ -398,7 +402,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC03 | [算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`）の借用対応（案 C・言語拡張 ①）](_completed/NC03-borrowed-arithmetic-operators.md) | P1 | L | – | done（D1-A: 非組み込み型の算術インスタンスを共有借用 `ref` で特殊化・値受け取りアダプター生成・`std/BigInt.tz` 非消費演算対応） |
 | NC04 | [汎用 `Index` 型クラスとスライス記述子モジュール `Slice`（案 C・言語拡張 ②）](_completed/NC04-generic-index-class-and-slice.md) | P1 | L | (NC02) | done（Phase 1–2: 組み込み 3 引数クラス `Index`/`IndexMut`、`FRONTEND_FORMAT = 27`、opt-in `std/Slice.tz`、`Tensor`/`Matrix`/`MatrixView`/`Map`/`HashMap` のインスタンスと `slice`） |
 | NC05 | [`Tensor` の形状操作・結合/分割・ファンシーインデキシング・ブールマスク](_completed/NC05-tensor-shape-indexing-and-masking.md) | P1 | M | NC02, (NC04) | done（形状操作・`pad` 5 モード・結合/ゼロコピー分割・ブールマスク/ファンシーインデキシング・`Tensor`/`View`/`Mut` マスク `Index`/`IndexMut` インスタンス） |
-| NC06 | [ブロードキャスト対応の要素ごと演算（ufunc）・比較・インプレース出力・演算子インスタンス](NC06-tensor-ufuncs-and-elementwise.md) | P1 | L | NC01, NC02, (NC03) | todo |
+| NC06 | [ブロードキャスト対応の要素ごと演算（ufunc）・比較・インプレース出力・演算子インスタンス](NC06-tensor-ufuncs-and-elementwise.md) | P1 | L | NC01, NC02, (NC03), (A37) | todo |
 | NC07 | [軸指定の還元・統計・累積・ソート・探索・集合演算](NC07-tensor-reductions-stats-and-sorting.md) | P1 | L | NC02, NC05, NC06 | todo |
 | NC08 | [線形代数モジュール `Linalg` とテンソル縮約（`matmul`/`tensordot`/`einsum`/分解/求解）](NC08-linalg-core-and-einsum.md) | P1 | XL | NC01, NC02, NC05, NC06 | todo |
 | NC09 | [高速フーリエ変換 `Fft` と多項式 `Polynomial`](NC09-fft-and-polynomial.md) | P2 | L | NC01, NC02, NC08, (NC15) | todo |
@@ -408,6 +412,12 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC13 | [テンソル向けハードウェア高速化（x86-64 FMA・`f16` 拡充・SIMD/Parallel/タイリング GEMM・GPU カーネル）](NC13-tensor-simd-parallel-and-gpu-kernels.md) | P2 | XL | NC02, NC06, NC07, NC08, (NC15) | todo |
 | NC14 | [Python / NumPy ゼロコピー相互運用（`--emit bindings-py` Buffer Protocol・`__array_interface__`・DLPack）](NC14-python-buffer-protocol-and-dlpack-bindings.md) | P3 | M | NC02, NC12 | todo |
 | NC15 | [借用入力をゼロコピーで共有できるチャンク並列組み込み（`Parallel.for_each_chunk_with`）](NC15-parallel-borrowed-chunk-input.md) | P1 | M | – | todo |
+| NC16 | [土台を借りる添字に `ref` を必須にし、要素の読み出しを確保なしにする（NC04 の後続）](NC16-index-ref-and-zero-alloc-element-reads.md) | P0 | M | A37, A38 | todo |
+| NC17 | [edition 2028 と範囲の構文の一本化（終端を含む `..`、`..<`、`<..`、`<..<`、`^k`）](NC17-edition-2028-inclusive-range-family.md) | P1 | XL | – | todo |
+| NC18 | [多次元の角括弧の添字 `t[i, a..b, ..]` と厳格なキー `Slice.Sel`](NC18-multi-axis-bracket-indexing.md) | P1 | L | A37, A38, NC16, NC17 | todo |
+| NC19 | [演算子の拡張インスタンス（`View` どうし・`Tensor` と `View`・スカラーとの演算子）](NC19-operator-extension-instances.md) | P1 | L | NC06, A37, (A40), (NC16), (NC18) | todo |
+| NC20 | [複合代入 `+=`・`-=`・`*=`・`/=`・`%=` と書き込み窓 `ref mut t[…]`（組み込みの `AddAssign` 系と `IndexBorrowMut`）](NC20-compound-assignment-and-mutable-index-views.md) | P2 | L | A37, A38, A39, NC18, NC19, (A40) | todo |
+| NC21 | [`Complex` と実数のスカラーの演算子（演算子の拡張インスタンス 8 個）](NC21-complex-real-scalar-operators.md) | P2 | S | NC19 | todo |
 
 ## 推奨フェーズ
 
@@ -430,6 +440,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 12. 第4期（2026-11-01） | Task・Async を廃止し、Go の goroutine に相当する tzroutine と、チャンネル・`select`・同期・時間・取り消しを揃える | ① TZ01 → TZ02 → TZ03 → TZ04 → ② TZ05・TZ06 → TZ07、TZ11 → ③ TZ08 → ④ TZ12 → TZ13 → ⑤ TZ09・TZ10。詳細は [第4期](#第4期-tzroutinego-の-goroutine-に相当する並行処理) |
 | 13. 追加（2026-11-02） | F# の Anonymous Type-tagged Unions（FS-1092）に相当する匿名共用体 `(A \| B)` を入れる | A24 → A25・A26。詳細は [追加チケット（2026-11-02。匿名共用体）](#追加チケット2026-11-02匿名共用体) |
 | 14. 追加（2026-11-24） | 案 C（ハイブリッド）で NumPy 互換の数値計算基盤と最小の汎用言語拡張 2 点（借用演算子・汎用 `Index`）およびゼロコピー並列チャンクを整備する | ① NC01・NC02・NC03・NC04・NC15 → ② NC05・NC06 → NC07 → ③ NC08 → NC09・NC10 → ④ NC11・NC12（W13 後）・NC13・NC14。詳細は [追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) |
+| 15. 追加（2026-11-25） | 自然な添字・範囲・演算子（D-66）: `Index` の借用の不具合を直し、窓を返す添字に `ref` を必須にし、edition 2028 で範囲の構文を一本化して、多次元の角括弧・演算子の拡張インスタンス・複合代入を入れる。委任による決定で、添字の評価順（A38）・フィールドの排他借用（A39）・参照の被演算子（A40）・`Complex` とスカラーの演算子（NC21）・std の複製の除去（PM10）を足した | ① A37 → A38 → NC16（NC03・NC04 を含む最初のリリースの前）、NC17 Phase 1 → ② NC17 Phase 2 → NC18、NC06 →（A40）→ NC19 → NC21、NC20 Phase 1（独立）・A39 → ③ NC20 Phase 2・3 → NC17 Phase 3。PM10（_perfs）は独立。詳細は [追加チケット（2026-11-25。自然な添字・範囲・演算子）](#追加チケット2026-11-25自然な添字範囲演算子) |
 
 ## 依存関係図
 
@@ -1058,18 +1069,18 @@ Tsuzuri で NumPy 互換の数値計算機能を提供するためのギャッ�
 
 | 種別 | チケット | 概要 | 承認 |
 | --- | --- | --- | --- |
-| 機能 | [NC01](NC01-complex-and-extended-math.md) | opt-in 複素数型 `Complex<'a>` と組み込み `Math`/`Int` の不足関数群（双曲線・`expm1`/`log1p`/`logaddexp`/`fmod`/`floor_div`/`floor_mod`/`ieee_remainder`/`frexp`/`nextafter`・`Int.gcd`/`lcm`/`div_floor`/`rem_floor`）を追加 | D1・D2 |
-| 機能 | [NC02](NC02-tensor-core-views-and-broadcasting.md) | `Tensor` 基盤を拡張（N 次元可変ビュー `Tensor.Mut`・`borrow_mut`/`update`・負/0 ストライド・64 軸・C/F 順・ブロードキャスト機構・`zeros`〜`meshgrid` 生成・`Eq`/`Display`） | D1・D2 |
-| 言語 | [NC03](NC03-borrowed-arithmetic-operators.md) | **案 C 言語拡張 ①**: 算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Pow`/`Neg`）を非消費の借用契約へ統一し、`Tensor`/`BigInt`/`Complex`/ユーザー型で `a + b` が値を消費しないようにする | D1・D2 |
-| 言語 | [NC04](NC04-generic-index-class-and-slice.md) | **案 C 言語拡張 ②**: 既存の `x[k]` 構文をユーザー型へ開放する汎用 `Index`（Phase 2 で `IndexMut`）クラスと標準スライス記述子モジュール `Slice` を追加 | D1・D2 |
-| 機能 | [NC05](NC05-tensor-shape-indexing-and-masking.md) | `Tensor` の形状操作（`-1` 推論 `reshape`/`squeeze`/`expand_dims`/`flip`/`pad`/`tile`）、結合・分割（`concatenate`/`stack`/`split`）、ファンシーインデキシング・ブールマスク（`mask`/`where_select`/`take`/`nonzero`/`clip`） | 不要 |
+| 機能 | [NC01](_completed/NC01-complex-and-extended-math.md) | opt-in 複素数型 `Complex<'a>` と組み込み `Math`/`Int` の不足関数群（双曲線・`expm1`/`log1p`/`logaddexp`/`fmod`/`floor_div`/`floor_mod`/`ieee_remainder`/`frexp`/`nextafter`・`Int.gcd`/`lcm`/`div_floor`/`rem_floor`）を追加 | D1・D2 |
+| 機能 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) | `Tensor` 基盤を拡張（N 次元可変ビュー `Tensor.Mut`・`borrow_mut`/`update`・負/0 ストライド・64 軸・C/F 順・ブロードキャスト機構・`zeros`〜`meshgrid` 生成・`Eq`/`Display`） | D1・D2 |
+| 言語 | [NC03](_completed/NC03-borrowed-arithmetic-operators.md) | **案 C 言語拡張 ①**: 算術演算子型クラス（`Add`/`Sub`/`Mul`/`Div`/`Rem`/`Pow`/`Neg`）を非消費の借用契約へ統一し、`Tensor`/`BigInt`/`Complex`/ユーザー型で `a + b` が値を消費しないようにする | D1・D2 |
+| 言語 | [NC04](_completed/NC04-generic-index-class-and-slice.md) | **案 C 言語拡張 ②**: 既存の `x[k]` 構文をユーザー型へ開放する汎用 `Index`（Phase 2 で `IndexMut`）クラスと標準スライス記述子モジュール `Slice` を追加 | D1・D2 |
+| 機能 | [NC05](_completed/NC05-tensor-shape-indexing-and-masking.md) | `Tensor` の形状操作（`-1` 推論 `reshape`/`squeeze`/`expand_dims`/`flip`/`pad`/`tile`）、結合・分割（`concatenate`/`stack`/`split`）、ファンシーインデキシング・ブールマスク（`mask`/`where_select`/`take`/`nonzero`/`clip`） | 不要 |
 | 機能 | [NC06](NC06-tensor-ufuncs-and-elementwise.md) | ブロードキャスト対応の要素ごと演算（四則・`floor_divide`/`floor_mod`/`ieee_remainder`・スカラー・ビット・論理・比較 `allclose`・全数学 ufunc）、ゼロ確保 `_into` 版、`NC03` 後の `Tensor` 演算子インスタンス | 不要 |
 | 機能 | [NC07](NC07-tensor-reductions-stats-and-sorting.md) | 軸指定・`keepdims` 対応の還元・統計（`sum`〜`std`・`nan*` 版・`median`/`percentile`/`histogram`/`cov`/`corrcoef`）、累積・差分・補間・畳み込み、軸指定 `sort`/`argsort`/`partition`/`searchsorted`/`unique`/集合演算、NumPy 対応・差分表（`numpy-migration.md`） | 不要 |
 | 機能 | [NC08](NC08-linalg-core-and-einsum.md) | opt-in 線形代数モジュール `Linalg`（Phase 1: バッチ `matmul`・共通 `B` 行結合/`tensordot`/`einsum`、Phase 2: LU/Cholesky/QR/複数右辺 `solve`・`lu_solve`/`cholesky_solve`/`solve_triangular`/`lstsq`/`inv`/`det`/`norm`、Phase 3: SVD/`eigh`/`eig`）。純 Tsuzuri 決定論基準実装 | D1・D2 |
 | 機能 | [NC09](NC09-fft-and-polynomial.md) | opt-in `Fft`（呼び出し内準備共有・不変 `Fft.Plan<'a>`・`i64` モジュラ位相・実測ベースの混合基数 `{2,3,5}` と並列バッチ/ND）と `Polynomial`（べき基底・Chebyshev/Legendre の評価・最小二乗フィット・求根） | D1 |
 | 機能 | [NC10](NC10-random-distributions-and-generators.md) | Phase 1 で常時ロード `Random` に `Pcg64`・`SeedSequence`・全スカラー確率分布（純粋状態引き回し `pcg64_*`）を追加し、Phase 2 で opt-in `RandomTensor` に分離して `Tensor` 一括生成・多変量分布・軸シャッフルを提供 | D1（Phase 2） |
 | 機能 | [NC11](NC11-tensor-codec-and-io.md) | 中立な永続化モジュール `TensorCodec`（純粋 `[ubyte]` 変換: `.npy`/`.npz`/Safetensors/CSV、WASM 動作）と `TensorIO`（ファイル I/O＋非ジェネリック `MappedTensor` と専用借用スライス合成による読み取り専用 `mmap`） | D1・D2 |
-| 性能 | [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) | [W13](W13-extern-ref-mut-and-mutable-buffers.md) の C FFI 可変バッファを `f32`/`i8`/`i16`/`i64u`/`Complex` へ拡張し、外部 BLAS/LAPACK/FFTW へゼロコピー接続する明示バックエンドを整備 | D1・D2 |
+| 性能 | [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) の C FFI 可変バッファを `f32`/`i8`/`i16`/`i64u`/`Complex` へ拡張し、外部 BLAS/LAPACK/FFTW へゼロコピー接続する明示バックエンドを整備 | D1・D2 |
 | 性能 | [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) | x86-64 FMA3 lowering・`f16` SIMD 拡充・計測先行のテンソル SIMD/並列カーネル（`Parallel.map`＋NC15）・加算順序保存タイリング GEMM・段階的ブロック化 Cholesky・GPU `map2`/`reduce`/`matmul` 拡張 | D1・D2（Phase 4） |
 | 連携 | [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) | `export def` のストライドテンソル ABI と、`--emit bindings-py` の `__array_interface__` / Buffer Protocol / DLPack ゼロコピー相互運用 | D1・D2 |
 | 性能 | [NC15](NC15-parallel-borrowed-chunk-input.md) | 共有借用入力をコピーなしで同期並列チャンクへ渡せる組み込み `Parallel.for_each_chunk_with` を追加し、`Matrix.mul_parallel`・2 入力 ufunc・並列 FFT の `Arc` 複製税を解消 | D1 |
@@ -1118,4 +1129,86 @@ graph LR
   NC12 --> NC14
 ```
 
+## 追加チケット（2026-11-25。自然な添字・範囲・演算子）
 
+NumPy の `a[1:-1, 0]`・`a[1:] - a[:-1]`・`a += b` に当たる書き方を、Tsuzuri の範囲の構文と借用の規則の上で自然に書けるようにする設計（HEAD `858a949c`）から、A37・NC16〜NC20 を起票し（その後の委任による決定で A38〜A40・NC21・PM10 を足し）、NC06 を改めた。設計の途中で、NC04 の `Index` が土台の場所を借りない不具合（安全なコードで解放後のメモリを読む）が見つかったので、A37 として先に直す。共通の記録は [GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) にある。
+
+### 利用者が決めた点（D-66）
+
+範囲の意味（D-66a）は、利用者の指定をそのまま採った。
+
+> Slice については、以下のような仕様を期待している
+> - `1..3` : 1 〜 3 (3 を含む) / `1..<3` : 1 〜 2 (3 を含まない) / `1<..3` : 2 〜 3 (1 を含まず、3 を含む)
+> - `..3` : 0 〜 3 (3 を含む) / `..<3` : 0 〜 2 (3 を含まない) / `0..` : 0 〜 N: 最終インデックス (N を含む)
+
+設計の 3 つの問いへの回答:
+
+| 問い | 回答（原文） | 決めたこと |
+| --- | --- | --- |
+| 末尾からの位置は `^1` を最後とする規則（C#）と `^0` を最後とする規則（F#）のどちらか | 「F# と同じ規則 (^0) にしてください。」 | D-66b: `^k` は位置 `n - 1 - k`。`^0` が最後、`..^1` は最後を除く（F# の RFC FS-1076 と同じ） |
+| `..` の意味を新しい edition で変えるために、edition 方針の例外を認めるか | 「認めます。edition 2029 の実装に一気に変えていいです。」 | D-66c: 中間の edition を作らず、1 つの新しい edition でスライスの素の `..` を終端を含む意味に変える。名前は docs/stability.md の命名規則（作成年以上で最新より大きい最小の年）で **2028**（問いは 2 段階の案の 2 段目を 2029 と呼んでいた。続く確認で 2028 に決定） |
+| 今の `t[[Slice…]]` にも `ref` を必須にするか | 「はい、`ref` を必須にしてください。」 | D-66d: 結果が土台を借りる添字は、どの綴りでも `ref` が要る。NC04 はどのリリースにも入っていないので edition を使わない |
+
+基準の例（`xs = [10, 20, 30, 40, 50]`、edition 2028。全行は D-66 と NC17 の仕様 1）: `xs[^0]` は `50`、`ref xs[1..3]` は `[20, 30, 40]`、`ref xs[1..<3]` は `[20, 30]`、`ref xs[1<..3]` は `[30, 40]`、`ref xs[..^1]` は `[10, 20, 30, 40]`、`ref xs[0..5]` はトラップ。
+
+| 種別 | チケット | 概要 | 承認 |
+| --- | --- | --- | --- |
+| 修正 | [A37](A37-index-base-place-borrow.md) | 結果が土台を借りる `Index`（`t[[Slice…]]`・`m[(Slice…, Slice…)]`・借用を返す利用者のインスタンス）の土台を、`Index.index (ref k) (ref x)` と同じく場所の共有借用で下げる。一時値の土台は、インスタンスが土台の中身だけを返すと証明できるとき（std の窓の窓）を除いて `E1013`。手順 5 で、std の型と組み込みの型への `Index`・`IndexMut`・1 引数の算術クラスのインスタンスの orphan 規則（`E1016`、kind `orphan_instance`。NC19・NC20 と 1 つの規則）と、利用者と std の重なりを利用者の位置で報告することを入れる | 不具合の修正は不要。orphan 規則（D4）と重なりの報告の位置（D7）は承認済み（D-66 の委任） |
+| 修正 | [A38](A38-index-evaluation-order.md) | 添字の評価順を 1 つにする（土台、キーの成分を左から右。キーを評価する間は土台に共有の守り。`IndexMut` の `=` は右辺が先）。NC03・NC04 を含む最初のリリースの条件 | 決定（D-66 の委任） |
+| 言語 | [A39](A39-field-exclusive-borrow.md) | レコードのフィールドの経路の排他借用（edition 2027 以降。2026 は今の `E1014`）。NC20 の std の本体と `model.w += g` の前提 | 承認済み（D-66 の委任） |
+| 言語 | [A40](A40-reference-operands.md) | 演算子の被演算子に参照を直接書ける（今の道が `E1003`・`E1005` を報告し、参照先の頭が分かるときだけ）。全 edition | 承認済み（D-66 の委任） |
+| 言語 | [NC16](NC16-index-ref-and-zero-alloc-element-reads.md) | 土台を借りる添字に `ref` を必須にする（ないと `E1042`。`ref t[[…]]` の型は `Tensor.View<'a>`）。借りない添字の `ref` は `E1003`、`Index` の候補が 2 つ以上なら `E1043`。`Tensor` の要素の読み出しを確保 0 回にし、1〜4 軸のタプルのキーを足す | `ref` 必須は承認済み（D-66d）。評価順（D8）は決定（D-66 の委任。A38 が実装）。ほかは既定案 |
+| 言語 | [NC17](NC17-edition-2028-inclusive-range-family.md) | edition 2028 で範囲の構文を一本化する（終端を含む `..`、`..<`、`<..`、`<..<`、`^k`、角括弧の中の刻み、境界のモデル）。2026・2027 は `W1013` と `tsuzuri fix --edition 2028` で移行する。Phase 1 は `i64u` の終端と B3 の不具合の修正。添字の負の整数リテラルに `W1014`（kind `negative_literal_index`） | 承認済み（D-66a〜c）。未決だった 3 つの質問は決定（D-66 の委任。D8・D9・D13） |
+| 言語 | [NC18](NC18-multi-axis-bracket-indexing.md) | 添字の角括弧のカンマ区切りの成分 `t[i, j]`・`ref t[1..^1, ..]` と、範囲外を丸めない厳格なキー `Slice.Sel`（`Slice.Pos`・`Slice.Bound`）。整数の位置と式だけのキーは全 edition、範囲・`^k`・単独 `..` を含むキーは 2028 から | 方向は承認済み（D-66a・d）。評価順（D7）、2028 の受理の時期（D1・D8）、窓の整数の成分の `W1014`（D15）は決定（D-66 の委任）。ほかは既定案 |
+| 言語 | [NC19](NC19-operator-extension-instances.md) | 組み込みの算術クラスに限った 3 引数のインスタンス `Sub<L, R, O>`・`Neg<S, O>`（演算子の構文だけに効く）と 1 つの演算子表。`ref a[1..] - ref a[..^1]`・`2.0 * x + 1.0`・`t + v` を書けるようにする | D1（NC03 D2 の改訂）・D2（1 つの演算子表、orphan 規則は A37 と同じ）・D10 は承認済み（D-66 の委任）。D9 は (i) 却下、(ii) A40 に分けて承認、(iii) `Complex` は NC21 に分けて承認・`BigInt` は却下 |
+| 言語 | [NC20](NC20-compound-assignment-and-mutable-index-views.md) | 複合代入 `+=`・`-=`・`*=`・`/=`・`%=`（組み込み型は `p = p op e` と同じ IR）、組み込みクラス `AddAssign` 系による `Tensor` の確保なしの更新、書き込み窓 `ref mut t[…]`（組み込みクラス `IndexBorrowMut`） | Phase 1 は不要。D1〜D5 は承認済み（D-66 の委任。D2 の std だけの特権は A39 の一般の規則に置き換え）。D13・D14 は決定（D13 の (a) は PM10、(b) は A38。D14 は連鎖した書き込み窓） |
+| 言語 | [NC21](NC21-complex-real-scalar-operators.md) | `Complex` と実数のスカラーの 8 個の OEI（`c * 2.0`・`2.0 - c`・`c / s` など）。`BigInt` と整数の OEI は採らない | 承認済み（D-66 の委任） |
+| 改訂 | [NC06](NC06-tensor-ufuncs-and-elementwise.md) | 演算子は同じ型どうしの `Tensor` だけを残し、NC19・NC20 が呼ぶ非公開のトラップ版カーネル（`*_or_trap`・`*_in_place_or_trap`）、両側のスカラー版、累積のインプレース版を足した。演算子インスタンスの段（手順 3）は A37 の手順 5 の後 | 不要（既存のまま） |
+| 性能 | [PM10](../_perfs/PM10-std-consume-copies.md) | 文書が「複製しない」と書く std の関数（`Tensor.update`・`Tensor.to_array`・`Matrix.set` など）の要素の複製の除去と、A17 の X1 の精密化（A39・NC20 が作る借用の根を含む） | 決定（D-66 の委任） |
+
+### 委任による決定（2026-11-25）
+
+起票の後、利用者は各チケットの承認と未決の問いの決定を委任した。
+
+> 「承認が必要なこと」と「決めていただきたいこと」については、あなたが考えられる最高の選択肢、手法、実装に基づいて決定することを承認します。
+
+決定の全体（19 件の記録の表）は [GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の「委任による決定（2026-11-25）」にある。要点は次のとおり。
+
+- **orphan 規則**: A37・NC19・NC20 で 1 つの規則にし、A37 の手順 5 が入れる。利用者のモジュールのインスタンスでは、振り分けの位置の少なくとも 1 つの頭が、このプログラムで宣言した型でなければならない（`E1016`、kind `orphan_instance`）。利用者と std の重なりは利用者の位置で報告する。
+- **演算子と新しい組み込みクラス**: NC19 の演算子の拡張インスタンス、NC20 の `AddAssign` 系と `IndexBorrowMut` を承認した。NC20 の std だけの特権は採らず、A39（edition 2027 以降のフィールドの排他借用）に置き換えた。参照の被演算子は A40、`Complex` と実数のスカラーは NC21 に分けた。マスクのビット演算子のテンソル版と、`BigInt` と整数の演算子は却下した。
+- **添字の評価順**: 土台、キーの成分を左から右の 1 つの規則にする。A38 が実装する。
+- **edition 2028 の凍結**: リリースを止めない。2028 の差の全体を NC17 の Phase 2 で宣言する。
+- **`xs[-1]` とリリースの数え方**: `W1014` に kind `negative_literal_index` を足す。リリースはコンパイラを利用者に配布する版で、コンパイラが変わらない版は数えない。
+- **`Tensor.update` の複製**: PM10 に起票した。
+
+### 進め方
+
+- **最初に（P0）**: A37（手順 5 の orphan 規則を含む）→ A38 → NC16。3 つとも、NC03・NC04 を含む最初のリリース（コンパイラを同梱する VS Code 拡張 `vsc-v*` を含む）より前に入れる。リリースの数え方は NC17 の仕様 10 で、NC17 の Phase 2 が docs/stability.md に書く。NC16 の手順 1〜3 は A37・A38 と並行してよい。
+- **範囲の構文**: NC17 の Phase 1 はいつでも着手できる。Phase 2 で 2028 の差の全体を宣言し、2028 の拒否と意味の差をすべて入れる。NC18（A38 の後）の 2028 の受理は宣言した差の実装なので、2028 を含むリリースの後に入ってよい（NC17 の D13）。Phase 3 は移行を検証してから。
+- **演算子と複合代入**: NC06（演算子インスタンスの段は A37 の手順 5 の後）→ NC19（A37 の手順 5 の後。A40 を先に入れるのを推奨）→ NC21。NC20 の Phase 1 は独立。A39 と A40 はいつでも着手できる。NC20 の Phase 2 は NC19・A39 の後、Phase 3 は A37・A38・A39・NC16・NC18 の後。
+- **性能**: PM10（`_perfs`）は独立に進められる。
+- orphan 規則は 1 つの規則に決めた（A37 が入れ、NC19・NC20 は振り分けの位置を足す。GUIDE D-66 の委任による決定）。
+
+```mermaid
+graph LR
+  A37 --> A38
+  A37 --> NC16
+  A38 --> NC16
+  A37 --> NC18
+  A38 --> NC18
+  NC16 --> NC18
+  NC17 --> NC18
+  A37 -.-> NC06
+  NC06 --> NC19
+  A37 --> NC19
+  A40 -.-> NC19
+  A40 -.-> NC20
+  NC16 -.-> NC19
+  NC18 -.-> NC19
+  NC19 --> NC21
+  A37 --> NC20
+  A38 --> NC20
+  A39 --> NC20
+  NC18 --> NC20
+  NC19 --> NC20
+```

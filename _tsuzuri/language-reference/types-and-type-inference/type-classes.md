@@ -153,6 +153,8 @@ flowchart TD
 
 `Format` も、このプログラムのレコードと共用体だけが実装できます。印クラスの意味は[制約 と 属性](./constraints.md)にまとめています。
 
+> 既知の不具合: 結果が土台を借りる添字（`t[[Slice.range 1 3]]`、`m[(Slice.range 0 2, Slice.all())]`、参照・関数・region を持つレコードなど借用を運ぶ型を返す利用者の `Index`）の土台に一時値を書くと、検査を通り、窓は解放した後のメモリを読みます。`(mk 100)[[Slice.range 1 3]]` ではなく、`let base = mk 100` と束縛してから `base[[Slice.range 1 3]]` と書いてください。また、`Tensor.Mut` など借用を持つ型に利用者が定義した `Index` の窓は、生きている間も土台への書き込みを止めません。修正は [A37](../../../_features/A37-index-base-place-borrow.md) です。
+
 ## deriving
 
 型宣言の末尾に `deriving (...)` を付けると、同じモジュールへ条件付きインスタンスが生成されます。指定できるのは `Eq`、`Ord`、`Display`、`Hash`、`Default`、`Encode`、`Decode`、`Arbitrary` です。
