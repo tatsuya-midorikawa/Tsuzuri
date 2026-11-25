@@ -83,6 +83,24 @@ impl FunctionEmitter<'_, '_> {
                 | MathPow
                 | MathCbrt
                 | MathHypot
+                | MathSinh
+                | MathCosh
+                | MathTanh
+                | MathAsinh
+                | MathAcosh
+                | MathAtanh
+                | MathExpm1
+                | MathLog1p
+                | MathLogaddexp
+                | MathLogaddexp2
+                | MathSinc
+                | MathDegrees
+                | MathRadians
+                | MathFmod
+                | MathFloorDiv
+                | MathFloorMod
+                | MathIeeeRemainder
+                | MathNextafter
         ) {
             let Type::Binary(bits) = ty else {
                 unreachable!()
@@ -94,6 +112,94 @@ impl FunctionEmitter<'_, '_> {
                 .join(", ");
             return self.value(format!(
                 "call {lowered} @tz_math_{name}_f{bits}({arguments})"
+            ));
+        }
+        if operation == MathLdexp {
+            let Type::Binary(bits) = ty else {
+                unreachable!()
+            };
+            return self.value(format!(
+                "call {lowered} @tz_math_scalbn_f{bits}({lowered} %arg0, i32 %arg1)"
+            ));
+        }
+        if operation == MathModf {
+            let tuple_ty = self.ty(&Type::Tuple(vec![ty.clone(), ty.clone()]));
+            let (bits, raw) = self.math_bits(ty, "%arg0");
+            let mask = (1u128 << (bits - 1)) - 1;
+            let mag = self.value(format!("and i{bits} {raw}, {mask}"));
+            let frac_bits = if bits == 32 { 23 } else { 52 };
+            let inf_bits = mask & !((1u128 << frac_bits) - 1);
+            let is_inf = self.value(format!("icmp eq i{bits} {mag}, {inf_bits}"));
+            let trunc_val = self.math_intrinsic("trunc", ty, &["%arg0"]);
+            let diff = self.value(format!("fsub {lowered} %arg0, {trunc_val}"));
+            let signed_zero = self.math_intrinsic("copysign", ty, &["0.0", "%arg0"]);
+            let frac_signed = self.math_intrinsic("copysign", ty, &[&diff, "%arg0"]);
+            let is_nan = self.value(format!("fcmp uno {lowered} %arg0, %arg0"));
+            let frac_non_nan = self.value(format!(
+                "select i1 {is_inf}, {lowered} {signed_zero}, {lowered} {frac_signed}"
+            ));
+            let frac = self.value(format!(
+                "select i1 {is_nan}, {lowered} %arg0, {lowered} {frac_non_nan}"
+            ));
+            let pair0 = self.value(format!(
+                "insertvalue {tuple_ty} zeroinitializer, {lowered} {frac}, 0"
+            ));
+            return self.value(format!(
+                "insertvalue {tuple_ty} {pair0}, {lowered} {trunc_val}, 1"
+            ));
+        }
+        if operation == MathFrexp {
+            let Type::Binary(bits) = ty else {
+                unreachable!()
+            };
+            let tuple_ty = self.ty(&Type::Tuple(vec![ty.clone(), Type::Integer(32, true)]));
+            let mant = self.value(format!(
+                "call {lowered} @tz_math_frexp_mant_f{bits}({lowered} %arg0)"
+            ));
+            let exp = self.value(format!(
+                "call i32 @tz_math_frexp_exp_f{bits}({lowered} %arg0)"
+            ));
+            let pair0 = self.value(format!(
+                "insertvalue {tuple_ty} zeroinitializer, {lowered} {mant}, 0"
+            ));
+            return self.value(format!("insertvalue {tuple_ty} {pair0}, i32 {exp}, 1"));
+        }
+        if operation == MathSignbit {
+            let (bits, value) = self.math_bits(ty, "%arg0");
+            return self.value(format!("icmp slt i{bits} {value}, 0"));
+        }
+        if operation == MathSign {
+            let one = crate::numeric::float_literal("1.0", ty, Span::default()).unwrap();
+            let neg_one = crate::numeric::float_literal("-1.0", ty, Span::default()).unwrap();
+            if matches!(ty, Type::Binary(32 | 64)) {
+                let is_nan = self.value(format!("fcmp uno {lowered} %arg0, %arg0"));
+                let is_zero = self.value(format!("fcmp oeq {lowered} %arg0, 0.0"));
+                let keep = self.value(format!("or i1 {is_nan}, {is_zero}"));
+                let is_neg = self.value(format!("fcmp olt {lowered} %arg0, 0.0"));
+                let unit = self.value(format!(
+                    "select i1 {is_neg}, {lowered} {neg_one}, {lowered} {one}"
+                ));
+                return self.value(format!(
+                    "select i1 {keep}, {lowered} %arg0, {lowered} {unit}"
+                ));
+            }
+            let zero = crate::numeric::float_literal("0.0", ty, Span::default()).unwrap();
+            let (bits, raw) = self.math_bits(ty, "%arg0");
+            let is_neg = self.value(format!("icmp slt i{bits} {raw}, 0"));
+            let left = self.spill(ty, "%arg0");
+            let right = self.spill(ty, &zero);
+            let ord = self.value(format!(
+                "call i32 @tz_soft_cmp(ptr {left}, ptr {right}, i32 {})",
+                numeric_kind(ty)
+            ));
+            let is_zero = self.value(format!("icmp eq i32 {ord}, 0"));
+            let is_nan = self.value(format!("icmp eq i32 {ord}, 2"));
+            let keep = self.value(format!("or i1 {is_zero}, {is_nan}"));
+            let unit = self.value(format!(
+                "select i1 {is_neg}, {lowered} {neg_one}, {lowered} {one}"
+            ));
+            return self.value(format!(
+                "select i1 {keep}, {lowered} %arg0, {lowered} {unit}"
             ));
         }
         if matches!(operation, MathPi | MathE) {

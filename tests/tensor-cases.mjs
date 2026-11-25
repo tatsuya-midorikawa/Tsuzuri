@@ -174,15 +174,56 @@ function hugeEmpty() {
   return [7n, 8n, 9n, 10n, 1n].reduce(mix, 0n);
 }
 
+function nc02Views() {
+  const rev = [60, 50, 40, 30, 20, 10];
+  let revFold = 0n;
+  for (const x of rev) revFold = mix(revFold, BigInt(x));
+  const br = [1, 2, 3, 1, 2, 3];
+  const bc = [10, 10, 10, 20, 20, 20];
+  let brFold = 0n;
+  for (const x of br) brFold = mix(brFold, BigInt(x));
+  let bcFold = 0n;
+  for (const x of bc) bcFold = mix(bcFold, BigInt(x));
+  return [0n, 1n, revFold, revFold, brFold, bcFold, 12n, 1n].reduce(mix, 0n);
+}
+
+function nc02Mut() {
+  // t0 = [[0,0,0],[0,0,0]] -> fill 2 -> row1 fill 5 -> flip1 write [0,0]=9 -> [[2,2,9],[5,5,5]] -> +1 -> [[3,3,10],[6,6,6]]
+  // step_mut axis 1 step 2 -> cols 0 and 2 doubled -> [[6,3,20],[12,6,12]]
+  const vals = [6, 3, 20, 12, 6, 12];
+  let f = 0n;
+  for (const x of vals) f = mix(f, BigInt(x));
+  return mix(f, 99n);
+}
+
+function nc02Creators() {
+  const foldArr = (arr) => arr.reduce((acc, x) => mix(acc, BigInt(x)), 0n);
+  return [
+    3n,
+    1n,
+    foldArr([1, 0, 1, 1]),
+    foldArr([1, 0, 3, 4]),
+    foldArr([1, 2, 0, 4]),
+    foldArr([5, 6]),
+    foldArr([1, 2, 1, 2]),
+    foldArr([10, 10, 20, 20]),
+    1n,
+    1n,
+  ].reduce(mix, 0n);
+}
+
 export const cases = [
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [2, 2, 2], [1, 5, 1], [4, 3, 2], [2, 1, 6]].map((shape) => ["ops", shape.map(BigInt), ops(...shape)]),
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [4, 3, 2], [1, 5, 2]].map((shape) => ["maps", shape.map(BigInt), maps(...shape)]),
   ["empties", [], empties()],
-  ...[0, 1, 2, 15, 16].map((n) => ["rank_limit", [BigInt(n)], rankLimit(n)]),
+  ...[0, 1, 2, 15, 16, 64].map((n) => ["rank_limit", [BigInt(n)], rankLimit(n)]),
   ...[[2, 2], [2, 3], [3, 2], [4, 5], [5, 4]].map(([rows, cols]) => ["matrices", [BigInt(rows), BigInt(cols)], matrices(rows, cols)]),
   ...[0, 1, 2, 5].map((n) => ["owners", [BigInt(n)], owners(n)]),
   ...[0, 1, 2, 5, 12].map((n) => ["owned_tensor", [BigInt(n)], ownedTensor(n)]),
   ["lookups", [], lookups()],
+  ["nc02_views", [], nc02Views()],
+  ["nc02_mut", [], nc02Mut()],
+  ["nc02_creators", [], nc02Creators()],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.
@@ -194,7 +235,7 @@ export const traps = [
   ...[[2, -1], [-1, 2], [4294967296, 4294967296], [9223372036854775807n, 2]].map((shape) => ["init_trap", shape.map(BigInt)]),
   ...[0n, 5n].map((tail) => ["overflow_trap", [tail]]),
   ["of_array_trap", []], ["reshape_trap", []], ["borrow_trap", []],
-  ...[17n, 40n].map((n) => ["rank_limit", [n]]),
+  ...[65n, 80n].map((n) => ["rank_limit", [n]]),
   ...[[2, 0, 0], [0, 3, 0], [0, 0, 4], [-1, 0, 0], [0, -1, 0], [0, 0, -1]].map((index) => ["at_trap", index.map(BigInt)]),
   ["at_rank_trap", []],
   ...[[0, 0, 1], [0, 1, 3], [0, 1, -1], [3, 1, 2], [1, 1, 1], [0, 2, 2]].map((axes) => ["permute_trap", axes.map(BigInt)]),
@@ -204,6 +245,8 @@ export const traps = [
   ...[[3, 0, 1], [-1, 0, 1], [0, -1, 1], [0, 0, -1], [0, 3, 0], [0, 1, 2], [2, 0, 5], [1, 2, 2]].map((triple) => ["narrow_trap", triple.map(BigInt)]),
   ...[[5, 5], [2, 13], [-1, -24]].map((shape) => ["reshape_view_trap", shape.map(BigInt)]),
   ["reshape_view_strided_trap", []], ["to_matrix_trap", []], ["as_matrix_view_trap", []],
+  ["as_matrix_view_neg_trap", []], ["as_slice_mut_trap", []],
+  ...[[0, 2, 2, -1, 1], [10, 1, 1, 0, 0], [0, 2, 2, maxIndex, 0], [5, 3, 1, -3, 0], [0, 2, 2, -maxIndex, -maxIndex]].map((layout) => ["strided_trap", layout.map(BigInt)]),
   // A matrix window with an element outside its 10 elements never becomes a tensor window, even when the index of its
   // last element is i64::MAX (the sum of the strides must not wrap).
   ...[[0, 3, 4, 4, 1], [10, 1, 1, 0, 0], [maxIndex, 1, 1, 0, 0], [0, 1, 2, 0, maxIndex], [maxIndex - 1n, 1, 2, 0, 1], [0, 2, 1, maxIndex, 0]].map((layout) => ["matrix_window_trap", layout.map(BigInt)]),

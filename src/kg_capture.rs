@@ -393,6 +393,7 @@ fn declare_module(
         effect_attributes: _,
         trusted: _,
         extern_counts: _,
+        c_layouts: _,
         noncanonical: _,
         aliases: _,
         declaration_starts: _,
@@ -799,26 +800,38 @@ fn declare_module(
             continue;
         };
         let class_id = builder.class_id(view.class);
-        let head = ids::type_id_text(view.head, &types, &builder.capture.module_ids);
+        let mut head_parts = vec![ids::type_id_text(
+            view.head,
+            &types,
+            &builder.capture.module_ids,
+        )];
+        for extra in &view.extra_args {
+            head_parts.push(ids::type_id_text(
+                extra,
+                &types,
+                &builder.capture.module_ids,
+            ));
+        }
+        let head = head_parts.join(", ");
         let id = ids::instance_id(&class_id, &head);
         let end = instance
             .methods
             .last()
             .map_or(instance.ty.span.end, |method| method.body.span.end);
+        let mut type_args = vec![docgen::type_text(&instance.ty)];
+        for extra in &instance.extra_args {
+            type_args.push(docgen::type_text(extra));
+        }
+        let type_args = type_args.join(", ");
         let node = builder.node(
             id.clone(),
             "instance",
             module,
+            format!("{}<{type_args}>", instance.class.text),
             format!(
-                "{}<{}>",
-                instance.class.text,
-                docgen::type_text(&instance.ty)
-            ),
-            format!(
-                "instance {}{}<{}>",
+                "instance {}{}<{type_args}>",
                 docgen::constraints_text(&instance.constraints),
-                instance.class.text,
-                docgen::type_text(&instance.ty)
+                instance.class.text
             ),
             instance.class.span,
             joined(instance.class.span, end),

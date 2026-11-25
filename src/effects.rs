@@ -387,20 +387,24 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | MathRoundEven | MathAbs | MathMin | MathMax | MathClamp | MathFma | MathCopysign
         | MathIsNan | MathIsInfinite | MathIsFinite | MathPi | MathE | MathSin | MathCos
         | MathTan | MathAsin | MathAcos | MathAtan | MathAtan2 | MathExp | MathExp2 | MathLog
-        | MathLog2 | MathLog10 | MathPow | MathCbrt | MathHypot | ToFloat | ToInt
-        | StringIsWellFormed | UnicodeTableLength | Default | Hash | HashMix | VecEmpty
-        | SimdSplat | SimdOfLanes2 | SimdOfLanes4 | SimdOfLanes8 | SimdOfLanes16
-        | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt | SimdLe | SimdGt | SimdGe
-        | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity | VecIsEmpty | VecPop
-        | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16 | Utf8CharToU32
-        | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes | StringCompare
-        | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs | IntAbsDiff
-        | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft | IntRotateRight
-        | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd | IntCheckedSub
-        | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg | IntSaturatingAdd
-        | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd | IntWrappingSub
-        | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul | OwnedDrop
-        | OwnedFunction | Not | Ignore => facts(None, false, false, false, false, false, None),
+        | MathLog2 | MathLog10 | MathPow | MathCbrt | MathHypot | MathSinh | MathCosh
+        | MathTanh | MathAsinh | MathAcosh | MathAtanh | MathExpm1 | MathLog1p | MathLogaddexp
+        | MathLogaddexp2 | MathSinc | MathDegrees | MathRadians | MathFmod | MathFloorDiv
+        | MathFloorMod | MathIeeeRemainder | MathModf | MathFrexp | MathLdexp | MathNextafter
+        | MathSign | MathSignbit | ToFloat | ToInt | StringIsWellFormed | UnicodeTableLength
+        | Default | Hash | HashMix | VecEmpty | SimdSplat | SimdOfLanes2 | SimdOfLanes4
+        | SimdOfLanes8 | SimdOfLanes16 | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt
+        | SimdLe | SimdGt | SimdGe | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity
+        | VecIsEmpty | VecPop | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16
+        | Utf8CharToU32 | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes
+        | StringCompare | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs
+        | IntAbsDiff | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft
+        | IntRotateRight | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd
+        | IntCheckedSub | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg
+        | IntSaturatingAdd | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd
+        | IntWrappingSub | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul
+        | IntGcd | IntLcm | IntCheckedGcd | IntCheckedLcm | OwnedDrop | OwnedFunction | Not
+        | Ignore => facts(None, false, false, false, false, false, None),
         #[cfg(test)]
         TestAdd | TestUnsigned | TestWiden => facts(None, false, false, false, false, false, None),
         // B2: the index is checked before the bounds guard, which never fails.
@@ -432,7 +436,9 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | Utf8CharOfU32Unchecked
         | Utf8StringDecodeAt
         | IntClamp
-        | IntWrappingPow => facts(None, false, true, false, false, false, None),
+        | IntWrappingPow
+        | IntDivFloor
+        | IntRemFloor => facts(None, false, true, false, false, false, None),
         // B5
         ArrayUpdate => facts(None, false, true, false, true, false, None),
         // B6. `String.to_code_units` and `String.from_code_units` widen or narrow the units into a
@@ -1313,18 +1319,21 @@ impl<'s, 'a> Scan<'s, 'a> {
     /// copies of its string arguments are made in the caller.
     fn host_call_here(&mut self, callee: usize, span: Span) {
         let function = &self.state.module.functions[callee];
-        if let TypedExprKind::HostCall(import, _) = &function.body.kind
-            && import.callbacks
-        {
-            if takes_string(function) {
-                self.source(Effect::Alloc, span, "string-marshalling");
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind {
+            if import.view.is_some() {
+                self.source(Effect::Trap, span, "extern-view-address");
             }
-            if import
-                .counts
-                .iter()
-                .any(|(_, len)| len.max_length().is_some())
-            {
-                self.source(Effect::Trap, span, "count-bounds");
+            if import.callbacks {
+                if takes_string(function) {
+                    self.source(Effect::Alloc, span, "string-marshalling");
+                }
+                if import
+                    .counts
+                    .iter()
+                    .any(|(_, len)| len.max_length().is_some())
+                {
+                    self.source(Effect::Trap, span, "count-bounds");
+                }
             }
         }
     }
@@ -1811,6 +1820,23 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::HostCall(import, _) => {
+                if import.view.is_some() {
+                    // W24: an extern view does not allocate, deep-copy, or diverge, so it satisfies
+                    // `@no_alloc`, `@no_copy`, and `@terminates` automatically, while remaining an
+                    // `extern` and `trap` source (null/alignment guard) for `pure` and `@no_trap`.
+                    let compiler_vouched = self.state.options.trusted.is_some_and(|bit| {
+                        let guaranteed = crate::syntax::trusted_property_bit("no_alloc")
+                            .unwrap_or(0)
+                            | crate::syntax::trusted_property_bit("no_copy").unwrap_or(0)
+                            | crate::syntax::trusted_property_bit("terminates").unwrap_or(0);
+                        bit & guaranteed != 0
+                    });
+                    if !compiler_vouched {
+                        self.source(Effect::Extern, span, "extern-view");
+                    }
+                    self.source(Effect::Trap, span, "extern-view-address");
+                    return false;
+                }
                 // E15: a person vouched for this property of the extern function.
                 let vouched = self.state.options.trusted.is_some_and(|bit| {
                     self.function
@@ -3405,19 +3431,28 @@ pub fn validate(
     validate_trusted(module, effects, &BTreeMap::new(), attributes)
 }
 
-/// The attributes whose `@trusted` property some extern function of `module` states, and
-/// which forbid `extern`: each needs its own summary (E15, D14).
+/// The attributes whose `@trusted` property some extern function of `module` states (or that the
+/// compiler itself guarantees for an `extern view`: `no_alloc`, `no_copy`, `terminates`), and
+/// which forbid `extern`: each needs its own summary (E15, D14, W24).
 pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
+    let has_view = module.functions.iter().any(|function| {
+        matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some())
+    });
     EffectKind::ALL
         .into_iter()
         .filter(|kind| {
             forbidden(*kind).contains(Effect::Extern)
-                && module.functions.iter().any(|function| {
-                    function
-                        .origin
-                        .trusted
-                        .is_some_and(|bits| bits & trusted_property(*kind) != 0)
-                })
+                && ((has_view
+                    && matches!(
+                        kind,
+                        EffectKind::NoAlloc | EffectKind::NoCopy | EffectKind::Terminates
+                    ))
+                    || module.functions.iter().any(|function| {
+                        function
+                            .origin
+                            .trusted
+                            .is_some_and(|bits| bits & trusted_property(*kind) != 0)
+                    }))
         })
         .collect()
 }
@@ -3800,10 +3835,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal.
-        assert_eq!(Builtin::ALL.len(), 346);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; NC01 added 23 Math and 6 Int builtins.
+        assert_eq!(Builtin::ALL.len(), 375);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 177);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 206);
     }
 
     #[test]
@@ -3827,7 +3862,7 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 56);
+        assert_eq!(count(|facts| facts.trap), 58);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 

@@ -530,6 +530,7 @@ pub fn build_debug_runner(
         .args(compile_args(platform))
         .args(sdk_args(platform)?)
         .args(link_args(platform));
+    let has_os = sources.iter().any(|(name, _)| *name == "os.c");
     let has_net = sources.iter().any(|(name, _)| *name == "net.c");
     let has_gpu = sources.iter().any(|(name, _)| *name == "gpu.c");
     for (name, source) in sources {
@@ -561,8 +562,13 @@ pub fn build_debug_runner(
         if has_gpu && platform.linux() {
             link.arg("-ldl");
         }
-    } else if has_net {
-        link.arg("-lws2_32");
+    } else {
+        if has_net {
+            link.arg("-lws2_32");
+        }
+        if has_os {
+            link.arg("-lbcrypt");
+        }
     }
     links.add_to(&mut link);
     let staged_pdb = temporary.path.join("tests.pdb");
@@ -647,7 +653,7 @@ fn native_runtime_sources(
                 crate::driver::os_message(platform),
             ));
         }
-        sources.push(("os.c", include_str!("runtime/os.c").to_owned()));
+        sources.push(("os.c", crate::driver::os_runtime_source_for(platform)));
     }
     if llvm::uses_net(text) {
         if !platform.net() {
@@ -1044,8 +1050,13 @@ fn compile_native_runner(
     if !platform.windows() {
         clang.arg("-lm");
     }
+    let os_source = if os_runtime {
+        crate::driver::os_runtime_source_for(platform)
+    } else {
+        String::new()
+    };
     for (needed, name, source) in [
-        (os_runtime, "os.c", include_str!("runtime/os.c")),
+        (os_runtime, "os.c", os_source.as_str()),
         (net_runtime, "net.c", include_str!("runtime/net.c")),
         (io_runtime, "io.c", include_str!("runtime/io.c")),
         (gpu_runtime, "gpu.c", gpu_source.as_str()),
@@ -1076,6 +1087,9 @@ fn compile_native_runner(
     }
     if net_runtime && platform.windows() {
         clang.arg("-lws2_32");
+    }
+    if os_runtime && platform.windows() {
+        clang.arg("-lbcrypt");
     }
     links.add_to(&mut clang);
     collect_message(

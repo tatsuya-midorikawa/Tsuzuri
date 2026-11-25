@@ -1,19 +1,44 @@
 /// An owned tensor: `shape` lists the extent of every axis and `data` holds the elements in
-/// row-major (C) order. Invariants: at most 16 axes, no negative extent, the product of the
+/// row-major (C) order. Invariants: at most 64 axes, no negative extent, the product of the
 /// extents is data.length. The product of the non-zero extents must not overflow; a shape with a
 /// 0 extent has no elements. A tensor with no axes holds one element.
 record Tensor<'a> { shape: [i64], data: ['a] }
 
-/// A borrowed strided window onto a row-major buffer: element (i0, i1, ...) is
-/// data[offset + i0 * strides[0] + i1 * strides[1] + ...]. The strides are never negative and every
-/// element lies inside `data`; every constructor checks this and every operation keeps it.
+/// A borrowed strided window onto a buffer: element (i0, i1, ...) is
+/// data[offset + i0 * strides[0] + i1 * strides[1] + ...]. Strides may be negative (reversed axis)
+/// or 0 (broadcast axis), and every element lies inside `data`; every constructor checks this
+/// without overflow and every operation preserves it.
 record View<'a> { r } { data: ref { r } ['a], offset: i64, shape: [i64], strides: [i64] }
 
-// The number of elements of a shape. Traps on more than 16 axes, a negative extent, or when the
+/// A borrowed writable N-dimensional window onto an exclusive buffer. Its layout is always
+/// injective (no two distinct coordinates alias the same slot in `data`), and every element lies
+/// inside `data`. Strides may be negative (reversed axes), never 0 on an axis with extent > 1.
+record Mut<'a> { r } { data: ref mut { r } ['a..], offset: i64, shape: [i64], strides: [i64] }
+
+/// Errors returned by fallible tensor shape and broadcasting operations.
+union Error =
+    | ShapeMismatch of ([i64] * [i64])
+    | IncompatibleBroadcast of ([i64] * [i64])
+    | InvalidAxis of (i64 * i64)
+    | InvalidShape of [i64]
+    | NonContiguous
+    deriving (Eq)
+
+instance Display<Error> {
+    fn display err =
+        match err with
+        | Error.ShapeMismatch (left, right) -> $"shape mismatch: {left} vs {right}"
+        | Error.IncompatibleBroadcast (left, right) -> $"cannot broadcast shapes {left} and {right}"
+        | Error.InvalidAxis (axis, rank) -> $"axis {axis} is out of bounds for rank {rank}"
+        | Error.InvalidShape shape -> $"invalid tensor shape: {shape}"
+        | Error.NonContiguous -> "tensor view is not contiguous"
+}
+
+// The number of elements of a shape. Traps on more than 64 axes, a negative extent, or when the
 // product of the non-zero extents overflows.
 private def volume :: ref [i64] -> i64
 fn volume shape =
-    assert (shape.length <= 16)
+    assert (shape.length <= 64)
     let mut empty = false
     let mut count = 1
     for axis in 0i64 ..= (shape.length - 1) do
@@ -24,6 +49,56 @@ fn volume shape =
             count = count * shape[axis]
     if empty then 0 else count
 
+private def try_volume :: ref [i64] -> Maybe<i64>
+fn try_volume shape =
+    if shape.length > 64 then Maybe.None
+    else
+        let mut ok = true
+        let mut empty = false
+        let mut count = 1
+        for axis in 0i64 ..= (shape.length - 1) do
+            if shape[axis] < 0 then ok = false
+            elif shape[axis] == 0 then empty = true
+            elif ok then
+                if count > 9223372036854775807 / shape[axis] then ok = false
+                else count = count * shape[axis]
+        if ok then Maybe.Some (if empty then 0 else count)
+        else Maybe.None
+
+private def check_strided_bounds :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> unit
+fn check_strided_bounds offset shape strides data_len =
+    assert (shape.length == strides.length && data_len >= 0)
+    let total = volume shape
+    if total == 0 then
+        assert (offset >= 0)
+    else
+        assert (offset >= 0 && offset < data_len)
+        let mut min_idx = offset
+        let mut max_idx = offset
+        for axis in 0i64 ..= (shape.length - 1) do
+            let span = shape[axis] - 1
+            let delta =
+                match Int.checked_mul span strides[axis] with
+                | Maybe.Some d -> d
+                | Maybe.None ->
+                    assert false
+                    0
+            if delta < 0 then
+                min_idx =
+                    match Int.checked_add min_idx delta with
+                    | Maybe.Some v -> v
+                    | Maybe.None ->
+                        assert false
+                        0
+            else
+                max_idx =
+                    match Int.checked_add max_idx delta with
+                    | Maybe.Some v -> v
+                    | Maybe.None ->
+                        assert false
+                        0
+        assert (min_idx >= 0 && max_idx < data_len)
+
 private def stride_of :: ref [i64] -> own i64 -> i64
 fn stride_of shape axis =
     let mut stride = 1
@@ -32,6 +107,21 @@ fn stride_of shape axis =
 
 private def dense_strides :: ref [i64] -> [i64]
 fn dense_strides shape = new [i64](shape.length, \axis -> stride_of shape axis)
+
+/// Computes column-major (Fortran-order) strides for `shape`.
+///
+/// ```tsuzuri run=[1,%202,%206]
+/// Tensor.fortran_strides [2, 3, 4]
+/// ```
+def fortran_strides :: ref [i64] -> [i64]
+fn fortran_strides shape =
+    let _ = volume shape
+    let mut out = new [i64](shape.length, \_ -> 1)
+    let mut stride = 1
+    for axis in 0i64 ..= (shape.length - 1) do
+        Array.write axis stride (ref mut out)
+        stride = stride * shape[axis]
+    out
 
 /// Takes a row-major array without copying; traps unless its length is the product of the shape.
 ///
@@ -376,7 +466,8 @@ fn map transform view =
         let packed = to_tensor view
         Tensor { shape: Array.copy (ref packed.shape), data: Array.map_owned transform (ref packed.data) }
 
-/// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2.
+/// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2 and both
+/// strides are non-negative (materialize negative-stride views with `to_tensor` first).
 ///
 /// ```tsuzuri run=2x3%205
 /// let t = Tensor.init [2, 3] (\i -> i)
@@ -402,3 +493,2409 @@ fn of_matrix_view window =
     let shape = [MatrixView.rows window, MatrixView.cols window]
     let strides = [MatrixView.row_stride window, MatrixView.col_stride window]
     View { data: MatrixView.data window, offset: MatrixView.offset window, shape: shape, strides: strides }
+
+/// Borrows a slice with explicit `offset`, `shape`, and `strides` (positive, zero, or negative).
+/// Traps if `shape.length > 64`, `shape.length != strides.length`, any extent is negative,
+/// stride arithmetic overflows `i64`, or any reachable element lies outside `data`.
+///
+/// ```tsuzuri run=[4,%203,%202,%201]
+/// let data = [1, 2, 3, 4]
+/// let rev = Tensor.strided 3 [4] [-1] (ref data)
+/// Tensor.to_array (Tensor.to_tensor (ref rev))
+/// ```
+def strided { r } :: own i64 -> own [i64] -> own [i64] -> ref { r } ['a] -> View<'a> { r }
+fn strided offset shape strides data =
+    check_strided_bounds offset (ref shape) (ref strides) data.length
+    View { data: data, offset: offset, shape: shape, strides: strides }
+
+/// Alias of `is_contiguous`: whether the elements are one run of `data` in row-major (C) order.
+///
+/// ```tsuzuri run=true%20false
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// $"{Tensor.is_c_contiguous v} {Tensor.is_c_contiguous (Tensor.permute [1, 0] v)}"
+/// ```
+def is_c_contiguous :: ref View<'a> -> bool
+fn is_c_contiguous view = is_contiguous view
+
+/// Whether the elements are one run of `data` in column-major (Fortran) order (an empty window is contiguous).
+///
+/// ```tsuzuri run=false%20true
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// $"{Tensor.is_f_contiguous v} {Tensor.is_f_contiguous (Tensor.permute [1, 0] v)}"
+/// ```
+def is_f_contiguous :: ref View<'a> -> bool
+fn is_f_contiguous view =
+    let mut expected = 1
+    let mut dense = true
+    for axis in 0i64 ..= (view.shape.length - 1) do
+        if view.shape[axis] != 1 && view.strides[axis] != expected then dense = false
+        expected = expected * view.shape[axis]
+    dense || volume (ref view.shape) == 0
+
+/// Copies the elements of a window into a new C-contiguous tensor (alias of `to_tensor`).
+///
+/// ```tsuzuri run=[0,%203,%201,%204,%202,%205]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view t
+/// Tensor.to_array (Tensor.as_contiguous (Tensor.permute [1, 0] v))
+/// ```
+def as_contiguous :: Copy<'a> => ref View<'a> -> Tensor<'a>
+fn as_contiguous view = to_tensor view
+
+// Writes the elements of a view in column-major (Fortran) order into `out`.
+private def rec gather_fortran :: Copy<'a> => ref ['a] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> ref mut ['a..] -> own i64 -> i64
+fn rec gather_fortran data shape strides axis offset out position =
+    let mut next = position
+    if axis == 0 then
+        for step in 0i64 ..= (shape[0] - 1) do
+            Array.write next data[offset + step * strides[0]] out
+            next = next + 1
+    else
+        for step in 0i64 ..= (shape[axis] - 1) do
+            next = gather_fortran data shape strides (axis - 1) (offset + step * strides[axis]) out next
+    next
+
+/// Packs the elements of a window into a flat column-major (Fortran-order) array.
+/// Pair with `Tensor.fortran_strides` and `Tensor.strided` to obtain an F-contiguous `View`.
+///
+/// ```tsuzuri run=[0,%203,%201,%204,%202,%205]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// Tensor.as_fortran (Tensor.view t)
+/// ```
+def as_fortran :: Copy<'a> => ref View<'a> -> ['a]
+fn as_fortran view =
+    let total = volume (ref view.shape)
+    if total == 0 then Array.init 0 (\_ -> view.data[0])
+    elif is_f_contiguous view then Array.sub view.offset total view.data
+    elif view.shape.length == 0 then [view.data[view.offset]]
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let written = gather_fortran view.data (ref view.shape) (ref view.strides) (view.shape.length - 1) view.offset (ref mut out) 0
+        assert (written == total)
+        out
+
+/// Explicitly duplicates an owned tensor.
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let copy = Tensor.clone (ref t)
+/// Tensor.to_array copy
+/// ```
+def clone :: Copy<'a> => ref Tensor<'a> -> Tensor<'a>
+fn clone tensor = Tensor { shape: Array.copy (ref tensor.shape), data: Array.copy (ref tensor.data) }
+
+/// Explicitly copies a window into a new owned contiguous tensor (alias of `to_tensor`).
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.clone_view (Tensor.view t))
+/// ```
+def clone_view :: Copy<'a> => ref View<'a> -> Tensor<'a>
+fn clone_view view = to_tensor view
+
+/// Converts every element of a window using `convert` into a new contiguous tensor.
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// let t = Tensor.of_array [3] [1, 2, 3]
+/// let f = Tensor.astype (\x -> x as f64) (Tensor.view t)
+/// Tensor.to_array f
+/// ```
+def astype :: (Copy<'a>, Copy<'b>) => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
+fn astype convert view = map convert view
+
+// ---------------------------------------------------------------------------
+// Writable N-dimensional views (`Tensor.Mut`)
+// ---------------------------------------------------------------------------
+
+private def offset_of_mut :: ref Mut<'a> -> ref [i64] -> i64
+fn offset_of_mut view index =
+    assert (index.length == view.shape.length)
+    let mut offset = view.offset
+    for axis in 0i64 ..= (index.length - 1) do
+        assert (index[axis] >= 0 && index[axis] < view.shape[axis])
+        offset = offset + index[axis] * view.strides[axis]
+    offset
+
+/// Takes an exclusive row-major array as a writable N-dimensional window; traps unless
+/// `data.length == volume shape`.
+///
+/// ```tsuzuri run=[0,%200,%207,%200]
+/// let mut data = [0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// Tensor.write [1, 0] 7 (ref mut m)
+/// $"{data}"
+/// ```
+def borrow_mut { r } :: own [i64] -> ref mut { r } ['a..] -> Mut<'a> { r }
+fn borrow_mut shape data =
+    assert (data.length == volume (ref shape))
+    let strides = dense_strides (ref shape)
+    Mut { data: data, offset: 0, shape: shape, strides: strides }
+
+/// Temporarily exposes an owned tensor's buffer as a writable `Mut` window, runs `writer`, and
+/// returns the updated tensor without copying.
+///
+/// ```tsuzuri run=[0,%200,%209,%200]
+/// let t = Tensor.zeros [2, 2]
+/// let t2 = Tensor.update (\m -> Tensor.write [1, 0] 9 m) t
+/// Tensor.to_array t2
+/// ```
+def update :: own (ref mut Mut<'a> -> unit) -> own Tensor<'a> -> Tensor<'a>
+fn update writer tensor =
+    let shape = tensor.shape
+    let mut data = tensor.data
+    let mut view = borrow_mut (Array.copy (ref shape)) (ref mut data)
+    writer (ref mut view)
+    Tensor { shape: shape, data: data }
+
+/// Borrows a writable window as a read-only `View` until the next write.
+///
+/// ```tsuzuri run=18
+/// let mut data = [1, 2, 3, 4]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// Tensor.write [0, 0] 9 (ref mut m)
+/// let v = Tensor.freeze (ref m)
+/// Tensor.fold (\acc x -> acc + x) 0 (ref v)
+/// ```
+def freeze { r } :: ref { r } Mut<'a> { r } -> View<'a> { r }
+fn freeze view =
+    View {
+        data: ref view.data[0 ..],
+        offset: view.offset,
+        shape: Array.copy (ref view.shape),
+        strides: Array.copy (ref view.strides)
+    }
+
+/// Whether a writable window is one contiguous C-order run of its backing slice.
+///
+/// ```tsuzuri run=true%20false
+/// let mut data = [1, 2, 3, 4, 5, 6]
+/// let mut m = Tensor.borrow_mut [2, 3] (ref mut data)
+/// let c1 = Tensor.is_contiguous_mut (ref m)
+/// let mut p = Tensor.permute_mut [1, 0] (ref mut m)
+/// let c2 = Tensor.is_contiguous_mut (ref p)
+/// $"{c1} {c2}"
+/// ```
+def is_contiguous_mut { r } :: ref Mut<'a> { r } -> bool
+fn is_contiguous_mut view =
+    let mut expected = 1
+    let mut dense = true
+    let mut axis = view.shape.length
+    while axis > 0 do
+        axis = axis - 1
+        if view.shape[axis] != 1 && view.strides[axis] != expected then dense = false
+        expected = expected * view.shape[axis]
+    dense || volume (ref view.shape) == 0
+
+/// Lends a contiguous writable window as an exclusive flat slice; traps unless
+/// `is_contiguous_mut view` holds.
+///
+/// ```tsuzuri run=[10,%202,%203,%204]
+/// let mut data = [1, 2, 3, 4]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// let s = Tensor.as_slice_mut (ref mut m)
+/// Array.write 0 10 s
+/// $"{data}"
+/// ```
+def as_slice_mut { r } :: ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]
+fn as_slice_mut view =
+    assert (is_contiguous_mut (ref view))
+    let total = volume (ref view.shape)
+    if total == 0 then ref mut view.data[0 .. 0]
+    else ref mut view.data[view.offset .. view.offset + total]
+
+/// Writes `value` at `index`; traps unless `index` has one entry per axis inside its extent.
+///
+/// ```tsuzuri run=[0,%200,%200,%200,%200,%205]
+/// let mut data = [0, 0, 0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [2, 3] (ref mut data)
+/// Tensor.write [1, 2] 5 (ref mut m)
+/// $"{data}"
+/// ```
+def write { r } :: own [i64] -> own 'a -> ref mut Mut<'a> { r } -> unit
+fn write index value view =
+    let slot = offset_of_mut (ref view) (ref index)
+    Array.write slot value view.data
+
+private def rec fill_axis :: Copy<'a> => ref mut ['a..] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own 'a -> unit
+fn rec fill_axis data shape strides axis offset value =
+    if axis == shape.length - 1 then
+        for step in 0i64 ..= (shape[axis] - 1) do
+            Array.write (offset + step * strides[axis]) value data
+    else
+        for step in 0i64 ..= (shape[axis] - 1) do
+            fill_axis data shape strides (axis + 1) (offset + step * strides[axis]) value
+
+/// Writes `value` to every element of the writable window.
+///
+/// ```tsuzuri run=[3,%203,%203,%203]
+/// let mut data = [0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// Tensor.fill 3 (ref mut m)
+/// $"{data}"
+/// ```
+def fill { r } :: Copy<'a> => own 'a -> ref mut Mut<'a> { r } -> unit
+fn fill value view =
+    let total = volume (ref view.shape)
+    if total > 0 then
+        if view.shape.length == 0 then Array.write view.offset value view.data
+        else
+            let shape = Array.copy (ref view.shape)
+            let strides = Array.copy (ref view.strides)
+            let start = view.offset
+            fill_axis view.data (ref shape) (ref strides) 0 start value
+
+private def rec copy_axis :: Copy<'a> => ref ['a] -> ref [i64] -> own i64 -> ref mut ['a..] -> ref [i64] -> own i64 -> ref [i64] -> own i64 -> unit
+fn rec copy_axis src src_strides src_offset dst dst_strides dst_offset shape axis =
+    if axis == shape.length - 1 then
+        for step in 0i64 ..= (shape[axis] - 1) do
+            let value = src[src_offset + step * src_strides[axis]]
+            Array.write (dst_offset + step * dst_strides[axis]) value dst
+    else
+        for step in 0i64 ..= (shape[axis] - 1) do
+            copy_axis src src_strides (src_offset + step * src_strides[axis]) dst dst_strides (dst_offset + step * dst_strides[axis]) shape (axis + 1)
+
+/// Copies elements from `source` into `target`; traps unless both windows have the same shape.
+///
+/// ```tsuzuri run=[1,%203,%202,%204]
+/// let src = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let sv = Tensor.view (ref src)
+/// let transposed = Tensor.permute [1, 0] (ref sv)
+/// let mut dst_data = [0, 0, 0, 0]
+/// let mut dst = Tensor.borrow_mut [2, 2] (ref mut dst_data)
+/// Tensor.copy_from (ref transposed) (ref mut dst)
+/// $"{dst_data}"
+/// ```
+def copy_from { s r } :: Copy<'a> => ref View<'a> { s } -> ref mut Mut<'a> { r } -> unit
+fn copy_from source target =
+    assert (target.shape.length == source.shape.length)
+    for axis in 0i64 ..= (target.shape.length - 1) do
+        assert (target.shape[axis] == source.shape[axis])
+    let total = volume (ref target.shape)
+    if total > 0 then
+        if target.shape.length == 0 then Array.write target.offset source.data[source.offset] target.data
+        else
+            let shape = Array.copy (ref target.shape)
+            let dst_strides = Array.copy (ref target.strides)
+            let dst_offset = target.offset
+            copy_axis source.data (ref source.strides) source.offset target.data (ref dst_strides) dst_offset (ref shape) 0
+
+private def rec map_in_place_axis :: Copy<'a> => own ('a -> 'a) -> ref mut ['a..] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> unit
+fn rec map_in_place_axis transform data shape strides axis offset =
+    if axis == shape.length - 1 then
+        for step in 0i64 ..= (shape[axis] - 1) do
+            let slot = offset + step * strides[axis]
+            let value = transform data[slot]
+            Array.write slot value data
+    else
+        for step in 0i64 ..= (shape[axis] - 1) do
+            map_in_place_axis transform data shape strides (axis + 1) (offset + step * strides[axis])
+
+/// Applies `transform` to every element of the writable window in place.
+///
+/// ```tsuzuri run=[1,%204,%209,%2016]
+/// let mut data = [1, 2, 3, 4]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// Tensor.map_in_place (\x -> x * x) (ref mut m)
+/// $"{data}"
+/// ```
+def map_in_place { r } :: Copy<'a> => own ('a -> 'a) -> ref mut Mut<'a> { r } -> unit
+fn map_in_place transform view =
+    let total = volume (ref view.shape)
+    if total > 0 then
+        if view.shape.length == 0 then
+            let value = transform view.data[view.offset]
+            Array.write view.offset value view.data
+        else
+            let shape = Array.copy (ref view.shape)
+            let strides = Array.copy (ref view.strides)
+            let start = view.offset
+            map_in_place_axis transform view.data (ref shape) (ref strides) 0 start
+
+/// Reorders the axes of a writable window without copying; traps unless `axes` is a permutation.
+///
+/// ```tsuzuri run=[0,%200,%207,%200,%200,%200]
+/// let mut data = [0, 0, 0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [2, 3] (ref mut data)
+/// let mut p = Tensor.permute_mut [1, 0] (ref mut m)
+/// Tensor.write [2, 0] 7 (ref mut p)
+/// $"{data}"
+/// ```
+def permute_mut { r } :: own [i64] -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn permute_mut axes view =
+    let rank = view.shape.length
+    assert (axes.length == rank)
+    for axis in 0i64 ..= (rank - 1) do
+        assert (axes[axis] >= 0 && axes[axis] < rank)
+        for earlier in 0i64 ..= (axis - 1) do assert (axes[earlier] != axes[axis])
+    let old_shape = ref view.shape
+    let old_strides = ref view.strides
+    let new_shape = new [i64](rank, \axis -> old_shape[axes[axis]])
+    let new_strides = new [i64](rank, \axis -> old_strides[axes[axis]])
+    let start = view.offset
+    Mut { data: ref mut view.data[0 ..], offset: start, shape: new_shape, strides: new_strides }
+
+/// Fixes one axis of a writable window at `position`, removing that axis.
+///
+/// ```tsuzuri run=[0,%200,%200,%205,%205,%205]
+/// let mut data = [0, 0, 0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [2, 3] (ref mut data)
+/// let mut row = Tensor.index_axis_mut 0 1 (ref mut m)
+/// Tensor.fill 5 (ref mut row)
+/// $"{data}"
+/// ```
+def index_axis_mut { r } :: own i64 -> own i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn index_axis_mut axis position view =
+    let rank = view.shape.length
+    assert (axis >= 0 && axis < rank && position >= 0 && position < view.shape[axis])
+    let start = view.offset + position * view.strides[axis]
+    let old_shape = ref view.shape
+    let old_strides = ref view.strides
+    let new_shape = new [i64](rank - 1, \d -> if d < axis then old_shape[d] else old_shape[d + 1])
+    let new_strides = new [i64](rank - 1, \d -> if d < axis then old_strides[d] else old_strides[d + 1])
+    Mut { data: ref mut view.data[0 ..], offset: start, shape: new_shape, strides: new_strides }
+
+/// Keeps `length` positions of `axis` starting at `start` in a writable window.
+///
+/// ```tsuzuri run=[0,%201,%201,%200,%200,%201,%201,%200]
+/// let mut data = new [i64](8, \_ -> 0)
+/// let mut m = Tensor.borrow_mut [2, 4] (ref mut data)
+/// let mut mid = Tensor.narrow_mut 1 1 2 (ref mut m)
+/// Tensor.fill 1 (ref mut mid)
+/// $"{data}"
+/// ```
+def narrow_mut { r } :: own i64 -> own i64 -> own i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn narrow_mut axis start length view =
+    let rank = view.shape.length
+    assert (axis >= 0 && axis < rank && start >= 0 && length >= 0 && start <= view.shape[axis] && length <= view.shape[axis] - start)
+    let new_offset = view.offset + start * view.strides[axis]
+    let old_shape = ref view.shape
+    let new_shape = new [i64](rank, \d -> if d == axis then length else old_shape[d])
+    let new_strides = Array.copy (ref view.strides)
+    Mut { data: ref mut view.data[0 ..], offset: new_offset, shape: new_shape, strides: new_strides }
+
+/// Extracts an N-dimensional box sub-window `[starts[d] .. starts[d] + lengths[d])` from a
+/// writable window.
+///
+/// ```tsuzuri run=[0,%200,%200,%200,%201,%201,%200,%201,%201]
+/// let mut data = new [i64](9, \_ -> 0)
+/// let mut m = Tensor.borrow_mut [3, 3] (ref mut data)
+/// let mut corner = Tensor.sub_mut [1, 1] [2, 2] (ref mut m)
+/// Tensor.fill 1 (ref mut corner)
+/// $"{data}"
+/// ```
+def sub_mut { r } :: own [i64] -> own [i64] -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn sub_mut starts lengths view =
+    let rank = view.shape.length
+    assert (starts.length == rank && lengths.length == rank)
+    let mut new_offset = view.offset
+    for d in 0i64 ..= (rank - 1) do
+        assert (starts[d] >= 0 && lengths[d] >= 0 && starts[d] <= view.shape[d] && lengths[d] <= view.shape[d] - starts[d])
+        new_offset = new_offset + starts[d] * view.strides[d]
+    let new_strides = Array.copy (ref view.strides)
+    Mut { data: ref mut view.data[0 ..], offset: new_offset, shape: lengths, strides: new_strides }
+
+/// Subsamples `axis` of a writable window by a non-zero `step` (negative `step` reverses the axis).
+/// Traps if `axis` is out of bounds or `step == 0`.
+///
+/// ```tsuzuri run=[9,%200,%209,%200,%209]
+/// let mut data = [0, 0, 0, 0, 0]
+/// let mut m = Tensor.borrow_mut [5] (ref mut data)
+/// let mut evens = Tensor.step_mut 0 2 (ref mut m)
+/// Tensor.fill 9 (ref mut evens)
+/// $"{data}"
+/// ```
+def step_mut { r } :: own i64 -> own i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn step_mut axis step view =
+    let rank = view.shape.length
+    assert (axis >= 0 && axis < rank && step != 0)
+    let old_len = view.shape[axis]
+    let old_stride = view.strides[axis]
+    let mut new_offset = view.offset
+    let mut new_len = 0
+    let mut new_stride = old_stride
+    if old_len > 0 then
+        if step > 0 then
+            new_len = (old_len - 1) / step + 1
+            if new_len > 1 then
+                new_stride =
+                    match Int.checked_mul old_stride step with
+                    | Maybe.Some s -> s
+                    | Maybe.None ->
+                        assert false
+                        0
+        else
+            let step_mag = 0i64u - (step as i64u)
+            new_len = (((old_len - 1) as i64u) / step_mag) as i64 + 1
+            new_offset = view.offset + (old_len - 1) * old_stride
+            if new_len > 1 then
+                new_stride =
+                    match Int.checked_mul old_stride step with
+                    | Maybe.Some s -> s
+                    | Maybe.None ->
+                        assert false
+                        0
+    let old_shape = ref view.shape
+    let old_strides = ref view.strides
+    let new_shape = new [i64](rank, \d -> if d == axis then new_len else old_shape[d])
+    let new_strides = new [i64](rank, \d -> if d == axis then new_stride else old_strides[d])
+    Mut { data: ref mut view.data[0 ..], offset: new_offset, shape: new_shape, strides: new_strides }
+
+/// Reverses `axis` of a writable window in O(rank) without copying.
+///
+/// ```tsuzuri run=[3,%202,%201]
+/// let mut data = [0, 0, 0]
+/// let mut m = Tensor.borrow_mut [3] (ref mut data)
+/// let mut rev = Tensor.flip_mut 0 (ref mut m)
+/// Tensor.write [0] 1 (ref mut rev)
+/// Tensor.write [1] 2 (ref mut rev)
+/// Tensor.write [2] 3 (ref mut rev)
+/// $"{data}"
+/// ```
+def flip_mut { r } :: own i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
+fn flip_mut axis view = step_mut axis (-1) view
+
+// ---------------------------------------------------------------------------
+// Broadcasting
+// ---------------------------------------------------------------------------
+
+/// Computes the NumPy-compatible right-aligned broadcast shape of two shapes.
+///
+/// ```tsuzuri run=[2,%203,%204]
+/// match Tensor.broadcast_shape [2, 1, 4] [3, 1] with
+/// | Result.Ok shape -> shape
+/// | Result.Error _ -> []
+/// ```
+def broadcast_shape :: ref [i64] -> ref [i64] -> Result<[i64], Error>
+fn broadcast_shape left right =
+    match try_volume left with
+    | Maybe.None -> Result.Error (Error.InvalidShape (Array.copy left))
+    | Maybe.Some _ ->
+        match try_volume right with
+        | Maybe.None -> Result.Error (Error.InvalidShape (Array.copy right))
+        | Maybe.Some _ ->
+            let rank = if left.length >= right.length then left.length else right.length
+            let mut out = new [i64](rank, \_ -> 1)
+            let mut ok = true
+            for i in 0i64 ..= (rank - 1) do
+                let l_idx = left.length - 1 - i
+                let r_idx = right.length - 1 - i
+                let l_dim = if l_idx >= 0 then left[l_idx] else 1
+                let r_dim = if r_idx >= 0 then right[r_idx] else 1
+                if l_dim == r_dim then Array.write (rank - 1 - i) l_dim (ref mut out)
+                elif l_dim == 1 then Array.write (rank - 1 - i) r_dim (ref mut out)
+                elif r_dim == 1 then Array.write (rank - 1 - i) l_dim (ref mut out)
+                else ok = false
+            if not ok then Result.Error (Error.IncompatibleBroadcast (Array.copy left, Array.copy right))
+            else
+                match try_volume (ref out) with
+                | Maybe.Some _ -> Result.Ok out
+                | Maybe.None -> Result.Error (Error.InvalidShape out)
+
+/// Broadcasts `view` to `target` shape in O(rank) without copying, setting stride 0 on expanded
+/// axes.
+///
+/// ```tsuzuri run=[1,%202,%201,%202]
+/// let t = Tensor.of_array [1, 2] [1, 2]
+/// let v = Tensor.view (ref t)
+/// match Tensor.broadcast_to [2, 2] (ref v) with
+/// | Result.Ok bv -> Tensor.to_array (Tensor.to_tensor (ref bv))
+/// | Result.Error _ -> []
+/// ```
+def broadcast_to :: own [i64] -> ref View<'a> -> Result<View<'a>, Error>
+fn broadcast_to target view =
+    match try_volume (ref target) with
+    | Maybe.None -> Result.Error (Error.InvalidShape target)
+    | Maybe.Some _ ->
+        if target.length < view.shape.length then
+            Result.Error (Error.IncompatibleBroadcast (Array.copy (ref view.shape), target))
+        else
+            let pad = target.length - view.shape.length
+            let mut new_strides = new [i64](target.length, \_ -> 0)
+            let mut ok = true
+            for s in 0i64 ..= (view.shape.length - 1) do
+                let t = pad + s
+                if view.shape[s] == target[t] then
+                    Array.write t view.strides[s] (ref mut new_strides)
+                elif view.shape[s] == 1 then
+                    Array.write t 0 (ref mut new_strides)
+                else
+                    ok = false
+            if not ok then Result.Error (Error.IncompatibleBroadcast (Array.copy (ref view.shape), target))
+            else Result.Ok (View { data: view.data, offset: view.offset, shape: target, strides: new_strides })
+
+/// Broadcasts two views to their common broadcast shape without copying.
+///
+/// ```tsuzuri run=[2,%202]%20[1,%202,%201,%202]%20[10,%2010,%2020,%2020]
+/// let a = Tensor.of_array [1, 2] [1, 2]
+/// let b = Tensor.of_array [2, 1] [10, 20]
+/// let av = Tensor.view (ref a)
+/// let bv = Tensor.view (ref b)
+/// match Tensor.broadcast_pair (ref av) (ref bv) with
+/// | Result.Ok (ba, bb) -> $"{Tensor.shape (ref ba)} {Tensor.to_array (Tensor.to_tensor (ref ba))} {Tensor.to_array (Tensor.to_tensor (ref bb))}"
+/// | Result.Error _ -> "err"
+/// ```
+def broadcast_pair :: ref View<'a> -> ref View<'b> -> Result<(View<'a> * View<'b>), Error>
+fn broadcast_pair left right =
+    match broadcast_shape (ref left.shape) (ref right.shape) with
+    | Result.Error err -> Result.Error err
+    | Result.Ok common ->
+        match broadcast_to (Array.copy (ref common)) left with
+        | Result.Error err -> Result.Error err
+        | Result.Ok bl ->
+            match broadcast_to common right with
+            | Result.Error err -> Result.Error err
+            | Result.Ok br -> Result.Ok (bl, br)
+
+/// Broadcasts an array of views to a single common shape without copying.
+///
+/// ```tsuzuri run=2%20[2,%203]
+/// let a = Tensor.of_array [1, 3] [1, 2, 3]
+/// let b = Tensor.of_array [2, 1] [10, 20]
+/// let views = [Tensor.view (ref a), Tensor.view (ref b)]
+/// match Tensor.broadcast_arrays (ref views) with
+/// | Result.Ok out -> $"{out.length} {Tensor.shape (ref out[0])}"
+/// | Result.Error _ -> "err"
+/// ```
+def broadcast_arrays :: ref [View<'a>] -> Result<[View<'a>], Error>
+fn broadcast_arrays views =
+    if views.length == 0 then
+        Result.Ok (Array.init 0 (\_ -> View { data: views[0].data, offset: 0, shape: [], strides: [] }))
+    else
+        let mut common = Array.copy (ref views[0].shape)
+        let mut err_opt: Maybe<Error> = Maybe.None
+        for i in 1i64 ..= (views.length - 1) do
+            match err_opt with
+            | Maybe.Some _ -> ()
+            | Maybe.None ->
+                match broadcast_shape (ref common) (ref views[i].shape) with
+                | Result.Ok next -> common = next
+                | Result.Error err -> err_opt = Maybe.Some err
+        match err_opt with
+        | Maybe.Some err -> Result.Error err
+        | Maybe.None ->
+            let out = new [View<'a>](views.length, \i ->
+                match broadcast_to (Array.copy (ref common)) (ref views[i]) with
+                | Result.Ok bv -> bv
+                | Result.Error _ ->
+                    assert false
+                    View { data: views[i].data, offset: views[i].offset, shape: Array.copy (ref views[i].shape), strides: Array.copy (ref views[i].strides) })
+            Result.Ok out
+
+// ---------------------------------------------------------------------------
+// Creation APIs
+// ---------------------------------------------------------------------------
+
+/// Creates a tensor filled with `Default.default()`.
+///
+/// ```tsuzuri run=[0,%200,%200,%200]
+/// let t: Tensor<i64> = Tensor.zeros [2, 2]
+/// Tensor.to_array t
+/// ```
+def zeros :: Default<'a> => own [i64] -> Tensor<'a>
+fn zeros shape = init shape (\_ -> Default.default())
+
+/// Creates a numeric tensor filled with `1`.
+///
+/// ```tsuzuri run=[1,%201,%201]
+/// let t: Tensor<i64> = Tensor.ones [3]
+/// Tensor.to_array t
+/// ```
+def ones :: Numeric<'a> => own [i64] -> Tensor<'a>
+fn ones shape = init shape (\_ -> 1 as 'a)
+
+/// Creates a tensor of `shape` filled with `value`.
+///
+/// ```tsuzuri run=[7,%207,%207,%207]
+/// Tensor.to_array (Tensor.full 7 [2, 2])
+/// ```
+def full :: Copy<'a> => own 'a -> own [i64] -> Tensor<'a>
+fn full value shape = init shape (\_ -> value)
+
+/// Creates a zero-filled tensor matching the shape of `view`.
+///
+/// ```tsuzuri run=[2,%203]%20[0,%200,%200,%200,%200,%200]
+/// let src = Tensor.init [2, 3] (\i -> i)
+/// let z: Tensor<i64> = Tensor.zeros_like (Tensor.view src)
+/// let zv = Tensor.view (ref z)
+/// $"{Tensor.shape (ref zv)} {Tensor.as_array (ref z)}"
+/// ```
+def zeros_like :: Default<'a> => ref View<'b> -> Tensor<'a>
+fn zeros_like view = zeros (Array.copy (ref view.shape))
+
+/// Creates a one-filled numeric tensor matching the shape of `view`.
+///
+/// ```tsuzuri run=[1,%201,%201,%201]
+/// let src = Tensor.init [2, 2] (\i -> i)
+/// let o: Tensor<i64> = Tensor.ones_like (Tensor.view src)
+/// Tensor.to_array o
+/// ```
+def ones_like :: Numeric<'a> => ref View<'b> -> Tensor<'a>
+fn ones_like view = ones (Array.copy (ref view.shape))
+
+/// Creates a tensor filled with `value` matching the shape of `view`.
+///
+/// ```tsuzuri run=[9,%209,%209]
+/// let src = Tensor.init [3] (\i -> i)
+/// Tensor.to_array (Tensor.full_like 9 (Tensor.view src))
+/// ```
+def full_like :: Copy<'a> => own 'a -> ref View<'b> -> Tensor<'a>
+fn full_like value view = full value (Array.copy (ref view.shape))
+
+/// Creates a rank-0 scalar tensor holding one element.
+///
+/// ```tsuzuri run=0%2042
+/// let t = Tensor.scalar 42
+/// let v = Tensor.view (ref t)
+/// $"{Tensor.rank (ref v)} {deref (Tensor.at [] (ref v))}"
+/// ```
+def scalar :: own 'a -> Tensor<'a>
+fn scalar value = Tensor { shape: [], data: [value] }
+
+/// Evenly spaced `i64` values in `[start, stop)` separated by `step`; traps when `step == 0`.
+///
+/// ```tsuzuri run=[1,%203,%205,%207]
+/// Tensor.to_array (Tensor.arange_i64 1 9 2)
+/// ```
+def arange_i64 :: own i64 -> own i64 -> own i64 -> Tensor<i64>
+fn arange_i64 start stop step =
+    assert (step != 0)
+    if (step > 0 && stop <= start) || (step < 0 && stop >= start) then
+        Tensor { shape: [0], data: [] }
+    elif step > 0 then
+        let dist = (stop as i64u) - (start as i64u)
+        let s = step as i64u
+        let count_u = (dist - 1i64u) / s + 1i64u
+        assert (count_u <= 9223372036854775807i64u)
+        let count = count_u as i64
+        Tensor { shape: [count], data: new [i64](count, \i -> ((start as i64u) + (i as i64u) * s) as i64) }
+    else
+        let dist = (start as i64u) - (stop as i64u)
+        let s = 0i64u - (step as i64u)
+        let count_u = (dist - 1i64u) / s + 1i64u
+        assert (count_u <= 9223372036854775807i64u)
+        let count = count_u as i64
+        Tensor { shape: [count], data: new [i64](count, \i -> ((start as i64u) - (i as i64u) * s) as i64) }
+
+/// Evenly spaced `f64` values in `[start, stop)` separated by `step`; traps on `step == 0.0`,
+/// non-finite inputs, or overflowing length.
+///
+/// ```tsuzuri run=[0,%200.5,%201,%201.5]
+/// Tensor.to_array (Tensor.arange_f64 0.0 2.0 0.5)
+/// ```
+def arange_f64 :: own f64 -> own f64 -> own f64 -> Tensor<f64>
+fn arange_f64 start stop step =
+    assert (Math.is_finite start && Math.is_finite stop && Math.is_finite step && step != 0.0)
+    if (step > 0.0 && stop <= start) || (step < 0.0 && stop >= start) then
+        Tensor { shape: [0], data: [] }
+    else
+        let span = (stop - start) / step
+        assert (Math.is_finite span && span >= 0.0 && span <= 9007199254740991.0)
+        let count = Math.ceil span as i64
+        Tensor { shape: [count], data: new [f64](count, \i -> start + (i as f64) * step) }
+
+/// Evenly spaced `f32` values in `[start, stop)` separated by `step`; traps on `step == 0.0f32`,
+/// non-finite inputs, or overflowing length.
+///
+/// ```tsuzuri run=[0,%200.5,%201,%201.5]
+/// Tensor.to_array (Tensor.arange_f32 0.0f32 2.0f32 0.5f32)
+/// ```
+def arange_f32 :: own f32 -> own f32 -> own f32 -> Tensor<f32>
+fn arange_f32 start stop step =
+    assert (Math.is_finite start && Math.is_finite stop && Math.is_finite step && step != 0.0f32)
+    if (step > 0.0f32 && stop <= start) || (step < 0.0f32 && stop >= start) then
+        Tensor { shape: [0], data: [] }
+    else
+        let span = ((stop as f64) - (start as f64)) / (step as f64)
+        assert (Math.is_finite span && span >= 0.0 && span <= 9007199254740991.0)
+        let count = Math.ceil span as i64
+        Tensor { shape: [count], data: new [f32](count, \i -> ((start as f64) + (i as f64) * (step as f64)) as f32) }
+
+/// `count` evenly spaced values over the closed interval `[start, stop]`; traps when `count < 0`.
+///
+/// ```tsuzuri run=[0,%200.25,%200.5,%200.75,%201]
+/// Tensor.to_array (Tensor.linspace 0.0 1.0 5)
+/// ```
+def linspace :: (Float<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Copy<'a>) => own 'a -> own 'a -> own i64 -> Tensor<'a>
+fn linspace start stop count =
+    assert (count >= 0)
+    if count == 0 then Tensor { shape: [0], data: Array.init 0 (\_ -> start) }
+    elif count == 1 then Tensor { shape: [1], data: [start] }
+    else
+        let denom = (count - 1) as 'a
+        let diff = stop - start
+        Tensor {
+            shape: [count],
+            data: new ['a](count, \i ->
+                if i == 0 then start
+                elif i == count - 1 then stop
+                else start + diff * ((i as 'a) / denom))
+        }
+
+/// `count` evenly spaced values over the half-open interval `[start, stop)`; traps when `count < 0`.
+///
+/// ```tsuzuri run=[0,%200.25,%200.5,%200.75]
+/// Tensor.to_array (Tensor.linspace_open 0.0 1.0 4)
+/// ```
+def linspace_open :: (Float<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Copy<'a>) => own 'a -> own 'a -> own i64 -> Tensor<'a>
+fn linspace_open start stop count =
+    assert (count >= 0)
+    if count == 0 then Tensor { shape: [0], data: Array.init 0 (\_ -> start) }
+    else
+        let denom = count as 'a
+        let diff = stop - start
+        Tensor { shape: [count], data: new ['a](count, \i -> start + diff * ((i as 'a) / denom)) }
+
+/// `count` values spaced evenly on a log scale: `base ^ linspace(start, stop, count)`.
+///
+/// ```tsuzuri run=[1,%2010,%20100]
+/// Tensor.to_array (Tensor.logspace 0.0 2.0 3 10.0)
+/// ```
+def logspace :: (Elementary<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Copy<'a>) => own 'a -> own 'a -> own i64 -> own 'a -> Tensor<'a>
+fn logspace start stop count base =
+    let exponents = linspace start stop count
+    Tensor {
+        shape: [count],
+        data: new ['a](count, \i -> Math.pow base exponents.data[i])
+    }
+
+/// `count` values spaced evenly on a geometric (multiplicative) scale over `[start, stop]`.
+/// Traps when `count < 0`, either endpoint is zero, or `start` and `stop` have opposite signs.
+///
+/// ```tsuzuri run=true
+/// let g = Tensor.geomspace 1.0 100.0 3
+/// let a = Tensor.as_array (ref g)
+/// a[0] == 1.0 && Math.abs (a[1] - 10.0) < 1.0e-12 && Math.abs (a[2] - 100.0) < 1.0e-12
+/// ```
+def geomspace :: (Elementary<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Neg<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> own i64 -> Tensor<'a>
+fn geomspace start stop count =
+    let zero_v = 0.0 as 'a
+    assert (count >= 0 && start != zero_v && stop != zero_v && ((start > zero_v && stop > zero_v) || (start < zero_v && stop < zero_v)))
+    if count == 0 then Tensor { shape: [0], data: Array.init 0 (\_ -> start) }
+    elif count == 1 then Tensor { shape: [1], data: [start] }
+    else
+        let negative = start < zero_v
+        let log_start = Math.log (Math.abs start)
+        let log_stop = Math.log (Math.abs stop)
+        let denom = (count - 1) as 'a
+        let diff = log_stop - log_start
+        Tensor {
+            shape: [count],
+            data: new ['a](count, \i ->
+                if i == 0 then start
+                elif i == count - 1 then stop
+                else
+                    let mag = Math.exp (log_start + diff * ((i as 'a) / denom))
+                    if negative then -mag else mag)
+        }
+
+/// 2D tensor with `1` on the `k`-th diagonal (`col - row == k`) and `0` elsewhere.
+///
+/// ```tsuzuri run=[0,%201,%200,%200,%200,%201]
+/// let e: Tensor<i64> = Tensor.eye 2 3 1
+/// Tensor.to_array e
+/// ```
+def eye :: Numeric<'a> => own i64 -> own i64 -> own i64 -> Tensor<'a>
+fn eye rows cols k =
+    let total = volume [rows, cols]
+    Tensor {
+        shape: [rows, cols],
+        data: new ['a](total, \index ->
+            let r = index / cols
+            let c = index % cols
+            if c - r == k then 1 as 'a else 0 as 'a)
+    }
+
+/// Square `n x n` identity tensor.
+///
+/// ```tsuzuri run=[1,%200,%200,%201]
+/// let id: Tensor<i64> = Tensor.identity 2
+/// Tensor.to_array id
+/// ```
+def identity :: Numeric<'a> => own i64 -> Tensor<'a>
+fn identity n = eye n n 0
+
+/// Constructs a 2D diagonal tensor from a 1D view placed on the `k`-th diagonal.
+/// Traps unless `rank view == 1`.
+///
+/// ```tsuzuri run=[0,%201,%200,%200,%200,%202,%200,%200,%200]
+/// let v = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.diag 1 (Tensor.view v))
+/// ```
+def diag :: (Default<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn diag k view =
+    assert (view.shape.length == 1)
+    let n = view.shape[0]
+    let shift = if k >= 0 then k else -k
+    assert (n <= 9223372036854775807 - shift)
+    let side = n + shift
+    let total = volume [side, side]
+    let mut out = new ['a](total, \_ -> Default.default())
+    for i in 0i64 ..= (n - 1) do
+        let row = if k >= 0 then i else i + shift
+        let col = if k >= 0 then i + shift else i
+        let val = view.data[view.offset + i * view.strides[0]]
+        Array.write (row * side + col) val (ref mut out)
+    Tensor { shape: [side, side], data: out }
+
+/// Extracts the `k`-th diagonal of a 2D view as a 1D tensor. Traps unless `rank view == 2`.
+///
+/// ```tsuzuri run=[1,%205]
+/// let t = Tensor.of_array [2, 3] [0, 1, 2, 3, 4, 5]
+/// Tensor.to_array (Tensor.diagonal 1 (Tensor.view t))
+/// ```
+def diagonal :: Copy<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn diagonal k view =
+    assert (view.shape.length == 2)
+    let rows = view.shape[0]
+    let cols = view.shape[1]
+    let start_row = if k < 0 then -k else 0
+    let start_col = if k > 0 then k else 0
+    let rem_rows = if start_row < rows then rows - start_row else 0
+    let rem_cols = if start_col < cols then cols - start_col else 0
+    let count = if rem_rows < rem_cols then rem_rows else rem_cols
+    if count == 0 then
+        Tensor { shape: [0], data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let row_s = view.strides[0]
+        let col_s = view.strides[1]
+        Tensor {
+            shape: [count],
+            data: new ['a](count, \i -> view.data[view.offset + (start_row + i) * row_s + (start_col + i) * col_s])
+        }
+
+/// Flattens a view of any rank and places its elements on the `k`-th diagonal of a 2D tensor.
+///
+/// ```tsuzuri run=[1,%200,%200,%202]
+/// let t = Tensor.of_array [1, 2] [1, 2]
+/// Tensor.to_array (Tensor.diag_flat 0 (Tensor.view t))
+/// ```
+def diag_flat :: (Default<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn diag_flat k view =
+    let flat = to_tensor view
+    let flat_1d = reshape [flat.data.length] flat
+    diag k (ref (Tensor.view (ref flat_1d)))
+
+/// 2D tensor with `1` on and below the `k`-th diagonal (`col - row <= k`) and `0` above.
+///
+/// ```tsuzuri run=[1,%200,%201,%201]
+/// let t: Tensor<i64> = Tensor.tri 2 2 0
+/// Tensor.to_array t
+/// ```
+def tri :: Numeric<'a> => own i64 -> own i64 -> own i64 -> Tensor<'a>
+fn tri rows cols k =
+    let total = volume [rows, cols]
+    Tensor {
+        shape: [rows, cols],
+        data: new ['a](total, \index ->
+            let r = index / cols
+            let c = index % cols
+            if c - r <= k then 1 as 'a else 0 as 'a)
+    }
+
+/// Returns a copy with elements above the `k`-th diagonal of the last two axes zeroed.
+/// Traps unless `rank view >= 2`.
+///
+/// ```tsuzuri run=[1,%200,%203,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.tril 0 (Tensor.view t))
+/// ```
+def tril :: (Default<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn tril k view =
+    let rank = view.shape.length
+    assert (rank >= 2)
+    let packed = to_tensor view
+    let rows = packed.shape[rank - 2]
+    let cols = packed.shape[rank - 1]
+    let plane = rows * cols
+    let total = packed.data.length
+    if total == 0 then packed
+    else
+        let mut data = packed.data
+        let mut base = 0
+        while base < total do
+            for r in 0i64 ..= (rows - 1) do
+                for c in 0i64 ..= (cols - 1) do
+                    if c - r > k then Array.write (base + r * cols + c) (Default.default()) (ref mut data)
+            base = base + plane
+        Tensor { shape: packed.shape, data: data }
+
+/// Returns a copy with elements below the `k`-th diagonal of the last two axes zeroed.
+/// Traps unless `rank view >= 2`.
+///
+/// ```tsuzuri run=[1,%202,%200,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.triu 0 (Tensor.view t))
+/// ```
+def triu :: (Default<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn triu k view =
+    let rank = view.shape.length
+    assert (rank >= 2)
+    let packed = to_tensor view
+    let rows = packed.shape[rank - 2]
+    let cols = packed.shape[rank - 1]
+    let plane = rows * cols
+    let total = packed.data.length
+    if total == 0 then packed
+    else
+        let mut data = packed.data
+        let mut base = 0
+        while base < total do
+            for r in 0i64 ..= (rows - 1) do
+                for c in 0i64 ..= (cols - 1) do
+                    if c - r < k then Array.write (base + r * cols + c) (Default.default()) (ref mut data)
+            base = base + plane
+        Tensor { shape: packed.shape, data: data }
+
+/// Returns coordinate grids `(X, Y)` with matrix (`ij`) indexing from two 1D views:
+/// `X` and `Y` both have shape `[x.length, y.length]`, with `X[i, j] = x[i]` and `Y[i, j] = y[j]`.
+///
+/// ```tsuzuri run=[1,%201,%202,%202]%20[10,%2020,%2010,%2020]
+/// let x = Tensor.of_array [2] [1, 2]
+/// let y = Tensor.of_array [2] [10, 20]
+/// let (gx, gy) = Tensor.meshgrid_ij (Tensor.view x) (Tensor.view y)
+/// $"{Tensor.as_array (ref gx)} {Tensor.as_array (ref gy)}"
+/// ```
+def meshgrid_ij :: (Copy<'a>, Copy<'b>) => ref View<'a> -> ref View<'b> -> (Tensor<'a> * Tensor<'b>)
+fn meshgrid_ij xs ys =
+    assert (xs.shape.length == 1 && ys.shape.length == 1)
+    let m = xs.shape[0]
+    let n = ys.shape[0]
+    let total = volume [m, n]
+    let gx =
+        if total == 0 then Tensor { shape: [m, n], data: Array.init 0 (\_ -> xs.data[0]) }
+        else Tensor { shape: [m, n], data: new ['a](total, \idx -> xs.data[xs.offset + (idx / n) * xs.strides[0]]) }
+    let gy =
+        if total == 0 then Tensor { shape: [m, n], data: Array.init 0 (\_ -> ys.data[0]) }
+        else Tensor { shape: [m, n], data: new ['b](total, \idx -> ys.data[ys.offset + (idx % n) * ys.strides[0]]) }
+    (gx, gy)
+
+/// Returns coordinate grids `(X, Y)` with Cartesian (`xy`) indexing from two 1D views:
+/// `X` and `Y` both have shape `[y.length, x.length]`, with `X[j, i] = x[i]` and `Y[j, i] = y[j]`.
+///
+/// ```tsuzuri run=[1,%202,%201,%202]%20[10,%2010,%2020,%2020]
+/// let x = Tensor.of_array [2] [1, 2]
+/// let y = Tensor.of_array [2] [10, 20]
+/// let (gx, gy) = Tensor.meshgrid (Tensor.view x) (Tensor.view y)
+/// $"{Tensor.as_array (ref gx)} {Tensor.as_array (ref gy)}"
+/// ```
+def meshgrid :: (Copy<'a>, Copy<'b>) => ref View<'a> -> ref View<'b> -> (Tensor<'a> * Tensor<'b>)
+fn meshgrid xs ys =
+    assert (xs.shape.length == 1 && ys.shape.length == 1)
+    let m = xs.shape[0]
+    let n = ys.shape[0]
+    let total = volume [n, m]
+    let gx =
+        if total == 0 then Tensor { shape: [n, m], data: Array.init 0 (\_ -> xs.data[0]) }
+        else Tensor { shape: [n, m], data: new ['a](total, \idx -> xs.data[xs.offset + (idx % m) * xs.strides[0]]) }
+    let gy =
+        if total == 0 then Tensor { shape: [n, m], data: Array.init 0 (\_ -> ys.data[0]) }
+        else Tensor { shape: [n, m], data: new ['b](total, \idx -> ys.data[ys.offset + (idx / m) * ys.strides[0]]) }
+    (gx, gy)
+
+// ---------------------------------------------------------------------------
+// Eq and Display instances
+// ---------------------------------------------------------------------------
+
+private def rec tensor_eq :: Eq<'a> => ref Tensor<'a> -> ref Tensor<'a> -> bool
+fn rec tensor_eq left right =
+    if left.shape.length != right.shape.length then false
+    else
+        let mut same = true
+        for axis in 0i64 ..= (left.shape.length - 1) do
+            if left.shape[axis] != right.shape[axis] then same = false
+        if not same then false
+        else
+            for i in 0i64 ..= (left.data.length - 1) do
+                if not (Eq.eq (ref left.data[i]) (ref right.data[i])) then same = false
+            same
+
+instance Eq<'a> => Eq<Tensor<'a>> {
+    fn rec eq left right = tensor_eq left right
+    fn rec ne left right = not (tensor_eq left right)
+}
+
+private def spaces :: own i64 -> string
+fn spaces count =
+    let mut out = ""
+    for _ in 0i64 ..= (count - 1) do out = out + " "
+    out
+
+private def rec format_axis :: Display<'a> => ref ['a] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own bool -> string
+fn rec format_axis data shape strides axis offset summarize =
+    let len = shape[axis]
+    let rank = shape.length
+    if len == 0 then "[]"
+    elif axis == rank - 1 then
+        let mut out = "["
+        if summarize && len > 6 then
+            for i in 0i64 ..= 2 do
+                if i > 0 then out = out + ", "
+                out = out + Display.display (ref data[offset + i * strides[axis]])
+            out = out + ", ..., "
+            for i in (len - 3) ..= (len - 1) do
+                if i > len - 3 then out = out + ", "
+                out = out + Display.display (ref data[offset + i * strides[axis]])
+        else
+            for i in 0i64 ..= (len - 1) do
+                if i > 0 then out = out + ", "
+                out = out + Display.display (ref data[offset + i * strides[axis]])
+        out + "]"
+    else
+        let mut out = "["
+        let indent = spaces (axis + 1)
+        let sep = if rank - axis >= 3 then ",\n\n" + indent else ",\n" + indent
+        if summarize && len > 6 then
+            for i in 0i64 ..= 2 do
+                if i > 0 then out = $"{out}{sep}"
+                out = out + format_axis data shape strides (axis + 1) (offset + i * strides[axis]) summarize
+            out = $"{out}{sep}..."
+            for i in (len - 3) ..= (len - 1) do
+                let part = format_axis data shape strides (axis + 1) (offset + i * strides[axis]) summarize
+                out = $"{out}{sep}{part}"
+        else
+            for i in 0i64 ..= (len - 1) do
+                if i > 0 then out = $"{out}{sep}"
+                out = out + format_axis data shape strides (axis + 1) (offset + i * strides[axis]) summarize
+        out + "]"
+
+private def rec format_strided :: Display<'a> => ref ['a] -> ref [i64] -> ref [i64] -> own i64 -> string
+fn rec format_strided data shape strides offset =
+    let total = volume shape
+    if shape.length == 0 then Display.display (ref data[offset])
+    else format_axis data shape strides 0 offset (total > 1000)
+
+/// Formats a borrowed tensor window with nested brackets and `...` summarization when `count > 1000`.
+///
+/// ```tsuzuri run=[[1,%202],%0A%20[3,%204]]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.format_view (Tensor.view t)
+/// ```
+def format_view :: Display<'a> => ref View<'a> -> string
+fn format_view view = format_strided view.data (ref view.shape) (ref view.strides) view.offset
+
+instance Display<'a> => Display<Tensor<'a>> {
+    fn rec display tensor =
+        let strides = dense_strides (ref tensor.shape)
+        format_strided (ref tensor.data) (ref tensor.shape) (ref strides) 0
+}
+
+instance Display<'a> => Display<View<'a>> {
+    fn rec display view = format_strided view.data (ref view.shape) (ref view.strides) view.offset
+}
+
+private def slice_raw { r } :: own [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> View<'a> { r }
+fn slice_raw axes data offset shape strides =
+    let in_rank = shape.length
+    let mut input_empty = false
+    for d in 0i64 ..= (in_rank - 1) do
+        if shape[d] == 0 then input_empty = true else ()
+    let mut new_offset = if input_empty then 0 else offset
+    let mut out_empty = input_empty
+    let mut out_shape = Vec.empty()
+    let mut out_strides = Vec.empty()
+    let mut in_axis = 0
+    for i in 0i64 ..= (axes.length - 1) do
+        match axes[i] with
+        | Slice.Axis.NewAxis ->
+            Vec.push_mut 1 (ref mut out_shape)
+            Vec.push_mut 0 (ref mut out_strides)
+        | _ ->
+            assert (in_axis < in_rank)
+            let dim = shape[in_axis]
+            let stride = strides[in_axis]
+            match Slice.resolve dim (ref axes[i]) with
+            | Slice.Resolved.Index pos ->
+                if !input_empty then
+                    new_offset = new_offset + pos * stride
+                else ()
+            | Slice.Resolved.Slice (start, len, step) ->
+                if len == 0 then
+                    out_empty = true
+                elif !input_empty then
+                    new_offset = new_offset + start * stride
+                else ()
+                let new_stride =
+                    if input_empty || len <= 1 then
+                        if input_empty then 0 else stride
+                    else
+                        match Int.checked_mul stride step with
+                        | Maybe.Some s -> s
+                        | Maybe.None ->
+                            assert false
+                            0
+                Vec.push_mut len (ref mut out_shape)
+                Vec.push_mut new_stride (ref mut out_strides)
+            | Slice.Resolved.InsertAxis ->
+                Vec.push_mut 1 (ref mut out_shape)
+                Vec.push_mut 0 (ref mut out_strides)
+            in_axis = in_axis + 1
+    while in_axis < in_rank do
+        Vec.push_mut shape[in_axis] (ref mut out_shape)
+        Vec.push_mut (if input_empty then 0 else strides[in_axis]) (ref mut out_strides)
+        in_axis = in_axis + 1
+    let shape_arr = Vec.to_array out_shape
+    assert (shape_arr.length <= 64)
+    if out_empty then
+        let zero_strides = new [i64](shape_arr.length, \_ -> 0)
+        View { data: data, offset: 0, shape: shape_arr, strides: zero_strides }
+    else
+        let strides_arr = Vec.to_array out_strides
+        View { data: data, offset: new_offset, shape: shape_arr, strides: strides_arr }
+
+/// Applies per-axis `Slice.Axis` descriptors to `view` without copying, supporting `All`, `At`,
+/// `Range`, `From`, `To`, `Step` (including negative steps), `rev`, and `NewAxis`. Trailing
+/// unmentioned axes are kept in full.
+///
+/// ```tsuzuri run=[8,%207,%205,%204]
+/// let t = Tensor.init [3, 3] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let sub = Tensor.slice [Slice.step 2 0 (-1), Slice.step 2 0 (-1)] (ref v)
+/// Tensor.to_array (Tensor.to_tensor (ref sub))
+/// ```
+def slice { r } :: own [Slice.Axis] -> ref View<'a> { r } -> View<'a> { r }
+fn slice axes view = slice_raw axes view.data view.offset (ref view.shape) (ref view.strides)
+
+instance Copy<'a> => Index<Tensor<'a>, [i64], 'a> {
+    fn index coords self =
+        let v = view self
+        deref (at (Array.copy coords) (ref v))
+}
+
+instance Copy<'a> => Index<View<'a>, [i64], 'a> {
+    fn index coords self = deref (at (Array.copy coords) self)
+}
+
+instance Index<Tensor<'a>, [Slice.Axis], View<'a>> {
+    fn index axes self =
+        let strides = dense_strides (ref self.shape)
+        slice_raw (Array.copy axes) (ref self.data) 0 (ref self.shape) (ref strides)
+}
+
+instance Index<View<'a>, [Slice.Axis], View<'a>> {
+    fn index axes self = slice (Array.copy axes) self
+}
+
+instance IndexMut<Mut<'a>, [i64], 'a> {
+    fn index_mut coords value self = write (Array.copy coords) value self
+}
+
+// ---------------------------------------------------------------------------
+// NC05: Shape manipulation, concatenation/splitting, masking & fancy indexing
+// ---------------------------------------------------------------------------
+
+/// Padding strategy for `Tensor.pad`.
+union PadMode<'a> =
+    | Constant of 'a
+    | Edge
+    | Reflect
+    | Symmetric
+    | Wrap
+
+/// Normalizes a possibly negative axis index against `rank`; traps unless `-rank <= axis < rank`.
+///
+/// ```tsuzuri run=2
+/// Tensor.normalize_axis (-1) 3
+/// ```
+pure def normalize_axis :: own i64 -> own i64 -> i64
+fn normalize_axis axis rank =
+    let norm = if axis < 0 then rank + axis else axis
+    assert (norm >= 0 && norm < rank)
+    norm
+
+private def resolve_infer_shape :: ref [i64] -> own i64 -> Maybe<[i64]>
+fn resolve_infer_shape spec total =
+    if spec.length > 64 then Maybe.None
+    else
+        let mut infer_pos = -1
+        let mut known = 1
+        let mut has_zero = false
+        let mut ok = true
+        for i in 0i64 ..= (spec.length - 1) do
+            let d = spec[i]
+            if d == (-1) then
+                if infer_pos >= 0 then ok = false
+                else infer_pos = i
+            elif d < 0 then ok = false
+            elif d == 0 then has_zero = true
+            elif ok then
+                if known > 9223372036854775807 / d then ok = false
+                else known = known * d
+        if not ok then Maybe.None
+        elif infer_pos < 0 then
+            let prod = if has_zero then 0 else known
+            if prod == total then Maybe.Some (Array.copy spec) else Maybe.None
+        elif has_zero then
+            if total == 0 then
+                let mut out = Array.copy spec
+                Array.write infer_pos 0 (ref mut out)
+                Maybe.Some out
+            else Maybe.None
+        elif total % known != 0 then Maybe.None
+        else
+            let inferred = total / known
+            let mut out = Array.copy spec
+            Array.write infer_pos inferred (ref mut out)
+            match try_volume (ref out) with
+            | Maybe.Some v -> if v == total then Maybe.Some out else Maybe.None
+            | Maybe.None -> Maybe.None
+
+/// Reshapes an owned tensor without copying, allowing at most one `-1` extent to be inferred from
+/// the element count; traps on multiple `-1`, invalid extents, or mismatched total size.
+///
+/// ```tsuzuri run=[3,%202]
+/// let t = Tensor.reshape_infer [-1, 2] (Tensor.init [2, 3] (\i -> i))
+/// let v = Tensor.view (ref t)
+/// Array.copy (Tensor.shape (ref v))
+/// ```
+def reshape_infer :: own [i64] -> own Tensor<'a> -> Tensor<'a>
+fn reshape_infer spec tensor =
+    match resolve_infer_shape (ref spec) tensor.data.length with
+    | Maybe.Some resolved -> Tensor { shape: resolved, data: tensor.data }
+    | Maybe.None ->
+        assert false
+        tensor
+
+/// Fallible version of `reshape_infer`: returns `Result.Error (Error.InvalidShape spec)` instead
+/// of trapping when `spec` is invalid or incompatible with the element count.
+///
+/// ```tsuzuri run=true%20true
+/// let ok = match Tensor.try_reshape [3, -1] (Tensor.init [2, 3] (\i -> i)) with
+///     | Result.Ok _ -> true
+///     | Result.Error _ -> false
+/// let bad = match Tensor.try_reshape [4, -1] (Tensor.init [2, 3] (\i -> i)) with
+///     | Result.Ok _ -> false
+///     | Result.Error _ -> true
+/// $"{ok} {bad}"
+/// ```
+def try_reshape :: own [i64] -> own Tensor<'a> -> Result<Tensor<'a>, Error>
+fn try_reshape spec tensor =
+    match resolve_infer_shape (ref spec) tensor.data.length with
+    | Maybe.Some resolved -> Result.Ok (Tensor { shape: resolved, data: tensor.data })
+    | Maybe.None -> Result.Error (Error.InvalidShape spec)
+
+/// Reverses all axes of a window without copying (generalized transpose).
+///
+/// ```tsuzuri run=[3,%202]%205
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let tr = Tensor.transpose (ref v)
+/// $"{Tensor.shape (ref tr)} {deref (Tensor.at [2, 1] (ref tr))}"
+/// ```
+def transpose { r } :: ref View<'a> { r } -> View<'a> { r }
+fn transpose view =
+    let rank = view.shape.length
+    let axes = new [i64](rank, \i -> rank - 1 - i)
+    permute axes view
+
+/// Swaps two axes (`axis1`, `axis2`, negative indices supported) without copying.
+///
+/// ```tsuzuri run=[4,%203,%202]
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let s = Tensor.swapaxes 0 (-1) (ref v)
+/// Array.copy (Tensor.shape (ref s))
+/// ```
+def swapaxes { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn swapaxes axis1 axis2 view =
+    let rank = view.shape.length
+    let a = normalize_axis axis1 rank
+    let b = normalize_axis axis2 rank
+    let axes = new [i64](rank, \i -> if i == a then b elif i == b then a else i)
+    permute axes view
+
+/// Moves `source` axis to `destination` position without copying (negative indices supported).
+///
+/// ```tsuzuri run=[3,%204,%202]
+/// let t = Tensor.init [2, 3, 4] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let m = Tensor.moveaxis 0 (-1) (ref v)
+/// Array.copy (Tensor.shape (ref m))
+/// ```
+def moveaxis { r } :: own i64 -> own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn moveaxis source destination view =
+    let rank = view.shape.length
+    let src = normalize_axis source rank
+    let dst = normalize_axis destination rank
+    let mut order = Vec.empty()
+    for i in 0i64 ..= (rank - 1) do
+        if i != src then Vec.push_mut i (ref mut order)
+    let rest = Vec.to_array order
+    let axes = new [i64](rank, \i ->
+        if i < dst then rest[i]
+        elif i == dst then src
+        else rest[i - 1])
+    permute axes view
+
+/// Removes all axes of extent 1 without copying.
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.init [1, 2, 1, 3, 1] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let s = Tensor.squeeze (ref v)
+/// Array.copy (Tensor.shape (ref s))
+/// ```
+def squeeze { r } :: ref View<'a> { r } -> View<'a> { r }
+fn squeeze view =
+    let mut out_shape = Vec.empty()
+    let mut out_strides = Vec.empty()
+    for i in 0i64 ..= (view.shape.length - 1) do
+        if view.shape[i] != 1 then
+            Vec.push_mut view.shape[i] (ref mut out_shape)
+            Vec.push_mut view.strides[i] (ref mut out_strides)
+    View { data: view.data, offset: view.offset, shape: Vec.to_array out_shape, strides: Vec.to_array out_strides }
+
+/// Removes one axis of extent 1 (negative axis supported) without copying; traps if its extent is not 1.
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.init [2, 1, 3] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let s = Tensor.squeeze_axis 1 (ref v)
+/// Array.copy (Tensor.shape (ref s))
+/// ```
+def squeeze_axis { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn squeeze_axis axis view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    assert (view.shape[norm] == 1)
+    index_axis norm 0 view
+
+/// Inserts a length-1, stride-0 axis at `axis` (in `[-(rank+1), rank]`) without copying.
+///
+/// ```tsuzuri run=[2,%201,%203]
+/// let t = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let e = Tensor.expand_dims 1 (ref v)
+/// Array.copy (Tensor.shape (ref e))
+/// ```
+def expand_dims { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn expand_dims axis view =
+    let rank = view.shape.length
+    let new_rank = rank + 1
+    assert (new_rank <= 64)
+    let norm = normalize_axis axis new_rank
+    let old_shape = ref view.shape
+    let old_strides = ref view.strides
+    let new_shape = new [i64](new_rank, \i ->
+        if i < norm then old_shape[i]
+        elif i == norm then 1
+        else old_shape[i - 1])
+    let new_strides = new [i64](new_rank, \i ->
+        if i < norm then old_strides[i]
+        elif i == norm then 0
+        else old_strides[i - 1])
+    View { data: view.data, offset: view.offset, shape: new_shape, strides: new_strides }
+
+/// Ensures a view has at least 1 axis (`[] -> [1]`) without copying.
+///
+/// ```tsuzuri run=[1]
+/// let s = Tensor.scalar 5
+/// let v = Tensor.view (ref s)
+/// let w = Tensor.atleast_1d (ref v)
+/// Array.copy (Tensor.shape (ref w))
+/// ```
+def atleast_1d { r } :: ref View<'a> { r } -> View<'a> { r }
+fn atleast_1d view =
+    if view.shape.length == 0 then
+        View { data: view.data, offset: view.offset, shape: [1], strides: [0] }
+    else
+        View { data: view.data, offset: view.offset, shape: Array.copy (ref view.shape), strides: Array.copy (ref view.strides) }
+
+/// Ensures a view has at least 2 axes (`[] -> [1, 1]`, `[n] -> [1, n]`) without copying.
+///
+/// ```tsuzuri run=[1,%203]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let v = Tensor.view (ref a)
+/// let w = Tensor.atleast_2d (ref v)
+/// Array.copy (Tensor.shape (ref w))
+/// ```
+def atleast_2d { r } :: ref View<'a> { r } -> View<'a> { r }
+fn atleast_2d view =
+    if view.shape.length == 0 then
+        View { data: view.data, offset: view.offset, shape: [1, 1], strides: [0, 0] }
+    elif view.shape.length == 1 then
+        View { data: view.data, offset: view.offset, shape: [1, view.shape[0]], strides: [0, view.strides[0]] }
+    else
+        View { data: view.data, offset: view.offset, shape: Array.copy (ref view.shape), strides: Array.copy (ref view.strides) }
+
+/// Ensures a view has at least 3 axes (`[] -> [1, 1, 1]`, `[n] -> [1, n, 1]`, `[m, n] -> [m, n, 1]`) without copying.
+///
+/// ```tsuzuri run=[2,%203,%201]
+/// let a = Tensor.init [2, 3] (\i -> i)
+/// let v = Tensor.view (ref a)
+/// let w = Tensor.atleast_3d (ref v)
+/// Array.copy (Tensor.shape (ref w))
+/// ```
+def atleast_3d { r } :: ref View<'a> { r } -> View<'a> { r }
+fn atleast_3d view =
+    if view.shape.length == 0 then
+        View { data: view.data, offset: view.offset, shape: [1, 1, 1], strides: [0, 0, 0] }
+    elif view.shape.length == 1 then
+        View { data: view.data, offset: view.offset, shape: [1, view.shape[0], 1], strides: [0, view.strides[0], 0] }
+    elif view.shape.length == 2 then
+        View { data: view.data, offset: view.offset, shape: [view.shape[0], view.shape[1], 1], strides: [view.strides[0], view.strides[1], 0] }
+    else
+        View { data: view.data, offset: view.offset, shape: Array.copy (ref view.shape), strides: Array.copy (ref view.strides) }
+
+/// Reverses one axis (negative axis supported) in O(rank) without copying.
+///
+/// ```tsuzuri run=[3,%204,%201,%202]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.flip_axis 0 (ref v))))
+/// ```
+def flip_axis { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn flip_axis axis view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let dim = view.shape[norm]
+    let old_stride = view.strides[norm]
+    let new_offset = if dim <= 1 then view.offset else view.offset + (dim - 1) * old_stride
+    let new_stride = if dim <= 1 then old_stride else -old_stride
+    let old_strides = ref view.strides
+    let new_strides = new [i64](rank, \d -> if d == norm then new_stride else old_strides[d])
+    View { data: view.data, offset: new_offset, shape: Array.copy (ref view.shape), strides: new_strides }
+
+/// Reverses every axis of a view in O(rank) without copying.
+///
+/// ```tsuzuri run=[4,%203,%202,%201]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.flip (ref v))))
+/// ```
+def flip { r } :: ref View<'a> { r } -> View<'a> { r }
+fn flip view =
+    let rank = view.shape.length
+    let mut new_offset = view.offset
+    let mut new_strides = Array.copy (ref view.strides)
+    for d in 0i64 ..= (rank - 1) do
+        let dim = view.shape[d]
+        if dim > 1 then
+            new_offset = new_offset + (dim - 1) * view.strides[d]
+            Array.write d (-view.strides[d]) (ref mut new_strides)
+    View { data: view.data, offset: new_offset, shape: Array.copy (ref view.shape), strides: new_strides }
+
+/// Reverses axis 1 (left-right flip); traps if `rank < 2`.
+///
+/// ```tsuzuri run=[2,%201,%204,%203]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.fliplr (ref v))))
+/// ```
+def fliplr { r } :: ref View<'a> { r } -> View<'a> { r }
+fn fliplr view =
+    assert (view.shape.length >= 2)
+    flip_axis 1 view
+
+/// Reverses axis 0 (up-down flip); traps if `rank < 1`.
+///
+/// ```tsuzuri run=[3,%204,%201,%202]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.flipud (ref v))))
+/// ```
+def flipud { r } :: ref View<'a> { r } -> View<'a> { r }
+fn flipud view =
+    assert (view.shape.length >= 1)
+    flip_axis 0 view
+
+/// Rotates a view `k` times by 90 degrees counter-clockwise in the plane of axes `(0, 1)` without
+/// copying; traps if `rank < 2`.
+///
+/// ```tsuzuri run=[2,%204,%201,%203]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.rot90 1 (ref v))))
+/// ```
+def rot90 { r } :: own i64 -> ref View<'a> { r } -> View<'a> { r }
+fn rot90 k view =
+    let rank = view.shape.length
+    assert (rank >= 2)
+    let turns = Int.rem_floor k 4
+    let mut new_offset = view.offset
+    let mut new_shape = Array.copy (ref view.shape)
+    let mut new_strides = Array.copy (ref view.strides)
+    match turns with
+    | 1 ->
+        // fliplr then swapaxes 0 1
+        if new_shape[1] > 1 then
+            new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
+            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+        else ()
+        let s0 = new_shape[0]
+        let s1 = new_shape[1]
+        let st0 = new_strides[0]
+        let st1 = new_strides[1]
+        Array.write 0 s1 (ref mut new_shape)
+        Array.write 1 s0 (ref mut new_shape)
+        Array.write 0 st1 (ref mut new_strides)
+        Array.write 1 st0 (ref mut new_strides)
+    | 2 ->
+        if new_shape[0] > 1 then
+            new_offset = new_offset + (new_shape[0] - 1) * new_strides[0]
+            Array.write 0 (-new_strides[0]) (ref mut new_strides)
+        else ()
+        if new_shape[1] > 1 then
+            new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
+            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+        else ()
+    | 3 ->
+        // swapaxes 0 1 then fliplr
+        let s0 = new_shape[0]
+        let s1 = new_shape[1]
+        let st0 = new_strides[0]
+        let st1 = new_strides[1]
+        Array.write 0 s1 (ref mut new_shape)
+        Array.write 1 s0 (ref mut new_shape)
+        Array.write 0 st1 (ref mut new_strides)
+        Array.write 1 st0 (ref mut new_strides)
+        if new_shape[1] > 1 then
+            new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
+            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+        else ()
+    | _ -> ()
+    View { data: view.data, offset: new_offset, shape: new_shape, strides: new_strides }
+
+/// Returns a 1D contiguous view without copying; traps unless `is_contiguous view` holds.
+///
+/// ```tsuzuri run=[0,%201,%202,%203]
+/// let t = Tensor.init [2, 2] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.to_tensor (ref (Tensor.ravel_view (ref v))))
+/// ```
+def ravel_view { r } :: ref View<'a> { r } -> View<'a> { r }
+fn ravel_view view = reshape_view [volume (ref view.shape)] view
+
+/// Copies the elements into a new 1D contiguous tensor.
+///
+/// ```tsuzuri run=[0,%202,%201,%203]
+/// let t = Tensor.init [2, 2] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// Tensor.to_array (Tensor.flatten (ref (Tensor.transpose (ref v))))
+/// ```
+def flatten :: Copy<'a> => ref View<'a> -> Tensor<'a>
+fn flatten view =
+    let packed = to_tensor view
+    reshape [packed.data.length] packed
+
+private def read_at_coords :: Copy<'a> => ref View<'a> -> ref [i64] -> 'a
+fn read_at_coords view coords =
+    let mut slot = view.offset
+    for d in 0i64 ..= (coords.length - 1) do
+        slot = slot + coords[d] * view.strides[d]
+    view.data[slot]
+
+private def unflatten_into :: own i64 -> ref [i64] -> ref mut [i64..] -> unit
+fn unflatten_into flat shape out =
+    let mut rem = flat
+    let mut d = shape.length
+    while d > 0 do
+        d = d - 1
+        let dim = shape[d]
+        Array.write d (rem % dim) out
+        rem = rem / dim
+
+/// Circularly shifts elements along `axis` by `shift` positions (negative axis and negative shift supported).
+///
+/// ```tsuzuri run=[3,%204,%201,%202]
+/// let t = Tensor.of_array [4] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.roll 0 2 (Tensor.view t))
+/// ```
+def roll :: Copy<'a> => own i64 -> own i64 -> ref View<'a> -> Tensor<'a>
+fn roll axis shift view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let total = volume (ref view.shape)
+    if total == 0 then to_tensor view
+    else
+        let dim = view.shape[norm]
+        let s = Int.rem_floor shift dim
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref view.shape) (ref mut coords)
+            let src_pos = Int.rem_floor (coords[norm] - s) dim
+            Array.write norm src_pos (ref mut coords)
+            Array.write flat (read_at_coords view (ref coords)) (ref mut out)
+        Tensor { shape: Array.copy (ref view.shape), data: out }
+
+/// Constructs a tensor by repeating `view` the number of times given by `reps` along each axis.
+///
+/// ```tsuzuri run=[2,%204]%20[1,%202,%201,%202,%201,%202,%201,%202]
+/// let t = Tensor.of_array [2] [1, 2]
+/// let tiled = Tensor.tile [2, 2] (Tensor.view t)
+/// let tv = Tensor.view (ref tiled)
+/// $"{Tensor.shape (ref tv)} {Tensor.as_array (ref tiled)}"
+/// ```
+def tile :: Copy<'a> => own [i64] -> ref View<'a> -> Tensor<'a>
+fn tile reps view =
+    for i in 0i64 ..= (reps.length - 1) do assert (reps[i] >= 0)
+    let rank = if reps.length >= view.shape.length then reps.length else view.shape.length
+    assert (rank <= 64)
+    let pad_v = rank - view.shape.length
+    let pad_r = rank - reps.length
+    let mut out_shape = new [i64](rank, \_ -> 1)
+    for d in 0i64 ..= (rank - 1) do
+        let vd = if d >= pad_v then view.shape[d - pad_v] else 1
+        let rd = if d >= pad_r then reps[d - pad_r] else 1
+        let prod =
+            match Int.checked_mul vd rd with
+            | Maybe.Some p -> p
+            | Maybe.None ->
+                assert false
+                0
+        Array.write d prod (ref mut out_shape)
+    let total = volume (ref out_shape)
+    if total == 0 then Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut out_coords = new [i64](rank, \_ -> 0)
+        let mut src_coords = new [i64](view.shape.length, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut out_coords)
+            for s in 0i64 ..= (view.shape.length - 1) do
+                Array.write s (out_coords[pad_v + s] % view.shape[s]) (ref mut src_coords)
+            Array.write flat (read_at_coords view (ref src_coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+/// Repeats each element along `axis` `repeats` times (traps if `repeats < 0`).
+///
+/// ```tsuzuri run=[1,%201,%202,%202,%203,%203,%204,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.repeat 1 2 (Tensor.view t))
+/// ```
+def repeat :: Copy<'a> => own i64 -> own i64 -> ref View<'a> -> Tensor<'a>
+fn repeat axis repeats view =
+    assert (repeats >= 0)
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let new_dim =
+        match Int.checked_mul view.shape[norm] repeats with
+        | Maybe.Some d -> d
+        | Maybe.None ->
+            assert false
+            0
+    let mut out_shape = Array.copy (ref view.shape)
+    Array.write norm new_dim (ref mut out_shape)
+    let total = volume (ref out_shape)
+    if total == 0 then Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut coords)
+            Array.write norm (coords[norm] / repeats) (ref mut coords)
+            Array.write flat (read_at_coords view (ref coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+private def pad_coord :: own i64 -> own i64 -> own i64 -> i64
+fn pad_coord idx dim kind =
+    // kind: 1 = Edge, 2 = Reflect, 3 = Symmetric, 4 = Wrap
+    assert (dim > 0)
+    if idx >= 0 && idx < dim then idx
+    elif kind == 1 then
+        if idx < 0 then 0 else dim - 1
+    elif kind == 2 then
+        if dim == 1 then 0
+        else
+            let period = 2 * (dim - 1)
+            let p = Int.rem_floor idx period
+            if p < dim then p else period - p
+    elif kind == 3 then
+        let period = 2 * dim
+        let p = Int.rem_floor idx period
+        if p < dim then p else period - 1 - p
+    else Int.rem_floor idx dim
+
+/// Pads every axis `d` with `(before, after)` positions using `mode`.
+///
+/// ```tsuzuri run=[0,%201,%202,%200,%200]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.pad [(1, 2)] (Tensor.PadMode.Constant 0) (Tensor.view t))
+/// ```
+def pad :: Copy<'a> => own [(i64 * i64)] -> own PadMode<'a> -> ref View<'a> -> Tensor<'a>
+fn pad widths mode view =
+    let rank = view.shape.length
+    assert (widths.length == rank)
+    let mut out_shape = new [i64](rank, \_ -> 0)
+    for d in 0i64 ..= (rank - 1) do
+        let (before, after) = widths[d]
+        assert (before >= 0 && after >= 0)
+        let s1 =
+            match Int.checked_add view.shape[d] before with
+            | Maybe.Some v -> v
+            | Maybe.None ->
+                assert false
+                0
+        let s2 =
+            match Int.checked_add s1 after with
+            | Maybe.Some v -> v
+            | Maybe.None ->
+                assert false
+                0
+        Array.write d s2 (ref mut out_shape)
+    let total = volume (ref out_shape)
+    if total == 0 then
+        Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let seed =
+            match mode with
+            | PadMode.Constant fill_val -> fill_val
+            | _ ->
+                assert (volume (ref view.shape) > 0)
+                view.data[view.offset]
+        let kind =
+            match mode with
+            | PadMode.Constant _ -> 0
+            | PadMode.Edge -> 1
+            | PadMode.Reflect -> 2
+            | PadMode.Symmetric -> 3
+            | PadMode.Wrap -> 4
+        let mut out = new ['a](total, \_ -> seed)
+        let mut out_coords = new [i64](rank, \_ -> 0)
+        let mut src_coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut out_coords)
+            let mut inside = true
+            for d in 0i64 ..= (rank - 1) do
+                let (before, _after) = widths[d]
+                let rel = out_coords[d] - before
+                if kind == 0 then
+                    if rel < 0 || rel >= view.shape[d] then inside = false
+                    else Array.write d rel (ref mut src_coords)
+                else
+                    Array.write d (pad_coord rel view.shape[d] kind) (ref mut src_coords)
+            if inside then Array.write flat (read_at_coords view (ref src_coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+// ---------------------------------------------------------------------------
+// Concatenation and splitting
+// ---------------------------------------------------------------------------
+
+/// Joins a non-empty array of views along `axis` (negative axis supported).
+/// Returns `Result.Error` if the input is empty, `axis` is out of bounds, or non-concat axes differ.
+///
+/// ```tsuzuri run=[1,%202,%203,%204,%205,%206]
+/// let a = Tensor.of_array [1, 3] [1, 2, 3]
+/// let b = Tensor.of_array [1, 3] [4, 5, 6]
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// match Tensor.concatenate 0 (ref vs) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def concatenate :: Copy<'a> => own i64 -> ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn concatenate axis views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let rank = views[0].shape.length
+        let norm = if axis < 0 then rank + axis else axis
+        if norm < 0 || norm >= rank then Result.Error (Error.InvalidAxis (axis, rank))
+        else
+            let mut ok = true
+            let mut mismatch_idx = 0
+            let mut concat_dim = 0
+            for i in 0i64 ..= (views.length - 1) do
+                if ok then
+                    if views[i].shape.length != rank then
+                        ok = false
+                        mismatch_idx = i
+                    else
+                        for d in 0i64 ..= (rank - 1) do
+                            if d != norm && views[i].shape[d] != views[0].shape[d] then
+                                ok = false
+                                mismatch_idx = i
+                        if ok then
+                            match Int.checked_add concat_dim views[i].shape[norm] with
+                            | Maybe.Some next -> concat_dim = next
+                            | Maybe.None -> ok = false
+            if not ok then
+                Result.Error (Error.ShapeMismatch (Array.copy (ref views[0].shape), Array.copy (ref views[mismatch_idx].shape)))
+            else
+                let mut out_shape = Array.copy (ref views[0].shape)
+                Array.write norm concat_dim (ref mut out_shape)
+                match try_volume (ref out_shape) with
+                | Maybe.None -> Result.Error (Error.InvalidShape out_shape)
+                | Maybe.Some total ->
+                    if total == 0 then
+                        Result.Ok (Tensor { shape: out_shape, data: Array.init 0 (\_ -> views[0].data[0]) })
+                    else
+                        let mut first_nonempty = 0
+                        while first_nonempty < views.length && volume (ref views[first_nonempty].shape) == 0 do
+                            first_nonempty = first_nonempty + 1
+                        let seed = views[first_nonempty].data[views[first_nonempty].offset]
+                        let mut out = new ['a](total, \_ -> seed)
+                        let out_strides = dense_strides (ref out_shape)
+                        let mut axis_offset = 0
+                        let mut coords = new [i64](rank, \_ -> 0)
+                        for idx in 0i64 ..= (views.length - 1) do
+                            let v_total = volume (ref views[idx].shape)
+                            for flat in 0i64 ..= (v_total - 1) do
+                                unflatten_into flat (ref views[idx].shape) (ref mut coords)
+                                let value = read_at_coords (ref views[idx]) (ref coords)
+                                let mut dst_slot = 0
+                                for d in 0i64 ..= (rank - 1) do
+                                    let pos = if d == norm then coords[d] + axis_offset else coords[d]
+                                    dst_slot = dst_slot + pos * out_strides[d]
+                                Array.write dst_slot value (ref mut out)
+                            axis_offset = axis_offset + views[idx].shape[norm]
+                        Result.Ok (Tensor { shape: out_shape, data: out })
+
+/// Joins views of identical shape along a new `axis` (in `[-(rank+1), rank]`).
+///
+/// ```tsuzuri run=[2,%203]%20[1,%202,%203,%204,%205,%206]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let b = Tensor.of_array [3] [4, 5, 6]
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// match Tensor.stack 0 (ref vs) with
+/// | Result.Ok t ->
+///     let tv = Tensor.view (ref t)
+///     $"{Tensor.shape (ref tv)} {Tensor.as_array (ref t)}"
+/// | Result.Error _ -> "err"
+/// ```
+def stack :: Copy<'a> => own i64 -> ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn stack axis views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let rank = views[0].shape.length
+        let new_rank = rank + 1
+        let norm = if axis < 0 then new_rank + axis else axis
+        if new_rank > 64 then Result.Error (Error.InvalidShape (Array.copy (ref views[0].shape)))
+        elif norm < 0 || norm >= new_rank then Result.Error (Error.InvalidAxis (axis, new_rank))
+        else
+            let expanded = new [View<'a>](views.length, \i -> expand_dims norm (ref views[i]))
+            concatenate norm (ref expanded)
+
+/// Stacks views vertically (row-wise, promoting 0D/1D inputs via `atleast_2d`).
+///
+/// ```tsuzuri run=[2,%202]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [3, 4]
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// let empty: [i64] = []
+/// match Tensor.vstack (ref vs) with
+/// | Result.Ok t ->
+///     let tv = Tensor.view (ref t)
+///     Array.copy (Tensor.shape (ref tv))
+/// | Result.Error _ -> empty
+/// ```
+def vstack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn vstack views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let promoted = new [View<'a>](views.length, \i -> atleast_2d (ref views[i]))
+        concatenate 0 (ref promoted)
+
+/// Stacks views horizontally (column-wise: axis 0 for 1D inputs, axis 1 for >= 2D inputs).
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [3, 4]
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// match Tensor.hstack (ref vs) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def hstack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn hstack views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let promoted = new [View<'a>](views.length, \i -> atleast_1d (ref views[i]))
+        let axis = if promoted[0].shape.length == 1 then 0 else 1
+        concatenate axis (ref promoted)
+
+/// Stacks views depth-wise along axis 2 (promoting inputs via `atleast_3d`).
+///
+/// ```tsuzuri run=[2,%202,%202]
+/// let a = Tensor.init [2, 2] (\i -> i)
+/// let b = Tensor.init [2, 2] (\i -> i + 10)
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// let empty: [i64] = []
+/// match Tensor.dstack (ref vs) with
+/// | Result.Ok t ->
+///     let tv = Tensor.view (ref t)
+///     Array.copy (Tensor.shape (ref tv))
+/// | Result.Error _ -> empty
+/// ```
+def dstack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn dstack views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let promoted = new [View<'a>](views.length, \i -> atleast_3d (ref views[i]))
+        concatenate 2 (ref promoted)
+
+/// Stacks 1D views as columns into a 2D tensor (and joins >= 2D views along axis 1).
+///
+/// ```tsuzuri run=[1,%203,%202,%204]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [3, 4]
+/// let vs = [Tensor.view (ref a), Tensor.view (ref b)]
+/// match Tensor.column_stack (ref vs) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def column_stack :: Copy<'a> => ref [View<'a>] -> Result<Tensor<'a>, Error>
+fn column_stack views =
+    if views.length == 0 then Result.Error (Error.InvalidShape [])
+    else
+        let promoted = new [View<'a>](views.length, \i ->
+            if views[i].shape.length == 0 then
+                View { data: views[i].data, offset: views[i].offset, shape: [1, 1], strides: [0, 0] }
+            elif views[i].shape.length == 1 then
+                View { data: views[i].data, offset: views[i].offset, shape: [views[i].shape[0], 1], strides: [views[i].strides[0], 0] }
+            else
+                View { data: views[i].data, offset: views[i].offset, shape: Array.copy (ref views[i].shape), strides: Array.copy (ref views[i].strides) })
+        concatenate 1 (ref promoted)
+
+/// Splits `view` into `sections` equal zero-copy views along `axis`; traps unless `sections >= 1`
+/// and `shape[axis]` is divisible by `sections`.
+///
+/// ```tsuzuri run=2%20[3,%204]
+/// let t = Tensor.of_array [4] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.split 0 2 (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[1]))}"
+/// ```
+def split :: own i64 -> own i64 -> ref View<'a> -> [View<'a>]
+fn split axis sections view =
+    let norm = normalize_axis axis view.shape.length
+    assert (sections >= 1 && view.shape[norm] % sections == 0)
+    let size = view.shape[norm] / sections
+    new [View<'a>](sections, \i -> narrow norm (i * size) size view)
+
+/// Splits `view` along `axis` at the given sorted split positions, returning `indices.length + 1`
+/// zero-copy views.
+///
+/// ```tsuzuri run=3%20[2,%203]
+/// let t = Tensor.of_array [5] [1, 2, 3, 4, 5]
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.split_at 0 [1, 3] (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[1]))}"
+/// ```
+def split_at :: own i64 -> own [i64] -> ref View<'a> -> [View<'a>]
+fn split_at axis indices view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    let clamp = \pos ->
+        let p = if pos < 0 then dim + pos else pos
+        if p < 0 then 0 elif p > dim then dim else p
+    let count = indices.length + 1
+    new [View<'a>](count, \i ->
+        let start = if i == 0 then 0 else clamp indices[i - 1]
+        let stop = if i == indices.length then dim else clamp indices[i]
+        let len = if stop > start then stop - start else 0
+        narrow norm start len view)
+
+/// Splits `view` into `sections` zero-copy views along `axis`, allowing uneven sizes (the first
+/// `dim % sections` chunks have size `dim / sections + 1`).
+///
+/// ```tsuzuri run=3%20[1,%202]%20[5]
+/// let t = Tensor.of_array [5] [1, 2, 3, 4, 5]
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.array_split 0 3 (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[0]))} {Tensor.to_array (Tensor.to_tensor (ref parts[2]))}"
+/// ```
+def array_split :: own i64 -> own i64 -> ref View<'a> -> [View<'a>]
+fn array_split axis sections view =
+    let norm = normalize_axis axis view.shape.length
+    assert (sections >= 1)
+    let dim = view.shape[norm]
+    let base_size = dim / sections
+    let rem = dim % sections
+    new [View<'a>](sections, \i ->
+        let start = if i < rem then i * (base_size + 1) else rem * (base_size + 1) + (i - rem) * base_size
+        let len = if i < rem then base_size + 1 else base_size
+        narrow norm start len view)
+
+/// Horizontal equal split (axis 0 for 1D, axis 1 for >= 2D).
+///
+/// ```tsuzuri run=2%20[2,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.hsplit 2 (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[1]))}"
+/// ```
+def hsplit :: own i64 -> ref View<'a> -> [View<'a>]
+fn hsplit sections view =
+    assert (view.shape.length >= 1)
+    let axis = if view.shape.length == 1 then 0 else 1
+    split axis sections view
+
+/// Vertical equal split along axis 0; traps if `rank < 2`.
+///
+/// ```tsuzuri run=2%20[3,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.vsplit 2 (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[1]))}"
+/// ```
+def vsplit :: own i64 -> ref View<'a> -> [View<'a>]
+fn vsplit sections view =
+    assert (view.shape.length >= 2)
+    split 0 sections view
+
+/// Depth equal split along axis 2; traps if `rank < 3`.
+///
+/// ```tsuzuri run=2%20[1,%203]
+/// let t = Tensor.init [1, 2, 2] (\i -> i)
+/// let v = Tensor.view (ref t)
+/// let parts = Tensor.dsplit 2 (ref v)
+/// $"{parts.length} {Tensor.to_array (Tensor.to_tensor (ref parts[1]))}"
+/// ```
+def dsplit :: own i64 -> ref View<'a> -> [View<'a>]
+fn dsplit sections view =
+    assert (view.shape.length >= 3)
+    split 2 sections view
+
+// ---------------------------------------------------------------------------
+// Boolean masking, conditional selection, and fancy indexing
+// ---------------------------------------------------------------------------
+
+private def assert_same_shape :: ref [i64] -> ref [i64] -> unit
+fn assert_same_shape left right =
+    assert (left.length == right.length)
+    for d in 0i64 ..= (left.length - 1) do assert (left[d] == right[d])
+
+/// Extracts elements where `cond` is `true` into a 1D tensor in row-major order; traps unless
+/// `cond` and `view` have identical shapes.
+///
+/// ```tsuzuri run=[2,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let m = Tensor.of_array [2, 2] [false, true, false, true]
+/// Tensor.to_array (Tensor.mask (Tensor.view m) (Tensor.view t))
+/// ```
+def mask :: Copy<'a> => ref View<bool> -> ref View<'a> -> Tensor<'a>
+fn mask cond view =
+    assert_same_shape (ref cond.shape) (ref view.shape)
+    let total = volume (ref view.shape)
+    let mut out = Vec.empty()
+    if total > 0 then
+        if view.shape.length == 0 then
+            if cond.data[cond.offset] then Vec.push_mut view.data[view.offset] (ref mut out)
+        else
+            let mut coords = new [i64](view.shape.length, \_ -> 0)
+            for flat in 0i64 ..= (total - 1) do
+                unflatten_into flat (ref view.shape) (ref mut coords)
+                if read_at_coords cond (ref coords) then
+                    Vec.push_mut (read_at_coords view (ref coords)) (ref mut out)
+    let arr = Vec.to_array out
+    Tensor { shape: [arr.length], data: arr }
+
+/// Selects slices along `axis` where `condition[i]` is `true` (stopping at `min(condition.length, dim)`).
+///
+/// ```tsuzuri run=[1,%203,%204,%206]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// Tensor.to_array (Tensor.compress 1 [true, false, true] (Tensor.view t))
+/// ```
+def compress :: Copy<'a> => own i64 -> ref [bool] -> ref View<'a> -> Tensor<'a>
+fn compress axis condition view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let dim = view.shape[norm]
+    let limit = if condition.length < dim then condition.length else dim
+    let mut keep = Vec.empty()
+    for i in 0i64 ..= (limit - 1) do
+        if condition[i] then Vec.push_mut i (ref mut keep)
+    let kept = Vec.to_array keep
+    let mut out_shape = Array.copy (ref view.shape)
+    Array.write norm kept.length (ref mut out_shape)
+    let total = volume (ref out_shape)
+    if total == 0 then Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut coords)
+            Array.write norm kept[coords[norm]] (ref mut coords)
+            Array.write flat (read_at_coords view (ref coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+/// Returns flat row-major indices of elements not equal to `Default.default()`.
+///
+/// ```tsuzuri run=[1,%203]
+/// let t = Tensor.of_array [2, 2] [0, 5, 0, 9]
+/// Tensor.flatnonzero (Tensor.view t)
+/// ```
+def flatnonzero :: (Eq<'a>, Default<'a>) => ref View<'a> -> [i64]
+fn flatnonzero view =
+    let zero_v: 'a = Default.default()
+    let total = volume (ref view.shape)
+    let mut out = Vec.empty()
+    if total > 0 then
+        if view.shape.length == 0 then
+            if not (Eq.eq (ref view.data[view.offset]) (ref zero_v)) then Vec.push_mut 0 (ref mut out)
+        else
+            let mut coords = new [i64](view.shape.length, \_ -> 0)
+            for flat in 0i64 ..= (total - 1) do
+                unflatten_into flat (ref view.shape) (ref mut coords)
+                let mut slot = view.offset
+                for d in 0i64 ..= (coords.length - 1) do slot = slot + coords[d] * view.strides[d]
+                if not (Eq.eq (ref view.data[slot]) (ref zero_v)) then Vec.push_mut flat (ref mut out)
+    Vec.to_array out
+
+/// Returns one coordinate array per axis listing the indices of non-zero elements.
+///
+/// ```tsuzuri run=[[0,%201],%20[1,%201]]
+/// let t = Tensor.of_array [2, 2] [0, 5, 0, 9]
+/// Tensor.nonzero (Tensor.view t)
+/// ```
+def nonzero :: (Eq<'a>, Default<'a>) => ref View<'a> -> [[i64]]
+fn nonzero view =
+    let rank = view.shape.length
+    let flats = flatnonzero view
+    let n = flats.length
+    let shape = ref view.shape
+    let flat_ref = ref flats
+    new [[i64]](rank, \axis ->
+        new [i64](n, \i ->
+            let mut rem = flat_ref[i]
+            let mut d = rank
+            let mut result = 0
+            while d > 0 do
+                d = d - 1
+                let dim = shape[d]
+                if d == axis then result = rem % dim
+                rem = rem / dim
+            result))
+
+/// Returns an `[N, rank]` tensor whose rows are the coordinates of non-zero elements.
+///
+/// ```tsuzuri run=[2,%202]%20[0,%201,%201,%201]
+/// let t = Tensor.of_array [2, 2] [0, 5, 0, 9]
+/// let idx = Tensor.argwhere (Tensor.view t)
+/// let iv = Tensor.view (ref idx)
+/// $"{Tensor.shape (ref iv)} {Tensor.as_array (ref idx)}"
+/// ```
+def argwhere :: (Eq<'a>, Default<'a>) => ref View<'a> -> Tensor<i64>
+fn argwhere view =
+    let rank = view.shape.length
+    let flats = flatnonzero view
+    let n = flats.length
+    let total = volume [n, rank]
+    if total == 0 then Tensor { shape: [n, rank], data: [] }
+    else
+        let mut out = new [i64](total, \_ -> 0)
+        let mut coords = new [i64](rank, \_ -> 0)
+        for i in 0i64 ..= (n - 1) do
+            unflatten_into flats[i] (ref view.shape) (ref mut coords)
+            for d in 0i64 ..= (rank - 1) do
+                Array.write (i * rank + d) coords[d] (ref mut out)
+        Tensor { shape: [n, rank], data: out }
+
+/// Overwrites every element of `target` where `cond` is `true` with `value`; traps if shapes differ.
+///
+/// ```tsuzuri run=[1,%200,%203,%200]
+/// let mut data = [1, 2, 3, 4]
+/// let cond = Tensor.of_array [2, 2] [false, true, false, true]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// Tensor.put_mask (Tensor.view cond) 0 (ref mut m)
+/// $"{data}"
+/// ```
+def put_mask { r } :: Copy<'a> => ref View<bool> -> own 'a -> ref mut Mut<'a> { r } -> unit
+fn put_mask cond value target =
+    assert_same_shape (ref cond.shape) (ref target.shape)
+    let total = volume (ref target.shape)
+    if total > 0 then
+        if target.shape.length == 0 then
+            if cond.data[cond.offset] then Array.write target.offset value target.data
+        else
+            let shape = Array.copy (ref target.shape)
+            let dst_strides = Array.copy (ref target.strides)
+            let dst_offset = target.offset
+            let mut coords = new [i64](shape.length, \_ -> 0)
+            for flat in 0i64 ..= (total - 1) do
+                unflatten_into flat (ref shape) (ref mut coords)
+                if read_at_coords cond (ref coords) then
+                    let mut slot = dst_offset
+                    for d in 0i64 ..= (shape.length - 1) do slot = slot + coords[d] * dst_strides[d]
+                    Array.write slot value target.data
+
+/// Selects elements from `on_true` or `on_false` according to `cond`, broadcasting all three inputs.
+///
+/// ```tsuzuri run=[10,%202,%2030,%204]
+/// let c = Tensor.of_array [2, 2] [true, false, true, false]
+/// let a = Tensor.of_array [2, 2] [10, 20, 30, 40]
+/// let b = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// match Tensor.where_select (Tensor.view c) (Tensor.view a) (Tensor.view b) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def where_select :: Copy<'a> => ref View<bool> -> ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn where_select cond on_true on_false =
+    match broadcast_shape (ref cond.shape) (ref on_true.shape) with
+    | Result.Error err -> Result.Error err
+    | Result.Ok s1 ->
+        match broadcast_shape (ref s1) (ref on_false.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok common ->
+            match broadcast_to (Array.copy (ref common)) cond with
+            | Result.Error err -> Result.Error err
+            | Result.Ok bc ->
+                match broadcast_to (Array.copy (ref common)) on_true with
+                | Result.Error err -> Result.Error err
+                | Result.Ok bt ->
+                    match broadcast_to (Array.copy (ref common)) on_false with
+                    | Result.Error err -> Result.Error err
+                    | Result.Ok bf ->
+                        let total = volume (ref common)
+                        if total == 0 then
+                            Result.Ok (Tensor { shape: common, data: Array.init 0 (\_ -> bt.data[0]) })
+                        elif common.length == 0 then
+                            let v = if bc.data[bc.offset] then bt.data[bt.offset] else bf.data[bf.offset]
+                            Result.Ok (Tensor { shape: common, data: [v] })
+                        else
+                            let seed = bt.data[bt.offset]
+                            let mut out = new ['a](total, \_ -> seed)
+                            let mut coords = new [i64](common.length, \_ -> 0)
+                            for flat in 0i64 ..= (total - 1) do
+                                unflatten_into flat (ref common) (ref mut coords)
+                                let v = if read_at_coords (ref bc) (ref coords) then read_at_coords (ref bt) (ref coords) else read_at_coords (ref bf) (ref coords)
+                                Array.write flat v (ref mut out)
+                            Result.Ok (Tensor { shape: common, data: out })
+
+/// Builds a tensor with the shape of `cond`, choosing scalar `on_true` or `on_false` at each slot.
+///
+/// ```tsuzuri run=[1,%20-1,%201]
+/// let c = Tensor.of_array [3] [true, false, true]
+/// Tensor.to_array (Tensor.where_scalar 1 (-1) (Tensor.view c))
+/// ```
+def where_scalar :: Copy<'a> => own 'a -> own 'a -> ref View<bool> -> Tensor<'a>
+fn where_scalar on_true on_false cond =
+    map (\b -> if b then on_true else on_false) cond
+
+/// Clamps every element of `view` into `[lo, hi]`; traps if `lo > hi`.
+///
+/// ```tsuzuri run=[1,%202,%205,%205]
+/// let t = Tensor.of_array [4] [-3, 2, 5, 9]
+/// Tensor.to_array (Tensor.clip 1 5 (Tensor.view t))
+/// ```
+def clip :: (Ord<'a>, Copy<'a>) => own 'a -> own 'a -> ref View<'a> -> Tensor<'a>
+fn clip lo hi view =
+    assert (lo <= hi)
+    map (\x -> if x < lo then lo elif x > hi then hi else x) view
+
+/// Gathers slices along `axis` at positions given by `indices` (negative indices supported).
+/// The output shape replaces `view.shape[axis]` with `indices.shape`.
+///
+/// ```tsuzuri run=[2,%202]%20[30,%2040,%2010,%2020]
+/// let t = Tensor.of_array [2, 2] [10, 20, 30, 40]
+/// let idx = Tensor.of_array [2] [-1, 0]
+/// let r = Tensor.take 0 (Tensor.view idx) (Tensor.view t)
+/// let rv = Tensor.view (ref r)
+/// $"{Tensor.shape (ref rv)} {Tensor.as_array (ref r)}"
+/// ```
+def take :: Copy<'a> => own i64 -> ref View<i64> -> ref View<'a> -> Tensor<'a>
+fn take axis indices view =
+    let v_rank = view.shape.length
+    let i_rank = indices.shape.length
+    let norm = normalize_axis axis v_rank
+    let out_rank = v_rank - 1 + i_rank
+    assert (out_rank <= 64)
+    let mut out_shape = new [i64](out_rank, \_ -> 0)
+    for d in 0i64 ..= (norm - 1) do Array.write d view.shape[d] (ref mut out_shape)
+    for d in 0i64 ..= (i_rank - 1) do Array.write (norm + d) indices.shape[d] (ref mut out_shape)
+    for d in (norm + 1) ..= (v_rank - 1) do Array.write (d - 1 + i_rank) view.shape[d] (ref mut out_shape)
+    let total = volume (ref out_shape)
+    let dim = view.shape[norm]
+    if total == 0 then Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut out_coords = new [i64](out_rank, \_ -> 0)
+        let mut idx_coords = new [i64](i_rank, \_ -> 0)
+        let mut src_coords = new [i64](v_rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut out_coords)
+            for d in 0i64 ..= (i_rank - 1) do Array.write d out_coords[norm + d] (ref mut idx_coords)
+            let raw_pos = if i_rank == 0 then indices.data[indices.offset] else read_at_coords indices (ref idx_coords)
+            let pos = normalize_axis raw_pos dim
+            for d in 0i64 ..= (norm - 1) do Array.write d out_coords[d] (ref mut src_coords)
+            Array.write norm pos (ref mut src_coords)
+            for d in (norm + 1) ..= (v_rank - 1) do Array.write d out_coords[d - 1 + i_rank] (ref mut src_coords)
+            Array.write flat (read_at_coords view (ref src_coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+/// Gathers values from `view` along `axis` using 1-to-1 coordinate indices of the same rank
+/// (other axes must match; negative indices supported).
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let idx = Tensor.of_array [2, 1] [1, 0]
+/// Tensor.to_array (Tensor.take_along_axis 1 (Tensor.view idx) (Tensor.view t))
+/// ```
+def take_along_axis :: Copy<'a> => own i64 -> ref View<i64> -> ref View<'a> -> Tensor<'a>
+fn take_along_axis axis indices view =
+    let rank = view.shape.length
+    assert (indices.shape.length == rank)
+    let norm = normalize_axis axis rank
+    for d in 0i64 ..= (rank - 1) do
+        if d != norm then assert (indices.shape[d] == view.shape[d])
+    let out_shape = Array.copy (ref indices.shape)
+    let total = volume (ref out_shape)
+    let dim = view.shape[norm]
+    if total == 0 then Tensor { shape: out_shape, data: Array.init 0 (\_ -> view.data[0]) }
+    else
+        let mut out = new ['a](total, \_ -> view.data[view.offset])
+        let mut coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref out_shape) (ref mut coords)
+            let raw_pos = read_at_coords indices (ref coords)
+            let pos = normalize_axis raw_pos dim
+            Array.write norm pos (ref mut coords)
+            Array.write flat (read_at_coords view (ref coords)) (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+/// Scatters `values` into `target` along `axis` at positions specified by `indices` (same shape as
+/// `values`, matching `target` on all axes other than `axis`; negative indices supported).
+///
+/// ```tsuzuri run=[1,%209,%208,%204]
+/// let mut data = [1, 2, 3, 4]
+/// let mut m = Tensor.borrow_mut [2, 2] (ref mut data)
+/// let idx = Tensor.of_array [2, 1] [1, 0]
+/// let vals = Tensor.of_array [2, 1] [9, 8]
+/// Tensor.put_along_axis 1 (Tensor.view idx) (Tensor.view vals) (ref mut m)
+/// $"{data}"
+/// ```
+def put_along_axis { r } :: Copy<'a> => own i64 -> ref View<i64> -> ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn put_along_axis axis indices values target =
+    let rank = target.shape.length
+    assert (indices.shape.length == rank && values.shape.length == rank)
+    assert_same_shape (ref indices.shape) (ref values.shape)
+    let norm = normalize_axis axis rank
+    for d in 0i64 ..= (rank - 1) do
+        if d != norm then assert (indices.shape[d] == target.shape[d])
+    let total = volume (ref indices.shape)
+    let dim = target.shape[norm]
+    if total > 0 then
+        let dst_strides = Array.copy (ref target.strides)
+        let dst_offset = target.offset
+        let mut coords = new [i64](rank, \_ -> 0)
+        for flat in 0i64 ..= (total - 1) do
+            unflatten_into flat (ref indices.shape) (ref mut coords)
+            let raw_pos = read_at_coords indices (ref coords)
+            let pos = normalize_axis raw_pos dim
+            let val = read_at_coords values (ref coords)
+            let mut slot = dst_offset
+            for d in 0i64 ..= (rank - 1) do
+                let p = if d == norm then pos else coords[d]
+                slot = slot + p * dst_strides[d]
+            Array.write slot val target.data
+
+instance Copy<'a> => Index<Tensor<'a>, Tensor<bool>, Tensor<'a>> {
+    fn index cond self =
+        let cv = view cond
+        let sv = view self
+        mask (ref cv) (ref sv)
+}
+
+instance Copy<'a> => Index<View<'a>, Tensor<bool>, Tensor<'a>> {
+    fn index cond self =
+        let cv = view cond
+        mask (ref cv) self
+}
+
+instance Copy<'a> => IndexMut<Mut<'a>, Tensor<bool>, 'a> {
+    fn index_mut cond value self =
+        let cv = view cond
+        put_mask (ref cv) value self
+}
+

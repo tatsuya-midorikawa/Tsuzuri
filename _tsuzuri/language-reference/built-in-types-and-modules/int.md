@@ -61,6 +61,9 @@ flowchart TD
 | <!-- rule: STD-005 -->`Int.abs` | `SignedInteger<'a> => 'a -> 'a` | 絶対値。最小値は最小値のまま（折り返し） |
 | `Int.unsigned_abs` | `SignedInteger<'a> => 'a ->` 同幅の符号なし | 最小値も正の大きさとして返せる |
 | `Int.abs_diff` | `Integer<'a> => 'a -> 'a ->` 同幅の符号なし | 差の絶対値 |
+| `Int.gcd` / `Int.lcm` | `Integer<'a> => 'a -> 'a -> 'a` | 最大公約数・最小公倍数（同幅で折り返し。溢れ検査付きは `checked_*`） |
+| `Int.checked_gcd` / `Int.checked_lcm` | `Integer<'a> => 'a -> 'a -> Maybe<'a>` | 溢れを `Maybe.None` で返す最大公約数・最小公倍数 |
+| `Int.div_floor` / `Int.rem_floor` | `Integer<'a> => 'a -> 'a -> 'a` | 負の無限大方向への床除算・床剰余（0 除算・最小値 `/` `-1` はトラップ） |
 
 `Int.abs (-128i8)` は `-128i8` です。同じ幅の符号付きでは `128` を表せないため、勝手に型を拡張しません。符号なしの正の大きさとして取得したいときは `Int.unsigned_abs` を使います。結果は `128i8u` になります。
 

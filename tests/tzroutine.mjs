@@ -652,11 +652,11 @@ bump ()
     }
   }
 
-  // TZ05: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): a watcher sees
-  // the sleeper asleep, which needs the thread while it sleeps (with one P too). The sleeper starts
-  // when the watcher runs, and the watcher yields until it has woken. Time.after's value is on
-  // Time.monotonic_ns's clock, and not early. os.c is POSIX only.
-  if (process.platform !== "win32") {
+  // TZ05 / W11: Time.sleep_ms in a tzroutine waits without its thread (the hook of os.c): a watcher
+  // sees the sleeper asleep, which needs the thread while it sleeps (with one P too). The sleeper
+  // starts when the watcher runs, and the watcher yields until it has woken. Time.after's value is
+  // on Time.monotonic_ns's clock, and not early.
+  {
     const sleeping = project(`def run :: unit -> string
 fn run _ =
     let state = Arc.new (Atomic.create 0i64)

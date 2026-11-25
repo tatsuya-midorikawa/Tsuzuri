@@ -201,8 +201,9 @@ impl Target {
 
 /// Why wasm output cannot reach the operating-system primitives of E08.
 pub(crate) const OS_WASM_MESSAGE: &str = "wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs because the default wasm target has no host imports; build for the native target, use --wasm-host wasi, or keep to Path and Random.Pcg, which need no host";
-/// Why a Windows build cannot reach them yet.
-pub(crate) const OS_WINDOWS_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux";
+/// Why a build for another host cannot reach the operating-system APIs (`src/runtime/os.c`, which
+/// `Platform::os_apis` says has an implementation: POSIX on macOS and Linux, Win32 on Windows).
+pub(crate) const OS_NATIVE_MESSAGE: &str = "the File, Dir, Env, Time, Random, and Process operating-system APIs are only available on macOS, Linux, and Windows; build on one of them";
 /// Why wasm output cannot reach the sockets of the standard Net module (E09).
 pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net socket API because the default wasm32 target has no host imports; build for the native target, build with --wasm-feature jspi --wasm-feature net and load the module with the generated JavaScript bindings on Node.js, or keep to Net address parsing, which needs no host";
 /// Why a build for another host cannot reach the Net sockets (`src/runtime/net.c`, which
@@ -210,20 +211,14 @@ pub(crate) const NET_WASM_MESSAGE: &str = "wasm32 output cannot use the Net sock
 pub(crate) const NET_NATIVE_MESSAGE: &str =
     "the Net socket API is only available on macOS, Linux, and Windows; build on one of them";
 
-/// Why the operating-system APIs are missing: the Windows message, or the one that names a target.
+/// Why the operating-system APIs are missing: the host message, or the one that names a target.
 pub(crate) fn os_message(platform: Platform) -> String {
     match platform.triple() {
-        Some(triple) if !platform.windows() => format!(
-            "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for the headers of macOS, Linux, and FreeBSD",
+        Some(triple) => format!(
+            "the File, Dir, Env, Time, Random, and Process operating-system APIs are not available for {}: src/runtime/os.c is written for macOS, Linux, and Windows",
             triple.name()
         ),
-        // A named Windows target may be built on any machine, so "build on macOS or Linux" would
-        // send someone who already is on one back to where they started.
-        Some(_) => OS_WINDOWS_MESSAGE.replace(
-            "build on macOS or Linux",
-            "build for macOS, Linux, or FreeBSD",
-        ),
-        None => OS_WINDOWS_MESSAGE.to_owned(),
+        None => OS_NATIVE_MESSAGE.to_owned(),
     }
 }
 
@@ -1446,6 +1441,42 @@ pub(crate) fn tzroutine_jspi_source() -> String {
         include_str!("runtime/tzroutine-jspi.h"),
         1,
     )
+}
+
+/// The operating-system runtime (E08, W11) with its Win32 half and shared argument splitter
+/// inlined for a Windows target: the temporary directory has no `os-windows.h` or
+/// `arguments-split.h` for quoted includes.
+pub(crate) fn os_runtime_source_for(platform: Platform) -> String {
+    let source = include_str!("runtime/os.c");
+    if platform.windows() {
+        source
+            .replacen(
+                "#include \"os-windows.h\"",
+                include_str!("runtime/os-windows.h"),
+                1,
+            )
+            .replacen(
+                "#include \"arguments-split.h\"",
+                include_str!("runtime/arguments-split.h"),
+                1,
+            )
+    } else {
+        source.to_owned()
+    }
+}
+
+/// The command-line argument reader with `arguments-split.h` inlined for a Windows target.
+pub(crate) fn arguments_runtime_source_for(platform: Platform) -> String {
+    let source = include_str!("runtime/arguments.c");
+    if platform.windows() {
+        source.replacen(
+            "#include \"arguments-split.h\"",
+            include_str!("runtime/arguments-split.h"),
+            1,
+        )
+    } else {
+        source.to_owned()
+    }
 }
 
 /// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target: Clang cannot
@@ -4429,7 +4460,7 @@ fn build_complete(
     if platform.windows() && native_runtime && options.emit == Emit::Object {
         return Err(driver_error_of(
             DiagnosticKind::PlatformUnsupportedApi,
-            "Windows COFF objects with embedded tzroutine, CPU, IO, or Net runtime are not supported; emit LLVM and link the runtime once, or build an executable",
+            "Windows COFF objects with embedded tzroutine, CPU, IO, Net, or operating-system runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
     protect_sources(project, output)?;
@@ -4812,15 +4843,21 @@ fn build_complete(
         let merge_runtime_ir = merge_debug_ir || options.emit == Emit::Bitcode;
         if native_runtime {
             let runtime_source = temporary.path.join("runtime.c");
+            let os_source = if os_runtime && options.target == Target::Native {
+                os_runtime_source_for(platform)
+            } else {
+                String::new()
+            };
+            let arguments_source = if arguments_runtime {
+                arguments_runtime_source_for(platform)
+            } else {
+                String::new()
+            };
             let mut source = format!(
                 "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 // The feature macros of os.c and net.c are the same and must precede every include, so
                 // they come first.
-                if os_runtime && options.target == Target::Native {
-                    include_str!("runtime/os.c")
-                } else {
-                    ""
-                },
+                os_source,
                 if net_runtime && options.target == Target::Native {
                     include_str!("runtime/net.c")
                 } else {
@@ -4848,11 +4885,7 @@ fn build_complete(
                 } else {
                     ""
                 },
-                if arguments_runtime {
-                    include_str!("runtime/arguments.c")
-                } else {
-                    ""
-                }
+                arguments_source
             );
             // After the nine parts, and only when used: the prebuilt runtimes are matched by the text
             // of the other programs' units (TZ02). The scheduler's feature macros go before every
@@ -5295,6 +5328,9 @@ fn build_complete(
             // The runtime also asks for it with a default-library request, which not every linker honors.
             if net_runtime && platform.windows() {
                 clang.arg("-lws2_32");
+            }
+            if os_runtime && platform.windows() {
+                clang.arg("-lbcrypt");
             }
         }
         if stack_runtime && dwarf_sidecar.is_none() {

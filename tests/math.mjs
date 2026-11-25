@@ -10,6 +10,7 @@ const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-math-"));
 const quick = process.argv.includes("--quick");
 const elementaryOnly = process.argv.includes("--elementary-only");
 const basicOnly = process.argv.includes("--basic-only");
+const nc01Only = process.argv.includes("--nc01-only");
 const execute = (program, args, options = {}) => {
   const result = spawnSync(program, args, { encoding: "utf8", timeout: 240_000, maxBuffer: 256 * 1024 * 1024, ...options });
   if (result.error) throw result.error;
@@ -253,7 +254,8 @@ for (const [formatIndex, format] of formats.entries()) {
 }
 
 try {
-  const elementaryCases = cases.filter((test) => test.elementary);
+  const elementaryCases = nc01Only ? [] : cases.filter((test) => test.elementary);
+  if (!nc01Only) {
   if (elementaryCases.length) {
     const input = elementaryCases.map((test) => JSON.stringify([test.name, formats[test.formatIndex].bits, test.args[0].toString(16), test.args[1].toString(16)])).join("\n") + "\n";
     const python = process.env.TSUZURI_MATH_PYTHON ?? resolve("target/math-reference-env/bin/python");
@@ -339,5 +341,166 @@ api()`);
     assert.deepEqual(WebAssembly.Module.imports(module), []);
     assert.equal(new WebAssembly.Instance(module).exports.tz_api(), 42n);
   }
-  console.log(`math: ${cases.length} reference cases (${elementaryCases.length} elementary), native/WASM O0/O3, non-NaN bit identity, trap-info and curried API`);
+  }
+  // NC01: verify all 23 extended Math builtins across native and WASM at -O0 and -O3
+  // (f32 and f64 boundaries: signed zero, infinities, NaNs, subnormals, tuple modf/frexp, mixed ldexp).
+  const nc01Src = join(temporary, "Nc01Math.tz");
+  writeFileSync(nc01Src, `
+export def nc01_u64 :: i32 -> f64 -> f64 = \\op x ->
+    match op with
+    | 0i32 -> Math.sinh x
+    | 1i32 -> Math.cosh x
+    | 2i32 -> Math.tanh x
+    | 3i32 -> Math.asinh x
+    | 4i32 -> Math.acosh x
+    | 5i32 -> Math.atanh x
+    | 6i32 -> Math.expm1 x
+    | 7i32 -> Math.log1p x
+    | 8i32 -> Math.sinc x
+    | 9i32 -> Math.degrees x
+    | 10i32 -> Math.radians x
+    | 11i32 -> Math.sign x
+    | 12i32 -> if Math.signbit x then 1.0 else 0.0
+    | 13i32 -> match Math.modf x with | (f, _) -> f
+    | 14i32 -> match Math.modf x with | (_, i) -> i
+    | 15i32 -> match Math.frexp x with | (m, _) -> m
+    | _ -> match Math.frexp x with | (_, e) -> e as f64
+
+export def nc01_b64 :: i32 -> f64 -> f64 -> f64 = \\op x y ->
+    match op with
+    | 0i32 -> Math.logaddexp x y
+    | 1i32 -> Math.logaddexp2 x y
+    | 2i32 -> Math.fmod x y
+    | 3i32 -> Math.floor_div x y
+    | 4i32 -> Math.floor_mod x y
+    | 5i32 -> Math.ieee_remainder x y
+    | _ -> Math.nextafter x y
+
+export def nc01_ldexp64 :: f64 -> i32 -> f64 = \\x e -> Math.ldexp x e
+
+export def nc01_u32 :: i32 -> f32 -> f32 = \\op x ->
+    match op with
+    | 0i32 -> Math.sinh x
+    | 1i32 -> Math.cosh x
+    | 2i32 -> Math.tanh x
+    | 3i32 -> Math.asinh x
+    | 4i32 -> Math.acosh x
+    | 5i32 -> Math.atanh x
+    | 6i32 -> Math.expm1 x
+    | 7i32 -> Math.log1p x
+    | 8i32 -> Math.sinc x
+    | 9i32 -> Math.degrees x
+    | 10i32 -> Math.radians x
+    | 11i32 -> Math.sign x
+    | 12i32 -> if Math.signbit x then 1.0f32 else 0.0f32
+    | 13i32 -> match Math.modf x with | (f, _) -> f
+    | 14i32 -> match Math.modf x with | (_, i) -> i
+    | 15i32 -> match Math.frexp x with | (m, _) -> m
+    | _ -> match Math.frexp x with | (_, e) -> e as f32
+
+export def nc01_b32 :: i32 -> f32 -> f32 -> f32 = \\op x y ->
+    match op with
+    | 0i32 -> Math.logaddexp x y
+    | 1i32 -> Math.logaddexp2 x y
+    | 2i32 -> Math.fmod x y
+    | 3i32 -> Math.floor_div x y
+    | 4i32 -> Math.floor_mod x y
+    | 5i32 -> Math.ieee_remainder x y
+    | _ -> Math.nextafter x y
+
+export def nc01_ldexp32 :: f32 -> i32 -> f32 = \\x e -> Math.ldexp x e
+`);
+  const nc01Host = join(temporary, "nc01_host.c");
+  writeFileSync(nc01Host, `
+#define _CRT_SECURE_NO_WARNINGS
+#include <inttypes.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+extern double tz_nc01_u64(int32_t, double);
+extern double tz_nc01_b64(int32_t, double, double);
+extern double tz_nc01_ldexp64(double, int32_t);
+extern float tz_nc01_u32(int32_t, float);
+extern float tz_nc01_b32(int32_t, float, float);
+extern float tz_nc01_ldexp32(float, int32_t);
+static uint64_t f64_bits(double v) { uint64_t b; memcpy(&b, &v, 8); return b; }
+static double bits_f64(uint64_t b) { double v; memcpy(&v, &b, 8); return v; }
+static uint32_t f32_bits(float v) { uint32_t b; memcpy(&b, &v, 4); return b; }
+static float bits_f32(uint32_t b) { float v; memcpy(&v, &b, 4); return v; }
+int main(void) {
+  int kind, op;
+  uint64_t a, b;
+  while (scanf("%d %d %" SCNx64 " %" SCNx64, &kind, &op, &a, &b) == 4) {
+    if (kind == 0) printf("%016" PRIx64 "\\n", f64_bits(tz_nc01_u64(op, bits_f64(a))));
+    else if (kind == 1) printf("%016" PRIx64 "\\n", f64_bits(tz_nc01_b64(op, bits_f64(a), bits_f64(b))));
+    else if (kind == 2) printf("%016" PRIx64 "\\n", f64_bits(tz_nc01_ldexp64(bits_f64(a), (int32_t)b)));
+    else if (kind == 3) printf("%08" PRIx32 "\\n", f32_bits(tz_nc01_u32(op, bits_f32((uint32_t)a))));
+    else if (kind == 4) printf("%08" PRIx32 "\\n", f32_bits(tz_nc01_b32(op, bits_f32((uint32_t)a), bits_f32((uint32_t)b))));
+    else printf("%08" PRIx32 "\\n", f32_bits(tz_nc01_ldexp32(bits_f32((uint32_t)a), (int32_t)b)));
+  }
+  return 0;
+}
+`);
+  const f64Vals = [0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.5, -2.5, 5e-324, -5e-324, 1e-308, 1e100, Infinity, -Infinity, NaN];
+  const f32Vals = [0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.5, -2.5, 1.401298464324817e-45, -1.401298464324817e-45, 1e-38, 1e20, Infinity, -Infinity, NaN].map(Math.fround);
+  const f64PairVals = [0.0, -0.0, 1.0, -2.5, 5e-324, Infinity, -Infinity, NaN];
+  const f32PairVals = [0.0, -0.0, 1.0, -2.5, 1.401298464324817e-45, Infinity, -Infinity, NaN].map(Math.fround);
+  const ldexpExps = [0, 1, -1, 10, -10, 1024, -1074, 2000, -2000];
+  const nc01Cases = [];
+  for (let op = 0; op < 17; op++) {
+    for (const v of f64Vals) nc01Cases.push({ kind: 0, op, a: numberBits(v, 64), b: 0n, bits: 64, va: v, vb: 0 });
+    for (const v of f32Vals) nc01Cases.push({ kind: 3, op, a: numberBits(v, 32), b: 0n, bits: 32, va: v, vb: 0 });
+  }
+  for (let op = 0; op < 7; op++) {
+    for (const x of f64PairVals) for (const y of f64PairVals) nc01Cases.push({ kind: 1, op, a: numberBits(x, 64), b: numberBits(y, 64), bits: 64, va: x, vb: y });
+    for (const x of f32PairVals) for (const y of f32PairVals) nc01Cases.push({ kind: 4, op, a: numberBits(x, 32), b: numberBits(y, 32), bits: 32, va: x, vb: y });
+  }
+  for (const x of [0.0, -0.0, 1.5, -1.5, 5e-324, Infinity, -Infinity, NaN]) {
+    for (const e of ldexpExps) nc01Cases.push({ kind: 2, op: 0, a: numberBits(x, 64), b: BigInt.asUintN(64, BigInt(e)), bits: 64, va: x, vb: e });
+  }
+  for (const x of [0.0, -0.0, 1.5, -1.5, 1.401298464324817e-45, Infinity, -Infinity, NaN].map(Math.fround)) {
+    for (const e of ldexpExps) nc01Cases.push({ kind: 5, op: 0, a: numberBits(x, 32), b: BigInt.asUintN(64, BigInt(e)), bits: 32, va: x, vb: e });
+  }
+  const nc01Input = nc01Cases.map((c) => `${c.kind} ${c.op} ${c.a.toString(16)} ${c.b.toString(16)}`).join("\n");
+  const isNanBits = (raw, bits) => bits === 64
+    ? ((raw & 0x7ff0000000000000n) === 0x7ff0000000000000n && (raw & 0x000fffffffffffffn) !== 0n)
+    : ((raw & 0x7f800000n) === 0x7f800000n && (raw & 0x007fffffn) !== 0n);
+  let nc01Baseline = null;
+  for (const optimization of [0, 3]) {
+    const obj = join(temporary, `nc01-${optimization}.o`);
+    const exe = join(temporary, `nc01-${optimization}${process.platform === "win32" ? ".exe" : ""}`);
+    cli(["build", nc01Src, "--no-cache", `-O${optimization}`, "--emit", "object", "-o", obj]);
+    const nc01LinkFlags = process.platform === "win32" && !/tsuzuri-clang(?:\.exe)?$/i.test(clang)
+      ? [`--target=${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "-fuse-ld=lld"]
+      : (process.platform === "win32" ? [] : ["-lm"]);
+    execute(clang, [`-O${optimization}`, "-ffp-contract=off", nc01Host, obj, ...nc01LinkFlags, "-o", exe]);
+    const nativeOut = execute(exe, [], { input: nc01Input }).stdout.trim().split("\n").map((line) => BigInt(`0x${line}`));
+    assert.equal(nativeOut.length, nc01Cases.length);
+    if (!nc01Baseline) nc01Baseline = nativeOut;
+    else {
+      for (let i = 0; i < nc01Cases.length; i++) {
+        const b = nc01Cases[i].bits;
+        if (isNanBits(nc01Baseline[i], b)) assert.ok(isNanBits(nativeOut[i], b), `nc01 native O${optimization} case ${i}: expected NaN`);
+        else assert.equal(nativeOut[i], nc01Baseline[i], `nc01 native O${optimization} case ${i}: ${nativeOut[i].toString(16)} != ${nc01Baseline[i].toString(16)}`);
+      }
+    }
+    const wasm = join(temporary, `nc01-${optimization}.wasm`);
+    cli(["build", nc01Src, "--target", "wasm32", "--no-cache", `-O${optimization}`, "-o", wasm]);
+    const wasmMod = new WebAssembly.Module(readFileSync(wasm));
+    assert.deepEqual(WebAssembly.Module.imports(wasmMod), []);
+    const exports = new WebAssembly.Instance(wasmMod).exports;
+    for (let i = 0; i < nc01Cases.length; i++) {
+      const c = nc01Cases[i];
+      let got;
+      if (c.kind === 0) got = numberBits(exports.tz_nc01_u64(c.op, c.va), 64);
+      else if (c.kind === 1) got = numberBits(exports.tz_nc01_b64(c.op, c.va, c.vb), 64);
+      else if (c.kind === 2) got = numberBits(exports.tz_nc01_ldexp64(c.va, c.vb), 64);
+      else if (c.kind === 3) got = numberBits(exports.tz_nc01_u32(c.op, c.va), 32);
+      else if (c.kind === 4) got = numberBits(exports.tz_nc01_b32(c.op, c.va, c.vb), 32);
+      else got = numberBits(exports.tz_nc01_ldexp32(c.va, c.vb), 32);
+      if (isNanBits(nc01Baseline[i], c.bits)) assert.ok(isNanBits(got, c.bits), `nc01 WASM O${optimization} case ${i}: expected NaN`);
+      else assert.equal(got, nc01Baseline[i], `nc01 WASM O${optimization} case ${i} (kind=${c.kind} op=${c.op}): ${got.toString(16)} != ${nc01Baseline[i].toString(16)}`);
+    }
+  }
+  console.log(`math: ${cases.length} reference cases (${elementaryCases.length} elementary) + ${nc01Cases.length} NC01 extended cases, native/WASM O0/O3, non-NaN bit identity, trap-info and curried API`);
 } finally { rmSync(temporary, { recursive: true, force: true }); }

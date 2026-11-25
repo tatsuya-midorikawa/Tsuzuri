@@ -7,7 +7,7 @@
 | 規模 | L（`std/Tensor.tz` の内部表現拡張・`Mut` ビュー・ブロードキャスト・生成・表示） |
 | 依存 | – |
 | 後続 | ([NC04](NC04-generic-index-class-and-slice.md)), [NC05](NC05-tensor-shape-indexing-and-masking.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md), [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), [NC09](NC09-fft-and-polynomial.md), [NC10](NC10-random-distributions-and-generators.md), [NC11](NC11-tensor-codec-and-io.md), [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md), [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（`Tensor.View` の負ストライド・0 ストライド・軸数上限 64・`Tensor.Mut` 不透明型登録。決定事項 D1・D2 が要承認、ほかは既定案） |
 | 手本にする既存実装 | `std/Tensor.tz`、`std/MatrixView.tz`（`Mut<'a> { r }`・`of_array_mut`・`strided`・`freeze`・`copy_from`・`last_index` のオーバーフロー安全検証）、`src/stdlib.rs`（`opaque_record`） |

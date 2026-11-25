@@ -21,14 +21,15 @@ pub(super) fn has_handle_parameter(function: &CheckedFunction) -> bool {
 }
 
 fn host_function(function: &CheckedFunction) -> bool {
-    function.exported || matches!(function.body.kind, TypedExprKind::HostCall(..))
+    function.exported
+        || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
 }
 
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     let types = module.types();
     module.functions.iter().any(|function| {
         extended(function)
-            || (matches!(function.body.kind, TypedExprKind::HostCall(..))
+            || (matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
@@ -47,27 +48,45 @@ pub(crate) fn handle_c_name(name: &str) -> String {
     text
 }
 
-/// Typedefs for the extern handles that the header's prototypes mention, in name order.
+/// Typedefs for the extern handles that the header's prototypes and `@c_layout` structs mention,
+/// in name order.
 pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
-    fn visit(ty: &Type, types: &crate::check::TypeContext<'_>, names: &mut BTreeSet<String>) {
+    fn visit(
+        ty: &Type,
+        module: &CheckedModule,
+        types: &crate::check::TypeContext<'_>,
+        names: &mut BTreeSet<String>,
+        seen_records: &mut BTreeSet<Type>,
+    ) {
         let viewed = crate::abi::c_view(ty, types);
         match viewed.as_ref() {
             Type::Handle(name, _) => {
                 names.insert(name.to_string());
             }
-            Type::Reference(inner, _) => visit(inner, types, names),
-            Type::FnPtr(inner) => visit(inner, types, names),
+            Type::Reference(inner, _) => visit(inner, module, types, names, seen_records),
+            Type::FnPtr(inner) => visit(inner, module, types, names, seen_records),
             Type::Function(parameters, result) => {
-                parameters.iter().for_each(|ty| visit(ty, types, names));
-                visit(result, types, names);
+                parameters
+                    .iter()
+                    .for_each(|ty| visit(ty, module, types, names, seen_records));
+                visit(result, module, types, names, seen_records);
+            }
+            Type::Record(id, arguments) if module.records[*id].c_layout.is_some() => {
+                if !seen_records.insert(viewed.as_ref().clone()) {
+                    return;
+                }
+                for field in types.record_fields(*id, arguments) {
+                    visit(&field, module, types, names, seen_records);
+                }
             }
             _ => {}
         }
     }
     let types = module.types();
     let mut names = BTreeSet::new();
+    let mut seen_records = BTreeSet::new();
     for function in module.functions.iter().filter(|function| {
-        // An explicit import has no prototype in the header.
+        // An explicit import has no prototype in the header, though its `@c_layout` structs do.
         host_function(function)
             && !matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.explicit)
     }) {
@@ -77,8 +96,11 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
             .iter()
             .chain([&function.signature.result])
         {
-            visit(ty, &types, &mut names);
+            visit(ty, module, &types, &mut names, &mut seen_records);
         }
+    }
+    for record in record_types(module) {
+        visit(&record, module, &types, &mut names, &mut seen_records);
     }
     names
         .iter()
@@ -87,6 +109,13 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
             format!("typedef struct {c_name}_s *{c_name};\n")
         })
         .collect()
+}
+
+/// Whether the header contains any `@c_layout` struct definition (W21).
+pub(super) fn has_c_layout_records(module: &CheckedModule) -> bool {
+    record_types(module)
+        .iter()
+        .any(|ty| matches!(ty, Type::Record(id, _) if module.records[*id].c_layout.is_some()))
 }
 
 pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
@@ -107,7 +136,7 @@ pub(crate) fn record_name(ty: &Type, module: &CheckedModule) -> String {
     name
 }
 
-fn record_types(module: &CheckedModule) -> Vec<Type> {
+fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
     fn visit(ty: &Type, module: &CheckedModule, seen: &mut BTreeSet<Type>, result: &mut Vec<Type>) {
         let viewed = crate::abi::c_view(ty, &module.types());
         let ty = if let Type::Reference(inner, _) = viewed.as_ref() {
@@ -131,11 +160,11 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
     }
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
-    for function in module
-        .functions
-        .iter()
-        .filter(|function| host_function(function))
-    {
+    for function in module.functions.iter().filter(|function| {
+        host_function(function)
+            || (include_views
+                && matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()))
+    }) {
         for ty in function
             .signature
             .parameters
@@ -148,15 +177,179 @@ fn record_types(module: &CheckedModule) -> Vec<Type> {
     result
 }
 
+fn record_types(module: &CheckedModule) -> Vec<Type> {
+    record_types_for(module, false)
+}
+
+/// W21: layout of one field inside a `@c_layout` record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CField {
+    pub offset: usize,
+    pub size: usize,
+    pub align: usize,
+    pub llvm_index: usize,
+}
+
+fn c_layout_element_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+    match ty {
+        Type::Integer(8, _) => (1, 1),
+        Type::Integer(16, _) => (2, 2),
+        Type::Integer(32, _) | Type::Binary(32) => (4, 4),
+        Type::Integer(64, _) | Type::Binary(64) => (8, 8),
+        Type::Handle(..) | Type::FnPtr(_) | Type::Reference(..) => (8, 8),
+        Type::FixedArray(element, _) => {
+            let (size, align) = c_layout_element_layout(element, module);
+            (size * fixed_length(ty), align)
+        }
+        Type::Record(..) => record_layout(ty, module),
+        _ => {
+            debug_assert!(
+                crate::abi::nullable(ty, &module.types()).is_some(),
+                "unexpected @c_layout field type: {ty:?}"
+            );
+            (8, 8)
+        }
+    }
+}
+
+/// W21: exact C layout fields, total size, and struct alignment for a `@c_layout` record.
+pub(crate) fn c_layout_fields(
+    ty: &Type,
+    module: &CheckedModule,
+) -> Option<(Vec<CField>, usize, usize)> {
+    let Type::Record(id, arguments) = ty else {
+        return None;
+    };
+    let layout = module.records[*id].c_layout?;
+    let pack = layout.pack.map(usize::from);
+    let mut fields = Vec::new();
+    let mut offset = 0usize;
+    let mut struct_align = 1usize;
+    let mut llvm_index = 0usize;
+    for field in module.types().record_fields(*id, arguments) {
+        let (fsize, natural_align) = c_layout_element_layout(&field, module);
+        let eff_align = pack.map_or(natural_align, |cap| natural_align.min(cap));
+        let aligned = offset.div_ceil(eff_align) * eff_align;
+        if aligned > offset {
+            llvm_index += 1;
+        }
+        fields.push(CField {
+            offset: aligned,
+            size: fsize,
+            align: eff_align,
+            llvm_index,
+        });
+        llvm_index += 1;
+        offset = aligned + fsize;
+        struct_align = struct_align.max(eff_align);
+    }
+    let total_size = offset.max(1).div_ceil(struct_align) * struct_align;
+    Some((fields, total_size, struct_align))
+}
+
+fn c_layout_llvm_field(ty: &Type, module: &CheckedModule) -> String {
+    match ty {
+        Type::Integer(bits, _) => format!("i{bits}"),
+        Type::Binary(32) => "float".into(),
+        Type::Binary(64) => "double".into(),
+        Type::Record(..) => format!("%{}", record_name(ty, module)),
+        Type::FixedArray(element, _) => {
+            format!(
+                "[{} x {}]",
+                fixed_length(ty),
+                c_layout_llvm_field(element, module)
+            )
+        }
+        _ => "ptr".into(),
+    }
+}
+
+fn c_layout_c_number(ty: &Type) -> &'static str {
+    match ty {
+        Type::Integer(8, true) => "int8_t",
+        Type::Integer(8, false) => "uint8_t",
+        Type::Integer(16, true) => "int16_t",
+        Type::Integer(16, false) => "uint16_t",
+        Type::Integer(32, true) => "int32_t",
+        Type::Integer(32, false) => "uint32_t",
+        Type::Integer(64, true) => "int64_t",
+        Type::Integer(64, false) => "uint64_t",
+        Type::Binary(32) => "float",
+        Type::Binary(64) => "double",
+        _ => unreachable!("expected @c_layout number: {ty:?}"),
+    }
+}
+
+fn c_layout_c_field(ty: &Type, name: &str, module: &CheckedModule) -> String {
+    let types = module.types();
+    let viewed = crate::abi::c_view(ty, &types);
+    match viewed.as_ref() {
+        Type::Integer(..) | Type::Binary(..) => {
+            format!("{} {name}", c_layout_c_number(viewed.as_ref()))
+        }
+        Type::FixedArray(element, _) => format!(
+            "{} {name}[{}]",
+            c_layout_c_number(element),
+            fixed_length(viewed.as_ref())
+        ),
+        Type::Record(..) => format!("{} {name}", record_name(viewed.as_ref(), module)),
+        Type::Handle(hname, _) => format!("{} {name}", handle_c_name(hname)),
+        Type::Reference(inner, false) if crate::abi::zstring(inner, &types) => {
+            format!("const uint16_t *{name}")
+        }
+        Type::FnPtr(inner) => {
+            let Type::Function(inputs, output) = inner.as_ref() else {
+                unreachable!("validated FnPtr")
+            };
+            let inputs = if matches!(inputs.as_slice(), [Type::Unit]) {
+                "void".to_owned()
+            } else {
+                inputs
+                    .iter()
+                    .map(|input| c_type(&crate::abi::c_view(input, &types)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!("{} (*{name})({inputs})", c_type(output))
+        }
+        other => unreachable!("validated @c_layout field type: {other:?}"),
+    }
+}
+
 pub(super) fn type_definitions(module: &CheckedModule) -> String {
-    if !uses_host_abi(module) {
+    let has_views = module.functions.iter().any(
+        |f| matches!(&f.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()),
+    );
+    if !uses_host_abi(module) && !has_views {
         return String::new();
     }
     let mut output = String::new();
-    for ty in record_types(module) {
+    for ty in record_types_for(module, true) {
         let Type::Record(id, arguments) = &ty else {
             unreachable!()
         };
+        if let Some((cfields, total_size, _)) = c_layout_fields(&ty, module) {
+            let field_types = module.types().record_fields(*id, arguments);
+            let mut parts = Vec::new();
+            let mut cursor = 0usize;
+            for (cfield, fty) in cfields.iter().zip(&field_types) {
+                if cfield.offset > cursor {
+                    parts.push(format!("[{} x i8]", cfield.offset - cursor));
+                }
+                parts.push(c_layout_llvm_field(fty, module));
+                cursor = cfield.offset + cfield.size;
+            }
+            if total_size > cursor {
+                parts.push(format!("[{} x i8]", total_size - cursor));
+            }
+            let _ = writeln!(
+                output,
+                "%{} = type <{{ {} }}>",
+                record_name(&ty, module),
+                parts.join(", ")
+            );
+            continue;
+        }
         let fields = module.types().record_fields(*id, arguments);
         let fields = if fields.is_empty() {
             "i8".into()
@@ -225,6 +418,40 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
         let Type::Record(id, arguments) = &ty else {
             unreachable!()
         };
+        let rname = record_name(&ty, module);
+        if let Some((cfields, total_size, _)) = c_layout_fields(&ty, module) {
+            let pack = module.records[*id].c_layout.and_then(|c| c.pack);
+            if let Some(n) = pack {
+                let _ = writeln!(output, "#pragma pack(push, {n})");
+            }
+            output.push_str("typedef struct {\n");
+            for ((name, _), field) in module.records[*id]
+                .fields
+                .iter()
+                .zip(module.types().record_fields(*id, arguments))
+            {
+                let cname = field_name(name);
+                let declaration = c_layout_c_field(&field, &cname, module);
+                let _ = writeln!(output, "    {declaration};");
+            }
+            let _ = writeln!(output, "}} {rname};");
+            if pack.is_some() {
+                output.push_str("#pragma pack(pop)\n");
+            }
+            let _ = writeln!(
+                output,
+                "typedef char {rname}__size[(sizeof({rname}) == {total_size}) ? 1 : -1];"
+            );
+            for ((name, _), cfield) in module.records[*id].fields.iter().zip(&cfields) {
+                let cname = field_name(name);
+                let _ = writeln!(
+                    output,
+                    "typedef char {rname}__f_{cname}[(offsetof({rname}, {cname}) == {}) ? 1 : -1];",
+                    cfield.offset
+                );
+            }
+            continue;
+        }
         output.push_str("typedef struct {\n");
         if module.records[*id].fields.is_empty() {
             output.push_str("    uint8_t tz_empty;\n");
@@ -246,7 +473,7 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
             };
             let _ = writeln!(output, "    {declaration};");
         }
-        let _ = writeln!(output, "}} {};", record_name(&ty, module));
+        let _ = writeln!(output, "}} {rname};");
     }
     output.push_str("\nvoid *tsuzuri_alloc(int64_t size);\nvoid tsuzuri_free(void *ptr);\n\n");
     output
@@ -733,6 +960,9 @@ pub(super) fn wrapper(
 }
 
 pub(crate) fn record_layout(ty: &Type, module: &CheckedModule) -> (usize, usize) {
+    if let Some((_, size, align)) = c_layout_fields(ty, module) {
+        return (size, align);
+    }
     if let Type::FixedArray(element, _) = ty {
         let (size, alignment) = record_layout(element, module);
         return (size * fixed_length(ty), alignment);
@@ -938,9 +1168,67 @@ impl FunctionEmitter<'_, '_> {
     }
 
     pub(super) fn read_host_record(&mut self, ty: &Type, pointer: &str) -> String {
+        self.read_host_record_aligned(ty, pointer, None)
+    }
+
+    fn read_host_record_aligned(
+        &mut self,
+        ty: &Type,
+        pointer: &str,
+        align_cap: Option<usize>,
+    ) -> String {
         let Type::Record(id, arguments) = ty else {
             unreachable!()
         };
+        if let Some((cfields, _, _)) = c_layout_fields(ty, self.module) {
+            let mut record = "zeroinitializer".to_owned();
+            let fields = self.module.types().record_fields(*id, arguments);
+            let rname = record_name(ty, self.module);
+            for (index, (field, cfield)) in fields.iter().zip(&cfields).enumerate() {
+                let leaf_align = align_cap.map_or(cfield.align, |cap| cap.min(cfield.align));
+                let slot = self.value(format!(
+                    "getelementptr inbounds %{rname}, ptr {pointer}, i32 0, i32 {}",
+                    cfield.llvm_index
+                ));
+                let value = if matches!(field, Type::Record(..)) {
+                    self.read_host_record_aligned(field, &slot, Some(leaf_align))
+                } else if let Type::FixedArray(element, _) = field {
+                    let array = self.slot(field);
+                    let elem_llvm = c_layout_llvm_field(element, self.module);
+                    let host = format!("[{} x {elem_llvm}]", fixed_length(field));
+                    self.array_loop(&fixed_length(field).to_string(), |emitter, idx| {
+                        let from = emitter.value(format!(
+                            "getelementptr inbounds {host}, ptr {slot}, i64 0, i64 {idx}"
+                        ));
+                        let loaded = emitter
+                            .value(format!("load {elem_llvm}, ptr {from}, align {leaf_align}"));
+                        let to = emitter.fixed_pointer(field, &array, idx);
+                        emitter.instruction(format!("store {elem_llvm} {loaded}, ptr {to}"));
+                    });
+                    self.value(format!("load {}, ptr {array}", self.ty(field)))
+                } else if matches!(field, Type::Handle(..)) {
+                    let loaded = self.value(format!("load ptr, ptr {slot}, align {leaf_align}"));
+                    if !self.globals.wasm {
+                        let valid = self.value(format!("icmp ne ptr {loaded}, null"));
+                        self.guard(&valid, TrapKind::NullHandle);
+                    }
+                    loaded
+                } else if crate::abi::nullable(field, &self.module.types()).is_some() {
+                    let loaded = self.value(format!("load ptr, ptr {slot}, align {leaf_align}"));
+                    self.nullable_from_c(field, &loaded)
+                } else {
+                    let elem_llvm = c_layout_llvm_field(field, self.module);
+                    self.value(format!("load {elem_llvm}, ptr {slot}, align {leaf_align}"))
+                };
+                let internal = self.field_slot(ty, index);
+                record = self.value(format!(
+                    "insertvalue {} {record}, {} {value}, {internal}",
+                    self.ty(ty),
+                    self.ty(field)
+                ));
+            }
+            return record;
+        }
         let mut record = "zeroinitializer".to_owned();
         for (index, field) in self
             .module
@@ -985,9 +1273,72 @@ impl FunctionEmitter<'_, '_> {
     }
 
     pub(super) fn write_host_record(&mut self, ty: &Type, value: &str, pointer: &str) {
+        self.write_host_record_aligned(ty, value, pointer, None);
+    }
+
+    fn write_host_record_aligned(
+        &mut self,
+        ty: &Type,
+        value: &str,
+        pointer: &str,
+        align_cap: Option<usize>,
+    ) {
         let Type::Record(id, arguments) = ty else {
             unreachable!()
         };
+        if let Some((cfields, _, _)) = c_layout_fields(ty, self.module) {
+            let fields = self.module.types().record_fields(*id, arguments);
+            let rname = record_name(ty, self.module);
+            for (index, (field, cfield)) in fields.iter().zip(&cfields).enumerate() {
+                let leaf_align = align_cap.map_or(cfield.align, |cap| cap.min(cfield.align));
+                let slot = self.value(format!(
+                    "getelementptr inbounds %{rname}, ptr {pointer}, i32 0, i32 {}",
+                    cfield.llvm_index
+                ));
+                let internal = self.field_slot(ty, index);
+                let extracted =
+                    self.value(format!("extractvalue {} {value}, {internal}", self.ty(ty)));
+                if matches!(field, Type::Record(..)) {
+                    self.write_host_record_aligned(field, &extracted, &slot, Some(leaf_align));
+                } else if let Type::FixedArray(element, _) = field {
+                    let array = self.spill(field, &extracted);
+                    let elem_llvm = c_layout_llvm_field(element, self.module);
+                    let host = format!("[{} x {elem_llvm}]", fixed_length(field));
+                    self.array_loop(&fixed_length(field).to_string(), |emitter, idx| {
+                        let from = emitter.fixed_pointer(field, &array, idx);
+                        let loaded = emitter.value(format!("load {elem_llvm}, ptr {from}"));
+                        let to = emitter.value(format!(
+                            "getelementptr inbounds {host}, ptr {slot}, i64 0, i64 {idx}"
+                        ));
+                        emitter.instruction(format!(
+                            "store {elem_llvm} {loaded}, ptr {to}, align {leaf_align}"
+                        ));
+                    });
+                } else if matches!(field, Type::Handle(..) | Type::FnPtr(_)) {
+                    self.instruction(format!(
+                        "store ptr {extracted}, ptr {slot}, align {leaf_align}"
+                    ));
+                } else if let Type::Reference(inner, false) = field
+                    && crate::abi::zstring(inner, &self.module.types())
+                {
+                    let rec = self.value(format!("load {}, ptr {extracted}", self.ty(inner)));
+                    let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));
+                    let data = self.value(format!("extractvalue %tz.array {arr}, 0"));
+                    self.instruction(format!("store ptr {data}, ptr {slot}, align {leaf_align}"));
+                } else if crate::abi::nullable(field, &self.module.types()).is_some() {
+                    let ptr_val = self.nullable_to_c(field, &extracted);
+                    self.instruction(format!(
+                        "store ptr {ptr_val}, ptr {slot}, align {leaf_align}"
+                    ));
+                } else {
+                    let elem_llvm = c_layout_llvm_field(field, self.module);
+                    self.instruction(format!(
+                        "store {elem_llvm} {extracted}, ptr {slot}, align {leaf_align}"
+                    ));
+                }
+            }
+            return;
+        }
         let fields = self.module.types().record_fields(*id, arguments);
         if fields.is_empty() {
             self.instruction(format!("store i8 0, ptr {pointer}"));

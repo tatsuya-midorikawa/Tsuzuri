@@ -226,3 +226,80 @@ fn view_products_use_the_same_separately_rounded_kernel() {
         }
     }
 }
+
+#[test]
+fn slicing_empty_views_with_huge_strides_does_not_overflow_or_trap() {
+    let source = r#"
+def main :: unit -> i32 = \() ->
+    let empty: [i64] = []
+    let at2 = Slice.at 2
+    let all = Slice.all()
+    let row_huge = MatrixView.strided 0 3 0 9223372036854775807 1 (ref empty)
+    let r_sub = MatrixView.slice (ref at2) (ref all) row_huge
+    assert (MatrixView.rows r_sub == 1 && MatrixView.cols r_sub == 0)
+    assert (MatrixView.offset r_sub == 0)
+    let r_idx = row_huge[(Slice.at 2, Slice.all())]
+    assert (MatrixView.rows r_idx == 1 && MatrixView.cols r_idx == 0)
+
+    let col_huge = MatrixView.strided 0 0 3 1 9223372036854775807 (ref empty)
+    let c_sub = MatrixView.slice (ref all) (ref at2) col_huge
+    assert (MatrixView.rows c_sub == 0 && MatrixView.cols c_sub == 1)
+    assert (MatrixView.offset c_sub == 0)
+    let c_idx = col_huge[(Slice.all(), Slice.at 2)]
+    assert (MatrixView.rows c_idx == 0 && MatrixView.cols c_idx == 1)
+
+    let t_row_huge = Tensor.strided 0 [3, 0] [9223372036854775807, 1] (ref empty)
+    let tr_sub = Tensor.slice [Slice.at 2, Slice.all()] (ref t_row_huge)
+    assert (deref (Tensor.shape (ref tr_sub)) == [0i64])
+    assert (Tensor.offset (ref tr_sub) == 0)
+
+    let t_col_huge = Tensor.strided 0 [0, 3] [1, 9223372036854775807] (ref empty)
+    let tc_sub = Tensor.slice [Slice.all(), Slice.at 2] (ref t_col_huge)
+    assert (deref (Tensor.shape (ref tc_sub)) == [0i64])
+    assert (Tensor.offset (ref tc_sub) == 0)
+    0
+"#;
+    let dir = std::env::temp_dir().join(format!(
+        "tsuzuri-empty-slice-huge-stride-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(&main_tz, source).unwrap();
+    for opt in ["-O0", "-O3"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["run", "--no-cache", opt])
+            .arg(&main_tz)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "opt={opt}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Invalid descriptor on an empty view must still trap.
+    let invalid = r#"
+def main :: unit -> i32 = \() ->
+    let empty: [i64] = []
+    let at5 = Slice.at 5
+    let all = Slice.all()
+    let row_huge = MatrixView.strided 0 3 0 9223372036854775807 1 (ref empty)
+    let _bad = MatrixView.slice (ref at5) (ref all) row_huge
+    0
+"#;
+    std::fs::write(&main_tz, invalid).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["run", "--no-cache", "-O0"])
+        .arg(&main_tz)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "out-of-bounds slice on empty view should trap"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

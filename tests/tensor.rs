@@ -132,3 +132,54 @@ fn tensor_constraints_follow_array_rules() {
         );
     }
 }
+
+#[test]
+fn tensor_mut_is_opaque_noncopy_and_exclusive() {
+    let setup =
+        "let mut data = [1, 2, 3, 4]\nlet mut m = Tensor.borrow_mut [2, 2] (ref mut data)\n";
+    let message = rejects(&format!("{setup}m.shape"), "E1022");
+    assert!(message.contains("is opaque"), "{message}");
+
+    let message = rejects(
+        &format!("{setup}let m2 = m\nTensor.write [0, 0] 9 (ref mut m)\n0"),
+        "E1012",
+    );
+    assert!(
+        message.starts_with("use of moved or partially moved value"),
+        "{message}"
+    );
+
+    // Exclusive borrow conflicts while `m` is live.
+    let message = rejects(
+        &format!("{setup}let n = data.length\nTensor.write [0, 0] 9 (ref mut m)\nn"),
+        "E1014",
+    );
+    assert!(
+        message.starts_with("access conflicts with a live borrow"),
+        "{message}"
+    );
+
+    // Sub-view exclusively reborrows `m`.
+    let message = rejects(
+        &format!(
+            "{setup}let mut sub = Tensor.flip_mut 0 (ref mut m)\nTensor.write [0, 0] 1 (ref mut m)\nTensor.write [0, 0] 2 (ref mut sub)\n0"
+        ),
+        "E1014",
+    );
+    assert!(
+        message.starts_with("access conflicts with a live borrow"),
+        "{message}"
+    );
+
+    // Cannot escape the backing array's lifetime.
+    let message = rejects(
+        "def leak {r} :: ref mut {r} [i64..] -> Tensor.Mut<i64> {r}\nfn leak outer =\n    let mut local = [1, 2]\n    Tensor.borrow_mut [2] (ref mut local)\n0",
+        "E1013",
+    );
+    assert!(message.contains("does not live long enough"), "{message}");
+
+    // Valid NC02 operations compile cleanly to native and WASM IR.
+    emits(
+        "let t0: Tensor<i64> = Tensor.zeros [2, 2]\nlet t1 = Tensor.update (\\m -> Tensor.fill 3 m) t0\nlet t2 = Tensor.ones [2, 2]\nlet v1 = Tensor.view (ref t1)\nlet _s = $\"{t1} {v1}\"\nlet _b = Tensor.broadcast_to [2, 2] (ref v1)\nif t1 == t2 then 1 else 0",
+    );
+}

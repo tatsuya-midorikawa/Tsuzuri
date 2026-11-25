@@ -317,6 +317,8 @@ pub struct Program {
     pub trusted: Vec<TrustedAttribute>,
     /// The `@count(pos, len)` attributes of this module's extern function declarations (W13).
     pub extern_counts: Vec<CountAttribute>,
+    /// The `@c_layout` attributes of this module's record declarations (W21).
+    pub c_layouts: Vec<CLayoutAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -498,6 +500,20 @@ pub struct CountAttribute {
     pub target: Ident,
     pub position: u32,
     pub length: CountLength,
+    pub span: Span,
+}
+
+/// C struct layout parameters of `@c_layout` / `@c_layout(pack = N)` (W21).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CLayout {
+    pub pack: Option<u8>,
+}
+
+/// `@c_layout` / `@c_layout(pack = N)` before a record declaration (W21).
+#[derive(Clone, Debug)]
+pub struct CLayoutAttribute {
+    pub target: Ident,
+    pub pack: Option<u8>,
     pub span: Span,
 }
 
@@ -709,6 +725,22 @@ pub struct ContractClause {
     pub span: Span,
 }
 
+/// Direction of an `extern view def` memory copy (W24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ViewDirection {
+    Read,
+    Write,
+}
+
+impl ViewDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub doc: Option<Documentation>,
@@ -724,6 +756,8 @@ pub struct SignatureDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub link: Option<Box<LinkName>>,
+    /// Declared as `extern view def` (W24).
+    pub view: bool,
 }
 
 /// The strings of `extern "symbol" def` or `extern "module" "symbol" def`.
@@ -840,6 +874,9 @@ impl Kind {
 pub struct InstanceDecl {
     pub class: Ident,
     pub ty: TypeExpr,
+    /// Extra type arguments for builtin 3-argument indexing classes (`Index<Self, Key, Output>`
+    /// and `IndexMut<Self, Key, Value>`); empty for all single-parameter classes.
+    pub extra_args: Vec<TypeExpr>,
     pub constraints: Vec<ConstraintExpr>,
     pub methods: Vec<Definition>,
 }

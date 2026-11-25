@@ -90,6 +90,29 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::MathPow
         | Builtin::MathCbrt
         | Builtin::MathHypot
+        | Builtin::MathSinh
+        | Builtin::MathCosh
+        | Builtin::MathTanh
+        | Builtin::MathAsinh
+        | Builtin::MathAcosh
+        | Builtin::MathAtanh
+        | Builtin::MathExpm1
+        | Builtin::MathLog1p
+        | Builtin::MathLogaddexp
+        | Builtin::MathLogaddexp2
+        | Builtin::MathSinc
+        | Builtin::MathDegrees
+        | Builtin::MathRadians
+        | Builtin::MathFmod
+        | Builtin::MathFloorDiv
+        | Builtin::MathFloorMod
+        | Builtin::MathIeeeRemainder
+        | Builtin::MathModf
+        | Builtin::MathFrexp
+        | Builtin::MathLdexp
+        | Builtin::MathNextafter
+        | Builtin::MathSign
+        | Builtin::MathSignbit
         | Builtin::ToFloat
         | Builtin::ToInt
         | Builtin::Assert
@@ -237,6 +260,12 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::IntWrappingNeg
         | Builtin::IntCheckedPow
         | Builtin::IntWideningMul
+        | Builtin::IntGcd
+        | Builtin::IntLcm
+        | Builtin::IntCheckedGcd
+        | Builtin::IntCheckedLcm
+        | Builtin::IntDivFloor
+        | Builtin::IntRemFloor
         | Builtin::OwnedDrop
         | Builtin::OwnedFunction
         | Builtin::OwnedCall

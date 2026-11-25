@@ -136,12 +136,21 @@ try {
     }
   }
 
-  // 9. The same for an operating-system API on a target that has none (the driver refuses before any tool runs): only a program
-  // that reaches `File.read_text` is refused.
-  const windows_gnu = (name) => execute(compiler, ["build", project(name), "--target", "x86_64-pc-windows-gnu", "-O0", "--no-cache", "-o", join(root, `${name}.exe`)], { success: false });
-  const refusal = /operating-system APIs are not supported on Windows/;
-  assert.match(windows_gnu("dead_os_reached").stderr, refusal);
-  assert.doesNotMatch(windows_gnu("dead_os").stderr, refusal);
+  // 9. Native executable pruning drops an unreachable operating-system API (`dead_os`), whereas
+  // `dead_os_reached` retains `@tsuzuri_os_`. WebAssembly keeps public functions as reachability
+  // roots, so both fixtures are refused before any tool runs on `--target wasm32`.
+  const deadOsExe = executable("dead_os");
+  const deadOsIr = build("dead_os", ["-O0"], deadOsExe, { capture: !windows });
+  assert.equal(execute(deadOsExe, []).stdout.replaceAll("\r\n", "\n"), "ok\n");
+  if (!windows) {
+    assert.doesNotMatch(deadOsIr, /@tsuzuri_os_/);
+    const reachedIr = build("dead_os_reached", ["-O0"], executable("dead_os_reached"), { capture: true });
+    assert.match(reachedIr, /@tsuzuri_os_/);
+  }
+  const wasm_no_os = (name) => execute(compiler, ["build", project(name), "--target", "wasm32", "-O0", "--no-cache", "-o", join(root, `${name}.wasm`)], { success: false });
+  const refusal = /wasm output cannot use the File, Dir, Env, Time, Random, or Process operating-system APIs/;
+  assert.match(wasm_no_os("dead_os_reached").stderr, refusal);
+  assert.match(wasm_no_os("dead_os").stderr, refusal);
   console.log("llvm handoff: roots ok");
 } finally {
   rmSync(root, { recursive: true, force: true });

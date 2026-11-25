@@ -6,11 +6,12 @@
 
 ## この記事のポイント
 
-- `Tensor<'a>` は、形と行優先のバッファを所有する非 Copy 型です。`Tensor.View<'a>` は借用を持つ窓で、オフセットと軸ごとのストライドで要素を指します。どちらも内部は不透明で、フィールド参照・パターン分解・リテラルでの構築は `E1022` です。
-- 軸は 16 本までです。長さは 0 以上で、長さが 0 の軸があれば要素は 0 個です。軸が 0 本のテンソルは要素を 1 個持ちます。長さが 0 の軸を除いた長さの積は、`i64` に収まる必要があります。
-- 窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` です。ストライドは負になりません。窓の全要素は `data` の中にあり、作る関数が検査して、どの操作も保ちます。
-- 窓は借用を持つので、持ち主を move・置換すると `E1014`、持ち主より長く使うと `E1013` です。窓自身は非 Copy で、API は `ref` で受け取ります。
-- `Tensor` という名前を書いたプログラムだけが、このモジュールと `Matrix`・`MatrixView` を読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Tensor.tz` は予約名で `E1011` です。
+- `Tensor<'a>` は、形と行優先のバッファを所有する非 Copy 型です。`Tensor.View<'a>` は読み取り専用の借用の窓、`Tensor.Mut<'a>` は排他借用の書き込める N 次元の窓です。いずれも内部は不透明で、フィールド参照・パターン分解・リテラルでの構築は `E1022` です。
+- 軸は 64 本までです。長さは 0 以上で、長さが 0 の軸があれば要素は 0 個です。軸が 0 本のテンソルは要素を 1 個持ちます。長さが 0 の軸を除いた長さの積は、`i64` に収まる必要があります。
+- 窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` です。`View` は負のストライド（逆順・反転）と 0 ストライド（ブロードキャスト軸）を安全に扱え、`strided` がオーバーフローしない境界検査で全要素が `data` の中にあることを保証します。`Mut` は単射性（異なる座標が同じスロットを指さないこと）を保つ操作だけを提供します。
+- 窓は借用を持つので、持ち主を move・置換すると `E1014`、持ち主より長く使うと `E1013` です。窓自身は非 Copy で、API は `ref` / `ref mut` で受け取ります。
+- `Index` / `IndexMut` インスタンスを備え、`t[[i, j]]`（要素）・`t[[Slice.step 1 4 2, Slice.rev()]]`（ゼロコピー `View`）・`t[mask]`（ブールマスク抽出）・`m[[i, j]] = v` / `m[mask] = v`（`Mut` への書き込み）が使えます。`Eq` と `Display`（要素数 1000 超は `...` 省略表示）も実装しています。
+- `Tensor` という名前を書いたプログラムだけが、このモジュールと `Matrix`・`MatrixView`・`Slice` を読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Tensor.tz` は予約名で `E1011` です。
 
 ## 作る
 
@@ -156,12 +157,12 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 
 | 条件 | API | 表示 |
 | --- | --- | --- |
-| 軸が 16 本を超える、長さが負、長さが 0 の軸を除いた積の溢れ | `of_array`・`init`・`reshape`・`reshape_view`・`borrow` | `trap: assertion failed` |
-| `values.length` が形の積と違う | `of_array`・`borrow` | 同上 |
-| 形の積が変わる、または窓が連続でない | `reshape`・`reshape_view` | 同上 |
-| 添字の数が軸の数と違う、または範囲外 | `at` | 同上 |
-| `axes` が並べ替えでない、軸や位置が範囲外 | `permute`・`index_axis`・`narrow` | 同上 |
-| 軸が 2 本でない | `to_matrix`・`as_matrix_view` | 同上 |
+| 軸が 64 本を超える、長さが負、長さが 0 の軸を除いた積の溢れ | `of_array`・`init`・`reshape`・`reshape_view`・`borrow`・`strided` | `trap: assertion failed` |
+| `values.length` が形の積と違う | `of_array`・`borrow`・`borrow_mut` | 同上 |
+| 形の積が変わる、または窓が連続でない | `reshape`・`reshape_view`・`as_slice_mut`・`ravel_view` | 同上 |
+| 添字の数が軸の数と違う、または範囲外 | `at`・`write` | 同上 |
+| `axes` が並べ替えでない、軸や位置が範囲外 | `permute`・`index_axis`・`narrow`・`normalize_axis` | 同上 |
+| 軸が 2 本でない、または負のストライドを `MatrixView` へ渡した | `to_matrix`・`as_matrix_view` | 同上 |
 | 要素の byte 数の溢れ、確保の失敗 | 確保する API | `trap: allocation size overflow` / `trap: allocation failed` |
 
 どの API も、前提条件の検査をすべて通してから、確保・要素の読み出し・callback の呼び出しをします。
@@ -194,8 +195,57 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 | `fold` | `Copy<'a> => ('state -> 'a -> 'state) -> 'state -> ref View<'a> -> 'state` |
 | `to_tensor` | `Copy<'a> => ref View<'a> -> Tensor<'a>` |
 | `map` | `Copy<'a> => ('a -> 'b) -> ref View<'a> -> Tensor<'b>` |
-| `as_matrix_view` | `ref View<'a> { r } -> MatrixView<'a> { r }` |
+| `as_matrix_view` | `ref View<'a> { r } -> MatrixView<'a> { r }`（負のストライドはトラップ） |
 | `of_matrix_view` | `MatrixView<'a> { r } -> View<'a> { r }` |
+| `strided` | `i64 -> [i64] -> [i64] -> ref { r } ['a] -> View<'a> { r }`（負・0 ストライド対応） |
+| `fortran_strides` | `ref [i64] -> [i64]` |
+| `is_c_contiguous` / `is_f_contiguous` | `ref View<'a> -> bool` |
+| `as_contiguous` / `clone_view` | `Copy<'a> => ref View<'a> -> Tensor<'a>` |
+| `as_fortran` | `Copy<'a> => ref View<'a> -> ['a]` |
+| `clone` | `Copy<'a> => ref Tensor<'a> -> Tensor<'a>` |
+| `astype` | `(Copy<'a>, Copy<'b>) => ('a -> 'b) -> ref View<'a> -> Tensor<'b>` |
+| `format_view` | `Display<'a> => ref View<'a> -> string` |
+| `borrow_mut` | `[i64] -> ref mut { r } ['a..] -> Mut<'a> { r }` |
+| `update` | `(ref mut Mut<'a> -> unit) -> Tensor<'a> -> Tensor<'a>` |
+| `freeze` | `ref { r } Mut<'a> { r } -> View<'a> { r }` |
+| `is_contiguous_mut` | `ref Mut<'a> { r } -> bool` |
+| `as_slice_mut` | `ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]` |
+| `write` / `fill` / `copy_from` / `map_in_place` | `Mut<'a> { r }` への書き込み・一括代入・複写・インプレース変換 |
+| `permute_mut` / `index_axis_mut` / `narrow_mut` / `sub_mut` / `step_mut` / `flip_mut` | 単射性を保つ `Mut<'a> { r }` のゼロコピー変形 |
+| `broadcast_shape` | `ref [i64] -> ref [i64] -> Result<[i64], Error>` |
+| `broadcast_to` / `broadcast_pair` / `broadcast_arrays` | NumPy 互換の右揃えゼロコピー（stride 0）ブロードキャスト |
+| `zeros` / `ones` / `full` / `zeros_like` / `ones_like` / `full_like` / `scalar` | 初期値・形状引継ぎ・スカラー生成 |
+| `arange_i64` / `arange_f64` / `arange_f32` | 等差数列生成 |
+| `linspace` / `linspace_open` / `logspace` / `geomspace` | 線形・対数・等比グリッド生成 |
+| `eye` / `identity` / `diag` / `diagonal` / `diag_flat` / `tri` / `tril` / `triu` | 単位・対角・三角行列生成と抽出 |
+| `meshgrid` / `meshgrid_ij` | 座標グリッド（`xy`・`ij` 順）生成 |
+| `normalize_axis` | `i64 -> i64 -> i64`（負の軸番号の正規化） |
+| `reshape_infer` / `try_reshape` | `-1` による 1 軸自動推論付きの変形 |
+| `slice` | `[Slice.Axis] -> ref View<'a> { r } -> View<'a> { r }` |
+| `transpose` / `swapaxes` / `moveaxis` / `squeeze` / `squeeze_axis` / `expand_dims` | ゼロコピー軸並べ替え・圧縮・拡張 |
+| `atleast_1d` / `atleast_2d` / `atleast_3d` | 最小ランク保証のゼロコピービュー |
+| `flip` / `flip_axis` / `fliplr` / `flipud` / `rot90` | ゼロコピー反転・90 度回転 |
+| `ravel_view` / `flatten` | 1 次元化（連続ビュー／所有コピー） |
+| `roll` / `tile` / `repeat` / `pad` | 循環シフト・タイル・反復・パディング（`PadMode`: `Constant`/`Edge`/`Reflect`/`Symmetric`/`Wrap`） |
+| `concatenate` / `stack` / `vstack` / `hstack` / `dstack` / `column_stack` | 軸指定・縦横奥行・列結合 |
+| `split` / `split_at` / `array_split` / `hsplit` / `vsplit` / `dsplit` | ゼロコピー分割（`[View<'a>]` を返す） |
+| `mask` / `compress` / `nonzero` / `argwhere` / `flatnonzero` / `put_mask` | ブールマスク抽出・圧縮・非ゼロ座標・マスク代入 |
+| `where_select` / `where_scalar` / `clip` | 条件選択（3 入力ブロードキャスト対応）・クランプ |
+| `take` / `take_along_axis` / `put_along_axis` | 整数添字による収集（gather）・散布（scatter） |
+
+```tsuzuri run=[1,%2099,%2099,%204]%20[2,%203]
+let g = Tensor.of_array [2, 2] [1, 2, 3, 4]
+let bmask = Tensor.of_array [2, 2] [false, true, true, false]
+let picked = g[bmask]
+let updated = Tensor.update (\m -> m[bmask] = 99) g
+$"{Tensor.to_array updated} {Tensor.to_array picked}"
+```
+
+実行結果:
+
+```text
+[1, 99, 99, 4] [2, 3]
+```
 
 ### 引数の順序
 
@@ -230,23 +280,23 @@ $"{deref corner} {missing} {plane_count}"
 | `view`・`borrow`・`permute`・`index_axis`・`narrow`・`reshape_view`・`is_contiguous`・`count`・`at`・`get` | $O(\text{rank})$。窓を返す API は、形とストライドの配列を新しく確保する |
 | `init`・`fold`・`map`・`to_tensor` | $O(\text{count})$ |
 
-軸は 16 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。
+軸は 64 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。
 
 ## できないこと
 
-- 書き込める窓は、`Matrix` の [`MatrixView.Mut`](./matrix-view.md) だけです。N 次元の書き込める窓はありません。
-- ブロードキャスト、軸に沿った集計、`einsum` のような演算はありません。`fold` と `map` を使います。
-- 窓の並列・SIMD・GPU のカーネルはありません。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
-- 負のストライド（逆順の窓）と、17 本以上の軸は作れません。
+- 要素ごと算術 ufunc、軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC06〜NC09](../../../_features/README.md) で追加予定）。
+- 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
+- 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。
 
 ## まとめ
 
-- `Tensor` は形と行優先のバッファを所有し、`Tensor.View` は同じバッファを軸の並べ替え・固定・絞り込み・読み替えで見る借用の窓です。
-- `Matrix` とは複製なしで行き来でき、2 軸の窓は `MatrixView` として見られます。
+- `Tensor` は形と行優先のバッファを所有し、`Tensor.View`（読み取り専用・負/0 ストライド対応）と `Tensor.Mut`（単射な書き込み専用）が同じバッファを見ます。
+- `Matrix` とは複製なしで行き来でき、[`Slice`](./slice.md) やブールマスクを使った `t[k]` / `m[k] = v` の汎用添字が使えます。
 - 窓は持ち主を動かすと `E1014`、持ち主より長く使うと `E1013` です。
 
 ## 関連項目
 
+- [Slice](./slice.md) — スライス記述子 `Slice.Axis`
 - [Matrix](./matrix.md) — 2 次元の持ち主と、行列積
 - [MatrixView](./matrix-view.md) — 2 次元の窓と、書き込める窓
 - [Array](./array.md) — 平らな配列とスライス

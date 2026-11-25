@@ -257,6 +257,32 @@ extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module
 
 ネイティブ実行ファイルでは、`main` が実行されている間であれば、`extern` 呼び出しが返ったあと（たとえば `RegisterClassExW` に登録したウィンドウプロシージャを後の `DispatchMessageW` が呼ぶ場合や、OS のワーカースレッド・タイマーコールバックから呼ぶ場合）でも静的コールバックを安全に呼べます。ランタイム未参加のホストスレッドから呼ばれたときは、その呼び出しの間だけ一時的なコンテキストで実行します。一方、`main` が返ってランタイムの終了処理が始まった後にコールバックが呼ばれた場合は、未定義動作にはならず `Tsuzuri runtime: a callback was called after main returned; stop the timers, threads and windows that call it before main returns` を報告して即座にトラップします（Windows では `RaiseFailFastException` で Windows Error Reporting や呼び出し元の SEH に捕まらず即終了します）。
 
+### C レイアウトレコード（`@c_layout`）
+
+C や Win32 API の構造体とバイト単位で一致する配置が必要なレコードには、宣言の前に `@c_layout` または `@c_layout(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`）を付けます。
+
+- フィールドは宣言順に C の標準アライメント（`pack = N` があるときは各葉のアライメントを `N` 以下に丸めた値）と明示パディングで配置され、`#pragma pack(push, N)` と `_Static_assert`（サイズ・各フィールドオフセット検証）を含む C/C++ ヘッダーが生成されます。
+- 許可されるフィールド型は固定幅の数値、固定長配列 `[T; N]`、入れ子の `@c_layout` レコード、`extern type copy` ハンドル、`Maybe<Handle>`、`FnPtr<F>`、`ref ZString`、`Maybe<ref ZString>`（入力専用）です。
+- ネイティブと WASM（ポインタ幅フィールドを含まないもの）の双方、および C#/Python/C++/JS バインディングに対応します。
+
+### ホストメモリの読み書きビュー（`extern view`）
+
+ホストが所有する構造体ポインタを、外部 C ラッパーを書かずにネイティブ実行コードから直接読み書きするときは `extern view def` を使います（ネイティブ専用、WASM は `E1008`）。
+
+```tsuzuri
+@c_layout
+record Point { x: i32, y: i32 }
+
+@trusted
+extern view def read_point :: i64 -> Point
+@trusted
+extern view def write_point :: i64 -> ref Point -> unit
+```
+
+- 読み取りビューは `i64 -> R`、書き込みビューは `i64 -> ref R -> unit` の 2 形のみ（`R` は `@c_layout` レコードまたは通常のレコード）で、直接全引数適用でのみ呼べます。
+- 呼び出し位置にインライン展開され、NULL ポインタおよび型の要求アライメント違反は実行時トラップ（`BoundsCheck`）で即座に停止します。書き込み時はパディングバイトを上書きしません。
+- 効果解析では `@no_alloc`・`@no_copy`・`@terminates` が自動的に満たされ、`pure` と `@no_trap` は拒否されます。`tsuzuri audit` は外部シンボルではなく `-> view read` / `-> view write` として報告します。
+
 ### 信頼の印（@trusted）
 
 コンパイラは `extern` の C 関数の署名しか知らず、ABI・所有権・寿命の約束が守られているかを確かめられません。人が確かめたら、宣言の前に `@trusted` を書きます。印は検査も生成コードの変更もしません。

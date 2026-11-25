@@ -244,6 +244,7 @@ data[0] () * 100 + moved.length
 | `get` | `Copy<'a> => i64 -> i64 -> MatrixView<'a> { r } -> Maybe<'a>` |
 | `transpose` | `MatrixView<'a> { r } -> MatrixView<'a> { r }` |
 | `sub` | `i64 -> i64 -> i64 -> i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }` |
+| `slice` | `ref Slice.Axis -> ref Slice.Axis -> MatrixView<'a> { r } -> MatrixView<'a> { r }` |
 | `row` / `col` | `i64 -> MatrixView<'a> { r } -> MatrixView<'a> { r }` |
 | `is_contiguous` | `MatrixView<'a> { r } -> bool` |
 | `to_matrix` | `Copy<'a> => MatrixView<'a> { r } -> Matrix<'a>` |

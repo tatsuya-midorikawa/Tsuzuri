@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use crate::abi::Buffer;
 use crate::check::{CheckedFunction, CheckedModule, HostImport, Type, TypedExprKind};
 use crate::llvm::fixed_length;
-use crate::llvm::host_abi::{handle_c_name, record_layout, record_name};
+use crate::llvm::host_abi::{c_layout_fields, handle_c_name, record_layout, record_name};
 
 #[path = "bindings_native.rs"]
 mod native;
@@ -103,7 +103,9 @@ fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction
         .filter_map(|id| {
             let function = &module.functions[id];
             match &function.body.kind {
-                TypedExprKind::HostCall(import, _) => Some((import.as_ref(), function)),
+                TypedExprKind::HostCall(import, _) if import.view.is_none() => {
+                    Some((import.as_ref(), function))
+                }
                 _ => None,
             }
         })
@@ -205,25 +207,41 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
     records
 }
 
-/// The handle types of the signatures, callbacks included, by C name.
+/// The handle types of the signatures, callbacks and `@c_layout` records included, by C name.
 fn handles(module: &CheckedModule) -> BTreeSet<String> {
-    fn visit(ty: &Type, types: &crate::check::TypeContext<'_>, handles: &mut BTreeSet<String>) {
+    fn visit(
+        ty: &Type,
+        types: &crate::check::TypeContext<'_>,
+        handles: &mut BTreeSet<String>,
+        seen: &mut BTreeSet<Type>,
+    ) {
         let viewed = crate::abi::c_view(ty, types);
         match viewed.as_ref() {
             Type::Handle(name, _) => {
                 handles.insert(handle_c_name(name));
             }
-            Type::Reference(inner, _) => visit(inner, types, handles),
-            Type::FnPtr(inner) => visit(inner, types, handles),
+            Type::Reference(inner, _) => visit(inner, types, handles, seen),
+            Type::FnPtr(inner) => visit(inner, types, handles, seen),
             Type::Function(parameters, result) => {
-                parameters.iter().for_each(|ty| visit(ty, types, handles));
-                visit(result, types, handles);
+                parameters
+                    .iter()
+                    .for_each(|ty| visit(ty, types, handles, seen));
+                visit(result, types, handles, seen);
+            }
+            Type::Record(id, arguments) if types.records[*id].c_layout.is_some() => {
+                if !seen.insert(viewed.as_ref().clone()) {
+                    return;
+                }
+                for field in types.record_fields(*id, arguments) {
+                    visit(&field, types, handles, seen);
+                }
             }
             _ => {}
         }
     }
     let types = module.types();
     let mut handles = BTreeSet::new();
+    let mut seen = BTreeSet::new();
     for function in signatures(module) {
         for ty in function
             .signature
@@ -231,7 +249,7 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
             .iter()
             .chain([&function.signature.result])
         {
-            visit(ty, &types, &mut handles);
+            visit(ty, &types, &mut handles, &mut seen);
         }
     }
     handles
@@ -248,11 +266,20 @@ fn signatures(module: &CheckedModule) -> Vec<&CheckedFunction> {
     functions
 }
 
-/// The fields of a record with their byte offsets in the normalized C layout of `record_layout`.
+/// The fields of a record with their byte offsets in the C layout of `record_layout`.
 fn fields(ty: &Type, module: &CheckedModule) -> Vec<(String, usize, Type)> {
     let Type::Record(id, arguments) = ty else {
         unreachable!("ABI record checked")
     };
+    if let Some((cfields, _, _)) = c_layout_fields(ty, module) {
+        return module.records[*id]
+            .fields
+            .iter()
+            .zip(module.types().record_fields(*id, arguments))
+            .zip(cfields)
+            .map(|(((name, _), field), cfield)| (name.clone(), cfield.offset, field))
+            .collect();
+    }
     let mut offset = 0usize;
     module.records[*id]
         .fields
@@ -313,10 +340,16 @@ fn table_for(module: &CheckedModule, flavor: JsFlavor) -> Value {
                 .into_iter()
                 .map(|(field, offset, ty)| json!([field, offset, descriptor(&ty, module)]))
                 .collect();
-            (
-                name,
-                json!({ "size": size, "align": align, "fields": fields }),
-            )
+            let mut entry = json!({ "size": size, "align": align, "fields": fields });
+            if let Type::Record(id, _) = &ty
+                && let Some(layout) = module.records[*id].c_layout
+            {
+                entry["c"] = json!(true);
+                if let Some(pack) = layout.pack {
+                    entry["pack"] = json!(pack);
+                }
+            }
+            (name, entry)
         })
         .collect();
     let mut table = json!({
@@ -351,14 +384,82 @@ pub fn javascript(module: &CheckedModule) -> String {
     javascript_for(module, JsFlavor::Single)
 }
 
+fn has_c_layout(module: &CheckedModule) -> bool {
+    records(module)
+        .values()
+        .any(|ty| matches!(ty, Type::Record(id, _) if module.records[*id].c_layout.is_some()))
+}
+
+fn core_for(module: &CheckedModule) -> std::borrow::Cow<'static, str> {
+    if !has_c_layout(module) {
+        return std::borrow::Cow::Borrowed(RUNTIME_CORE);
+    }
+    let exact_helpers = r#"function exactScalar(type) {
+  const base = scalar(type);
+  if (type === "i8") return { ...base, read: (view, at) => view.getInt8(at), write: (view, at, value) => view.setInt8(at, value) };
+  if (type === "i8u") return { ...base, read: (view, at) => view.getUint8(at), write: (view, at, value) => view.setUint8(at, value) };
+  if (type === "i16") return { ...base, read: (view, at) => view.getInt16(at, true), write: (view, at, value) => view.setInt16(at, value, true) };
+  if (type === "i16u") return { ...base, read: (view, at) => view.getUint16(at, true), write: (view, at, value) => view.setUint16(at, value, true) };
+  return base;
+}
+function exactWidth(type) {
+  if (type === "i8" || type === "i8u") return 1;
+  if (type === "i16" || type === "i16u") return 2;
+  if (type === "i64" || type === "i64u" || type === "f64") return 8;
+  return 4;
+}
+"#;
+    let exact_resolve = r#"    const exact = TABLE.records[name].c === true;
+    const resolveField = (type) => {
+      if (!exact) return resolve(type);
+      if (Array.isArray(type) && type[0] === "array") {
+        const stride = exactWidth(type[1]);
+        const item = exactScalar(type[1]);
+        const length = type[2];
+        return {
+          check(value) {
+            if (!Array.isArray(value) || value.length !== length) throw mismatch(`an array of ${length} elements`);
+            const checked = new Array(length);
+            for (let index = 0; index < length; index++) {
+              try { checked[index] = item.check(value[index]); } catch (error) { throw inField(error, `[${index}]`); }
+            }
+            return checked;
+          },
+          write(view, at, checked) { for (let index = 0; index < length; index++) item.write(view, at + index * stride, checked[index]); },
+          read(view, at) { const value = new Array(length); for (let index = 0; index < length; index++) value[index] = item.read(view, at + index * stride); return value; },
+        };
+      }
+      if (typeof type === "string" && type.indexOf(":") < 0) return exactScalar(type);
+      return resolve(type);
+    };
+"#;
+    let core = splice(
+        RUNTIME_CORE,
+        &[
+            ("function handle(name) {\n", exact_helpers, false),
+            (
+                "    for (const [field, offset, type] of fields) {\n",
+                exact_resolve,
+                false,
+            ),
+        ],
+    );
+    std::borrow::Cow::Owned(core.replacen(
+        "      const converter = resolve(type);\n",
+        "      const converter = resolveField(type);\n",
+        1,
+    ))
+}
+
 /// The JavaScript module of `--emit bindings-js` for one flavor.
 pub fn javascript_for(module: &CheckedModule, flavor: JsFlavor) -> String {
     let tail = match flavor {
         JsFlavor::Single | JsFlavor::Jspi => RUNTIME_SINGLE,
         JsFlavor::Threads => RUNTIME_THREADS,
     };
+    let core = core_for(module);
     format!(
-        "{}const TABLE = {};\n{RUNTIME_CORE}{tail}",
+        "{}const TABLE = {};\n{core}{tail}",
         banner("//"),
         table_for(module, flavor)
     )
@@ -382,8 +483,9 @@ pub fn javascript_with_net(module: &CheckedModule) -> String {
     table["net"] = json!(true);
     // The sockets deliver their bytes into the module's memory, through its allocator.
     table["hostAbi"] = json!(true);
+    let base_core = core_for(module);
     let core = splice(
-        RUNTIME_CORE,
+        &base_core,
         &[
             (
                 NET_INSPECT_ANCHOR,

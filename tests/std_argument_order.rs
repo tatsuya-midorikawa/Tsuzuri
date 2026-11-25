@@ -71,6 +71,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Cbor", SingleArgument),
     ("Channel", Exempt(BUILTIN_HANDLE)),
     ("Char", SingleArgument),
+    ("Complex", subject(&["Complex"])),
     ("Cond", Exempt(BUILTIN_HANDLE)),
     ("Context", Exempt(BUILTIN_HANDLE)),
     ("DataChannel", Exempt(BUILTIN_HANDLE)),
@@ -138,10 +139,11 @@ const MODULES: &[(&str, Kind)] = &[
     ("SendOnly", Exempt(BUILTIN_HANDLE)),
     ("Seq", subject(&["Seq"])),
     ("Set", subject(&["Set"])),
+    ("Slice", subject(&["Axis"])),
     ("String", text(&["string", "[string]"], &["text", "parts"])),
     // A concurrent map is a resource that tzroutines share, like Mutex: the map comes first.
     ("SyncMap", Exempt(HANDLE)),
-    ("Tensor", subject(&["Tensor", "View"])),
+    ("Tensor", subject(&["Tensor", "View", "Mut"])),
     ("Test", Exempt(HARNESS)),
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
     ("Text", text(&["'s", "['s]"], &["text", "parts"])),

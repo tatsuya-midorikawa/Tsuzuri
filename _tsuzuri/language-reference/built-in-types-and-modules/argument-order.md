@@ -23,7 +23,7 @@
 | [Arena](./arena.md) | アリーナ | `Arena.insert value arena`、`Arena.get handle arena` |
 | [String](./string.md)、[ZString](./zstring.md)、[Utf8String](./utf8string.md)、[Text](./text.md)、[Unicode](./unicode.md)、[Regex](./regex.md) | 文字列（`Regex` では調べる文字列で、正規表現は先に取ります） | `String.slice first last text`、`ZString.of text`、`Text.find needle text`、`Regex.find_at re start text` |
 | [Anchor](./anchor.md) | スロットのトークン `i64`（`read`・`update`） | `token |> Anchor.read (\s -> s.count)`、`Anchor.update f token` |
-| [Matrix](./matrix.md)、[MatrixView](./matrix-view.md)、[Tensor](./tensor.md) | 行列、窓、テンソルの view | `Matrix.get row col m`、`MatrixView.write row col value window` |
+| [Matrix](./matrix.md)、[MatrixView](./matrix-view.md)、[Tensor](./tensor.md)、[Slice](./slice.md) | 行列、窓、テンソルの view・可変ビュー、スライス指定 | `Matrix.get row col m`、`MatrixView.write row col value window`、`Slice.resolve 5 axis` |
 | [Maybe](./maybe.md)、[Result](./result.md)、[IO](./io.md) | `Maybe`、`Result`、`IO` の値 | `Maybe.bind f maybe`、`IO.bind f action` |
 | [Json](./json.md) | 値、書き込み器、読み取り器 | `Json.write_bool flag writer`、`Json.to_utf8string_pretty indent value` |
 | [Seq](./seq.md)、[Gen](./gen.md) | シーケンス、生成器 | `Seq.map f seq`、`Gen.map f gen` |
@@ -104,7 +104,7 @@ values |> Array.write 0 (values[1] * 10)
 | 種類 | 関数 | 順序 | 理由 |
 | --- | --- | --- | --- |
 | 資源 | [File](./file.md)、[Net](./net.md) のソケット、[Process](./process.md)、[Atomic](./atomic.md)、[Mutex](./mutex.md)、[DataChannel](./datachannel.md)、[Owned](./owned.md)、[Rc と Arc](./rc.md) | ハンドルやパスが先で、データ、時間制限、コールバックが後です（`File.write handle bytes`、`DataChannel.send (ref sender) item`、`Mutex.with_lock (ref lock) callback`） | 状態を持つ資源への操作です。メソッドの受け手が先に来る .NET の呼び出しと同じ形にしています。 |
-| 数値 | [Int](./int.md)、[Math](./math.md)、[Simd](./simd.md)、[Char](./char.md)、[Utf8Char](./utf8char.md) | 数式の順です（`Math.pow base exponent`） | コレクションを取らず、被演算子の順が意味を持ちます。 |
+| 数値 | [Int](./int.md)、[Math](./math.md)、[Complex](./complex.md)、[Simd](./simd.md)、[Char](./char.md)、[Utf8Char](./utf8char.md) | 数式の順です（`Math.pow base exponent`、`Complex.div a b`） | コレクションを取らず、被演算子の順が意味を持ちます。 |
 | コンパイラが呼ぶ関数 | 計算式ビルダーの大文字で始まる操作（`Bind`、`Return`、`For` など）、`derive` が生成するコードが呼ぶ `Json.decode_field` と `Json.case_index` | プロトコルが決めます | 利用者は直接呼びません。 |
 | テストとベンチマークの入口 | [Gen](./gen.md) の `for_all`・`for_all_cases`・`check`、[Test](./test.md)、[Bench](./bench.md) | 生成器や準備が先で、本体のラムダが最後です | 結果を返さないので、パイプでつなぎません。 |
 

@@ -183,8 +183,15 @@ fn add_values left right =
         if compare_limbs (ref left.limbs) (ref right.limbs) >= 0 then make left.negative (sub_limbs (ref left.limbs) (ref right.limbs))
         else make right.negative (sub_limbs (ref right.limbs) (ref left.limbs))
 
-private def negate :: own BigInt -> BigInt
-fn negate value = BigInt { negative: !value.negative && value.limbs.length > 0, limbs: value.limbs }
+private def sub_values :: ref BigInt -> ref BigInt -> BigInt
+fn sub_values left right =
+    let right_neg = !right.negative && right.limbs.length > 0
+    if left.negative == right_neg then make left.negative (add_limbs (ref left.limbs) (ref right.limbs)) else
+        if compare_limbs (ref left.limbs) (ref right.limbs) >= 0 then make left.negative (sub_limbs (ref left.limbs) (ref right.limbs))
+        else make right_neg (sub_limbs (ref right.limbs) (ref left.limbs))
+
+private def negate :: ref BigInt -> BigInt
+fn negate value = BigInt { negative: !value.negative && value.limbs.length > 0, limbs: Array.copy (ref value.limbs) }
 
 /// The truncated quotient and the remainder, whose sign is the dividend's.
 private def divide :: ref BigInt -> ref BigInt -> (BigInt * BigInt)
@@ -205,7 +212,7 @@ fn compare left right =
         if left.negative then 0 - order else order
 
 /// `base ** exponent` for an exponent below 10^18; a negative exponent traps.
-private def power :: own BigInt -> own BigInt -> BigInt
+private def power :: ref BigInt -> ref BigInt -> BigInt
 fn power base exponent =
     assert (!exponent.negative && exponent.limbs.length <= 2)
     let mut count = 0
@@ -214,7 +221,7 @@ fn power base exponent =
         index = index - 1
         count = count * 1000000000 + exponent.limbs[index]
     let mut result = of_i64 1
-    let mut factor = base
+    let mut factor = BigInt { negative: base.negative, limbs: Array.copy (ref base.limbs) }
     while count > 0 do
         if count % 2 == 1 then
             result = make (result.negative != factor.negative) (mul_limbs (ref result.limbs) (ref factor.limbs))
@@ -223,13 +230,11 @@ fn power base exponent =
     result
 
 instance Add<BigInt> {
-    fn add left right = add_values (ref left) (ref right)
+    fn add left right = add_values left right
 }
 
 instance Sub<BigInt> {
-    fn sub left right =
-        let negated = negate right
-        add_values (ref left) (ref negated)
+    fn sub left right = sub_values left right
 }
 
 instance Mul<BigInt> {
@@ -238,13 +243,13 @@ instance Mul<BigInt> {
 
 instance Div<BigInt> {
     fn div left right =
-        match divide (ref left) (ref right) with
+        match divide left right with
         | (quotient, _remainder) -> quotient
 }
 
 instance Rem<BigInt> {
     fn rem left right =
-        match divide (ref left) (ref right) with
+        match divide left right with
         | (_quotient, remainder) -> remainder
 }
 

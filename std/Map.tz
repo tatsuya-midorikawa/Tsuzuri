@@ -504,3 +504,12 @@ fn invariants_hold map =
 		sum = sum + size
 		chunk = chunk + 1
 	valid && sum == map.length
+
+instance (Ord<'key>, Copy<'value>) => Index<Map<'key, 'value>, 'key, 'value> {
+	fn index key self =
+		match locate self key with
+		| (chunk, offset) ->
+			assert (offset >= 0)
+			let entries = chunk_of self chunk
+			entries[offset].value
+}

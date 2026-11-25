@@ -7,7 +7,7 @@
 | 規模 | M（`std/Complex.tz` と組み込み `Math` 関数の追加、native / WASM `-O0`・`-O3` 参照検証） |
 | 依存 | – |
 | 後続 | [NC06](NC06-tensor-ufuncs-and-elementwise.md), [NC08](NC08-linalg-core-and-einsum.md), [NC09](NC09-fft-and-polynomial.md), [NC10](NC10-random-distributions-and-generators.md), [NC11](NC11-tensor-codec-and-io.md), [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（新規 opt-in std モジュール `Complex` の `RESERVED_MODULES` 登録と新規 `Math.*` 組み込み関数群。決定事項 D1・D2 が要承認、ほかは既定案） |
 | 手本にする既存実装 | `src/llvm_math.rs`、`src/check.rs` の `Builtin::Math*`、`src/runtime/math.ll`、`std/Math.tz`、`std/Tensor.tz`、`tests/math.mjs` |

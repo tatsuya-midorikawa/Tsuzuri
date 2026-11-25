@@ -7,7 +7,7 @@
 | 規模 | XL（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | W13, W15, W18（Phase 2: W20, W22） |
 | 後続 | W24, W25, W27, W36 |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E05 の正規化の例外、E12 D5・D11、D-53）。決定事項 D1・D3・D7 が要承認で、ほかは既定案 |
 | 手本にする既存実装 | `src/llvm_abi.rs` の `record_layout`・`type_definitions`・`header_types`・`read_host_record`・`write_host_record`（境界の一時構造体）、`src/abi.rs` の `scalar_record`（field の検査）、`src/parser.rs` の `attributes`・`cpu_attribute`（宣言の前の属性。D-53）と `program.trusted`（宣言の名前で引く脇のリスト。E15）、`src/llvm_layout.rs` の `record_slots`（内部の並べ替え。変えない） |

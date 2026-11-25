@@ -122,6 +122,21 @@ impl Scalar {
         }
     }
 
+    fn ctypes_exact(self) -> &'static str {
+        match self {
+            Self::I8 => "_ctypes.c_int8",
+            Self::U8 => "_ctypes.c_uint8",
+            Self::I16 => "_ctypes.c_int16",
+            Self::U16 => "_ctypes.c_uint16",
+            Self::I32 | Self::Bool => "_ctypes.c_int32",
+            Self::U32 => "_ctypes.c_uint32",
+            Self::I64 => "_ctypes.c_int64",
+            Self::U64 => "_ctypes.c_uint64",
+            Self::F32 => "_ctypes.c_float",
+            Self::F64 => "_ctypes.c_double",
+        }
+    }
+
     fn cpp(self) -> &'static str {
         match self {
             Self::I8 => "std::int8_t",
@@ -343,13 +358,22 @@ fn csharp_element(buffer: Buffer) -> &'static str {
 }
 
 /// The C# struct that holds a C array field `T name[N]`, with its ABI element type.
-fn csharp_fixed(ty: &Type) -> (String, &'static str, usize) {
+fn csharp_fixed(ty: &Type, exact: bool) -> (String, &'static str, usize) {
     let Type::FixedArray(element, _) = ty else {
         unreachable!("fixed-length array field")
     };
-    let element = Scalar::of(element).expect("scalar elements").csharp_abi();
+    let scalar = Scalar::of(element).expect("scalar elements");
+    let element = if exact {
+        scalar.csharp()
+    } else {
+        scalar.csharp_abi()
+    };
     let length = fixed_length(ty);
     let title = match element {
+        "sbyte" => "SByte",
+        "byte" => "Byte",
+        "short" => "Int16",
+        "ushort" => "UInt16",
         "int" => "Int32",
         "uint" => "UInt32",
         "long" => "Int64",
@@ -512,13 +536,19 @@ pub fn csharp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     for (record, ty) in &records {
         let fields = fields(ty, module);
         let names: BTreeSet<String> = fields.iter().map(|(field, ..)| field.clone()).collect();
+        let c_layout = match &ty {
+            Type::Record(id, _) => module.records[*id].c_layout,
+            _ => None,
+        };
+        let is_c = c_layout.is_some();
+        let types = module.types();
         let mut backing = names.clone();
         let mut storage = Vec::new();
         let mut accessors = Vec::new();
         for (field, _, field_type) in &fields {
             let public = csharp_name(field);
             if let Some(scalar) = Scalar::of(field_type) {
-                if scalar.normalized() {
+                if !is_c && scalar.normalized() {
                     let store = unique(format!("{field}__abi"), &backing, "_");
                     backing.insert(store.clone());
                     storage.push(format!("private {} {store};", scalar.csharp_abi()));
@@ -539,9 +569,15 @@ pub fn csharp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                     storage.push(format!("public {} {public};", scalar.csharp()));
                 }
             } else if matches!(field_type, Type::FixedArray(..)) {
-                let (array, element, length) = csharp_fixed(field_type);
+                let (array, element, length) = csharp_fixed(field_type, is_c);
                 fixed.insert((array.clone(), element, length));
                 storage.push(format!("public {array} {public};"));
+            } else if let Type::Handle(hname, _) = crate::abi::c_view(field_type, &types).as_ref() {
+                storage.push(format!("public {} {public};", handle_c_name(hname)));
+            } else if matches!(field_type, Type::FnPtr(_))
+                || is_borrowed_zstring(field_type, &types)
+            {
+                storage.push(format!("public nint {public};"));
             } else {
                 storage.push(format!(
                     "public {} {public};",
@@ -555,11 +591,23 @@ pub fn csharp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 unique("empty__abi".into(), &backing, "_")
             ));
         }
-        let _ = writeln!(
-            output,
-            "    /// <summary>The Tsuzuri record <c>{}</c> in the C layout of the header: bool and 8/16-bit\n    /// integers are stored as 32-bit values.</summary>\n    [StructLayout(LayoutKind.Sequential)]\n    public struct {record}\n    {{",
-            xml_text(&ty.display(&module.types()))
-        );
+        if let Some(layout) = c_layout {
+            let attr = match layout.pack {
+                Some(pack) => format!("[StructLayout(LayoutKind.Sequential, Pack = {pack})]"),
+                None => "[StructLayout(LayoutKind.Sequential)]".to_owned(),
+            };
+            let _ = writeln!(
+                output,
+                "    /// <summary>The <c>@c_layout</c> Tsuzuri record <c>{}</c> in its exact C layout.</summary>\n    {attr}\n    public struct {record}\n    {{",
+                xml_text(&ty.display(&module.types()))
+            );
+        } else {
+            let _ = writeln!(
+                output,
+                "    /// <summary>The Tsuzuri record <c>{}</c> in the C layout of the header: bool and 8/16-bit\n    /// integers are stored as 32-bit values.</summary>\n    [StructLayout(LayoutKind.Sequential)]\n    public struct {record}\n    {{",
+                xml_text(&ty.display(&module.types()))
+            );
+        }
         for line in storage.iter().chain(&accessors) {
             let _ = writeln!(output, "        {line}");
         }
@@ -984,8 +1032,15 @@ fn python_ctype(shape: &Shape) -> String {
     }
 }
 
+fn is_borrowed_zstring(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    matches!(
+        crate::abi::c_view(ty, types).as_ref(),
+        Type::Reference(inner, false) if crate::abi::zstring(inner, types)
+    )
+}
+
 /// The Python expression that checks `value` and makes the C value of `ty`.
-fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str) -> String {
+fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str, exact: bool) -> String {
     if let Some(scalar) = Scalar::of(ty) {
         return match (scalar, scalar.range()) {
             (Scalar::Bool, _) => format!("_bool({value}, {at})"),
@@ -998,6 +1053,35 @@ fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str) -> Str
             _ => format!("_float({value}, {at})"),
         };
     }
+    let types = module.types();
+    if let Type::Handle(hname, _) = ty {
+        let h = handle_c_name(hname);
+        return format!(
+            "_integer({value}.value if isinstance({value}, {h}) else {value}, 1, _POINTER_MAX, \"{h}\", {at})"
+        );
+    }
+    if let Some(crate::abi::Nullable::Handle(Type::Handle(hname, _))) =
+        crate::abi::nullable(ty, &types)
+    {
+        let h = handle_c_name(hname);
+        return format!(
+            "(None if {value} is None else _integer({value}.value if isinstance({value}, {h}) else {value}, 1, _POINTER_MAX, \"{h}\", {at}))"
+        );
+    }
+    if matches!(ty, Type::FnPtr(_)) {
+        return format!("_integer({value}, 1, _POINTER_MAX, \"FnPtr\", {at})");
+    }
+    if matches!(
+        crate::abi::nullable(ty, &types),
+        Some(crate::abi::Nullable::BorrowedZString(_))
+    ) {
+        return format!(
+            "(None if {value} is None else _integer({value}, 1, _POINTER_MAX, \"ZString\", {at}))"
+        );
+    }
+    if is_borrowed_zstring(ty, &types) {
+        return format!("_integer({value}, 1, _POINTER_MAX, \"ZString\", {at})");
+    }
     match ty {
         Type::Record(..) => format!("_to_{}({value}, {at})", record_name(ty, module)),
         Type::FixedArray(element, _) => {
@@ -1005,16 +1089,32 @@ fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str) -> Str
             format!(
                 "_fixed({value}, {}, {}, lambda item, where: {}, {at})",
                 fixed_length(ty),
-                scalar.ctypes(),
-                python_lower(element, module, "item", "where")
+                if exact {
+                    scalar.ctypes_exact()
+                } else {
+                    scalar.ctypes()
+                },
+                python_lower(element, module, "item", "where", exact)
             )
         }
-        _ => unreachable!("record fields are scalars, arrays and records"),
+        _ => unreachable!("record fields are scalars, arrays, handles and records"),
     }
 }
 
 /// The Python expression that reads the C value `raw` of a record field.
 fn python_lift(ty: &Type, module: &CheckedModule, raw: &str) -> String {
+    let types = module.types();
+    if let Type::Handle(hname, _) = ty {
+        return format!("{}({raw})", handle_c_name(hname));
+    }
+    if let Some(crate::abi::Nullable::Handle(Type::Handle(hname, _))) =
+        crate::abi::nullable(ty, &types)
+    {
+        return format!("(None if not {raw} else {}({raw}))", handle_c_name(hname));
+    }
+    if matches!(ty, Type::FnPtr(_)) || is_borrowed_zstring(ty, &types) {
+        return raw.to_owned();
+    }
     match ty {
         Type::Bool => format!("{raw} != 0"),
         Type::Record(..) => format!("_from_{}({raw})", record_name(ty, module)),
@@ -1092,6 +1192,12 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             output,
             "\n\n@_dataclasses.dataclass\nclass {record}:\n    \"\"\"A Tsuzuri record; fixed-length array fields are tuples.\"\"\"\n"
         );
+        let c_layout = match &ty {
+            Type::Record(id, _) => module.records[*id].c_layout,
+            _ => None,
+        };
+        let is_c = c_layout.is_some();
+        let types = module.types();
         if fields.is_empty() {
             output.push_str("    pass\n");
         }
@@ -1101,6 +1207,22 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 Type::FixedArray(..) => "tuple".to_owned(),
                 Type::Bool => "bool".to_owned(),
                 Type::Binary(_) => "float".to_owned(),
+                Type::FnPtr(_) => "int".to_owned(),
+                _ if matches!(
+                    crate::abi::nullable(field_type, &types),
+                    Some(crate::abi::Nullable::Handle(_))
+                ) =>
+                {
+                    "int | None".to_owned()
+                }
+                _ if matches!(
+                    crate::abi::nullable(field_type, &types),
+                    Some(crate::abi::Nullable::BorrowedZString(_))
+                ) =>
+                {
+                    "int | None".to_owned()
+                }
+                _ if is_borrowed_zstring(field_type, &types) => "int".to_owned(),
                 _ => "int".to_owned(),
             };
             let _ = writeln!(output, "    {}: {annotation}", python_name(field));
@@ -1109,17 +1231,37 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             .iter()
             .enumerate()
             .map(|(index, (_, _, field_type))| {
-                let ctype = match field_type {
-                    Type::Record(..) => format!("_{}", record_name(field_type, module)),
-                    Type::FixedArray(element, _) => format!(
-                        "{} * {}",
-                        Scalar::of(element).expect("scalar elements").ctypes(),
-                        fixed_length(field_type)
-                    ),
-                    _ => Scalar::of(field_type)
-                        .expect("scalar field")
-                        .ctypes()
-                        .to_owned(),
+                let ctype = if matches!(
+                    crate::abi::c_view(field_type, &types).as_ref(),
+                    Type::Handle(..)
+                ) || matches!(field_type, Type::FnPtr(_))
+                    || is_borrowed_zstring(field_type, &types)
+                {
+                    "_ctypes.c_void_p".to_owned()
+                } else {
+                    match field_type {
+                        Type::Record(..) => format!("_{}", record_name(field_type, module)),
+                        Type::FixedArray(element, _) => {
+                            let scalar = Scalar::of(element).expect("scalar elements");
+                            format!(
+                                "{} * {}",
+                                if is_c {
+                                    scalar.ctypes_exact()
+                                } else {
+                                    scalar.ctypes()
+                                },
+                                fixed_length(field_type)
+                            )
+                        }
+                        _ => {
+                            let scalar = Scalar::of(field_type).expect("scalar field");
+                            if is_c {
+                                scalar.ctypes_exact().to_owned()
+                            } else {
+                                scalar.ctypes().to_owned()
+                            }
+                        }
+                    }
                 };
                 format!("(\"f{index}\", {ctype})")
             })
@@ -1129,9 +1271,13 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
         } else {
             structure.join(", ")
         };
+        let pack_line = match c_layout.and_then(|c| c.pack) {
+            Some(pack) => format!("    _pack_ = {pack}\n"),
+            None => String::new(),
+        };
         let _ = write!(
             output,
-            "\n\nclass _{record}(_ctypes.Structure):\n    _fields_ = [{structure}]\n\n\ndef _to_{record}(value, where):\n    try:\n        return _{record}(\n"
+            "\n\nclass _{record}(_ctypes.Structure):\n{pack_line}    _fields_ = [{structure}]\n\n\ndef _to_{record}(value, where):\n    try:\n        return _{record}(\n"
         );
         for (field, _, field_type) in &fields {
             let attribute = python_name(field);
@@ -1139,7 +1285,7 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             let _ = writeln!(
                 output,
                 "            {},",
-                python_lower(field_type, module, &format!("value.{attribute}"), &at)
+                python_lower(field_type, module, &format!("value.{attribute}"), &at, is_c)
             );
         }
         let lifted: Vec<_> = fields
@@ -1233,7 +1379,7 @@ fn python_export(
         match shape(ty, module) {
             Shape::Scalar(scalar) => {
                 argtypes.push(scalar.ctypes().to_owned());
-                arguments.push(python_lower(ty, module, &argument, &at));
+                arguments.push(python_lower(ty, module, &argument, &at, false));
             }
             Shape::Handle(handle) => {
                 argtypes.push("_ctypes.c_void_p".to_owned());

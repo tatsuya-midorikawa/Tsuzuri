@@ -1,0 +1,185 @@
+/// A per-axis slice descriptor for `Tensor`, `Matrix`, and `MatrixView` indexing.
+///
+/// Negative positions count backward from the axis length (`len + i`), following NumPy/Python
+/// slice clamping rules for ranges and trapping on out-of-bounds `At` indices or `step == 0`.
+union Axis =
+    | All
+    | At of i64
+    | Range of (i64 * i64)
+    | From of i64
+    | To of i64
+    | Step of (Maybe<i64> * Maybe<i64> * i64)
+    | NewAxis
+
+private pure def maybe_eq :: ref Maybe<i64> -> ref Maybe<i64> -> bool
+fn maybe_eq left right =
+    match (left, right) with
+    | (Maybe.None, Maybe.None) -> true
+    | (Maybe.Some a, Maybe.Some b) -> a == b
+    | _ -> false
+
+private pure def axis_eq :: ref Axis -> ref Axis -> bool
+fn axis_eq left right =
+    match (left, right) with
+    | (Axis.All, Axis.All) -> true
+    | (Axis.At a, Axis.At b) -> a == b
+    | (Axis.Range (a1, a2), Axis.Range (b1, b2)) -> a1 == b1 && a2 == b2
+    | (Axis.From a, Axis.From b) -> a == b
+    | (Axis.To a, Axis.To b) -> a == b
+    | (Axis.Step (as1, ae1, st1), Axis.Step (as2, ae2, st2)) ->
+        maybe_eq (ref as1) (ref as2) && maybe_eq (ref ae1) (ref ae2) && st1 == st2
+    | (Axis.NewAxis, Axis.NewAxis) -> true
+    | _ -> false
+
+instance Eq<Axis> {
+    fn eq left right = axis_eq left right
+    fn ne left right = not (axis_eq left right)
+}
+
+/// The normalized result of resolving one `Slice.Axis` against a concrete axis extent.
+union Resolved =
+    | Index of i64
+    | Slice of (i64 * i64 * i64)
+    | InsertAxis
+    deriving (Eq)
+
+/// Selects every position along the axis.
+///
+/// ```tsuzuri run=true
+/// Slice.all() == Slice.Axis.All
+/// ```
+pure def all :: Axis
+fn all = Axis.All
+
+/// Selects a single position `index` (negative counts from the end) and removes the axis.
+///
+/// ```tsuzuri run=true
+/// Slice.at (-1) == Slice.Axis.At (-1)
+/// ```
+pure def at :: own i64 -> Axis
+fn at index = Axis.At index
+
+/// Selects the half-open interval `[start, stop)` with step 1.
+///
+/// ```tsuzuri run=true
+/// Slice.range 1 4 == Slice.Axis.Range (1, 4)
+/// ```
+pure def range :: own i64 -> own i64 -> Axis
+fn range start stop = Axis.Range (start, stop)
+
+/// Selects from `start` through the end of the axis with step 1.
+///
+/// ```tsuzuri run=true
+/// Slice.from 2 == Slice.Axis.From 2
+/// ```
+pure def from :: own i64 -> Axis
+fn from start = Axis.From start
+
+/// Selects from the start of the axis up to (excluding) `stop` with step 1.
+///
+/// ```tsuzuri run=true
+/// Slice.until 3 == Slice.Axis.To 3
+/// ```
+pure def until :: own i64 -> Axis
+fn until stop = Axis.To stop
+
+/// Selects positions from `start` to `stop` (exclusive) by `step`; `step == 0` traps on resolve.
+///
+/// ```tsuzuri run=true
+/// Slice.step 1 7 2 == Slice.Axis.Step (Maybe.Some 1, Maybe.Some 7, 2)
+/// ```
+pure def step :: own i64 -> own i64 -> own i64 -> Axis
+fn step start stop stride = Axis.Step (Maybe.Some start, Maybe.Some stop, stride)
+
+/// Selects the whole axis stepping by `stride` (negative reverses the axis).
+///
+/// ```tsuzuri run=true
+/// Slice.every 2 == Slice.Axis.Step (Maybe.None, Maybe.None, 2)
+/// ```
+pure def every :: own i64 -> Axis
+fn every stride = Axis.Step (Maybe.None, Maybe.None, stride)
+
+/// Reverses the whole axis (`step = -1`).
+///
+/// ```tsuzuri run=true
+/// Slice.rev() == Slice.Axis.Step (Maybe.None, Maybe.None, -1)
+/// ```
+pure def rev :: Axis
+fn rev = Axis.Step (Maybe.None, Maybe.None, -1)
+
+/// Inserts a new length-1 axis without consuming an input axis.
+///
+/// ```tsuzuri run=true
+/// Slice.new_axis() == Slice.Axis.NewAxis
+/// ```
+pure def new_axis :: Axis
+fn new_axis = Axis.NewAxis
+
+private pure def clamp_pos :: own i64 -> own i64 -> i64
+fn clamp_pos index len =
+    let norm = if index < 0 then len + index else index
+    if norm < 0 then 0
+    elif norm > len then len
+    else norm
+
+private pure def clamp_neg :: own i64 -> own i64 -> i64
+fn clamp_neg index len =
+    let norm = if index < 0 then len + index else index
+    if norm < (-1) then (-1)
+    elif norm >= len then len - 1
+    else norm
+
+private pure def resolve_step :: own i64 -> Maybe<i64> -> Maybe<i64> -> own i64 -> Resolved
+fn resolve_step len start_opt stop_opt stride =
+    assert (len >= 0 && stride != 0)
+    if stride > 0 then
+        let start =
+            match start_opt with
+            | Maybe.Some s -> clamp_pos s len
+            | Maybe.None -> 0
+        let stop =
+            match stop_opt with
+            | Maybe.Some e -> clamp_pos e len
+            | Maybe.None -> len
+        if stop <= start then Resolved.Slice (0, 0, stride)
+        else
+            let dist = (stop as i64u) - (start as i64u)
+            let s = stride as i64u
+            let count = ((dist - 1i64u) / s + 1i64u) as i64
+            Resolved.Slice (start, count, stride)
+    else
+        let start =
+            match start_opt with
+            | Maybe.Some s -> clamp_neg s len
+            | Maybe.None -> len - 1
+        let stop =
+            match stop_opt with
+            | Maybe.Some e -> clamp_neg e len
+            | Maybe.None -> (-1)
+        if start <= stop then Resolved.Slice (0, 0, stride)
+        else
+            let dist = (start as i64u) - (stop as i64u)
+            let s = 0i64u - (stride as i64u)
+            let count = ((dist - 1i64u) / s + 1i64u) as i64
+            Resolved.Slice (start, count, stride)
+
+/// Resolves one `Slice.Axis` against an axis of extent `len >= 0`.
+/// Traps on out-of-bounds `At` indices or `step == 0`.
+///
+/// ```tsuzuri run=true
+/// Slice.resolve 5 (Slice.rev()) == Slice.Resolved.Slice (4, 5, -1)
+/// ```
+pure def resolve :: own i64 -> ref Axis -> Resolved
+fn resolve len axis =
+    assert (len >= 0)
+    match axis with
+    | Axis.All -> Resolved.Slice (0, len, 1)
+    | Axis.At index ->
+        let norm = if index < 0 then len + index else index
+        assert (norm >= 0 && norm < len)
+        Resolved.Index norm
+    | Axis.Range (start, stop) -> resolve_step len (Maybe.Some start) (Maybe.Some stop) 1
+    | Axis.From start -> resolve_step len (Maybe.Some start) Maybe.None 1
+    | Axis.To stop -> resolve_step len Maybe.None (Maybe.Some stop) 1
+    | Axis.Step (start_opt, stop_opt, stride) -> resolve_step len start_opt stop_opt stride
+    | Axis.NewAxis -> Resolved.InsertAxis

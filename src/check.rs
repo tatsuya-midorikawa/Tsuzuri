@@ -737,7 +737,7 @@ impl Type {
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
         self.has_user_drop(types)
-            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
+            || matches!(self, Self::Record(id, _) if types.records[*id].origin == ModuleOrigin::Std && matches!(types.records[*id].name.as_str(), "Seq.Seq" | "Gpu.Device" | "Gpu.Buffer" | "Owned.Function" | "Regex.Regex" | "Matrix.Matrix" | "Tensor.Tensor" | "Tensor.View" | "Tensor.Mut" | "Atomic.Atomic" | "Mutex.Mutex" | "RwMutex.RwMutex" | "OnceValue.OnceValue"))
     }
 
     /// The std `Atomic.Atomic`, `Mutex.Mutex` and, since TZ06, `RwMutex.RwMutex` and
@@ -1606,6 +1606,29 @@ pub enum Builtin {
     MathPow,
     MathCbrt,
     MathHypot,
+    MathSinh,
+    MathCosh,
+    MathTanh,
+    MathAsinh,
+    MathAcosh,
+    MathAtanh,
+    MathExpm1,
+    MathLog1p,
+    MathLogaddexp,
+    MathLogaddexp2,
+    MathSinc,
+    MathDegrees,
+    MathRadians,
+    MathFmod,
+    MathFloorDiv,
+    MathFloorMod,
+    MathIeeeRemainder,
+    MathModf,
+    MathFrexp,
+    MathLdexp,
+    MathNextafter,
+    MathSign,
+    MathSignbit,
     ToFloat,
     ToInt,
     Assert,
@@ -1816,6 +1839,12 @@ pub enum Builtin {
     IntWrappingNeg,
     IntCheckedPow,
     IntWideningMul,
+    IntGcd,
+    IntLcm,
+    IntCheckedGcd,
+    IntCheckedLcm,
+    IntDivFloor,
+    IntRemFloor,
     /// `Owned.drop :: 'a -> unit` drops its argument now (B07).
     OwnedDrop,
     /// `Owned.function :: ('a -> 'b) -> Owned.Function<'a, 'b>` (B07).
@@ -2251,6 +2280,29 @@ impl Builtin {
         Self::MathPow,
         Self::MathCbrt,
         Self::MathHypot,
+        Self::MathSinh,
+        Self::MathCosh,
+        Self::MathTanh,
+        Self::MathAsinh,
+        Self::MathAcosh,
+        Self::MathAtanh,
+        Self::MathExpm1,
+        Self::MathLog1p,
+        Self::MathLogaddexp,
+        Self::MathLogaddexp2,
+        Self::MathSinc,
+        Self::MathDegrees,
+        Self::MathRadians,
+        Self::MathFmod,
+        Self::MathFloorDiv,
+        Self::MathFloorMod,
+        Self::MathIeeeRemainder,
+        Self::MathModf,
+        Self::MathFrexp,
+        Self::MathLdexp,
+        Self::MathNextafter,
+        Self::MathSign,
+        Self::MathSignbit,
         Self::ToFloat,
         Self::ToInt,
         Self::Assert,
@@ -2406,6 +2458,12 @@ impl Builtin {
         Self::IntWrappingNeg,
         Self::IntCheckedPow,
         Self::IntWideningMul,
+        Self::IntGcd,
+        Self::IntLcm,
+        Self::IntCheckedGcd,
+        Self::IntCheckedLcm,
+        Self::IntDivFloor,
+        Self::IntRemFloor,
         Self::OwnedDrop,
         Self::OwnedFunction,
         Self::OwnedCall,
@@ -2606,6 +2664,29 @@ impl Builtin {
             Self::MathPow => "Math.pow",
             Self::MathCbrt => "Math.cbrt",
             Self::MathHypot => "Math.hypot",
+            Self::MathSinh => "Math.sinh",
+            Self::MathCosh => "Math.cosh",
+            Self::MathTanh => "Math.tanh",
+            Self::MathAsinh => "Math.asinh",
+            Self::MathAcosh => "Math.acosh",
+            Self::MathAtanh => "Math.atanh",
+            Self::MathExpm1 => "Math.expm1",
+            Self::MathLog1p => "Math.log1p",
+            Self::MathLogaddexp => "Math.logaddexp",
+            Self::MathLogaddexp2 => "Math.logaddexp2",
+            Self::MathSinc => "Math.sinc",
+            Self::MathDegrees => "Math.degrees",
+            Self::MathRadians => "Math.radians",
+            Self::MathFmod => "Math.fmod",
+            Self::MathFloorDiv => "Math.floor_div",
+            Self::MathFloorMod => "Math.floor_mod",
+            Self::MathIeeeRemainder => "Math.ieee_remainder",
+            Self::MathModf => "Math.modf",
+            Self::MathFrexp => "Math.frexp",
+            Self::MathLdexp => "Math.ldexp",
+            Self::MathNextafter => "Math.nextafter",
+            Self::MathSign => "Math.sign",
+            Self::MathSignbit => "Math.signbit",
             Self::ToFloat => "to_float",
             Self::ToInt => "to_int",
             Self::Assert => "assert",
@@ -2761,6 +2842,12 @@ impl Builtin {
             Self::IntWrappingNeg => "Int.wrapping_neg",
             Self::IntCheckedPow => "Int.checked_pow",
             Self::IntWideningMul => "Int.widening_mul",
+            Self::IntGcd => "Int.gcd",
+            Self::IntLcm => "Int.lcm",
+            Self::IntCheckedGcd => "Int.checked_gcd",
+            Self::IntCheckedLcm => "Int.checked_lcm",
+            Self::IntDivFloor => "Int.div_floor",
+            Self::IntRemFloor => "Int.rem_floor",
             Self::OwnedDrop => "Owned.drop",
             Self::OwnedFunction => "Owned.function",
             Self::OwnedCall => "Owned.call",
@@ -3493,7 +3580,13 @@ impl Builtin {
             | Self::IntWrappingMul
             | Self::IntWrappingNeg
             | Self::IntCheckedPow
-            | Self::IntWideningMul => {
+            | Self::IntWideningMul
+            | Self::IntGcd
+            | Self::IntLcm
+            | Self::IntCheckedGcd
+            | Self::IntCheckedLcm
+            | Self::IntDivFloor
+            | Self::IntRemFloor => {
                 let parameters = match self {
                     Self::IntAbs
                     | Self::IntUnsignedAbs
@@ -3527,7 +3620,9 @@ impl Builtin {
                     | Self::IntCheckedDiv
                     | Self::IntCheckedRem
                     | Self::IntCheckedNeg
-                    | Self::IntCheckedPow => BuiltinType::Std {
+                    | Self::IntCheckedPow
+                    | Self::IntCheckedGcd
+                    | Self::IntCheckedLcm => BuiltinType::Std {
                         module: "Maybe",
                         name: "Maybe",
                         args: vec![a()],
@@ -3563,6 +3658,8 @@ impl Builtin {
             | Self::MathIsNan
             | Self::MathIsInfinite
             | Self::MathIsFinite
+            | Self::MathSign
+            | Self::MathSignbit
             | Self::MathPi
             | Self::MathE => {
                 let count = match self {
@@ -3573,7 +3670,7 @@ impl Builtin {
                 };
                 let result = if matches!(
                     self,
-                    Self::MathIsNan | Self::MathIsInfinite | Self::MathIsFinite
+                    Self::MathIsNan | Self::MathIsInfinite | Self::MathIsFinite | Self::MathSignbit
                 ) {
                     Concrete(Type::Bool)
                 } else {
@@ -3602,15 +3699,52 @@ impl Builtin {
             | Self::MathLog10
             | Self::MathPow
             | Self::MathCbrt
-            | Self::MathHypot => {
-                let count = if matches!(self, Self::MathAtan2 | Self::MathPow | Self::MathHypot) {
-                    2
-                } else {
-                    1
+            | Self::MathHypot
+            | Self::MathSinh
+            | Self::MathCosh
+            | Self::MathTanh
+            | Self::MathAsinh
+            | Self::MathAcosh
+            | Self::MathAtanh
+            | Self::MathExpm1
+            | Self::MathLog1p
+            | Self::MathLogaddexp
+            | Self::MathLogaddexp2
+            | Self::MathSinc
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::MathFmod
+            | Self::MathFloorDiv
+            | Self::MathFloorMod
+            | Self::MathIeeeRemainder
+            | Self::MathModf
+            | Self::MathFrexp
+            | Self::MathLdexp
+            | Self::MathNextafter => {
+                let parameters = match self {
+                    Self::MathLdexp => vec![a(), Concrete(Type::Integer(32, true))],
+                    Self::MathAtan2
+                    | Self::MathPow
+                    | Self::MathHypot
+                    | Self::MathLogaddexp
+                    | Self::MathLogaddexp2
+                    | Self::MathFmod
+                    | Self::MathFloorDiv
+                    | Self::MathFloorMod
+                    | Self::MathIeeeRemainder
+                    | Self::MathNextafter => vec![a(), a()],
+                    _ => vec![a()],
+                };
+                let result = match self {
+                    Self::MathModf => BuiltinType::Tuple(vec![a(), a()]),
+                    Self::MathFrexp => {
+                        BuiltinType::Tuple(vec![a(), Concrete(Type::Integer(32, true))])
+                    }
+                    _ => a(),
                 };
                 (
-                    vec![a(); count],
-                    a(),
+                    parameters,
+                    result,
                     vec![BuiltinConstraint {
                         class: "Elementary",
                         ty: a(),
@@ -4961,6 +5095,8 @@ pub struct CheckedRecord {
     pub span: Span,
     /// Every instance of the record has a user `Drop` instance (B07).
     pub user_drop: bool,
+    /// Explicit C struct layout from `@c_layout` / `@c_layout(pack = N)` (W21).
+    pub c_layout: Option<crate::syntax::CLayout>,
     /// Declared region count. 0 and 1 both mean one shared region (A09).
     pub(crate) region_count: usize,
     /// Only when `region_count >= 2`: per field in declaration order, the record-region mask of
@@ -5269,6 +5405,8 @@ pub struct HostImport {
     pub callbacks: bool,
     /// W13: `(parameter_index, CountLength)` sorted by parameter index from `@count(pos, len)`.
     pub counts: Vec<(usize, crate::syntax::CountLength)>,
+    /// W24: `Some(Read | Write)` when declared as `extern view def`.
+    pub view: Option<crate::syntax::ViewDirection>,
 }
 
 impl HostImport {
@@ -8463,7 +8601,17 @@ fn check_modules_collect(
             for ty in external.parameters.iter().chain([&external.result]) {
                 regions::reject_local(ty)?;
             }
-            let import = if let Some(link) = &external.link {
+            let import = if external.view {
+                HostImport {
+                    native_symbol: String::new(),
+                    wasm_module: String::new(),
+                    wasm_name: String::new(),
+                    explicit: false,
+                    callbacks: false,
+                    counts: Vec::new(),
+                    view: Some(crate::syntax::ViewDirection::Read),
+                }
+            } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
                     return Err(error);
                 }
@@ -8477,6 +8625,7 @@ fn check_modules_collect(
                     explicit: true,
                     callbacks: false,
                     counts: Vec::new(),
+                    view: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -8494,6 +8643,7 @@ fn check_modules_collect(
                     explicit: false,
                     callbacks: false,
                     counts: Vec::new(),
+                    view: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8868,6 +9018,15 @@ fn check_modules_collect(
         }
     }
     names.flush_renamed(diagnostics).check()?;
+    let mut c_layout_by_name: BTreeMap<String, crate::syntax::CLayout> = BTreeMap::new();
+    for module in modules {
+        for attr in &module.program.c_layouts {
+            c_layout_by_name.insert(
+                format!("{}.{}", module.name, attr.target.text),
+                crate::syntax::CLayout { pack: attr.pack },
+            );
+        }
+    }
     let mut records = Vec::new();
     for (module, record) in &record_declarations {
         if diagnostics.is_full() {
@@ -8952,6 +9111,7 @@ fn check_modules_collect(
                 ));
             }
             Ok(CheckedRecord {
+                c_layout: c_layout_by_name.get(&qualified).copied(),
                 name: qualified,
                 visibility: record.visibility,
                 origin: names.origin(module),
@@ -9101,6 +9261,8 @@ fn check_modules_collect(
         records: &records,
         unions: &unions,
     };
+    validate_c_layout_records(&record_declarations, &records, &types, diagnostics);
+    diagnostics.check()?;
     classes.check_superclasses(&types, diagnostics)?;
     let mut signatures = Vec::new();
     names.declared = vec![DeclaredFunction::default(); function_declarations.len()];
@@ -9284,6 +9446,38 @@ fn check_modules_collect(
                     function.name.span,
                 ));
             }
+            if function.exported {
+                for ty in public_parameters
+                    .iter()
+                    .chain(std::iter::once(public_result.as_ref()))
+                {
+                    if let Some((outer, fname, inner)) =
+                        crate::abi::plain_record_contains_c_layout(ty, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::CLayoutInPlainRecord,
+                            format!(
+                                "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
+                            ),
+                            function.name.span,
+                        ));
+                    }
+                    let rec = match ty {
+                        Type::Reference(inner, _) => inner.as_ref(),
+                        _ => ty,
+                    };
+                    if crate::abi::c_layout_has_zstring_field(rec, &types) {
+                        let rname = rec.display(&types);
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::CLayoutInputOnly,
+                            format!(
+                                "'@c_layout' record '{rname}' holds a borrowed ZString, which the host can only read; pass it as an extern argument '{rname}' or 'ref {rname}'"
+                            ),
+                            function.name.span,
+                        ));
+                    }
+                }
+            }
             if function.exported
                 && (public_parameters
                     .iter()
@@ -9328,138 +9522,218 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if crate::abi::has_invalid_extern_maybe(
-                    &signature.parameters,
-                    &signature.result,
-                    &types,
-                ) {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::AbiNullablePayload,
-                        "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
-                        function.name.span,
-                    ));
-                }
-                if crate::abi::reaches_fnptr(&signature.result, &types)
-                    || signature.parameters.iter().any(|ty| match ty {
-                        Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
-                        Type::Reference(inner, true) => crate::abi::reaches_fnptr(inner, &types),
-                        _ => false,
-                    })
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::FnptrFromHost,
-                        "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
-                        function.name.span,
-                    ));
-                }
-                if signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::FnptrSignature,
-                        "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
-                        function.name.span,
-                    ));
-                }
-                if signature
-                    .parameters
-                    .iter()
-                    .any(|ty| matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types))
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::UnsupportedExternSignature,
-                        "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
-                        function.name.span,
-                    ));
-                }
-                if signature.parameters.iter().any(|ty| {
-                    !crate::abi::extern_parameter(ty, &types)
-                        && *ty != Type::Unit
-                        && !matches!(ty, Type::Function(..))
-                }) || !crate::abi::extern_result(&signature.result, &types)
-                {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::UnsupportedExternSignature,
-                        "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
-                        function.name.span,
-                    ));
-                }
-                if let Some(raw) = counts_by_id.get(&id) {
-                    let mut validated: Vec<(usize, CountLength)> = Vec::new();
-                    for attr in raw {
-                        let pos = attr.position as usize;
-                        if pos == 0 || pos > signature.parameters.len() {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountPositionOutOfRange,
-                                format!(
-                                    "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
-                                    attr.position,
-                                    signature.parameters.len()
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        let index = pos - 1;
-                        if crate::abi::extern_buffer_parameter(&signature.parameters[index])
-                            .is_none()
-                        {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountNotBuffer,
-                                format!(
-                                    "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
-                                    signature.parameters[index].display(&types)
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        if validated.iter().any(|(seen, _)| *seen == index) {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::CountRepeated,
-                                format!(
-                                    "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
-                                ),
-                                attr.span,
-                            ));
-                        }
-                        validated.push((index, attr.length));
-                    }
-                    validated.sort_by_key(|(index, _)| *index);
-                    external_functions.get_mut(&id).unwrap().counts = validated;
-                }
-                let import = &external_functions[&id];
-                if import.explicit {
-                    let declared = crate::abi::c_signature(
-                        &signature.parameters,
+                if external_functions[&id].view.is_some() {
+                    let (direction, target_record) = match (
+                        signature.parameters.as_slice(),
                         &signature.result,
-                        &import.counts,
-                        &types,
-                    );
-                    match explicit_symbols.entry(import.native_symbol.clone()) {
-                        std::collections::btree_map::Entry::Vacant(slot) => {
-                            slot.insert((
-                                declared.clone(),
-                                declared,
-                                false,
-                                import.wasm_module.clone(),
+                    ) {
+                        ([Type::Integer(64, true)], rec @ Type::Record(..)) => {
+                            (crate::syntax::ViewDirection::Read, rec)
+                        }
+                        ([Type::Integer(64, true), Type::Reference(rec, false)], Type::Unit)
+                            if matches!(rec.as_ref(), Type::Record(..)) =>
+                        {
+                            (crate::syntax::ViewDirection::Write, rec.as_ref())
+                        }
+                        _ => {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ExternViewSignature,
+                                "an extern view is 'i64 -> R' to read or 'i64 -> ref R -> unit' to write, with R a record",
                                 function.name.span,
                             ));
                         }
-                        std::collections::btree_map::Entry::Occupied(mut slot) => {
-                            let (first, canonical, mixed, wasm_module, first_span) = slot.get_mut();
-                            if *wasm_module != import.wasm_module {
+                    };
+                    if let Err(reason) =
+                        crate::abi::view_record(target_record, &types, &function.name.text)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ExternViewRecord,
+                            reason,
+                            function.name.span,
+                        ));
+                    }
+                    external_functions.get_mut(&id).unwrap().view = Some(direction);
+                } else {
+                    if crate::abi::has_invalid_extern_maybe(
+                        &signature.parameters,
+                        &signature.result,
+                        &types,
+                    ) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::AbiNullablePayload,
+                            "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
+                            function.name.span,
+                        ));
+                    }
+                    for ty in signature
+                        .parameters
+                        .iter()
+                        .chain(std::iter::once(&signature.result))
+                    {
+                        if let Some((outer, fname, inner)) =
+                            crate::abi::plain_record_contains_c_layout(ty, &types)
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::CLayoutInPlainRecord,
+                                format!(
+                                    "record '{outer}' has the '@c_layout' record '{inner}' as field '{fname}'; add '@c_layout' to '{outer}' to pass it to the host"
+                                ),
+                                function.name.span,
+                            ));
+                        }
+                    }
+                    if crate::abi::reaches_fnptr(&signature.result, &types)
+                        || signature.parameters.iter().any(|ty| match ty {
+                            Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
+                            Type::Reference(inner, true) => {
+                                crate::abi::reaches_fnptr(inner, &types)
+                            }
+                            _ => false,
+                        })
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FnptrFromHost,
+                            "FnPtr values pass Tsuzuri callbacks to the host and cannot be returned by 'extern' functions or received inside host callbacks or mutable out-parameters",
+                            function.name.span,
+                        ));
+                    }
+                    if crate::abi::c_layout_has_zstring_field(&signature.result, &types)
+                    || signature.parameters.iter().any(|ty| {
+                        matches!(ty, Type::Reference(inner, true) if crate::abi::c_layout_has_zstring_field(inner, &types))
+                    })
+                {
+                    let bad_rec = if crate::abi::c_layout_has_zstring_field(&signature.result, &types) {
+                        &signature.result
+                    } else {
+                        signature
+                            .parameters
+                            .iter()
+                            .find_map(|ty| match ty {
+                                Type::Reference(inner, true)
+                                    if crate::abi::c_layout_has_zstring_field(inner, &types) =>
+                                {
+                                    Some(inner.as_ref())
+                                }
+                                _ => None,
+                            })
+                            .unwrap()
+                    };
+                    let rname = bad_rec.display(&types);
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::CLayoutInputOnly,
+                        format!(
+                            "'@c_layout' record '{rname}' holds a borrowed ZString, which the host can only read; pass it as an extern argument '{rname}' or 'ref {rname}'"
+                        ),
+                        function.name.span,
+                    ));
+                }
+                    if signature
+                        .parameters
+                        .iter()
+                        .any(|ty| matches!(ty, Type::FnPtr(_)) && !crate::abi::fnptr(ty, &types))
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::FnptrSignature,
+                            "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                            function.name.span,
+                        ));
+                    }
+                    if signature.parameters.iter().any(|ty| {
+                        matches!(ty, Type::Function(..)) && !crate::abi::callback(ty, &types)
+                    }) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UnsupportedExternSignature,
+                            "extern callback parameters support functions over scalar, unit and extern handle types; buffers, records and nested functions are not supported",
+                            function.name.span,
+                        ));
+                    }
+                    if signature.parameters.iter().any(|ty| {
+                        !crate::abi::extern_parameter(ty, &types)
+                            && *ty != Type::Unit
+                            && !matches!(ty, Type::Function(..))
+                    }) || !crate::abi::extern_result(&signature.result, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::UnsupportedExternSignature,
+                            "extern parameters support scalars, unit, extern handles, callbacks, scalar records by value or by shared or mutable borrow, mutable scalars, and shared or mutable buffers of i64, f64, ubyte, i16u, i32 or i32u (plus string and utf8string inputs); results support scalars, unit, handles, owned buffers and scalar records",
+                            function.name.span,
+                        ));
+                    }
+                    if let Some(raw) = counts_by_id.get(&id) {
+                        let mut validated: Vec<(usize, CountLength)> = Vec::new();
+                        for attr in raw {
+                            let pos = attr.position as usize;
+                            if pos == 0 || pos > signature.parameters.len() {
                                 return Err(Diagnostic::of(
-                                    DiagnosticKind::ConflictingExternDeclaration,
+                                    DiagnosticKind::CountPositionOutOfRange,
                                     format!(
-                                        "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
-                                        import.native_symbol
+                                        "'@count' position {} is out of range for an extern with {} parameter(s); positions are 1-based",
+                                        attr.position,
+                                        signature.parameters.len()
                                     ),
+                                    attr.span,
+                                ));
+                            }
+                            let index = pos - 1;
+                            if crate::abi::extern_buffer_parameter(&signature.parameters[index])
+                                .is_none()
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::CountNotBuffer,
+                                    format!(
+                                        "'@count' parameter {pos} has type '{}', which is not an ABI buffer; '@count' applies only to shared or mutable slice/string buffers",
+                                        signature.parameters[index].display(&types)
+                                    ),
+                                    attr.span,
+                                ));
+                            }
+                            if validated.iter().any(|(seen, _)| *seen == index) {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::CountRepeated,
+                                    format!(
+                                        "'@count' is specified more than once for parameter {pos}; keep one '@count' per buffer parameter"
+                                    ),
+                                    attr.span,
+                                ));
+                            }
+                            validated.push((index, attr.length));
+                        }
+                        validated.sort_by_key(|(index, _)| *index);
+                        external_functions.get_mut(&id).unwrap().counts = validated;
+                    }
+                    let import = &external_functions[&id];
+                    if import.explicit {
+                        let declared = crate::abi::c_signature(
+                            &signature.parameters,
+                            &signature.result,
+                            &import.counts,
+                            &types,
+                        );
+                        match explicit_symbols.entry(import.native_symbol.clone()) {
+                            std::collections::btree_map::Entry::Vacant(slot) => {
+                                slot.insert((
+                                    declared.clone(),
+                                    declared,
+                                    false,
+                                    import.wasm_module.clone(),
                                     function.name.span,
                                 ));
                             }
-                            if let Some(reason) = declared.mismatch(first) {
-                                return Err(Diagnostic::of(
+                            std::collections::btree_map::Entry::Occupied(mut slot) => {
+                                let (first, canonical, mixed, wasm_module, first_span) =
+                                    slot.get_mut();
+                                if *wasm_module != import.wasm_module {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::ConflictingExternDeclaration,
+                                        format!(
+                                            "extern symbol '{}' is declared with different signatures or import modules; declare it once and call it from other modules",
+                                            import.native_symbol
+                                        ),
+                                        function.name.span,
+                                    ));
+                                }
+                                if let Some(reason) = declared.mismatch(first) {
+                                    return Err(Diagnostic::of(
                                     DiagnosticKind::ConflictingExternDeclaration,
                                     format!(
                                         "extern symbol '{}' has a different C ABI here: {reason}; declarations of one symbol may differ only in types that pass the same way",
@@ -9472,9 +9746,10 @@ fn check_modules_collect(
                                     "first defined here",
                                     *first_span,
                                 ));
-                            }
-                            if canonical.merge_canonical(&declared) || declared != *first {
-                                *mixed = true;
+                                }
+                                if canonical.merge_canonical(&declared) || declared != *first {
+                                    *mixed = true;
+                                }
                             }
                         }
                     }
@@ -10473,8 +10748,13 @@ fn lower_zstring_literals(
 
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
+    let is_view_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some());
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
+        _ => None,
+    };
+    let view_extern = |expression: &TypedExpr| match &expression.kind {
+        TypedExprKind::Function(FunctionRef::User(id)) if is_view_extern(*id) => Some(*id),
         _ => None,
     };
     let is_fnptr_of = |expression: &TypedExpr| {
@@ -10489,6 +10769,16 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             DiagnosticKind::ExternCallbackCallForm,
             format!(
                 "extern '{}' takes a callback and must be called directly with all arguments",
+                module.functions[id].name
+            ),
+            span,
+        )
+    };
+    let view_direct_only = |id: usize, span: Span| {
+        Diagnostic::of(
+            DiagnosticKind::ExternViewCallForm,
+            format!(
+                "extern view '{}' must be called directly with all its arguments",
                 module.functions[id].name
             ),
             span,
@@ -10567,6 +10857,19 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
                 // The callee is the extern itself; only the arguments can hold other uses.
                 pending.extend(arguments.iter());
                 continue;
+            }
+            if let TypedExprKind::Call(callee, arguments) = &expression.kind
+                && let Some(id) = view_extern(callee)
+            {
+                let target = &module.functions[id];
+                if arguments.len() != target.parameters.len() {
+                    return Err(view_direct_only(id, expression.span));
+                }
+                pending.extend(arguments.iter());
+                continue;
+            }
+            if let Some(id) = view_extern(expression) {
+                return Err(view_direct_only(id, expression.span));
             }
             if let Some(id) = callback_extern(expression) {
                 return Err(direct_only(id, expression.span));
@@ -10911,6 +11214,11 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
         .iter()
         .take_while(|binding| binding.recursion == Recursion::And)
         .count()
+}
+
+#[cfg(test)]
+pub(crate) fn is_builtin_class(name: &str) -> bool {
+    polymorph::BUILTIN_CLASSES.contains(&name)
 }
 
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
@@ -12166,6 +12474,160 @@ fn validate_size(ty: &Type, types: &TypeContext<'_>, span: Span) -> Result<usize
 struct Validation<'a> {
     layouts: Layouts<'a>,
     instances: BTreeSet<Type>,
+}
+
+/// W21: validates every `@c_layout` record declaration (even when unused at an ABI boundary).
+fn validate_c_layout_records(
+    declarations: &[(&str, &RecordDecl)],
+    records: &[CheckedRecord],
+    types: &TypeContext<'_>,
+    diagnostics: &mut Diagnostics,
+) {
+    let decl_by_name: BTreeMap<String, &RecordDecl> = declarations
+        .iter()
+        .map(|(module, decl)| (format!("{module}.{}", decl.name.text), *decl))
+        .collect();
+    for record in records {
+        if diagnostics.is_full() {
+            break;
+        }
+        if record.c_layout.is_none() {
+            continue;
+        }
+        let short = record.name.rsplit('.').next().unwrap_or(&record.name);
+        if !record.parameters.is_empty() || record.region_count > 0 {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutGeneric,
+                format!(
+                    "'@c_layout' record '{short}' cannot declare type parameters or regions; remove them to give it a fixed C layout"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        if record.fields.is_empty() {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutEmpty,
+                format!(
+                    "'@c_layout' record '{short}' must declare at least one field; ISO C does not allow empty structs"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        if record.user_drop {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::CLayoutDrop,
+                format!(
+                    "'@c_layout' record '{short}' cannot implement 'Drop'; remove the Drop instance or '@c_layout'"
+                ),
+                record.span,
+            ));
+            continue;
+        }
+        let decl = decl_by_name.get(&record.name).copied();
+        let mut seen_c_names = BTreeSet::new();
+        for (index, (field_name, field_ty)) in record.fields.iter().enumerate() {
+            let field_span = decl
+                .and_then(|d| d.fields.get(index))
+                .map_or(record.span, |f| f.ty.span);
+            let c_name = crate::abi::field_name(field_name);
+            if !seen_c_names.insert(c_name) {
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::CLayoutFieldType,
+                    format!(
+                        "field '{field_name}' of '@c_layout' record '{short}' collides with another field's C name"
+                    ),
+                    field_span,
+                ));
+                continue;
+            }
+            match field_ty {
+                Type::Bool => {
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutBoolField,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' is bool, whose C width is 4 bytes as BOOL and 1 byte as _Bool; declare it i32 or i8u"
+                        ),
+                        field_span,
+                    ));
+                }
+                _ if crate::abi::c_layout_number(field_ty) => {}
+                Type::FixedArray(element, _)
+                    if field_ty.fixed_length().is_some_and(|length| length > 0) =>
+                {
+                    if **element == Type::Bool {
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutBoolField,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' contains bool, whose C width is 4 bytes as BOOL and 1 byte as _Bool; declare it i32 or i8u"
+                            ),
+                            field_span,
+                        ));
+                    } else if !crate::abi::c_layout_number(element) {
+                        let shown = field_ty.display(types);
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutFieldType,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' has type '{shown}', which has no C layout; fixed-length arrays in '@c_layout' records hold exact-width numbers"
+                            ),
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Record(nested_id, nested_args) => {
+                    let nested = &records[*nested_id];
+                    if nested.c_layout.is_none() || !nested_args.is_empty() {
+                        let nested_short = nested.name.rsplit('.').next().unwrap_or(&nested.name);
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::CLayoutNestedRecord,
+                            format!(
+                                "field '{field_name}' of '@c_layout' record '{short}' is the record '{nested_short}', which has no '@c_layout'; add '@c_layout' to '{nested_short}'"
+                            ),
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Handle(_, crate::syntax::HandleKind::Copy) => {}
+                Type::Handle(hname, _) => {
+                    let hshort = hname.rsplit('.').next().unwrap_or(hname);
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutOwnedHandleField,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' holds the owning handle '{hshort}'; declare the handle 'extern type copy' if it does not own a resource, or keep the owning handle outside the C struct"
+                        ),
+                        field_span,
+                    ));
+                }
+                Type::FnPtr(_) => {
+                    if !crate::abi::fnptr(field_ty, types) {
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::FnptrSignature,
+                            "FnPtr requires a C-callable function signature over scalar, unit, and extern handle types; buffers, records, and nested functions are not supported",
+                            field_span,
+                        ));
+                    }
+                }
+                Type::Reference(inner, false) if crate::abi::zstring(inner, types) => {}
+                _ if matches!(
+                    crate::abi::nullable(field_ty, types),
+                    Some(
+                        crate::abi::Nullable::Handle(_) | crate::abi::Nullable::BorrowedZString(_)
+                    )
+                ) => {}
+                _ => {
+                    let shown = field_ty.display(types);
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::CLayoutFieldType,
+                        format!(
+                            "field '{field_name}' of '@c_layout' record '{short}' has type '{shown}', which has no C layout; use an exact-width number, a fixed-length array of numbers, another '@c_layout' record, an 'extern type copy' handle, 'Maybe' of an extern type, 'FnPtr', or 'ref ZString'"
+                        ),
+                        field_span,
+                    ));
+                }
+            }
+        }
+    }
 }
 
 /// A13: the regions of each record that hold an exclusive borrow and the regions of the borrows
@@ -14288,23 +14750,91 @@ impl<'a> Checker<'a> {
                 if value.ty.contains_error() {
                     return Ok(TypedExpr::error(expression.span));
                 }
-                let ty = match &value.ty {
+                let built_in_ty = match &value.ty {
                     Type::Array(element)
                     | Type::List(element)
                     | Type::Vec(element)
-                    | Type::FixedArray(element, _) => (**element).clone(),
-                    Type::String => Type::Integer(16, false),
-                    Type::Utf8String => Type::Integer(8, false),
-                    _ => {
+                    | Type::FixedArray(element, _) => Some((**element).clone()),
+                    Type::String => Some(Type::Integer(16, false)),
+                    Type::Utf8String => Some(Type::Integer(8, false)),
+                    _ => None,
+                };
+                if let Some(ty) = built_in_ty {
+                    let index = self.index_operand(index)?;
+                    (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
+                } else {
+                    let self_ty = self.inference.resolve(&value.ty);
+                    let hint =
+                        self.classes
+                            .index_key_hint(&self_ty, false, &self.inference, &self.types);
+                    let key = self.expression(index, hint.as_ref())?;
+                    if key.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let Some(resolved) = self.classes.resolve_index(
+                        &self_ty,
+                        &key.ty,
+                        false,
+                        &mut self.inference,
+                        &self.constraints,
+                        &self.types,
+                        expression.span,
+                    )?
+                    else {
+                        let key_ty = self.inference.resolve(&key.ty);
+                        if self.classes.has_index_instances(
+                            &self_ty,
+                            false,
+                            &self.inference,
+                            &self.types,
+                        ) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::NoInstance,
+                                format!(
+                                    "no instance for Index<{}, {}>; define an instance or use a supported key type",
+                                    self_ty.display_with(self.names),
+                                    key_ty.display_with(self.names)
+                                ),
+                                expression.span,
+                            ));
+                        }
                         return Err(Diagnostic::of(
                             DiagnosticKind::IndexNonIndexable,
-                            "indexing requires an array, list, string, or utf8string",
+                            "indexing requires an array, list, string, utf8string, or a type implementing Index",
                             value.span,
                         ));
-                    }
-                };
-                let index = self.index_operand(index)?;
-                (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
+                    };
+                    self.constraints.extend(resolved.constraints);
+                    let callee_kind = if resolved.type_args.is_empty() {
+                        TypedExprKind::Function(FunctionRef::User(resolved.function))
+                    } else {
+                        TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+                    };
+                    let key_span = key.span;
+                    let key_ty = self.inference.resolve(&key.ty);
+                    let val_span = value.span;
+                    let val_ty = self.inference.resolve(&value.ty);
+                    let call = TypedExprKind::Call(
+                        Box::new(TypedExpr {
+                            kind: callee_kind,
+                            ty: resolved.call_signature,
+                            span: expression.span,
+                        }),
+                        vec![
+                            TypedExpr {
+                                kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                                ty: Type::Reference(Box::new(key_ty), false),
+                                span: key_span,
+                            },
+                            TypedExpr {
+                                kind: TypedExprKind::BorrowOperand(Box::new(value)),
+                                ty: Type::Reference(Box::new(val_ty), false),
+                                span: val_span,
+                            },
+                        ],
+                    );
+                    (call, resolved.output_ty)
+                }
             }
             ExprKind::Borrow(value, mutable, notation) => {
                 let value = match notation {
@@ -14363,6 +14893,100 @@ impl<'a> Checker<'a> {
                 (TypedExprKind::Dereference(Box::new(value)), ty)
             }
             ExprKind::Assign(place, value) => {
+                // NC04 Phase 2: `target[key] = rhs` dispatches to `IndexMut` for non-builtin
+                // containers while leaving built-in array/list/Vec/FixedArray assignment unchanged.
+                if let ExprKind::Index(target, key_expr) = &place.kind {
+                    let raw_target = self.expression(target, None)?;
+                    if raw_target.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let inner_ty = self.inference.resolve(
+                        &raw_target
+                            .ty
+                            .dereferenced()
+                            .unwrap_or_else(|| raw_target.ty.clone()),
+                    );
+                    let built_in_index = matches!(
+                        inner_ty,
+                        Type::Array(_)
+                            | Type::List(_)
+                            | Type::Vec(_)
+                            | Type::FixedArray(..)
+                            | Type::String
+                            | Type::Utf8String
+                    );
+                    if !built_in_index {
+                        let target_arg = if matches!(raw_target.ty, Type::Reference(_, true)) {
+                            raw_target
+                        } else {
+                            Self::require_mutable_reference(&raw_target)?;
+                            let target_span = raw_target.span;
+                            let target_ty = self.inference.resolve(&raw_target.ty);
+                            TypedExpr {
+                                kind: TypedExprKind::Borrow(Box::new(raw_target), true),
+                                ty: Type::Reference(Box::new(target_ty), true),
+                                span: target_span,
+                            }
+                        };
+                        let hint = self.classes.index_key_hint(
+                            &inner_ty,
+                            true,
+                            &self.inference,
+                            &self.types,
+                        );
+                        let key = self.expression(key_expr, hint.as_ref())?;
+                        if key.ty.contains_error() {
+                            return Ok(TypedExpr::error(expression.span));
+                        }
+                        let Some(resolved) = self.classes.resolve_index(
+                            &inner_ty,
+                            &key.ty,
+                            true,
+                            &mut self.inference,
+                            &self.constraints,
+                            &self.types,
+                            expression.span,
+                        )?
+                        else {
+                            let key_ty = self.inference.resolve(&key.ty);
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::NoInstance,
+                                format!(
+                                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
+                                    inner_ty.display_with(self.names),
+                                    key_ty.display_with(self.names)
+                                ),
+                                expression.span,
+                            ));
+                        };
+                        self.constraints.extend(resolved.constraints);
+                        let rhs = self.expression(value, Some(&resolved.output_ty))?;
+                        let callee_kind = if resolved.type_args.is_empty() {
+                            TypedExprKind::Function(FunctionRef::User(resolved.function))
+                        } else {
+                            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+                        };
+                        let key_span = key.span;
+                        let key_ty = self.inference.resolve(&key.ty);
+                        let call = TypedExprKind::Call(
+                            Box::new(TypedExpr {
+                                kind: callee_kind,
+                                ty: resolved.call_signature,
+                                span: expression.span,
+                            }),
+                            vec![
+                                TypedExpr {
+                                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                                    ty: Type::Reference(Box::new(key_ty), false),
+                                    span: key_span,
+                                },
+                                rhs,
+                                target_arg,
+                            ],
+                        );
+                        return self.finish_expression(call, Type::Unit, expected, expression.span);
+                    }
+                }
                 let place = self.expression(place, None)?;
                 if place.ty.contains_error() {
                     return Ok(TypedExpr::error(expression.span));

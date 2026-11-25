@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1: `Process` 以外のすべて。Phase 2: `Process.run`。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要確認（E08 Phase 2 の Windows の方針の承認の記録がない。E08 の承認の記録は D1・D9・D10・D12 だけで、Windows を外した D11 は既定案）。確認を着手条件にする。決定事項 D4 は要承認 |
 | 手本にする既存実装 | `src/runtime/os.c`（POSIX の 10 個の入口・状態値・`tz_os_deliver`・`File.Handle` の世代付きの表・`tz_os_spawn_now` の上限の扱い）、`src/runtime/tzroutine-windows.h` と `src/driver.rs` の `tzroutine_runtime_source_for`（Windows の半分を別ファイルにして、driver が `#include` を中身で置き換える形）、`src/runtime/net.c` の Windows の部分（`WIN32_LEAN_AND_MEAN` を未定義のときだけ定義、`#pragma comment(lib, …)` と driver の `-lws2_32`）、`src/runtime/arguments.c` の `tz_arguments_split`、`tests/windows.rs` の `cross_links_the_net_runtime_with_microsoft_sdk_when_requested` |

@@ -120,6 +120,53 @@ fn nodes_of_examples_polymorphism_match_the_golden_file() {
 }
 
 #[test]
+fn index_and_index_mut_instances_appear_in_kg_with_distinct_identities() {
+    let model = kg::collect_sources(&[(
+        "Main.tz",
+        "\
+record Grid { value: i64 }
+instance Index<Grid, i64, i64> {
+    fn index k self = self.value + deref k
+}
+instance Index<Grid, string, i64> {
+    fn index k self = self.value + k.length
+}
+instance IndexMut<Grid, i64, i64> {
+    fn index_mut k v self = self.value = deref k + v
+}
+0
+",
+    )])
+    .unwrap();
+    let nodes = rows(&text(|o| model.write_nodes(o)));
+    let ids: Vec<&str> = nodes
+        .iter()
+        .map(|node| node["id"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "instance:Index<Main.Grid, i64, i64>",
+        "instance:Index<Main.Grid, i64, i64>.index",
+        "instance:Index<Main.Grid, string, i64>",
+        "instance:Index<Main.Grid, string, i64>.index",
+        "instance:IndexMut<Main.Grid, i64, i64>",
+        "instance:IndexMut<Main.Grid, i64, i64>.index_mut",
+    ] {
+        assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
+    }
+    let edges = rows(&text(|o| model.write_edges(o)));
+    assert!(edges.iter().any(|e| {
+        e["rel"] == "instance_of"
+            && e["from"] == "instance:Index<Main.Grid, string, i64>"
+            && e["to"] == "Index"
+    }));
+    assert!(edges.iter().any(|e| {
+        e["rel"] == "instance_of"
+            && e["from"] == "instance:IndexMut<Main.Grid, i64, i64>"
+            && e["to"] == "IndexMut"
+    }));
+}
+
+#[test]
 fn kg_basic_nodes_cover_every_kind() {
     let nodes = rows(&text(|o| kg_basic().write_nodes(o)));
     let mut kinds = std::collections::BTreeMap::new();

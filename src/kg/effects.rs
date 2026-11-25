@@ -135,6 +135,29 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | MathPow
         | MathCbrt
         | MathHypot
+        | MathSinh
+        | MathCosh
+        | MathTanh
+        | MathAsinh
+        | MathAcosh
+        | MathAtanh
+        | MathExpm1
+        | MathLog1p
+        | MathLogaddexp
+        | MathLogaddexp2
+        | MathSinc
+        | MathDegrees
+        | MathRadians
+        | MathFmod
+        | MathFloorDiv
+        | MathFloorMod
+        | MathIeeeRemainder
+        | MathModf
+        | MathFrexp
+        | MathLdexp
+        | MathNextafter
+        | MathSign
+        | MathSignbit
         | ToFloat
         | ToInt
         | Assert
@@ -259,6 +282,12 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | IntWrappingNeg
         | IntCheckedPow
         | IntWideningMul
+        | IntGcd
+        | IntLcm
+        | IntCheckedGcd
+        | IntCheckedLcm
+        | IntDivFloor
+        | IntRemFloor
         | OwnedDrop
         | OwnedFunction
         | OwnedCall

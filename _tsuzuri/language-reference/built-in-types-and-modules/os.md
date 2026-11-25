@@ -4,7 +4,8 @@
 
 ## この記事のポイント
 
-- 失敗は `Os.Error { kind, code }` です。`code` は OS の `errno` で、Tsuzuri が自分で見つけた失敗は `0` です。
+- 失敗は `Os.Error { kind, code }` です。`code` は POSIX の `errno` または Windows の Win32 エラーコード（`GetLastError()`）で、Tsuzuri が自分で見つけた失敗は `0` です。
+- Linux・macOS・Windows のすべてで `File`・`Dir`・`Env`・`Time`・`Random`・`Process` が動作します（Windows では UTF-16 Win32 API・`BCryptGenRandom`・`CreateProcessW` を用います）。
 - `Os.message` は `not found (os error 2)` のような文字列です。`code` が 0 なら種類だけです。
 - `encode` と `decode` は、`string` と UTF-8 の変換です。孤立サロゲートや不正な UTF-8 は置換しません。
 - `ErrorKind` にケースを足すと、網羅した `match` が壊れます。追加は互換性を壊す変更です。

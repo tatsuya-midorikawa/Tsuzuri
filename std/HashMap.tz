@@ -486,3 +486,7 @@ fn rec iter_from map index = Seq.defer (\() ->
 /// ```
 def iter :: ref HashMap<'key, 'value> -> Seq<(ref 'key * ref 'value)>
 fn iter map = iter_from map 0
+
+instance (Hash<'key>, Eq<'key>, Copy<'value>) => Index<HashMap<'key, 'value>, 'key, 'value> {
+    fn index key self = deref (at_ref key self)
+}

@@ -402,3 +402,77 @@ fn map_in_place transform view =
                 let index = base + j * view.col_stride
                 let value = transform view.data[index]
                 Array.write index value view.data
+
+private def validate_2d_axis :: own i64 -> ref Slice.Axis -> (i64 * i64 * i64)
+fn validate_2d_axis len axis =
+    match Slice.resolve len axis with
+    | Slice.Resolved.Index pos -> (pos, 1, 1)
+    | Slice.Resolved.Slice (start, count, step) ->
+        assert (step > 0)
+        (start, count, step)
+    | Slice.Resolved.InsertAxis ->
+        assert false
+        (0, 0, 1)
+
+/// Slices a 2D `MatrixView` with positive-step `Slice.Axis` descriptors without copying.
+/// Traps on negative steps or `Slice.NewAxis` (use `Tensor.slice` for negative strides or rank changes).
+///
+/// ```tsuzuri run=[4,%206]
+/// let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+/// let v = MatrixView.of_matrix m
+/// let r = Slice.at 1
+/// let c = Slice.every 2
+/// let sub = MatrixView.slice (ref r) (ref c) v
+/// Matrix.to_array (MatrixView.to_matrix sub)
+/// ```
+def slice { r } :: ref Slice.Axis -> ref Slice.Axis -> MatrixView<'a> { r } -> MatrixView<'a> { r }
+fn slice row_axis col_axis view =
+    let (r_start, new_rows, r_step) = validate_2d_axis view.rows row_axis
+    let (c_start, new_cols, c_step) = validate_2d_axis view.cols col_axis
+    if new_rows == 0 || new_cols == 0 then
+        strided 0 new_rows new_cols 1 1 view.data
+    else
+        let new_row_stride =
+            if new_rows == 1 then view.row_stride
+            else
+                match Int.checked_mul view.row_stride r_step with
+                | Maybe.Some s -> s
+                | Maybe.None ->
+                    assert false
+                    0
+        let new_col_stride =
+            if new_cols == 1 then view.col_stride
+            else
+                match Int.checked_mul view.col_stride c_step with
+                | Maybe.Some s -> s
+                | Maybe.None ->
+                    assert false
+                    0
+        let r_off = r_start * view.row_stride
+        let c_off = c_start * view.col_stride
+        strided (view.offset + r_off + c_off) new_rows new_cols new_row_stride new_col_stride view.data
+
+instance Copy<'a> => Index<MatrixView<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (row, col) -> deref (at row col (deref self))
+}
+
+instance Index<Matrix<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>> {
+    fn index axes self =
+        let mv = of_matrix self
+        match axes with
+        | (r_axis, c_axis) -> slice (ref r_axis) (ref c_axis) mv
+}
+
+instance Index<MatrixView<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>> {
+    fn index axes self =
+        match axes with
+        | (r_axis, c_axis) -> slice (ref r_axis) (ref c_axis) (deref self)
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (row, col) -> write row col value self
+}

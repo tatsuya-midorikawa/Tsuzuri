@@ -66,6 +66,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Utf8Char.tz", include_str!("../std/Utf8Char.tz")),
     ("std/Utf8String.tz", include_str!("../std/Utf8String.tz")),
     ("std/Vec.tz", include_str!("../std/Vec.tz")),
+    ("std/Slice.tz", include_str!("../std/Slice.tz")),
     ("std/Matrix.tz", include_str!("../std/Matrix.tz")),
     ("std/MatrixView.tz", include_str!("../std/MatrixView.tz")),
     ("std/Tensor.tz", include_str!("../std/Tensor.tz")),
@@ -73,6 +74,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/RegexText.tt", include_str!("../std/RegexText.tt")),
     ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
+    ("std/Complex.tz", include_str!("../std/Complex.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -130,6 +132,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Mutex",
     "MatrixView",
     "Tensor",
+    "Slice",
     "Channel",
     "DataChannel",
     // TZ03 Phase 2: the direction handles of Channel.
@@ -161,6 +164,7 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Anchor",
     // W20: NUL-terminated UTF-16 strings for C / Win32 APIs.
     "ZString",
+    "Complex",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -206,6 +210,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "MatrixView.Mut"
             | "Tensor.Tensor"
             | "Tensor.View"
+            | "Tensor.Mut"
             | "DataChannel.Sender"
             | "DataChannel.Receiver"
             | "Channel.Channel"
@@ -305,6 +310,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &[],
     },
     OptIn {
+        module: "Slice",
+        names: &["Slice"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
         module: "Matrix",
         names: &["Matrix"],
         aliases: &[],
@@ -332,13 +343,13 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "MatrixView",
         names: &["MatrixView"],
         aliases: &[],
-        uses: &["Matrix"],
+        uses: &["Matrix", "Slice"],
     },
     OptIn {
         module: "Tensor",
         names: &["Tensor"],
         aliases: &[],
-        uses: &["Matrix", "MatrixView"],
+        uses: &["Matrix", "MatrixView", "Slice"],
     },
     // The old names of DataChannel are `Channel.bounded` and the like (TZ03): they resolve as their
     // replacements while they are reported (E1040), so a program that names Channel loads it too.
@@ -465,6 +476,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         aliases: &[],
         uses: &[],
     },
+    OptIn {
+        module: "Complex",
+        names: &["Complex"],
+        aliases: &[],
+        uses: &[],
+    },
 ];
 
 /// The builtins of an always-loaded module whose types name an opt-in module (TZ05): a program
@@ -476,6 +493,11 @@ const MEMBER_TRIGGERS: &[(&str, &str, &str)] = &[
     ("Time", "tick", "Channel"),
     ("Time", "after_func", "Timer"),
 ];
+
+/// Opt-in modules loaded only when a pair of other opt-in modules are both named (NC04):
+/// `Matrix` alone does not pull in `MatrixView`, while `Matrix` + `Slice` loads `MatrixView`
+/// for `instance Index<Matrix<'a>, (Slice.Axis * Slice.Axis), MatrixView<'a>>`.
+const PAIR_TRIGGERS: &[(&str, &str, &str)] = &[("Matrix", "Slice", "MatrixView")];
 
 /// The opt-in modules of `MEMBER_TRIGGERS` that `text` refers to: a word of the table, a dot and the
 /// member, as the lexer reads them. So they may stand apart (spaces, newlines and comments between
@@ -567,6 +589,11 @@ pub fn sources_for<'a>(
     for module in triggered {
         if !needed.contains(&module) {
             needed.push(module);
+        }
+    }
+    for &(first, second, target) in PAIR_TRIGGERS {
+        if needed.contains(&first) && needed.contains(&second) && !needed.contains(&target) {
+            needed.push(target);
         }
     }
     let mut next = 0;
@@ -731,8 +758,18 @@ mod tests {
                             .iter()
                             .any(|alias| alias.name.text == head)
                 });
+                let pair_triggered = head.is_some_and(|head| {
+                    PAIR_TRIGGERS.iter().any(|&(first, second, target)| {
+                        target == module.module
+                            && head == first
+                            && instance
+                                .extra_args
+                                .iter()
+                                .any(|arg| format!("{arg:?}").contains(second))
+                    })
+                });
                 assert!(
-                    own || module.names.contains(&instance.class.text.as_str()),
+                    own || pair_triggered || module.names.contains(&instance.class.text.as_str()),
                     "{path}: instance {} is for a type it does not declare; add '{}' to its OptIn names",
                     instance.class.text,
                     instance.class.text
@@ -749,7 +786,8 @@ mod tests {
                         .unwrap();
                     let named = mentions(source, other.module)
                         || public_names(other_source).iter().any(|(_, name)| {
-                            mentions_as(source, name, true)
+                            !crate::check::is_builtin_class(name)
+                                && mentions_as(source, name, true)
                                 && !declared.iter().any(|(_, declared)| declared == name)
                         });
                     assert_eq!(
@@ -862,11 +900,20 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 76);
+        assert_eq!(RESERVED_MODULES.len(), 78);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
         assert!(is_reserved_module("Tensor"));
+        let names_of = |texts: &[&str]| -> Vec<&str> {
+            sources_for(texts.iter().copied())
+                .into_iter()
+                .filter_map(|(path, _)| module_name(path))
+                .collect()
+        };
+        assert!(!names_of(&["Matrix.rows (ref m)"]).contains(&"MatrixView"));
+        assert!(!names_of(&["Slice.all()"]).contains(&"MatrixView"));
+        assert!(names_of(&["Matrix.of_array 1 1 [1]", "Slice.all()"]).contains(&"MatrixView"));
         assert!(is_reserved_module("Text"));
         assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));

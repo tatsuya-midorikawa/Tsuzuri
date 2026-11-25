@@ -7,7 +7,7 @@
 | 規模 | M（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | W15（Phase 2: W21） |
 | 後続 | W25, W27, [NS07](NS07-extern-addr-nonnull-view.md)（`ExternAddr` による静的非 Null 化） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 承認済み（D-63）。細目は要承認（決定事項 D1 の綴りと文脈キーワードの登録。ほかは既定案） |
 | 手本にする既存実装 | `src/llvm_abi.rs` の `wrapper`（record の引数を `host_pointer` で null と整列を検査してから `read_host_record` で読む）、`src/llvm.rs` のコールバックを取る extern の呼び出し地点の `host_call`（`import.callbacks` の分岐。関数本体を出さない）、`src/check.rs` の `validate_callbacks`（直接・全引数の呼び出しの検査）、`src/parser.rs` の `extern_declaration`（`extern type` の分岐） |

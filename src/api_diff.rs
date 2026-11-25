@@ -225,6 +225,8 @@ struct Item {
     local_handle: bool,
     /// Non-default `@count(position, length)` settings on an `extern def` (W13; `i64` is normalized out).
     extern_counts: BTreeMap<u32, CountLength>,
+    /// `@c_layout` / `@c_layout(pack = N)` on a `record` (W21): `None` = plain, `Some(pack)` = C layout.
+    c_layout: Option<Option<u8>>,
     /// A `const def`, which a `const` initializer of another module may call.
     constant: bool,
     /// Conservative until API comparison resolves parameter types and aliases.
@@ -271,6 +273,7 @@ impl Item {
             copy_handle: false,
             local_handle: false,
             extern_counts: BTreeMap::new(),
+            c_layout: None,
             constant: false,
             borrowing_defaults: Vec::new(),
             pure: None,
@@ -301,6 +304,12 @@ impl Item {
         }
         for (&position, &length) in &self.extern_counts {
             text.push_str(&format!("@count({position}, {}) ", length.name()));
+        }
+        if let Some(pack) = self.c_layout {
+            match pack {
+                Some(n) => text.push_str(&format!("@c_layout(pack = {n}) ")),
+                None => text.push_str("@c_layout "),
+            }
         }
         if self.exported {
             text.push_str("export ");
@@ -1460,6 +1469,7 @@ fn add_items(
         // E15: `@trusted` is a reviewer's mark, not part of the API.
         trusted: _,
         extern_counts,
+        c_layouts,
         noncanonical: _,
         aliases,
         declaration_starts: _,
@@ -1591,8 +1601,13 @@ fn add_items(
             |signature| signature.parameters.iter().collect(),
         );
         let result = signature.map_or(&declaration.result, |signature| &signature.result);
+        let kind_label = if declaration.view {
+            "extern view def"
+        } else {
+            "extern def"
+        };
         let header = function_text(
-            "extern def",
+            kind_label,
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,
@@ -1600,7 +1615,7 @@ fn add_items(
             result,
             fresh(),
         );
-        let mut item = Item::new("extern def", qualified(&declaration.name.text), header)
+        let mut item = Item::new(kind_label, qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
         for attribute in extern_counts
@@ -1655,6 +1670,12 @@ fn add_items(
         });
         let mut item = Item::new("record", qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
+        if let Some(attribute) = c_layouts
+            .iter()
+            .find(|attribute| attribute.target.text == declaration.name.text)
+        {
+            item.c_layout = Some(attribute.pack);
+        }
         for (field, ty) in declaration.fields.iter().zip(types) {
             let mut member = Member::new(
                 "field",
@@ -1867,16 +1888,22 @@ fn add_items(
     }
     for declaration in instances {
         let header = fresh().least(|renaming| {
-            let ty = renaming.ty(&declaration.ty);
+            let mut args = vec![type_text(&renaming.ty(&declaration.ty))];
+            for extra in &declaration.extra_args {
+                args.push(type_text(&renaming.ty(extra)));
+            }
             let constraints = renaming.constraints(&declaration.constraints);
             let class = renaming.class_name(&declaration.class);
-            let name = format!("{}<{}>", class.text, type_text(&ty));
+            let name = format!("{}<{}>", class.text, args.join(", "));
             format!("instance {}{name}", constraints_text(&constraints))
         });
         let name = Renaming::new(true, resolved).least(|key| {
-            let ty = key.ty(&declaration.ty);
+            let mut args = vec![type_text(&key.ty(&declaration.ty))];
+            for extra in &declaration.extra_args {
+                args.push(type_text(&key.ty(extra)));
+            }
             let class = key.class_name(&declaration.class);
-            format!("{}<{}>", class.text, type_text(&ty))
+            format!("{}<{}>", class.text, args.join(", "))
         });
         // Two modules can spell the same instance for their own types, so the module is part of it.
         let mut item = Item::new("instance", qualified(&name), header);
@@ -2325,6 +2352,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.copy_handle != new.copy_handle
         || old.local_handle != new.local_handle
         || old.extern_counts != new.extern_counts
+        || old.c_layout != new.c_layout
         || old.constant != new.constant
         || old.borrowing_defaults != new.borrowing_defaults
         || old.pure != new.pure
@@ -2345,6 +2373,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
             && old.copy_handle <= new.copy_handle
             && old.local_handle >= new.local_handle
             && old.extern_counts == new.extern_counts
+            && old.c_layout == new.c_layout
             && old.constant <= new.constant
             && old.borrowing_defaults == new.borrowing_defaults
             && (old.pure.is_none() || old.pure == new.pure)
@@ -2362,6 +2391,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
                 "default parameter conventions change; effective signatures may differ"
             } else if old.extern_counts != new.extern_counts {
                 "lowered C buffer count signature changes"
+            } else if old.c_layout != new.c_layout {
+                "C struct layout of the record changes"
             } else if added_obligation {
                 "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
             } else if local_added {

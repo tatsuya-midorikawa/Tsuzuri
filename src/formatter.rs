@@ -271,6 +271,9 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.hints.type_headers.insert(instance.class.span.end);
         canonical.ident(&mut instance.class);
         canonical.ty(&mut instance.ty);
+        for arg in &mut instance.extra_args {
+            canonical.ty(arg);
+        }
         canonical.constraints(&mut instance.constraints);
         for method in &mut instance.methods {
             canonical.ident(&mut method.name);
@@ -317,6 +320,10 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         attribute.span = Span::default();
     }
     for attribute in &mut program.extern_counts {
+        canonical.ident(&mut attribute.target);
+        attribute.span = Span::default();
+    }
+    for attribute in &mut program.c_layouts {
         canonical.ident(&mut attribute.target);
         attribute.span = Span::default();
     }

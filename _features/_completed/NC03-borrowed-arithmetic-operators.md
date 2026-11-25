@@ -7,7 +7,7 @@
 | 規模 | L（型クラス契約・型検査・単相化・所有権検査・edition 互換・`BigInt` 移行） |
 | 依存 | – |
 | 後続 | ([NC06](NC06-tensor-ufuncs-and-elementwise.md)) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（組み込み算術型クラスのメソッド引数契約を借用へ改める言語仕様拡張。決定事項 D1・D2 が要承認、ほかは既定案） |
 | 手本にする既存実装 | [A11](_completed/A11-borrowed-comparisons.md)（D-20: `Eq`/`Ord` の借用シグネチャ化）、[A18](_completed/A18-parameter-conventions.md)（edition 2027 の読み取り既定引数規約と `own`）、`src/polymorph.rs` の演算子ディスパッチ、`std/BigInt.tz` の `instance Add<BigInt>` |

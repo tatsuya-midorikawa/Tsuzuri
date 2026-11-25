@@ -465,6 +465,7 @@ impl Build<'_> {
         InstanceDecl {
             class: self.ident(class.name()),
             ty: polymorph::type_expression(ty, types, self.span),
+            extra_args: Vec::new(),
             constraints,
             methods,
         }

@@ -1057,5 +1057,7 @@ fn specializes_operators_for_every_numeric_representation() {
     accepts(
         "def bits :: 'a -> 'a -> 'a\nfn bits x y = Bits.ushr ((~~~x &&& y ||| x ^^^ y) <<< y >>> y) (y % x)\ndef answer :: i32\nfn answer = bits 42 2",
     );
-    accepts("instance Add<[i32]> { fn add x y = x }\ndef answer :: [i32]\nfn answer = [] + []");
+    accepts(
+        "instance Add<[i32]> { fn add x y = Array.copy x }\ndef answer :: [i32]\nfn answer = [] + []",
+    );
 }

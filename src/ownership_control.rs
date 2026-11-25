@@ -289,7 +289,7 @@ struct LoopSummary {
     copy_variables: BTreeSet<String>,
     kept: BTreeSet<LoanKey>,
     kept_elsewhere: BTreeSet<LoanKey>,
-    contents_elsewhere: BTreeSet<usize>,
+    contents_elsewhere: BTreeMap<usize, BTreeSet<LoanKey>>,
     block_shares: BTreeMap<usize, BTreeSet<usize>>,
     handed: usize,
     exports: usize,
@@ -720,7 +720,12 @@ impl<'a> Checker<'a, '_> {
             copy_variables: self.copy_variables.clone(),
             kept: keys(&self.state.kept, None),
             kept_elsewhere: keys(&self.state.kept_elsewhere, None),
-            contents_elsewhere: self.state.contents_elsewhere.clone(),
+            contents_elsewhere: self
+                .state
+                .contents_elsewhere
+                .iter()
+                .map(|(root, loans)| (*root, keys(loans, None)))
+                .collect(),
             block_shares: self.state.block_shares.clone(),
             handed: self.handed.len(),
             exports: self.exports.len(),
