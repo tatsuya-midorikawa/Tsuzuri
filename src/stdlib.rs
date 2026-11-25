@@ -349,7 +349,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Tensor",
         names: &["Tensor"],
         aliases: &[],
-        uses: &["Matrix", "MatrixView", "Slice"],
+        uses: &["Complex", "Matrix", "MatrixView", "Slice"],
     },
     // The old names of DataChannel are `Channel.bounded` and the like (TZ03): they resolve as their
     // replacements while they are reported (E1040), so a program that names Channel loads it too.

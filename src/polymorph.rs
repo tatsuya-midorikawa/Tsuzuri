@@ -3843,11 +3843,13 @@ impl Classes {
         }
         let mut inf = Inference::quiet();
         let mut ty_vars = BTreeMap::new();
+        let mut infer_vars = BTreeMap::new();
         let open_ty = map_type(ty, &mut |part| match part {
             Type::Variable(name) => ty_vars
                 .entry(name.clone())
                 .or_insert_with(|| inf.fresh())
                 .clone(),
+            Type::Infer(id) => infer_vars.entry(*id).or_insert_with(|| inf.fresh()).clone(),
             _ => part.clone(),
         });
         let has_matching = self.instances.iter().any(|inst| {

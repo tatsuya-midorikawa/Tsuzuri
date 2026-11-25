@@ -13119,6 +13119,7 @@ struct CheckerWatermark {
     reference_borrows_len: usize,
     format_specs_len: usize,
     use_bindings_len: usize,
+    piped: Option<Type>,
     operand_len: usize,
     integer_literals_len: usize,
     families_len: usize,
@@ -13128,7 +13129,10 @@ struct CheckerWatermark {
     poisoned: bool,
     recovering: bool,
     recovered_len: usize,
+    indexing: bool,
     name_uses_len: usize,
+    checked_arithmetic: bool,
+    dyn_callee: bool,
     holes_searched: usize,
     call_constraints_len: usize,
 }
@@ -16634,6 +16638,7 @@ impl<'a> Checker<'a> {
             reference_borrows_len: self.reference_borrows.len(),
             format_specs_len: self.format_specs.len(),
             use_bindings_len: self.use_bindings.len(),
+            piped: self.piped.clone(),
             operand_len: self.operand.len(),
             integer_literals_len: self.integer_literals.len(),
             families_len: self.families.len(),
@@ -16643,7 +16648,10 @@ impl<'a> Checker<'a> {
             poisoned: self.poisoned,
             recovering: self.recovering,
             recovered_len: self.recovered.len(),
+            indexing: self.indexing,
             name_uses_len: self.name_uses.len(),
+            checked_arithmetic: self.checked_arithmetic,
+            dyn_callee: self.dyn_callee,
             holes_searched: self.holes_searched,
             call_constraints_len: self.call_constraints.len(),
         }
@@ -16662,8 +16670,13 @@ impl<'a> Checker<'a> {
         self.open_locals.truncate(mark.open_locals_len);
         if self.next_local > mark.next_local {
             let limit = mark.next_local;
+            for scope in &mut self.scopes {
+                scope.retain(|_, local| local.id < limit);
+            }
             self.borrowed.retain(|&id| id < limit);
             self.mutable_locals.retain(|&id| id < limit);
+            self.default_reads.retain(|&id, _| id < limit);
+            self.read_value_parameters.retain(|&id| id < limit);
             self.next_local = limit;
         }
         self.normal_loop_depth = mark.normal_loop_depth;
@@ -16673,6 +16686,7 @@ impl<'a> Checker<'a> {
         self.reference_borrows.truncate(mark.reference_borrows_len);
         self.format_specs.truncate(mark.format_specs_len);
         self.use_bindings.truncate(mark.use_bindings_len);
+        self.piped = mark.piped;
         self.operand.truncate(mark.operand_len);
         self.integer_literals.truncate(mark.integer_literals_len);
         self.families.truncate(mark.families_len);
@@ -16683,7 +16697,10 @@ impl<'a> Checker<'a> {
         self.poisoned = mark.poisoned;
         self.recovering = mark.recovering;
         self.recovered.truncate(mark.recovered_len);
+        self.indexing = mark.indexing;
         self.name_uses.truncate(mark.name_uses_len);
+        self.checked_arithmetic = mark.checked_arithmetic;
+        self.dyn_callee = mark.dyn_callee;
         self.holes_searched = mark.holes_searched;
         self.call_constraints.truncate(mark.call_constraints_len);
     }

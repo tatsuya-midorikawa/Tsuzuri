@@ -93,6 +93,9 @@ $"{flat[0]} {flat[1]} {flat[2]} {flat[3]}"
 - `Matrix.fold folder initial (ref m)` は、行優先で左から右に畳み込みます。
 - `Matrix.transpose (ref m)` は、`cols` 行 `rows` 列の新しい行列を返します。出力 `(j, i)` が入力 `(i, j)` です。
 - `Matrix.add (ref a) (ref b)` は、要素ごとの `left + right` です。形が違うとトラップします。
+- `Matrix.sub (ref a) (ref b)` は、要素ごとの `left - right` です。形が違うとトラップします。
+- `Matrix.hadamard (ref a) (ref b)` は、要素ごとの積（アダマール積 `left * right`）です。行列積 `Matrix.mul` と混同しないよう、`Matrix` には `*`（`Mul` インスタンス）を定義せず名前で区別します。
+- `Matrix.scale factor (ref m)` は、全要素を `factor * x` で定数倍した新しい行列を返します（対象行列が最後の引数です）。
 
 どれも入力を借用し、出力のバッファを 1 つだけ確保します。同じ行列を両方の引数に渡しても構いません。
 

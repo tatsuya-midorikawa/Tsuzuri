@@ -155,6 +155,40 @@ fn add left right =
     assert (left.rows == right.rows && left.cols == right.cols)
     Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] + right.data[index]) }
 
+/// Element-wise difference (`left - right`); traps unless both shapes are equal.
+///
+/// ```tsuzuri run=[9,%2018,%2027,%2036]
+/// let a = Matrix.of_array 2 2 [10, 20, 30, 40]
+/// let b = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.to_array (Matrix.sub a b)
+/// ```
+def sub :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn sub left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] - right.data[index]) }
+
+/// Element-wise (Hadamard) product (`left * right`); traps unless both shapes are equal.
+///
+/// ```tsuzuri run=[10,%2040,%2090,%20160]
+/// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let b = Matrix.of_array 2 2 [10, 20, 30, 40]
+/// Matrix.to_array (Matrix.hadamard a b)
+/// ```
+def hadamard :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn hadamard left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] * right.data[index]) }
+
+/// Multiplies every element by `factor` (`factor * x`).
+///
+/// ```tsuzuri run=[3,%206,%209,%2012]
+/// let m = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.to_array (Matrix.scale 3 m)
+/// ```
+def scale :: Numeric<'a> => own 'a -> ref Matrix<'a> -> Matrix<'a>
+fn scale factor matrix =
+    Matrix { rows: matrix.rows, cols: matrix.cols, data: new ['a](matrix.data.length, \index -> factor * matrix.data[index]) }
+
 // Adds the product rows `first ..` into `out`, which holds whole output rows of `cols` elements and
 // starts at +0. Every element of `out` is updated only by `out + (a * b)` with k ascending, so its
 // sequence of roundings equals the textbook sum from +0 over k; only the order in which different

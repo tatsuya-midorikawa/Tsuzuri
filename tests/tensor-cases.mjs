@@ -238,6 +238,7 @@ export const cases = [
   ["nc02_creators", [], nc02Creators()],
   ["a37_chained_view_and_temp_read", [], a37ChainedViewAndTempRead()],
   ["nc16_tuple_reads_and_writes", [], nc16TupleReadsAndWrites()],
+  ["nc06_ufuncs", [], 606n],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.
@@ -268,4 +269,5 @@ export const traps = [
   ["nc16_scalar_on_rank2_trap", []],
   ["nc16_neg_coord_trap", []],
   ["nc16_oob_coord_trap", []],
+  ["nc06_op_mismatch_trap", []],
 ];

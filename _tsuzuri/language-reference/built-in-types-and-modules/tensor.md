@@ -258,6 +258,52 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 | `where_select` / `where_scalar` / `clip` | 条件選択（3 入力ブロードキャスト対応）・クランプ |
 | `take` / `take_along_axis` / `put_along_axis` | 整数添字による収集（gather）・散布（scatter） |
 
+### ブロードキャスト要素ごと演算（ufunc）・比較・インプレース出力・演算子
+
+2 入力・3 入力の要素ごと演算はすべて NumPy 互換の右揃えブロードキャストに対応します。同形状かつ C 連続の窓では 1D スライス直走査の高速経路を取り、非連続・負ストライド・0 ストライドの窓では汎用ストライド経路へ自動分岐します。関数 API は形状非互換を `Result.Error` で返し、同じ型どうしの演算子はトラップします。二項テンソル関数の引数順は常に `left -> right`（`Tensor.sub left right` は `left - right`）であり、スカラーとの関数と `_into`／`_in_place` では対象（`View` または出力 `Mut`）が最後です。
+
+| 分類 | API | 概要 |
+| --- | --- | --- |
+| 反復エンジン | `map_into`, `map2`, `map2_into`, `map3`, `map3_into`, `map2_in_place` | 1〜3 入力のブロードキャスト要素変換・ゼロ確保出力・累積更新 |
+| 二項算術・剰余 | `add`, `sub`, `mul`, `div`, `rem`, `pow`, `floor_divide`, `floor_mod`, `divmod`, `floor_divide_float`, `floor_mod_float`, `divmod_float`, `fmod`, `ieee_remainder` | 四則・べき乗・床除算/床剰余（整数と浮動小数点）・C99 `fmod`・IEEE 754 最近接偶数剰余 |
+| 極値・二項数学・三項 | `maximum`, `minimum`, `fmax`, `fmin`, `atan2`, `hypot`, `copysign`, `logaddexp`, `logaddexp2`, `fma` | `NaN` 伝播／無視の最大最小・二変数数学関数・明示 FMA |
+| ビット・論理 | `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shl`, `shr`, `logical_and`, `logical_or`, `logical_xor`, `logical_not` | 整数テンソルのビット演算・`bool` テンソルの論理演算 |
+| 両側スカラー演算 | `add_scalar`, `radd_scalar`, `sub_scalar`, `rsub_scalar`, `mul_scalar`, `scale`, `div_scalar`, `rdiv_scalar`, `rem_scalar`, `rrem_scalar`, `pow_scalar`, `rpow_scalar` | `x op s` と `s op x`（非可換の要素型でも左右の順序を保持） |
+| ゼロ確保出力（`_into`） | `add_into`, `sub_into`, `mul_into`, `div_into`, `scale_into`, `mul_add_into`, `fma_into`, `neg_into`, `abs_into`, `sqrt_into`, `exp_into`, `log_into` | `Tensor.borrow_mut` 等で得た `ref mut Mut` へ追加ヒープ確保 0 回で書き込み |
+| 累積インプレース | `add_in_place`, `sub_in_place`, `mul_in_place`, `div_in_place`, `rem_in_place` | `target` の形を保ったまま `rhs` をブロードキャストして `target_i = target_i op rhs_i` をゼロ確保で更新 |
+| 単項数学 | `neg`, `abs`, `sqrt`, `cbrt`, `square`, `reciprocal`, `floor`, `ceil`, `trunc`, `round`, `round_even`, `sign`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p`, `sinc`, `degrees`, `radians` | 符号・丸め・三角・双曲線・指数対数・正規化 `sinc`・角度変換 |
+| 複素数・特殊値 | `real`, `imag`, `conj`, `angle`, `is_nan`, `is_infinite`, `is_finite`, `signbit`, `nan_to_num` | `Complex<'a>` ビューの実部/虚部/共役/偏角と、`NaN`/`±Inf`/符号ビット判定・置換 |
+| 比較・近傍一致・外積 | `elem_eq`, `elem_ne`, `elem_lt`, `elem_le`, `elem_gt`, `elem_ge`, `eq_scalar`, `ne_scalar`, `lt_scalar`, `le_scalar`, `gt_scalar`, `ge_scalar`, `isclose`, `allclose`, `array_equal`, `array_equiv`, `outer_with`, `accumulate` | 要素ごと比較マスク・許容誤差比較・外積表・軸に沿った累積適用 |
+
+同じ型どうしの所有 `Tensor<'a>` には `Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg` の借用算術インスタンスが定義されており、`a + b`・`(x - mean) / std`・`-a` を被演算子を消費せずにそのまま書けます（形状非互換時はトラップします）。`View` どうし・`Tensor` と `View`・スカラーとの直接演算子は [NC19](../../../_features/NC19-operator-extension-instances.md)、複合代入 `+=` 等は [NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md) で追加予定です。
+
+```tsuzuri run=true
+let x = Tensor.of_array [2, 3] [2.0, 4.0, 6.0, 10.0, 20.0, 30.0]
+let mean = Tensor.of_array [2, 1] [4.0, 20.0]
+let std_dev = Tensor.of_array [2, 1] [2.0, 10.0]
+let z = (x - mean) / std_dev
+let expected = Tensor.of_array [2, 3] [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0]
+Tensor.allclose 1e-12 1e-12 false (Tensor.view (ref z)) (Tensor.view (ref expected))
+```
+
+実行結果:
+
+```text
+true
+```
+
+#### NumPy との違い
+
+| 項目 | NumPy | Tsuzuri `Tensor` |
+| --- | --- | --- |
+| 整数の `/` と `//` | `/` は浮動小数点の真の除算、`//` は床除算 | `/`（および `Tensor.div`）は Tsuzuri の整数規則どおり 0 方向切り捨て。床除算は `Tensor.floor_divide`（浮動小数点は `Tensor.floor_divide_float`） |
+| 整数の `%`（剰余） | `np.remainder` / `%` は除数の符号に揃う床剰余 | `%`（および `Tensor.rem`）は被除数の符号を保つ。床剰余は `Tensor.floor_mod`（浮動小数点は `Tensor.floor_mod_float`）、IEEE 754 最近接偶数剰余は `Tensor.ieee_remainder` |
+| 丸め（`round`） | `np.round` は最近接偶数丸め | `Tensor.round` は 0 から遠い側へ丸め（`Math.round`）。最近接偶数丸めは `Tensor.round_even` |
+| `sign(-0.0)` | `+0.0` | ゼロの符号を保ち `-0.0`（`Math.sign` と同じ） |
+| `@checked` | — | `@checked` は演算子インスタンス内部の要素演算までは検査しません |
+| ブールマスクの結合 | `m1 & m2`、`m1 \| m2`、`~m` | 演算子 `&&&` 等は整数ビット演算専用です。マスクの結合には `Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_xor`・`Tensor.logical_not` を使います |
+| `==` 演算子 | 要素ごとのブール配列 | コレクション全体の等価 `bool`。要素ごとの比較マスクは `Tensor.elem_eq`〜`elem_ge`・`gt_scalar` 等を使います |
+
 ```tsuzuri run=[1,%2099,%2099,%204]%20[2,%203]
 let g = Tensor.of_array [2, 2] [1, 2, 3, 4]
 let bmask = Tensor.of_array [2, 2] [false, true, true, false]
@@ -312,7 +358,7 @@ $"{deref corner} {missing} {plane_count}"
 
 ## できないこと
 
-- 要素ごと算術 ufunc、軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC06〜NC09](../../../_features/README.md) で追加予定）。
+- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、`View` やスカラーとの混在算術演算子（[NC19](../../../_features/NC19-operator-extension-instances.md)）と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
 - 要素が Copy 型の所有するテンソルから、複製せずにバッファを取り出すことと、複製せずに書き換えることは今はできません（[所有者の操作と Matrix との変換](#所有者の操作と-matrix-との変換)の既知の制限）。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。

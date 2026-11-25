@@ -470,11 +470,18 @@ using std
 def same_tensor :: Tensor<i64> -> Tensor<i64> -> bool
 fn same_tensor a b = a == b
 
+def add_tensor :: Tensor<f64> -> Tensor<f64> -> Tensor<f64>
+fn add_tensor a b = a + b
+
 def main :: unit -> i32 = \\() ->
     let t1 = Tensor.of_array [2] [10, 20]
     let t2 = Tensor.of_array [2] [10, 20]
     let t3 = Tensor.of_array [2] [10, 21]
-    if same_tensor t1 t2 && !(same_tensor t1 t3) then 0i32 else 1i32
+    let f1 = Tensor.of_array [2] [1.5, 2.5]
+    let f2 = Tensor.of_array [2] [0.5, 1.5]
+    let fsum = add_tensor f1 f2
+    let expected = Tensor.of_array [2] [2.0, 4.0]
+    if same_tensor t1 t2 && !(same_tensor t1 t3) && fsum == expected && f1 == Tensor.of_array [2] [1.5, 2.5] then 0i32 else 1i32
 ";
     emits(src);
     assert_eq!(run_exit_code(src, false), 0);

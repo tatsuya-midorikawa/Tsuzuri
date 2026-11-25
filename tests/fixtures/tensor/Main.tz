@@ -509,3 +509,39 @@ fn nc16_oob_coord_trap =
     let t = Tensor.init [2, 3] (\i -> i)
     t[(0, 3)]
 
+// NC06: broadcast ufuncs, same-type Tensor operators `(x - mean) / std`, _into, _in_place, allclose, outer_with.
+export def nc06_ufuncs :: i64
+fn nc06_ufuncs =
+    let x = Tensor.of_array [2, 3] [2.0, 4.0, 6.0, 10.0, 20.0, 30.0]
+    let mean = Tensor.of_array [2, 1] [4.0, 20.0]
+    let std_dev = Tensor.of_array [2, 1] [2.0, 10.0]
+    let z = (x - mean) / std_dev
+    let z_expected = Tensor.of_array [2, 3] [-1.0, 0.0, 1.0, -1.0, 0.0, 1.0]
+    let zv = Tensor.view (ref z)
+    let zev = Tensor.view (ref z_expected)
+    let ok_norm = Tensor.allclose 1e-12 1e-12 false (ref zv) (ref zev)
+    let a = Tensor.of_array [2, 1] [10, 20]
+    let b = Tensor.of_array [1, 3] [1, 2, 3]
+    let sum_op = a + b
+    let mut into_buf = [0, 0, 0, 0, 0, 0]
+    let mut dst = Tensor.borrow_mut [2, 3] (ref mut into_buf)
+    let _ = Tensor.add_into (Tensor.view (ref a)) (Tensor.view (ref b)) (ref mut dst)
+    let _ = Tensor.add_in_place (Tensor.view (ref b)) (ref mut dst)
+    let ok_into = sum_op == Tensor.of_array [2, 3] [11, 12, 13, 21, 22, 23] && into_buf[0] == 12 && into_buf[5] == 26
+    let neg_t = Tensor.of_array [2] [-7, 7]
+    let two_t = Tensor.of_array [2] [2, 2]
+    let ok_floor = match Tensor.divmod (Tensor.view (ref neg_t)) (Tensor.view (ref two_t)) with
+        | Result.Ok (q, r) -> q == Tensor.of_array [2] [-4, 3] && r == Tensor.of_array [2] [1, 1]
+        | Result.Error _ -> false
+    let pos = neg_t[Tensor.gt_scalar 0 (Tensor.view (ref neg_t))]
+    let out_tbl = Tensor.outer_with (\u v -> u * v) (Tensor.view (ref two_t)) (Tensor.view (ref pos))
+    if ok_norm && ok_into && ok_floor && (Tensor.as_array (ref out_tbl))[0] == 14 then 606 else -1
+
+export def nc06_op_mismatch_trap :: i64
+fn nc06_op_mismatch_trap =
+    let a = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+    let b = Tensor.of_array [2, 4] [1, 2, 3, 4, 5, 6, 7, 8]
+    let c = a + b
+    (Tensor.as_array (ref c)).length
+
+
