@@ -67,7 +67,7 @@ node scripts/check-spec.mjs --coverage
 | LEX | 10 | 0 | 10 | 10 | 10 |
 | SYN | 10 | 0 | 10 | 10 | 10 |
 | TYP | 23 | 0 | 23 | 23 | 23 |
-| OWN | 31 | 0 | 31 | 31 | 31 |
+| OWN | 32 | 0 | 32 | 33 | 32 |
 | EVL | 21 | 0 | 21 | 21 | 21 |
 | NUM | 30 | 0 | 30 | 30 | 30 |
 | STR | 10 | 0 | 10 | 10 | 10 |
@@ -79,7 +79,7 @@ node scripts/check-spec.mjs --coverage
 | ABI | 13 | 0 | 13 | 14 | 13 |
 | STD | 10 | 0 | 10 | 10 | 10 |
 | EDN | 10 | 0 | 10 | 10 | 10 |
-| Total | 247 | 11 | 247 | 249 | 247 |
+| Total | 248 | 11 | 248 | 251 | 248 |
 <!-- /generated:spec-coverage -->
 
 ## 限界

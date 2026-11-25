@@ -944,6 +944,9 @@ const suites = {
         const last = count - 1n;
         return ["target_owned", [count], (last % 2n === 0n ? 6n : 5n) * 100000n + BigInt(String(last * 1000n).length)];
       }),
+      // A39:xs=[10,90,40] -> sum=140 -> n=145 -> "updated-145" (len 11) + 42 + 7 = 205; "inside-42" len 9 -> 909.
+      ["a39_field_slice_and_disjoint", [], 205n],
+      ["a39_arena_frame_escape", [], 309n],
     ],
   },
   iteration_protocol: {

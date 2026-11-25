@@ -64,6 +64,9 @@ struct Place {
     /// A field or payload step starts at a value whose type implements Drop. The types along
     /// `root` and `fields` decide it, so equal places always agree.
     through_drop: bool,
+    /// A39: whether any step after any leading region-slot marker is not a `Type::Record` field
+    /// (i.e. `ELEMENT`, `PAYLOAD`, or a `Type::Tuple` component).
+    non_record_step: bool,
 }
 
 /// Collection elements are conservatively one place.
@@ -580,6 +583,8 @@ struct Contract<'a> {
     captures: usize,
     /// A34 (`fvdrop`): edition-2027 read-by-default parameter flags of the function.
     read_by_default: &'a [bool],
+    /// A39: whether this body uses edition 2027+ record-field exclusive borrow rules.
+    field_borrows: bool,
 }
 
 impl<'a> Contract<'a> {
@@ -592,6 +597,7 @@ impl<'a> Contract<'a> {
             lends_mutable: None,
             captures: function.capture_count,
             read_by_default: &function.read_by_default,
+            field_borrows: function.origin.field_borrows,
         }
     }
 }
@@ -723,6 +729,7 @@ fn start_checker<'a, 'run>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
         builtin_wrapper: contract.builtin_wrapper,
+        field_borrows: contract.field_borrows,
         lends_mutable: contract.lends_mutable,
         dropped: None,
         drop_types: BTreeMap::new(),
@@ -770,6 +777,7 @@ fn start_checker<'a, 'run>(
         hidden_walks: BTreeMap::new(),
         exporting: false,
         views: BTreeSet::new(),
+        pattern_locals: BTreeSet::new(),
         drop_read_types: BTreeMap::new(),
         drop_read_locals: BTreeMap::new(),
         binding_order: BTreeMap::new(),
@@ -5789,6 +5797,8 @@ struct Checker<'a, 'run> {
     later_use_budget: usize,
     /// The body is a generated function that applies a builtin to its own parameters (A30).
     builtin_wrapper: bool,
+    /// A39: whether edition 2027+ record-field exclusive borrows are enabled for this body.
+    field_borrows: bool,
     /// Whether the body, or one that it is lifted from or that is lifted from it, lends a way to
     /// write (`lending_bodies`); the body alone is asked when the contract does not say.
     lends_mutable: Option<bool>,
@@ -5912,6 +5922,7 @@ struct Checker<'a, 'run> {
     /// A31: the pattern variables of the body bound as read-only views of the matched storage
     /// (`view`): a borrow of one points into that storage (`expand_views`).
     views: BTreeSet<usize>,
+    pattern_locals: BTreeSet<usize>,
     /// A31: whether dropping a value of a type may run a user `Drop.drop` (`drop_reads`), by type,
     /// and by local (`local_drop_reads`).
     drop_read_types: BTreeMap<Type, bool>,
@@ -6351,6 +6362,7 @@ impl<'a> Checker<'a, '_> {
                             lends_mutable: Some(self.facts.lending.no_reads(*id)),
                             captures: captures.len(),
                             read_by_default: &function.read_by_default,
+                            field_borrows: function.origin.field_borrows,
                         },
                         &mut Vec::new(),
                         None,
@@ -6943,6 +6955,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root,
                 fields,
                 through_drop: false,
+                non_record_step: false,
             };
             let mutable = exclusive & (1 << slot) != 0;
             loans.push(self.loan(place, mutable, BTreeSet::new(), parameter.span));
@@ -7555,6 +7568,18 @@ impl<'a, 'run> Checker<'a, 'run> {
                 span,
             ));
         }
+        if usage == Use::MutBorrow
+            && Some(place.root) == self.drop_root
+            && !place.fields.is_empty()
+            && self.field_borrows
+            && !place.non_record_step
+        {
+            return Err(error(
+                DiagnosticKind::DropReplaceWholeValue,
+                "cannot borrow a field exclusively inside Drop.drop; read it or borrow it with 'ref' instead",
+                span,
+            ));
+        }
         // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
         if place.fields.is_empty() {
             // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
@@ -7585,38 +7610,128 @@ impl<'a, 'run> Checker<'a, 'run> {
             } else {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
-            if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
-                let diagnostic = Diagnostic::of(
-                    DiagnosticKind::MutateImmutableValue,
-                    "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
-                    span,
-                );
-                let declared = self
-                    .state
-                    .locals
-                    .get(&place.root)
-                    .map(|(local, _)| *local)
-                    .filter(|local| {
-                        via.is_empty()
-                            && !local.mutable
-                            && unmarked_fields(place).is_empty()
-                            && local.span.end > local.span.start
-                            && !local.name.starts_with('$')
-                    });
-                let diagnostic = match declared {
-                    Some(local) => diagnostic
-                        .related(
-                            RelatedRole::DeclaredHere,
-                            format!("'{}' is declared here without 'mut'", local.name),
-                            local.span,
+            let has_fields = !unmarked_fields(place).is_empty();
+            let disallow_field_borrow = usage != Use::Write
+                && has_fields
+                && !(self.field_borrows && !place.non_record_step);
+            if !mutable || disallow_field_borrow {
+                let diagnostic = if !has_fields {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
+                        span,
+                    );
+                    let declared = self
+                        .state
+                        .locals
+                        .get(&place.root)
+                        .map(|(local, _)| *local)
+                        .filter(|local| {
+                            via.is_empty()
+                                && !local.mutable
+                                && local.span.end > local.span.start
+                                && !local.name.starts_with('$')
+                        });
+                    match declared {
+                        Some(local) => diagnostic
+                            .related(
+                                RelatedRole::DeclaredHere,
+                                format!("'{}' is declared here without 'mut'", local.name),
+                                local.span,
+                            )
+                            .with_help(format!(
+                                "declare '{}' with 'let mut', or take it by 'ref mut'",
+                                local.name
+                            )),
+                        None => diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        ),
+                    }
+                } else if !self.field_borrows {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
+                        span,
+                    );
+                    if mutable && !place.non_record_step {
+                        diagnostic.with_help(
+                            "record fields are immutable in edition 2026: copy the field into a 'let mut' local, change it, and rebuild the record with '{ b with f = ... }'; edition 2027 can borrow it with 'ref mut b.f'",
                         )
-                        .with_help(format!(
-                            "declare '{}' with 'let mut', or take it by 'ref mut'",
-                            local.name
-                        )),
-                    None => diagnostic.with_help(
-                        "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
-                    ),
+                    } else {
+                        diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        )
+                    }
+                } else if place.non_record_step {
+                    Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); array elements, list elements, union payloads, and tuple components cannot be borrowed exclusively",
+                        span,
+                    )
+                    .with_help(
+                        "write elements through an exclusive slice with 'Array.write', or keep the value in a 'let mut' local or a record field",
+                    )
+                } else {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut')",
+                        span,
+                    );
+                    let captured_name = if via.is_empty()
+                        && self.capture_roots.contains(&(usize::MAX - place.root))
+                    {
+                        self.state
+                            .locals
+                            .get(&place.root)
+                            .map(|(local, _)| local.name.as_str())
+                            .filter(|name| !name.starts_with('$'))
+                    } else {
+                        via.iter().find_map(|id| {
+                            let root = self.loans[*id].place.root;
+                            self.capture_roots
+                                .contains(&root)
+                                .then(|| self.declarations.get(&(usize::MAX - root)))
+                                .flatten()
+                                .map(|local| local.name.as_str())
+                                .filter(|name| !name.starts_with('$'))
+                        })
+                    };
+                    let is_view = self.views.contains(&place.root)
+                        || self.pattern_locals.contains(&place.root)
+                        || via.iter().any(|id| self.loans[*id].view.is_some());
+                    if let Some(name) = captured_name {
+                        let name = name.to_owned();
+                        diagnostic.with_help(format!(
+                            "a closure captures '{name}' as an immutable value; pass it by 'ref mut' as an argument instead"
+                        ))
+                    } else if !is_view
+                        && via.is_empty()
+                        && let Some(local) = self
+                            .state
+                            .locals
+                            .get(&place.root)
+                            .map(|(local, _)| *local)
+                            .filter(|local| {
+                                !local.mutable
+                                    && local.span.end > local.span.start
+                                    && !local.name.starts_with('$')
+                            })
+                    {
+                        diagnostic
+                            .related(
+                                RelatedRole::DeclaredHere,
+                                format!("'{}' is declared here without 'mut'", local.name),
+                                local.span,
+                            )
+                            .with_help(format!(
+                                "declare '{}' with 'let mut', or take it by 'ref mut'",
+                                local.name
+                            ))
+                    } else {
+                        diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        )
+                    }
                 };
                 return self.report(place, diagnostic);
             }
@@ -7876,6 +7991,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 },
                 BTreeSet::new(),
             )]),
@@ -7884,15 +8000,18 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: STATIC_ROOT + 1 + *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 },
                 BTreeSet::new(),
             )]),
             E::Field(value, field) => {
                 let through_drop = value.ty.has_user_drop(&self.module.types());
+                let non_record = !matches!(value.ty, Type::Record(..));
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(*field);
                     place.through_drop |= through_drop;
+                    place.non_record_step |= non_record;
                 }
                 Ok(places)
             }
@@ -7902,6 +8021,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 for (place, _) in &mut places {
                     place.fields.push(PAYLOAD);
                     place.through_drop |= through_drop;
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
@@ -7909,6 +8029,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(ELEMENT);
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
@@ -7932,6 +8053,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 for (place, _) in &mut places {
                     // Collection loans conservatively cover every element.
                     place.fields.push(ELEMENT);
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
@@ -8285,11 +8407,12 @@ impl<'a, 'run> Checker<'a, 'run> {
                         continue;
                     }
                     let place = loan.place.clone();
-                    if stored
-                        .loans
-                        .iter()
-                        .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
-                    {
+                    if stored.loans.iter().any(|id| {
+                        *id != reference
+                            && (self.loans[*id].place.overlaps(&place)
+                                || (!unmarked_fields(&place).is_empty()
+                                    && self.loans[*id].place.root == place.root))
+                    }) {
                         return Err(error(
                             DiagnosticKind::SelfReferentialStore,
                             "cannot store a reference inside its own owner",
@@ -10523,12 +10646,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let original = &self.loans[loan];
                     // A step that starts at a value whose type implements Drop, as `place` marks it.
                     let mut through_drop = original.place.through_drop;
+                    let mut non_record_step = original.place.non_record_step;
                     let mut current = target.cloned();
                     for &field in path {
                         let Some(ty) = current.take() else {
+                            non_record_step = true;
                             break;
                         };
                         through_drop |= ty.has_user_drop(&types);
+                        non_record_step |= !matches!(ty, Type::Record(..));
                         current = match ty {
                             Type::Record(id, arguments)
                                 if field < types.records[id].fields.len() =>
@@ -10555,6 +10681,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                             &orig_fields,
                             &fields,
                             through_drop,
+                            non_record_step,
                         ));
                     }
                     let copy = Loan {
@@ -10562,6 +10689,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                             root: orig_root,
                             fields,
                             through_drop,
+                            non_record_step,
                         },
                         mutable: false,
                         parents: narrowed_parents,
@@ -10593,6 +10721,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         orig_fields: &[usize],
         target_fields: &[usize],
         through_drop: bool,
+        non_record_step: bool,
     ) -> usize {
         let p = &self.loans[parent];
         let is_outer_same = !p.mutable
@@ -10611,6 +10740,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         let p_fields = p.place.fields.clone();
         let p_span = p.span;
         let p_through_drop = p.place.through_drop || through_drop;
+        let p_non_record_step = p.place.non_record_step || non_record_step;
         let grand_parents: Vec<usize> = p.parents.iter().copied().collect();
         let mut narrowed = BTreeSet::new();
         for gp in grand_parents {
@@ -10620,6 +10750,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 &p_fields,
                 target_fields,
                 p_through_drop,
+                p_non_record_step,
             ));
         }
         let copy = Loan {
@@ -10627,6 +10758,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root: orig_root,
                 fields: target_fields.to_vec(),
                 through_drop: p_through_drop,
+                non_record_step: p_non_record_step,
             },
             mutable: false,
             parents: narrowed,
@@ -10825,6 +10957,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                                 root: original.place.root,
                                 fields,
                                 through_drop: original.place.through_drop,
+                                non_record_step: true,
                             },
                             mutable: false,
                             parents,
@@ -13023,6 +13156,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root: id,
                 fields: Vec::new(),
                 through_drop: false,
+                non_record_step: false,
             },
             false,
             BTreeSet::new(),
@@ -14204,6 +14338,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 };
                 self.state
                     .moved
@@ -14421,6 +14556,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                         root,
                         fields: Vec::new(),
                         through_drop: false,
+                        non_record_step: false,
                     };
                     let via = BTreeSet::new();
                     self.access(&place, &via, Use::Borrow, base_arg.span)?;
@@ -14799,6 +14935,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                         root: STATIC_ROOT,
                         fields: Vec::new(),
                         through_drop: false,
+                        non_record_step: false,
                     },
                     false,
                     BTreeSet::new(),
@@ -14856,6 +14993,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             Contract {
                 lends_mutable,
                 captures: captured,
+                field_borrows: self.field_borrows,
                 ..Contract::default()
             },
             self.recovered,

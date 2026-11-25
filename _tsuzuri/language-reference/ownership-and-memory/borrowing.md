@@ -106,6 +106,29 @@ count
 
 参照先の置換は `deref r = value`（edition 2026 の記号形式では `*r = value`）で行います。評価結果の型は `unit` です。
 
+### レコードのフィールドの排他借用（edition 2027）
+
+<!-- rule: OWN-032 -->
+edition 2027 以降では、`let mut` の持ち主または `ref mut` の参照先を根とし、途中の段がすべてレコードのフィールドである場所も、`ref mut b.f` や排他スライス `ref mut b.xs[a..b]`（および `Array.write 0 9 b.xs` の暗黙の排他借用）として借りられます。別のフィールドどうし（`ref mut b.n` と `ref b.xs`、または `ref mut b.xs[0..]`）は同時に借りられますが、フィールドの借用が生きているあいだ持ち主の全体 `b` を読んだり move・置換したりすると `E1014` になります。配列・リストの要素、共用体のペイロード、タプルの成分を経由する経路（`ref mut arr[0].n` など）はどの edition でも排他借用できません（`E1014`）。
+
+```tsuzuri run=52
+record Boxed { x: i64, xs: [i64] }
+def add_len :: ref mut i64 -> ref [i64] -> unit = \dst xs ->
+    deref dst = deref dst + Array.sum xs
+
+let mut b = Boxed { x: 2, xs: [10, 20] }
+let s = ref mut b.xs[0..]
+Array.write 0 30 s
+add_len (ref mut b.x) (ref b.xs)
+b.x
+```
+
+実行結果:
+
+```text
+52
+```
+
 ## 借用から導く最適化情報
 
 コンパイラは、検証済みの借用契約を通常の内部関数の LLVM 属性にも伝えます。
@@ -233,7 +256,7 @@ value
 | 呼び出し先の仮引数型 | 渡した実引数 | 自動補完される動作 |
 | --- | --- | --- |
 | `ref T` | 所有値 `x: T` | `ref x` による共有借用 |
-| `ref mut T` | 可変な所有値 `x: T` | `ref mut x` による排他借用 |
+| `ref mut T` | 可変な所有値 `x: T`、または可変な持ち主・排他参照を根にしたレコードのフィールド（edition 2027 以降） | `ref mut x` / `ref mut b.f` による排他借用 |
 | `ref T` | 参照 `r: ref T` または `ref mut T` | `ref r` による共有再借用 |
 | `ref mut T` | 排他参照 `r: ref mut T` | `ref mut r` による排他再借用 |
 | 非参照の値型 `T`（Copy のみ） | 参照 `r: ref T` または `ref mut T` | `deref r` による自動逆参照 |

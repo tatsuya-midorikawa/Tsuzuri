@@ -4974,6 +4974,8 @@ pub struct FunctionOrigin {
     pub trusted: Option<u8>,
     /// A37/A38: generated method role of an `Index` or `IndexMut` instance.
     pub(crate) index_method: Option<IndexMethodKind>,
+    /// A39: whether the module that wrote this function uses edition 2027+ parameter/field-borrow rules.
+    pub(crate) field_borrows: bool,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -5016,6 +5018,7 @@ impl FunctionOrigin {
             asserts: Asserts(0),
             trusted: None,
             index_method: None,
+            field_borrows: false,
         }
     }
 
@@ -10238,6 +10241,7 @@ fn check_modules_collect(
                         pure: function.pure,
                         pure_values: checker.pure_values,
                         index_method: classes.index_method(id),
+                        field_borrows: checker.read_conventions,
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -10337,6 +10341,7 @@ fn check_modules_collect(
                 origin: FunctionOrigin {
                     pure_values: checker.pure_values,
                     provenance: Provenance::Generated,
+                    field_borrows: checker.read_conventions,
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
                 name: "$entry".into(),

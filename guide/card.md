@@ -84,7 +84,7 @@ def main :: unit -> i32 = \() ->
 - `p.x = 1` and `xs[i] = v` are E1012 (fields and elements are immutable): `{ p with x = 1 }`, `xs = Array.update_at i v xs`.
 <!--endif-->
 <!--if edition=2027-->
-- `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.
+- `p.x = 1`, `ref mut p.x`, and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.
 <!--endif-->
 - `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.
 - `for i in 0 ..= xs.length` compiles, then traps: `..=` includes the end. Use `0 ..< xs.length`.

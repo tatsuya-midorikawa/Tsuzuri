@@ -1607,7 +1607,7 @@ A18 の edition 2027 の引数補完は `check_modules_collect` の署名収集�
 解決済みの具体型が `needs_drop` である通常の引数に加え、裸の型変数と関数型も共有 `Type::Reference` にします。
 明示の借用・`own`・`mut`・`dyn`・SIMD（と、利用者が書けない tzroutine の本体の `Type::Once`）は既定の読み取り補完から除きます。
 `const def`・入口の `main`・`extern`・instance のメソッド、明示 region を持つ引数と可変束縛引数は除外します。
-生成と所有権検査は edition を見ず、明示の `ref T` と同じ経路を使います。
+生成は edition を見ず、所有権検査も（edition 2027 以降の関数に `FunctionOrigin::field_borrows` でレコードのフィールドの経路 `!place.non_record_step` の排他借用を許し、`Place::overlaps` と `store_arguments` の同一ルート検査で健全性を保つ A39 の 1 か所を除き）edition を見ず、明示の `ref T` と同じ経路を使います。
 region 契約を読む前に宣言の引数型にも同じ表面上の補完を反映し、region の推論規則は変更しません。
 `CheckedFunction.read_by_default` は診断の補足と editor の補完前の表記に使い、最適化や所有権の判定には使いません。
 `Type::Function` の box 化した `FunctionParameters` は物理引数型と `Own`・`Read`・`Mut` の規約を保持します。
