@@ -893,6 +893,8 @@ pub(super) struct IndexInstanceTemplate {
     self_ty: Type,
     key_ty: Type,
     output_ty: Type,
+    /// A37: whether the declared `Output` carries loans (borrows its base container).
+    borrows_base: bool,
     /// Variable order of the generated instance `FunctionDecl` (`polymorph::variables(&sig)`).
     variables: Vec<String>,
     constraints: Vec<Constraint>,
@@ -904,6 +906,7 @@ pub(super) struct ResolvedIndex {
     pub(super) function: usize,
     pub(super) type_args: Vec<Type>,
     pub(super) output_ty: Type,
+    pub(super) borrows_base: bool,
     pub(super) constraints: Vec<Constraint>,
     pub(super) call_signature: Type,
 }
@@ -1036,6 +1039,12 @@ impl Classes {
             .methods
             .get(method)
             .and_then(|method| method.signature.as_ref().ok())
+    }
+
+    pub(super) fn is_index_view(&self, function: usize) -> bool {
+        self.index_instances
+            .iter()
+            .any(|inst| inst.borrows_base && inst.function == function)
     }
 
     pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
@@ -2667,10 +2676,12 @@ impl Classes {
         let sig_vars = variables(&sig_for_vars.as_type());
         functions.push((module.into(), fn_decl));
 
+        let borrows_base = !mutable && output_ty.carries_loans(types);
         let template = IndexInstanceTemplate {
             self_ty,
             key_ty,
             output_ty,
+            borrows_base,
             variables: sig_vars,
             constraints: context,
             function: function_id,
@@ -2878,6 +2889,7 @@ impl Classes {
             function: cand.function,
             type_args,
             output_ty,
+            borrows_base: cand.borrows_base,
             constraints,
             call_signature,
         }))
@@ -6278,10 +6290,12 @@ impl Specializer<'_> {
             let pure = function.origin.pure;
             // A20: an instance is checked against the attributes of its declaration.
             let asserts = function.origin.asserts;
+            let index_view = function.origin.index_view;
             function.origin = function.origin.generated(instance);
             function.origin.cpu = cpu;
             function.origin.pure = pure;
             function.origin.asserts = asserts;
+            function.origin.index_view = index_view;
         }
         for constraint in &function.constraints {
             self.classes.validate(

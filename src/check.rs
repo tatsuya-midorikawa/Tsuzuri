@@ -4906,6 +4906,8 @@ pub struct FunctionOrigin {
     /// The `@trusted` mark of an extern function (E15): `None` without one, else the bits of its
     /// properties (`syntax::TRUSTED_PROPERTIES`). Other functions have none.
     pub trusted: Option<u8>,
+    /// A37: generated method of a base-borrowing `Index` instance (`ResolvedIndex::borrows_base`).
+    pub(crate) index_view: bool,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -4947,6 +4949,7 @@ impl FunctionOrigin {
             pure_values: false,
             asserts: Asserts(0),
             trusted: None,
+            index_view: false,
         }
     }
 
@@ -4959,6 +4962,7 @@ impl FunctionOrigin {
             pure: false,
             asserts: Asserts(0),
             trusted: None,
+            index_view: false,
             ..self
         }
     }
@@ -10115,6 +10119,7 @@ fn check_modules_collect(
                         trusted: trusted_by_id.get(&id).copied(),
                         pure: function.pure,
                         pure_values: checker.pure_values,
+                        index_view: classes.is_index_view(id),
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -14814,6 +14819,11 @@ impl<'a> Checker<'a> {
                     let key_ty = self.inference.resolve(&key.ty);
                     let val_span = value.span;
                     let val_ty = self.inference.resolve(&value.ty);
+                    let base_kind = if resolved.borrows_base && value.is_place() {
+                        TypedExprKind::Borrow(Box::new(value), false)
+                    } else {
+                        TypedExprKind::BorrowOperand(Box::new(value))
+                    };
                     let call = TypedExprKind::Call(
                         Box::new(TypedExpr {
                             kind: callee_kind,
@@ -14827,7 +14837,7 @@ impl<'a> Checker<'a> {
                                 span: key_span,
                             },
                             TypedExpr {
-                                kind: TypedExprKind::BorrowOperand(Box::new(value)),
+                                kind: base_kind,
                                 ty: Type::Reference(Box::new(val_ty), false),
                                 span: val_span,
                             },

@@ -212,6 +212,11 @@ function nc02Creators() {
   ].reduce(mix, 0n);
 }
 
+function a37ChainedViewAndTempRead() {
+  const row = [106n, 107n, 108n].reduce(mix, 0n);
+  return mix(row, 102n);
+}
+
 export const cases = [
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [2, 2, 2], [1, 5, 1], [4, 3, 2], [2, 1, 6]].map((shape) => ["ops", shape.map(BigInt), ops(...shape)]),
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [4, 3, 2], [1, 5, 2]].map((shape) => ["maps", shape.map(BigInt), maps(...shape)]),
@@ -224,6 +229,7 @@ export const cases = [
   ["nc02_views", [], nc02Views()],
   ["nc02_mut", [], nc02Mut()],
   ["nc02_creators", [], nc02Creators()],
+  ["a37_chained_view_and_temp_read", [], a37ChainedViewAndTempRead()],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.

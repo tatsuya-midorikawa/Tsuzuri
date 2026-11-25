@@ -790,6 +790,8 @@ fn start_checker<'a, 'run>(
         parameter_path_steps: std::cell::Cell::new(0),
         matched_by: None,
         injections: BTreeSet::new(),
+        checking_contents: false,
+        last_deref_all_through: false,
     };
     if !infer && facts.seeded {
         known_functions(
@@ -1422,9 +1424,21 @@ struct CallFacts {
     /// A34 (`shareparam`): by function and parameter index, whether a complete call returns only
     /// a `Loan::share` of that parameter's block (`fn dup r = Rc.share r`).
     share_returns: Vec<Option<Box<[bool]>>>,
+    /// A37: by function and parameter index, whether a complete call returns loans from a shared
+    /// reference parameter only as contents read through its target (`Part::Contents`).
+    contents_returns: Vec<Option<Box<[bool]>>>,
 }
 
 impl CallFacts {
+    /// A37: whether parameter `index` reaches `function`'s result only as contents behind a
+    /// shared reference target (or not at all).
+    fn returns_contents(&self, function: usize, index: usize) -> bool {
+        self.contents_returns
+            .get(function)
+            .and_then(Option::as_deref)
+            .is_some_and(|flags| flags.get(index) == Some(&true))
+    }
+
     /// A34 (`shareparam`): whether parameter `index` reaches `function`'s result only as a shared
     /// block owner (`Loan::share`).
     fn returns_share(&self, function: usize, index: usize) -> bool {
@@ -1497,6 +1511,7 @@ fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
         self_borrow_paths: joint.self_borrow_paths,
         self_borrow_any: joint.self_borrow_any,
         share_returns: joint.share_returns,
+        contents_returns: joint.contents_returns,
     }
 }
 
@@ -1730,6 +1745,7 @@ struct JointFacts {
     self_borrow_paths: BTreeMap<Type, BTreeSet<Vec<usize>>>,
     self_borrow_any: bool,
     share_returns: Vec<Option<Box<[bool]>>>,
+    contents_returns: Vec<Option<Box<[bool]>>>,
 }
 
 /// A31: the builtins that store a value that they get where an exclusive reference that they get
@@ -2065,6 +2081,32 @@ fn joint_facts(
             .user_drops
             .values()
             .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
+    let mut contents_targets: BTreeSet<usize> = (0..count)
+        .filter(|id| module.functions[*id].origin.index_view)
+        .collect();
+    let mut pending_contents: Vec<usize> = contents_targets.iter().copied().collect();
+    let mut contents_callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    while let Some(caller_id) = pending_contents.pop() {
+        let mut exprs = vec![&module.functions[caller_id].body];
+        while let Some(expr) = exprs.pop() {
+            if let E::Call(callee, _) | E::Binary(BinaryOp::Pipe, _, callee) = &expr.kind
+                && let Some(callee_id) = direct_callee(callee)
+            {
+                contents_callees
+                    .entry(caller_id)
+                    .or_default()
+                    .insert(callee_id);
+                if contents_targets.insert(callee_id) {
+                    pending_contents.push(callee_id);
+                }
+            }
+            expr.try_for_each_child(&mut |child| {
+                exprs.push(child);
+                Ok(())
+            })
+            .expect("collecting contents callees cannot fail");
+        }
+    }
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
@@ -2086,6 +2128,7 @@ fn joint_facts(
         self_borrow_paths: BTreeMap::new(),
         self_borrow_any: false,
         share_returns: vec![None; count],
+        contents_returns: vec![None; count],
         revoked: vec![false; count],
         stores: (0..count)
             .map(|id| {
@@ -2132,6 +2175,7 @@ fn joint_facts(
     let checked: BTreeSet<usize> = callers
         .keys()
         .copied()
+        .chain(contents_targets.iter().copied())
         .chain((0..count).filter(|id| storing[*id] || (closed[*id] && revocable(*id))))
         .collect();
     // The functions whose checks read the facts of each function.
@@ -2141,6 +2185,13 @@ fn joint_facts(
             .entry(callee)
             .or_default()
             .extend(users.iter().filter(|user| checked.contains(user)));
+    }
+    for (&caller, used) in &contents_callees {
+        for &callee in used {
+            if checked.contains(&caller) {
+                dependents.entry(callee).or_default().insert(caller);
+            }
+        }
     }
     for &user in &checked {
         for &callee in &candidates.mentions[user] {
@@ -2165,6 +2216,7 @@ fn joint_facts(
             .get(&id)
             .into_iter()
             .flatten()
+            .chain(contents_callees.get(&id).into_iter().flatten())
             .chain(&candidates.mentions[id])
             .copied()
             .filter(|callee| checked.contains(callee))
@@ -2261,6 +2313,7 @@ fn joint_facts(
                 for id in unsettled {
                     facts.retained[id] = None;
                     facts.share_returns[id] = None;
+                    facts.contents_returns[id] = None;
                     if candidates.may_store[id] {
                         facts.stores[id] = StoreFacts::top();
                     }
@@ -2279,6 +2332,7 @@ fn joint_facts(
                 infer,
                 &facts,
                 retention.contains(&id),
+                contents_targets.contains(&id),
                 storing[id],
                 facts.closed[id] && revocable(id),
             );
@@ -2303,6 +2357,12 @@ fn joint_facts(
                 && facts.share_returns[id].as_deref() != Some(shares.as_ref())
             {
                 facts.share_returns[id] = Some(shares);
+                changed = true;
+            }
+            if contents_targets.contains(&id)
+                && facts.contents_returns[id] != outcome.contents_returns
+            {
+                facts.contents_returns[id] = outcome.contents_returns;
                 changed = true;
             }
             if storing[id] {
@@ -2476,6 +2536,7 @@ fn joint_facts(
         self_borrow_paths: facts.self_borrow_paths,
         self_borrow_any: facts.self_borrow_any,
         share_returns: facts.share_returns,
+        contents_returns: facts.contents_returns,
     }
 }
 
@@ -3800,6 +3861,8 @@ struct FactsOutcome {
     retained: Option<Box<[bool]>>,
     /// A34 (`shareparam`): parameters that reach the result exclusively via `Loan::share`.
     share_returns: Option<Box<[bool]>>,
+    /// A37: parameters that reach the result only as contents read through their reference target.
+    contents_returns: Option<Box<[bool]>>,
     stores: StoreFacts,
     /// The closed result is revoked: the result holds a loan.
     revoke: bool,
@@ -3812,21 +3875,25 @@ struct FactsOutcome {
 /// a loan of its own locals, or when it lends a way to write or makes an opaque call,
 /// `lending_bodies`), its store facts (`stores`; `top` when it does not check), and whether its
 /// result holds a loan (`revocable`).
+#[allow(clippy::too_many_arguments)]
 fn check_facts(
     module: &CheckedModule,
     id: usize,
     infer: bool,
     facts: &CallFacts,
     retention: bool,
+    contents: bool,
     stores: bool,
     revocable: bool,
 ) -> FactsOutcome {
     let function = &module.functions[id];
     let retention = retention && !facts.lending.no_facts(id);
-    if !retention && !stores && !revocable {
+    let contents = contents && !facts.lending.no_reads(id);
+    if !retention && !contents && !stores && !revocable {
         return FactsOutcome {
             retained: None,
             share_returns: None,
+            contents_returns: None,
             stores: StoreFacts::default(),
             revoke: false,
             failed: false,
@@ -3847,6 +3914,7 @@ fn check_facts(
         None,
         None,
     );
+    checker.checking_contents = contents;
     checker.drops_stop_reads = drops_stop_reads(
         module,
         function.parameters.iter(),
@@ -3875,6 +3943,7 @@ fn check_facts(
             return FactsOutcome {
                 retained: None,
                 share_returns: None,
+                contents_returns: None,
                 stores: StoreFacts::top(),
                 revoke: revocable,
                 failed: true,
@@ -3929,10 +3998,74 @@ fn check_facts(
     } else {
         None
     };
+    let contents_returns = if contents
+        && result.loans.iter().all(|loan| {
+            let root = checker.loans[*loan].place.root;
+            roots.contains_key(&root) || is_static_root(root)
+        }) {
+        let types = module.types();
+        let dropped = checker.dropped.as_ref();
+        let mut flags = vec![false; function.parameters.len()];
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            let carries = matches!(
+                &parameter.ty,
+                Type::Reference(target, false)
+                    if target.carries_loans(&types) && !target.reaches_exclusive(&types)
+            );
+            let param_root = usize::MAX - parameter.id;
+            let mut reaches_param = false;
+            let mut all_contents = true;
+            let mut pending: Vec<(usize, bool)> = result
+                .loans
+                .iter()
+                .map(|&l| (l, result.through.contains(&l)))
+                .collect();
+            if facts.drops_write
+                && let Some(dropped_set) = dropped
+            {
+                for &l in dropped_set {
+                    pending.push((l, false));
+                }
+            }
+            let mut seen = BTreeSet::new();
+            while let Some((loan_id, is_through)) = pending.pop() {
+                if !seen.insert((loan_id, is_through)) {
+                    continue;
+                }
+                let loan = &checker.loans[loan_id];
+                if loan.place.root == param_root {
+                    reaches_param = true;
+                    let is_slot_target = checker
+                        .slots
+                        .get(&(param_root, 0))
+                        .is_some_and(|slot| slot.target.contains(&loan_id));
+                    let valid_place = loan.place.fields.is_empty() && !loan.share;
+                    if !(carries && valid_place && (is_through || is_slot_target)) {
+                        all_contents = false;
+                        break;
+                    }
+                    for &parent in &loan.parents {
+                        pending.push((parent, is_through));
+                    }
+                    continue;
+                }
+                for &parent in &loan.parents {
+                    pending.push((parent, false));
+                }
+            }
+            if !reaches_param || all_contents {
+                flags[index] = true;
+            }
+        }
+        flags.iter().any(|&f| f).then_some(flags.into_boxed_slice())
+    } else {
+        None
+    };
     if !retention {
         return FactsOutcome {
             retained: None,
             share_returns,
+            contents_returns,
             stores: found,
             revoke,
             failed: false,
@@ -3945,6 +4078,7 @@ fn check_facts(
         return FactsOutcome {
             retained: None,
             share_returns,
+            contents_returns,
             stores: found,
             revoke,
             failed: false,
@@ -3974,6 +4108,7 @@ fn check_facts(
     FactsOutcome {
         retained: Some(retained.into_boxed_slice()),
         share_returns,
+        contents_returns,
         stores: found,
         revoke,
         failed: false,
@@ -5843,6 +5978,8 @@ struct Checker<'a, 'run> {
     /// The spans of the values that moved into an anonymous union when they were injected (A24),
     /// for the help of a later use: a borrow cannot be injected.
     injections: BTreeSet<(Option<usize>, usize, usize)>,
+    checking_contents: bool,
+    last_deref_all_through: bool,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -7109,8 +7246,10 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// Adds to a direct call's result the loans of `argument` that its named result regions select.
     /// The target slot of a result written `ref {r} T {s}` gets none (A13 Phase 2).
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn argument_regions(
         &self,
+        known: Option<usize>,
         sources: &RegionSources,
         slots: Option<&RegionSlots>,
         index: usize,
@@ -7119,6 +7258,8 @@ impl<'a, 'run> Checker<'a, 'run> {
         current: &mut Value,
     ) {
         let result_target = slots.is_some_and(|slots| slots.result_target);
+        let from_contents = self.checking_contents
+            && known.is_some_and(|id| self.facts.returns_contents(id, index));
         for (result_slot, allowed) in sources.iter().enumerate() {
             if result_target && result_slot == 1 {
                 continue;
@@ -7131,7 +7272,20 @@ impl<'a, 'run> Checker<'a, 'run> {
                 if let Some(slots) = current.regions.as_mut() {
                     slots[result_slot].extend(&loans);
                 }
-                current.hold(loans);
+                if self.checking_contents {
+                    for loan in loans {
+                        let as_contents = from_contents || value.through.contains(&loan);
+                        if current.loans.insert(loan) {
+                            if as_contents {
+                                current.through.insert(loan);
+                            }
+                        } else if !as_contents {
+                            current.through.remove(&loan);
+                        }
+                    }
+                } else {
+                    current.hold(loans);
+                }
             }
         }
     }
@@ -7784,6 +7938,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // the reference has direct pointer loans, skip `through` loans so dereferencing in
                 // a loop cannot nest fields onto stored cell loans without bound.
                 let has_direct = value.loans.iter().any(|id| !value.through.contains(id));
+                self.last_deref_all_through = !value.loans.is_empty() && !has_direct;
                 for id in &value.loans {
                     if has_direct && value.through.contains(id) {
                         continue;
@@ -14231,6 +14386,20 @@ impl<'a, 'run> Checker<'a, 'run> {
         current.regions = region_sources.and_then(call_slots);
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
+            // A37: a base-borrowing `Index` rejects a temporary base (`BorrowOperand` of a
+            // non-place) unless the instance body is proven to return only contents behind `self`
+            // (`returns_contents(id, 1)`).
+            if index == 1
+                && let Some(id) = known
+                && self.module.functions[id].origin.index_view
+                && let E::BorrowOperand(inner) = &argument.kind
+                && !Self::is_place(inner)
+                && !self.facts.returns_contents(id, 1)
+            {
+                return Err(self.borrow_of_temporary(inner).with_help(
+                    "the result of 'x[k]' borrows 'x'; bind the value with 'let' first, as in 'let base = ...', and index 'base'",
+                ));
+            }
             let mark = self.events.as_ref().map_or(0, |events| events.len());
             // A31: an argument that the callee may drop, and the temporaries of the argument,
             // are reported at the call.
@@ -14378,9 +14547,15 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             match region_sources {
                 _ if owned_call && index == 0 => {}
-                Some(sources) => {
-                    self.argument_regions(sources, slots, index, argument, &value, &mut current)
-                }
+                Some(sources) => self.argument_regions(
+                    known,
+                    sources,
+                    slots,
+                    index,
+                    argument,
+                    &value,
+                    &mut current,
+                ),
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
@@ -14708,12 +14883,17 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::Borrow(value, mutable) => {
                 // A31: whether the places of this borrow are the parts that it borrows.
                 let exact = self.exact_place(value);
+                self.last_deref_all_through = false;
                 let places = if *mutable {
                     self.shared_exclusive(value, expression.span)?;
                     self.exclusive_places(value, &during)?
                 } else {
                     self.place(value, &during)?
                 };
+                let reborrows_contents = self.checking_contents
+                    && !*mutable
+                    && matches!(value.kind, E::Dereference(_))
+                    && self.last_deref_all_through;
                 for (place, via) in places {
                     self.access(
                         &place,
@@ -14726,6 +14906,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                         expression.span,
                     )?;
                     self.borrow_event(&place, via.is_empty(), *mutable, expression.span);
+                    if reborrows_contents {
+                        for id in via {
+                            result.loans.insert(id);
+                            result.through.insert(id);
+                        }
+                        continue;
+                    }
                     // The place of an exact borrow is of the borrowed value's type, as far as
                     // `place_type` reads it (unwrapping `Rc`/`Arc`, A34 `rcgetpart`).
                     let expected_ty = {
