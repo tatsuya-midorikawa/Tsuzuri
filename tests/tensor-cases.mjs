@@ -217,6 +217,13 @@ function a37ChainedViewAndTempRead() {
   return mix(row, 102n);
 }
 
+function nc16TupleReadsAndWrites() {
+  // v1[1] = t1[3] = 13; v2[(2,1)] = t2[(1,2)] = 60; v3[(1,2,1)] = t3[(1,2,0)] = 11; v4[(2,1,0,1)] = t4[(1,0,1,2)] = 17*2+1 = 35
+  // t5[[1,0,1,0,2]] = ((1*1+0)*2+1)*1+0 = 3 -> 3*3+2 = 11 -> 11+7 = 18
+  // writes: 41 + 42 + 43 + 44 = 170
+  return [8n, 120n, 110n, 13n + 60n + 11n + 35n, 18n, 170n].reduce(mix, 0n);
+}
+
 export const cases = [
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [2, 2, 2], [1, 5, 1], [4, 3, 2], [2, 1, 6]].map((shape) => ["ops", shape.map(BigInt), ops(...shape)]),
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [4, 3, 2], [1, 5, 2]].map((shape) => ["maps", shape.map(BigInt), maps(...shape)]),
@@ -230,6 +237,7 @@ export const cases = [
   ["nc02_mut", [], nc02Mut()],
   ["nc02_creators", [], nc02Creators()],
   ["a37_chained_view_and_temp_read", [], a37ChainedViewAndTempRead()],
+  ["nc16_tuple_reads_and_writes", [], nc16TupleReadsAndWrites()],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.
@@ -256,4 +264,8 @@ export const traps = [
   // A matrix window with an element outside its 10 elements never becomes a tensor window, even when the index of its
   // last element is i64::MAX (the sum of the strides must not wrap).
   ...[[0, 3, 4, 4, 1], [10, 1, 1, 0, 0], [maxIndex, 1, 1, 0, 0], [0, 1, 2, 0, maxIndex], [maxIndex - 1n, 1, 2, 0, 1], [0, 2, 1, maxIndex, 0]].map((layout) => ["matrix_window_trap", layout.map(BigInt)]),
+  ["nc16_tuple2_on_rank3_trap", []],
+  ["nc16_scalar_on_rank2_trap", []],
+  ["nc16_neg_coord_trap", []],
+  ["nc16_oob_coord_trap", []],
 ];

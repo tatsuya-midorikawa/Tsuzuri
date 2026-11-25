@@ -238,14 +238,14 @@ def main :: unit -> i32 = \() ->
     let r_sub = MatrixView.slice (ref at2) (ref all) row_huge
     assert (MatrixView.rows r_sub == 1 && MatrixView.cols r_sub == 0)
     assert (MatrixView.offset r_sub == 0)
-    let r_idx = row_huge[(Slice.at 2, Slice.all())]
+    let r_idx = ref row_huge[(Slice.at 2, Slice.all())]
     assert (MatrixView.rows r_idx == 1 && MatrixView.cols r_idx == 0)
 
     let col_huge = MatrixView.strided 0 0 3 1 9223372036854775807 (ref empty)
     let c_sub = MatrixView.slice (ref all) (ref at2) col_huge
     assert (MatrixView.rows c_sub == 0 && MatrixView.cols c_sub == 1)
     assert (MatrixView.offset c_sub == 0)
-    let c_idx = col_huge[(Slice.all(), Slice.at 2)]
+    let c_idx = ref col_huge[(Slice.all(), Slice.at 2)]
     assert (MatrixView.rows c_idx == 0 && MatrixView.cols c_idx == 1)
 
     let t_row_huge = Tensor.strided 0 [3, 0] [9223372036854775807, 1] (ref empty)

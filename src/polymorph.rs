@@ -2735,10 +2735,11 @@ impl Classes {
         &self,
         self_ty: &Type,
         mutable: bool,
-        inference: &Inference,
+        inference: &mut Inference,
         types: &TypeContext<'_>,
     ) -> bool {
-        if is_unknown(self_ty) {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
             return false;
         }
         let list = if mutable {
@@ -2746,16 +2747,19 @@ impl Classes {
         } else {
             &self.index_instances
         };
-        list.iter().any(|cand| {
-            let mut inf = inference.clone();
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), inf.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
             let head = substitute(&cand.self_ty, &subs);
-            inf.unify(self_ty, &head, types, cand.span).is_ok()
-        })
+            inference.unifies(&self_resolved, &head, types, |_| true)
+        });
+        inference.quiet = was_quiet;
+        found
     }
 
     /// Returns a key type hint when every `Index`/`IndexMut` candidate matching `self_ty` yields
@@ -2765,10 +2769,11 @@ impl Classes {
         &self,
         self_ty: &Type,
         mutable: bool,
-        inference: &Inference,
+        inference: &mut Inference,
         types: &TypeContext<'_>,
     ) -> Option<Type> {
-        if is_unknown(self_ty) {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
             return None;
         }
         let list = if mutable {
@@ -2776,28 +2781,31 @@ impl Classes {
         } else {
             &self.index_instances
         };
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
         let mut matched: Option<Type> = None;
         for cand in list {
-            let mut inf = inference.clone();
-            inf.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), inf.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
             let head = substitute(&cand.self_ty, &subs);
-            if inf.unify(self_ty, &head, types, cand.span).is_ok() {
-                let key = inf.resolve(&substitute(&cand.key_ty, &subs));
-                if matched.is_some() {
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut key_out = None;
+            if inference.unifies(&self_resolved, &head, types, |inf| {
+                key_out = Some(inf.resolve(&cand_key));
+                true
+            }) {
+                let key = key_out.unwrap();
+                if matched.is_some() || is_unknown(&key) {
+                    inference.quiet = was_quiet;
                     return None;
                 }
-                if !is_unknown(&key) {
-                    matched = Some(key);
-                } else {
-                    return None;
-                }
+                matched = Some(key);
             }
         }
+        inference.quiet = was_quiet;
         matched
     }
 
@@ -2810,7 +2818,9 @@ impl Classes {
         inference: &mut Inference,
         pending_constraints: &[Constraint],
         types: &TypeContext<'_>,
+        names: &Names,
         span: Span,
+        key_span: Span,
     ) -> Result<Option<ResolvedIndex>, Diagnostic> {
         let list = if mutable {
             &self.index_mut_instances
@@ -2822,59 +2832,108 @@ impl Classes {
             return Ok(None);
         }
         let key_resolved = inference.resolve(key_ty);
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let actual_pair = Type::Tuple(vec![self_resolved.clone(), key_resolved.clone()]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
         let mut candidates = Vec::new();
         for (idx, cand) in list.iter().enumerate() {
-            let mut trial = inference.clone();
-            trial.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), trial.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
-            let cand_self = substitute(&cand.self_ty, &subs);
-            let cand_key = substitute(&cand.key_ty, &subs);
-            if trial
-                .unify(&self_resolved, &cand_self, types, span)
-                .is_err()
-                || trial.unify(&key_resolved, &cand_key, types, span).is_err()
-            {
-                continue;
-            }
-            // Reject candidates that newly bind a constrained inference variable (e.g. an
-            // unsuffixed integer literal in `t[[1, 2]]`) to an incompatible concrete type
-            // (e.g. `Slice.Axis`), while ignoring unrelated or still-partial constraints.
-            let compatible = pending_constraints.iter().all(|c| {
-                let before = inference.resolve(&c.ty);
-                let bound = trial.resolve(&c.ty);
-                if before == bound || bound.contains_error() {
-                    return true;
-                }
-                let mut has_unknown = false;
-                map_type(&bound, &mut |part| {
-                    if is_unknown(part) {
-                        has_unknown = true;
+            let cand_pair = Type::Tuple(vec![
+                substitute(&cand.self_ty, &subs),
+                substitute(&cand.key_ty, &subs),
+            ]);
+            let accepted = inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
                     }
-                    part.clone()
-                });
-                if has_unknown {
-                    return true;
-                }
-                self.validate(
-                    &Constraint {
-                        class: c.class,
-                        ty: bound,
-                        span: c.span,
-                    },
-                    types,
-                )
-                .is_ok()
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return true;
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                })
             });
-            if compatible {
+            if accepted {
                 candidates.push(idx);
             }
         }
+        inference.quiet = was_quiet;
         if candidates.is_empty() {
             return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            let class_name = if mutable { "IndexMut" } else { "Index" };
+            let listed: Vec<String> = candidates
+                .iter()
+                .map(|&i| {
+                    let c = &list[i];
+                    format!(
+                        "{class_name}<{}, {}, {}>",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    )
+                })
+                .collect();
+            let mut has_literal = false;
+            map_type(&key_resolved, &mut |part| {
+                if inference.is_numeric_literal(part) {
+                    has_literal = true;
+                }
+                part.clone()
+            });
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::AmbiguousInstanceCandidates,
+                format!(
+                    "more than one {class_name} instance fits {} with this key: {}; give the key a type",
+                    self_resolved.display_with(names),
+                    listed.join(", ")
+                ),
+                key_span,
+            );
+            for &i in candidates.iter().take(8) {
+                let c = &list[i];
+                diag = diag.related(
+                    crate::diagnostic::RelatedRole::DeclaredHere,
+                    format!(
+                        "candidate {class_name}<{}, {}, {}> declared here",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    ),
+                    c.span,
+                );
+            }
+            let help = if has_literal {
+                "give the number literal a type suffix, for example '1i64' or '1i8'"
+            } else {
+                "annotate the key expression or parameter with a concrete type, for example '\\(k: [i64]) -> t[k]'"
+            };
+            return Err(diag.with_help(help));
         }
         let cand = &list[candidates[0]];
         let subs: BTreeMap<String, Type> = cand

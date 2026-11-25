@@ -10,7 +10,7 @@
 - 軸は 64 本までです。長さは 0 以上で、長さが 0 の軸があれば要素は 0 個です。軸が 0 本のテンソルは要素を 1 個持ちます。長さが 0 の軸を除いた長さの積は、`i64` に収まる必要があります。
 - 窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` です。`View` は負のストライド（逆順・反転）と 0 ストライド（ブロードキャスト軸）を安全に扱え、`strided` がオーバーフローしない境界検査で全要素が `data` の中にあることを保証します。`Mut` は単射性（異なる座標が同じスロットを指さないこと）を保つ操作だけを提供します。
 - 窓は借用を持つので、持ち主を move・置換すると `E1014`、持ち主より長く使うと `E1013` です。窓自身は非 Copy で、API は `ref` / `ref mut` で受け取ります。
-- `Index` / `IndexMut` インスタンスを備え、`t[[i, j]]`（要素）・`t[[Slice.step 1 4 2, Slice.rev()]]`（ゼロコピー `View`）・`t[mask]`（ブールマスク抽出）・`m[[i, j]] = v` / `m[mask] = v`（`Mut` への書き込み）が使えます。`Eq` と `Display`（要素数 1000 超は `...` 省略表示）も実装しています。
+- `Index` / `IndexMut` インスタンスを備え、`t[[i, j]]`・`t[(i, j)]`（確保なしの要素読み出し）・`ref t[[Slice.step 1 4 2, Slice.rev()]]`（ゼロコピー `View`）・`t[mask]`（ブールマスク抽出）・`m[[i, j]] = v` / `m[(i, j)] = v` / `m[mask] = v`（`Mut` への書き込み）が使えます。`Eq` と `Display`（要素数 1000 超は `...` 省略表示）も実装しています。
 - `Tensor` という名前を書いたプログラムだけが、このモジュールと `Matrix`・`MatrixView`・`Slice` を読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Tensor.tz` は予約名で `E1011` です。
 
 ## 作る
@@ -103,7 +103,25 @@ $"{strides[0]},{strides[1]} {flipped_strides[0]},{flipped_strides[1]} {column_st
 | `Tensor.map transform view` | 窓の行優先で 1 回ずつ変換した新しい `Tensor` |
 | `Tensor.to_tensor view` | 窓の要素を行優先に複製した新しい `Tensor` |
 
-添字は `[i64]` の配列です。`at` と `get` は、添字の配列を 1 つ確保します。要素ごとに呼ぶ内側のループには、`Tensor.fold`・`Tensor.map` を使うか、`offset`・`strides`・`data` から添字を自分で計算してください。
+添字関数の `at` と `get` は `[i64]` の配列を所有値で受け取るため、添字の配列を 1 つ確保します。一方、添字構文 `t[[i, j]]`・`v[[i, j]]` と、1〜4 軸のタプルのキー（`t[i]`・`t[(i, j)]`・`t[(i, j, k)]`・`t[(i, j, k, l)]`、および `View`・`Mut` への同じキー）は確保を一切行いません。内側のループで要素を 1 つずつ読み書きするときは、`t[(i, j)]`・`m[(i, j)] = val` の添字構文か、`Tensor.fold`・`Tensor.map` を使ってください。
+
+### 添字構文（`t[k]`・`ref t[[Slice…]]`・`m[k] = val`）
+
+`Tensor<'a>` と `Tensor.View<'a>` は、座標のキー（`[i64]` と 1〜4 軸の `i64` / タプル）で要素 `'a` を確保なしに読み、`[Slice.Axis]` のキーに `ref` を付けた `ref t[[...]]` でゼロコピーの `Tensor.View<'a>` を返します（`ref` を省くと `E1042`、要素読み出しやマスクに `ref` を付けると `E1003` です）。窓から要素を読むときは `(ref t[[Slice.at 2]])[3]` のように窓だけに `ref` を付けます。
+
+```tsuzuri run=8%20120%20110
+let t = Tensor.init [3, 4] (\i -> i * 10)
+let rows = ref t[[Slice.range 1 3]]
+let elem = t[[1, 2]] + t[(1, 2)]
+let last = (ref t[[Slice.at 2]])[3]
+$"{Tensor.count rows} {elem} {last}"
+```
+
+実行結果:
+
+```text
+8 120 110
+```
 
 値で読む `get`・`fold`・`map`・`to_tensor` は `Copy<'a>` を要求します。要素が文字列のような非 Copy 型の窓でも、`at`・`rank`・`shape`・`count`・`permute`・`index_axis`・`narrow` は使えます。
 
@@ -152,12 +170,13 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 | 窓が生きている間に、持ち主のテンソルを move・置換する | `E1014` |
 | 窓を `let w = v` で move した後で `v` を使う | `E1012` |
 | 一時値を `ref` で借りる（`Tensor.rank (ref (Tensor.permute …))`） | `E1013`（`borrow requires a local place`） |
-| 一時値の土台から窓を取る（`(mk 100)[[Slice.range 1 3]]`） | `E1013`（`borrow requires a local place`） |
+| 一時値の土台から窓を取る（`ref (mk 100)[[Slice.range 1 3]]`） | `E1013`（`borrow requires a local place`） |
+| 窓を返す添字に `ref` を付けない（`t[[Slice.range 1 3]]`） | `E1042`（`index_view_requires_ref`） |
 | 窓が生きている間に、窓の土台の `View`・`Mut` を move・置換・排他借用する | `E1014` |
 | フィールド参照、パターン分解、リテラルでの構築 | `E1022` |
 | 非 Copy の要素に `get`・`fold`・`map`・`to_tensor` | `E1005` |
 
-窓からさらに切り出す窓の連鎖（`t[[Slice.range 1 3]][[Slice.at 1]]`）と、一時値からの要素の読み出し（`(mk 100)[[2]]`）はそのまま書けます。
+窓からさらに切り出す窓の連鎖（`ref t[[Slice.range 1 3]][[Slice.at 1]]`）と、一時値からの要素の読み出し（`(mk 100)[2]`・`(mk 100)[[2]]`）はそのまま書けます。
 
 ## トラップ
 
@@ -285,6 +304,8 @@ $"{deref corner} {missing} {plane_count}"
 | `of_array` | $O(\text{rank})$（形の検査だけ）、要素の複製なし |
 | `to_array`・`reshape`・`reshape_infer`・`try_reshape`・`of_matrix`・`to_matrix`・`update` | 要素が Copy 型なら $O(\text{count})$（今のコンパイラは要素を複製する。`update` は 2 回）。要素が Copy でない型なら要素を複製せず、形の検査の $O(\text{rank})$ だけ。`update` は、どちらの場合もこれに `writer` の費用が加わる |
 | `view`・`borrow`・`permute`・`index_axis`・`narrow`・`reshape_view`・`is_contiguous`・`count`・`at`・`get` | $O(\text{rank})$。窓を返す API は、形とストライドの配列を新しく確保する |
+| 添字 `t[[…]]`・`t[(i, j)]`・`m[(i, j)] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保なし |
+| 添字 `ref t[[Slice…]]`・`ref v[[Slice…]]`（窓） | $O(\text{rank})$、結果の形とストライドの 2 配列のみ確保 |
 | `init`・`fold`・`map`・`to_tensor` | $O(\text{count})$ |
 
 軸は 64 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。

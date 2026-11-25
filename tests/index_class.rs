@@ -148,7 +148,7 @@ fn std_collections_support_index_with_temporary_keys_and_borrowed_views() {
     // Tensor coordinate + Slice view indexing (temporary [Slice.Axis] key does not trigger E1013).
     emits(
         "let t = Tensor.init [4, 4] (\\i -> i)\n\
-         let sub = t[[Slice.step 1 4 2, Slice.rev()]]\n\
+         let sub = ref t[[Slice.step 1 4 2, Slice.rev()]]\n\
          let elem = t[[2, 3]]\n\
          let v_elem = sub[[0, 1]]\n\
          elem + v_elem",
@@ -157,7 +157,7 @@ fn std_collections_support_index_with_temporary_keys_and_borrowed_views() {
     // Matrix, MatrixView, Map, HashMap indexing (non-Copy string keys are borrowed, not moved).
     emits(
         "let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]\n\
-         let mv = m[(Slice.range 0 2, Slice.every 2)]\n\
+         let mv = ref m[(Slice.range 0 2, Slice.every 2)]\n\
          let mp = Map.empty() |> Map.insert \"tea\" 3 |> Map.insert \"cake\" 5\n\
          let hm = HashMap.empty() |> HashMap.insert \"tea\" 7\n\
          let k = \"tea\"\n\
@@ -172,7 +172,7 @@ fn index_view_inherits_container_lifetime_and_rejects_key_escape() {
         "def leak { r } :: ref { r } Tensor<i64> -> Tensor.View<i64> { r }\n\
          fn leak _outer =\n    \
          let local = Tensor.init [3, 3] (\\i -> i)\n    \
-         local[[Slice.all(), Slice.rev()]]\n\
+         ref local[[Slice.all(), Slice.rev()]]\n\
          0",
         "E1013",
     );
@@ -181,7 +181,7 @@ fn index_view_inherits_container_lifetime_and_rejects_key_escape() {
     // Moving the container while an indexed view is still live is E1014.
     let message = rejects(
         "let t = Tensor.init [3, 3] (\\i -> i)\n\
-         let sub = t[[Slice.all(), Slice.rev()]]\n\
+         let sub = ref t[[Slice.all(), Slice.rev()]]\n\
          let moved = t\n\
          sub[[0, 0]] + (Tensor.as_array (ref moved)).length",
         "E1014",
@@ -259,7 +259,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
     check_temp_e1013(
         "def mk :: i64 -> Tensor<i64>\n\
          fn mk n = Tensor.init [4] (\\i -> i + n)\n\
-         let v = (mk 100)[[Slice.range 1 3]]\n\
+         let v = ref (mk 100)[[Slice.range 1 3]]\n\
          Tensor.count (ref v)",
         "mk 100",
     );
@@ -268,7 +268,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
     check_temp_e1013(
         "def mk :: i64 -> Tensor<i64>\n\
          fn mk n = Tensor.init [2, 1] (\\i -> i + n)\n\
-         let x = (mk 100)[[Slice.range 0 2]][[1, 0]]\n\
+         let x = (ref (mk 100)[[Slice.range 0 2]])[[1, 0]]\n\
          x",
         "mk 100",
     );
@@ -277,7 +277,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
     check_temp_e1013(
         "def mk :: i64 -> Matrix<i64>\n\
          fn mk n = Matrix.init 3 3 (\\r c -> r * 3 + c + n)\n\
-         let mv = (mk 100)[(Slice.range 1 3, Slice.all())]\n\
+         let mv = ref (mk 100)[(Slice.range 1 3, Slice.all())]\n\
          mv[(0, 0)]",
         "mk 100",
     );
@@ -290,7 +290,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
          }\n\
          def mk :: i64 -> Grid\n\
          fn mk n = Grid { names: Array.init 3 (\\i -> $\"name-{i + n}\") }\n\
-         let s = (mk 100)[1]\n\
+         let s = ref (mk 100)[1]\n\
          s.length",
         "mk 100",
     );
@@ -304,7 +304,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
          def mk { r } :: i64 -> ref { r } [i64] -> R { r }\n\
          fn mk n e = R { own_data: Array.init 6 (\\i -> i + n), b: e }\n\
          let e = [1, 2, 3]\n\
-         let z = (mk 100 (ref e))[0]\n\
+         let z = ref (mk 100 (ref e))[0]\n\
          z.b[0]",
         "mk 100",
     );
@@ -317,7 +317,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
          }\n\
          def mk :: i64 -> Grid\n\
          fn mk n = Grid { names: Array.init 3 (\\i -> $\"name-{i + n}\") }\n\
-         let p = (mk 100)[1]\n\
+         let p = ref (mk 100)[1]\n\
          match p with | (s, i) -> s.length + i",
         "mk 100",
     );
@@ -333,7 +333,7 @@ fn index_view_on_a_temporary_base_is_rejected() {
          }\n\
          def mk :: i64 -> Grid\n\
          fn mk n = Grid { names: Array.init 3 (\\i -> $\"name-{i + n}\") }\n\
-         let f = (mk 100)[1]\n\
+         let f = ref (mk 100)[1]\n\
          f ()",
         "mk 100",
     );
@@ -349,7 +349,7 @@ fn index_view_keeps_a_loan_of_its_base_place() {
          }\n\
          let mut data = [1, 2, 3, 4]\n\
          let mut m = Tensor.borrow_mut [4] (ref mut data)\n\
-         let v = m[Key { k: 0 }]\n\
+         let v = ref m[Key { k: 0 }]\n\
          Tensor.write [0] 99 (ref mut m)\n\
          Tensor.count (ref v)",
         "E1014",
@@ -365,7 +365,7 @@ fn index_view_keeps_a_loan_of_its_base_place() {
          fn mk n e = R { own_data: Array.init 6 (\\i -> i + n), b: e }\n\
          let e = [1, 2, 3]\n\
          let mut base = mk 100 (ref e)\n\
-         let z = base[0]\n\
+         let z = ref base[0]\n\
          base = mk 900 (ref e)\n\
          z.b[0] + base.own_data[0]",
         "E1014",
@@ -384,7 +384,7 @@ fn index_view_keeps_a_loan_of_its_base_place() {
              Tensor.copy_from (ref part) (ref mut tail)\n\
          let mut data = [1, 2, 3, 4, 5]\n\
          let mut m = Tensor.borrow_mut [5] (ref mut data)\n\
-         overlap_copy m[Key { k: 0 }] (ref mut m)\n\
+         overlap_copy (ref m[Key { k: 0 }]) (ref mut m)\n\
          data[0]",
         "E1014",
     );
@@ -393,7 +393,7 @@ fn index_view_keeps_a_loan_of_its_base_place() {
     rejects(
         "let t = Tensor.init [4] (\\i -> i)\n\
          let v = Tensor.view (ref t)\n\
-         let s = v[[Slice.at 0]]\n\
+         let s = ref v[[Slice.at 0]]\n\
          let moved = v\n\
          Tensor.count (ref s) + Tensor.count (ref moved)",
         "E1014",
@@ -410,12 +410,12 @@ fn std_view_chains_on_temporary_views_stay_accepted() {
          def mm :: i64 -> Matrix<i64>\n\
          fn mm n = Matrix.init 2 2 (\\r c -> r * 2 + c + n)\n\
          def from_ref { r } :: ref { r } Tensor<i64> -> Tensor.View<i64> { r }\n\
-         fn from_ref r = r[[Slice.at 0]]\n\
+         fn from_ref r = ref r[[Slice.at 0]]\n\
          let t = Tensor.init [4, 3] (\\i -> i + 100)\n\
-         let row = t[[Slice.range 1 3]][[Slice.at 1]]\n\
-         let elem = t[[Slice.range 1 3]][[1, 2]]\n\
+         let row = ref t[[Slice.range 1 3]][[Slice.at 1]]\n\
+         let elem = (ref t[[Slice.range 1 3]])[[1, 2]]\n\
          let m = Matrix.init 3 3 (\\r c -> r * 3 + c + 100)\n\
-         let mv = m[(Slice.range 1 3, Slice.all())][(Slice.all(), Slice.at 2)]\n\
+         let mv = ref m[(Slice.range 1 3, Slice.all())][(Slice.all(), Slice.at 2)]\n\
          let r_view = from_ref (ref t)\n\
          row[[0]] + elem + mv[(0, 0)] + (mk 100)[[2]] + (mm 100)[(1, 1)] + r_view[[0]]",
     );
@@ -423,9 +423,9 @@ fn std_view_chains_on_temporary_views_stay_accepted() {
     // Chained slices inside generic functions (`infer_copy_all` + monomorphized check).
     emits(
         "def first_row { r } :: ref Tensor.View<'a> { r } -> Tensor.View<'a> { r }\n\
-         fn first_row v = v[[Slice.range 0 1]][[Slice.at 0]]\n\
+         fn first_row v = ref v[[Slice.range 0 1]][[Slice.at 0]]\n\
          def corner :: Copy<'a> => ref Tensor<'a> -> 'a\n\
-         fn corner t = t[[Slice.range 1 3]][[0, 0]]\n\
+         fn corner t = (ref t[[Slice.range 1 3]])[[0, 0]]\n\
          let t = Tensor.init [4, 3] (\\i -> i + 100)\n\
          let v = Tensor.view (ref t)\n\
          let row = first_row (ref v)\n\
@@ -574,7 +574,7 @@ def main :: unit -> i32 = \\() ->
     let mut foo = Foo { v: 200 }
     let b = (pick (ref mut foo))[say \"pkey\" 2]
     let t = Tensor.init [3, 2] (\\i -> i + 10)
-    let sub = t[[say_range 0 2]][[say_slice 1]]
+    let sub = ref t[[say_range 0 2]][[say_slice 1]]
     let c = (arr ())[say \"akey\" 1]
     do! IO.writeln ($\"{a}:{b}:{sub[[0]]}:{c}\")
     0
@@ -941,4 +941,270 @@ check_simple (Foo { v: 1 }) (Holder { f: Foo { v: 2 } }) (ref (Foo { v: 3 })) 0 
         "expected zero $index.* locals in check_simple, got body: {:?}",
         func.body
     );
+}
+
+#[test]
+fn index_view_requires_ref_and_absorbs_ref() {
+    // Accepted forms: `ref t[[...]]`, implicit borrow in call args, chained `ref t[[...]][[...]]`,
+    // `(ref t[[...]])[[3]]`, user region-bearing Output `ref h[0]`, and built-in `ref xs[1]` / slices.
+    emits(
+        r#"record R { r } { b: ref { r } [i64] }
+record Holder { items: [i64] }
+instance Index<Holder, i64, R> {
+    fn index i self = R { b: ref self.items[(deref i)..] }
+}
+let t = Tensor.init [3, 4] (\i -> i * 10)
+let v: Tensor.View<i64> = ref t[[Slice.all()]]
+let rows = ref t[[Slice.range 1 3]]
+let n1 = Tensor.count (ref t[[Slice.range 1 3]])
+let n2 = Tensor.count (ref rows)
+let m = Matrix.of_array 2 3 [1, 2, 3, 4, 5, 6]
+let mv: MatrixView<i64> = ref m[(Slice.range 0 2, Slice.every 2)]
+let ch: Tensor.View<i64> = ref t[[Slice.range 0 2]][[Slice.at 1]]
+let elem = (ref t[[Slice.at 2]])[[3]]
+let h = Holder { items: [10, 20, 30] }
+let hr = ref h[1]
+let mut xs = [1, 2, 3, 4]
+let xr: ref i64 = ref xs[1]
+let xs_s: ref [i64] = ref xs[1..3]
+let xs_sum = (deref xr) + xs_s.length
+let xs_m: ref mut [i64..] = ref mut xs[0..2]
+Array.write 0 9 xs_m
+Tensor.count (ref v) + n1 + n2 + MatrixView.rows mv + Tensor.count (ref ch) + elem + hr.b[0] + xs_sum"#,
+    );
+
+    // Edition 2026 symbolic `&t[[Slice.all()]]` is also absorbed into `Tensor.View`.
+    let e2026 = tsuzuri::analyze_with_edition(
+        "let t = Tensor.init [2, 3] (\\i -> i)\n\
+         let v: Tensor.View<i64> = &t[[Slice.all()]]\n\
+         Tensor.count (&v)",
+        tsuzuri::syntax::Edition::E2026,
+    )
+    .expect("Edition 2026 &t[[...]]");
+    assert!(tsuzuri::llvm::emit_target(&e2026, tsuzuri::llvm::Entry::Library, false).is_ok());
+
+    // Tensor<ref i64> element read (declared Output is `'a`, not carrying loans) does NOT require `ref`.
+    emits(
+        r#"let x = 42
+let t = Tensor.of_array [1] [ref x]
+let r: ref i64 = t[0]
+deref r"#,
+    );
+
+    // E1042 (`index_view_requires_ref`): uncovered view-returning Index calls.
+    let check_req_ref = |source: &str| {
+        let err = analyze(source).expect_err(source).into_data();
+        assert_eq!(err.code, "E1042", "{source}\n{}", err.message);
+        assert_eq!(err.kind, Some("index_view_requires_ref"), "{source}");
+        assert_eq!(err.fixes.len(), 1, "{source}");
+        assert_eq!(
+            err.fixes[0].applicability,
+            tsuzuri::diagnostic::Applicability::Certain,
+            "{source}"
+        );
+    };
+
+    check_req_ref(
+        "let t = Tensor.init [2, 2] (\\i -> i)\nlet v = t[[Slice.all()]]\nTensor.count (ref v)",
+    );
+    check_req_ref(
+        "let m = Matrix.of_array 2 2 [1, 2, 3, 4]\nlet mv = m[(Slice.all(), Slice.all())]\nMatrixView.rows mv",
+    );
+    check_req_ref(
+        "let t = Tensor.init [2, 2] (\\i -> i)\nlet axes = [Slice.all()]\nlet v = t[axes]\nTensor.count (ref v)",
+    );
+    check_req_ref("let t = Tensor.init [2, 2] (\\i -> i)\nTensor.count t[[Slice.all()]]");
+    check_req_ref("let t = Tensor.init [3, 2] (\\i -> i)\nt[[Slice.range 1 3]][[1, 0]]");
+    check_req_ref(
+        "def pass { r } :: Tensor.View<i64> { r } -> Tensor.View<i64> { r } = \\v -> v\n\
+         let t = Tensor.init [2, 2] (\\i -> i)\n\
+         let v = ref (pass t[[Slice.all()]])\n\
+         0",
+    );
+    check_req_ref(
+        "record R { r } { b: ref { r } [i64] }\n\
+         record Holder { items: [i64] }\n\
+         instance Index<Holder, i64, R> {\n\
+             fn index i self = R { b: ref self.items[(deref i)..] }\n\
+         }\n\
+         let h = Holder { items: [1, 2] }\n\
+         let r = h[0]\n\
+         r.b[0]",
+    );
+
+    // E1042 (`index_view_not_writable`): `ref mut` on a shared-borrow Index window.
+    let mut_err = analyze(
+        "let mut t = Tensor.init [2, 2] (\\i -> i)\n\
+         let v = ref mut t[[Slice.all()]]\n\
+         0",
+    )
+    .unwrap_err()
+    .into_data();
+    assert_eq!(mut_err.code, "E1042");
+    assert_eq!(mut_err.kind, Some("index_view_not_writable"));
+    assert_eq!(mut_err.fixes.len(), 1);
+    assert_eq!(
+        mut_err.fixes[0].applicability,
+        tsuzuri::diagnostic::Applicability::Likely
+    );
+
+    // E1003 (`index_ref_on_value`): `ref` on a value-returning Index.
+    let check_ref_on_val = |source: &str, expect_window_help: bool| {
+        let err = analyze(source).expect_err(source).into_data();
+        assert_eq!(err.code, "E1003", "{source}\n{}", err.message);
+        assert_eq!(err.kind, Some("index_ref_on_value"), "{source}");
+        if expect_window_help {
+            assert!(
+                err.help
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("(ref t[[...]])[[...]]"),
+                "{source}\nhelp={:?}",
+                err.help
+            );
+        }
+    };
+
+    check_ref_on_val(
+        "def f :: ref i64 -> i64 = \\x -> deref x\n\
+         let t = Tensor.init [2, 3] (\\i -> i)\n\
+         f (ref t[[1, 2]])",
+        false,
+    );
+    check_ref_on_val(
+        "let t = Tensor.of_array [3] [10, 20, 30]\n\
+         let mask = Tensor.of_array [3] [true, false, true]\n\
+         let sub = ref t[mask]\n\
+         0",
+        false,
+    );
+    check_ref_on_val(
+        "let mp = Map.empty() |> Map.insert \"tea\" 3\n\
+         let r = ref mp[\"tea\"]\n\
+         0",
+        false,
+    );
+    check_ref_on_val(
+        "let t = Tensor.init [3, 4] (\\i -> i)\n\
+         let x = ref t[[Slice.at 2]][[3]]\n\
+         x",
+        true,
+    );
+}
+
+#[test]
+fn index_ambiguous_candidates_report_e1043() {
+    for order in [false, true] {
+        let inst_a = "instance Index<Foo, i8, string> { fn index _k _self = \"i8\" }";
+        let inst_b = "instance Index<Foo, i16, string> { fn index _k _self = \"i16\" }";
+        let (first, second) = if order {
+            (inst_b, inst_a)
+        } else {
+            (inst_a, inst_b)
+        };
+        let src =
+            format!("record Foo {{ v: i64 }}\n{first}\n{second}\nlet f = Foo {{ v: 1 }}\nf[1]");
+        let err = analyze(&src).unwrap_err().into_data();
+        assert_eq!(err.code, "E1043", "{src}");
+        assert_eq!(err.kind, Some("ambiguous_instance_candidates"));
+        assert_eq!(err.related.len(), 2, "{src}\n{:?}", err.related);
+
+        // Concrete suffix disambiguates cleanly regardless of declaration order.
+        let ok_src =
+            format!("record Foo {{ v: i64 }}\n{first}\n{second}\nlet f = Foo {{ v: 1 }}\nf[1i16]");
+        emits(&ok_src);
+    }
+
+    // Open lambda parameter `\k -> t[k]` reports E1043; annotated `\(k: [i64]) -> t[k]` succeeds.
+    let open_err = analyze(
+        "let t = Tensor.init [2, 2] (\\i -> i)\n\
+         let f = \\k -> t[k]\n\
+         f [1, 1]",
+    )
+    .unwrap_err()
+    .into_data();
+    assert_eq!(open_err.code, "E1043");
+    assert_eq!(open_err.kind, Some("ambiguous_instance_candidates"));
+
+    emits(
+        "let t = Tensor.init [2, 2] (\\i -> i)\n\
+         let f = \\(k: [i64]) -> t[k]\n\
+         f [1, 1]",
+    );
+
+    // IndexMut ambiguous candidates also report E1043.
+    let mut_err = analyze(
+        "record Foo { v: i64 }\n\
+         instance IndexMut<Foo, i8, i64> { fn index_mut _k x self = deref self = Foo { v: x } }\n\
+         instance IndexMut<Foo, i16, i64> { fn index_mut _k x self = deref self = Foo { v: x } }\n\
+         let mut f = Foo { v: 0 }\n\
+         f[1] = 7\n\
+         f.v",
+    )
+    .unwrap_err()
+    .into_data();
+    assert_eq!(mut_err.code, "E1043");
+    assert_eq!(mut_err.kind, Some("ambiguous_instance_candidates"));
+}
+
+#[test]
+fn index_view_requires_ref_fix_is_certain_and_check_clean() {
+    let dir = std::env::temp_dir().join(format!("tsuzuri-nc16-fix-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(
+        &main_tz,
+        r#"def main :: unit -> i32 = \() ->
+    let t = Tensor.init [3, 4] (\i -> i * 10)
+    let rows = t[[Slice.range 1 3]]
+    let n = Tensor.count t[[Slice.all()]]
+    (Tensor.count rows + n - 20) as i32
+"#,
+    )
+    .unwrap();
+    let json_out = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["check", "--json"])
+        .arg(&main_tz)
+        .output()
+        .unwrap();
+    assert!(!json_out.status.success());
+    let json_str = format!(
+        "{}{}",
+        String::from_utf8_lossy(&json_out.stdout),
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    assert!(json_str.contains("\"code\":\"E1042\""), "{json_str}");
+    assert!(
+        json_str.contains("\"kind\":\"index_view_requires_ref\""),
+        "{json_str}"
+    );
+    assert!(
+        json_str.contains("\"applicability\":\"certain\""),
+        "{json_str}"
+    );
+
+    let fix_out = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("fix")
+        .arg(&main_tz)
+        .output()
+        .unwrap();
+    assert!(
+        fix_out.status.success(),
+        "tsuzuri fix failed:\n{}\n{}",
+        String::from_utf8_lossy(&fix_out.stdout),
+        String::from_utf8_lossy(&fix_out.stderr)
+    );
+    let check_out = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&main_tz)
+        .output()
+        .unwrap();
+    assert!(
+        check_out.status.success(),
+        "tsuzuri check after fix failed:\n{}\n{}",
+        String::from_utf8_lossy(&check_out.stdout),
+        String::from_utf8_lossy(&check_out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

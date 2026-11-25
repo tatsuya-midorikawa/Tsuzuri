@@ -216,6 +216,7 @@ diagnostic_kinds! {
         (FormatSpecTypeMismatch, "format_spec_type_mismatch", "E1003"),
         (FormatSpecTypeUnknown, "format_spec_type_unknown", "E1003"),
         (IndexNotInteger, "index_not_integer", "E1003"),
+        (IndexRefOnValue, "index_ref_on_value", "E1003"),
         (TypeMismatch, "type_mismatch", "E1003"),
         // E1004
         (AmbiguousBuilderAlias, "ambiguous_builder_alias", "E1004"),
@@ -741,6 +742,11 @@ diagnostic_kinds! {
         (TypeTestNotMember, "type_test_not_member", "E1041"),
         (TypeTestUnion, "type_test_union", "E1041"),
         (TypeTestUnknownScrutinee, "type_test_unknown_scrutinee", "E1041"),
+        // E1042
+        (IndexViewNotWritable, "index_view_not_writable", "E1042"),
+        (IndexViewRequiresRef, "index_view_requires_ref", "E1042"),
+        // E1043
+        (AmbiguousInstanceCandidates, "ambiguous_instance_candidates", "E1043"),
         // E2000
         (AllocNeedsCountingAllocator, "alloc_needs_counting_allocator", "E2000"),
         (AuditUsage, "audit_usage", "E2000"),

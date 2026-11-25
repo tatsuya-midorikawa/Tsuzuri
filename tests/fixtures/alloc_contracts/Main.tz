@@ -469,3 +469,41 @@ test "an outer window contains the windows inside it" =
     expect "inner" 1 0 0 32 inner_used
     expect "outer" 2 0 0 64 outer_used
     assert (Array.length (ref a) + Array.length (ref b) == 8)
+
+// --- Tensor indexing (NC16) ---
+
+// Rule: reading Tensor and Tensor.View elements through Index ([i64] or 1..4D tuple keys) allocates nothing.
+test "Tensor element reads via Index: zero allocations" =
+    let t1 = Tensor.init [4] (\i -> i + 1)
+    let t2 = Tensor.init [3, 4] (\i -> i * 10)
+    let t3 = Tensor.init [2, 2, 2] (\i -> i + 5)
+    let t4 = Tensor.init [2, 2, 2, 2] (\i -> i + 1)
+    let v2 = Tensor.view (ref t2)
+    let start = Alloc.snapshot ()
+    let mut sum = t1[2] + t2[[1, 2]] + t2[(1, 2)] + t3[(1, 0, 1)] + t4[(1, 1, 0, 1)] + v2[[1, 2]] + v2[(1, 2)]
+    for i in 0 ..= 2 do
+        for j in 0 ..= 3 do
+            sum = sum + t2[(i, j)] + t2[[i, j]]
+    let used = Alloc.since start
+    expect "tensor elem read" 0 0 0 0 used
+    assert (sum == 1587)
+
+// Rule: writing Tensor.Mut elements through IndexMut ([i64] or 1..4D tuple keys) allocates nothing.
+test "Tensor.Mut element writes via IndexMut: zero allocations" =
+    let mut buf = new [i64](6, \_ -> 0)
+    let mut m = Tensor.borrow_mut [2, 3] (ref mut buf)
+    let start = Alloc.snapshot ()
+    m[[0, 1]] = 7
+    m[(1, 2)] = 9
+    let used = Alloc.since start
+    expect "tensor mut write" 0 0 0 0 used
+    assert (buf[1] == 7 && buf[5] == 9)
+
+// Rule: taking a Tensor.View window through `ref t[[...]]` allocates only the result shape and strides arrays.
+test "Tensor slice window via Index: allocates only shape and strides" =
+    let t = Tensor.init [3, 4] (\i -> i * 10)
+    let start = Alloc.snapshot ()
+    let w = ref t[[Slice.range 1 3, Slice.all()]]
+    let used = Alloc.since start
+    expect_events "tensor slice view" 2 0 0 used
+    assert (Tensor.count (ref w) == 8)

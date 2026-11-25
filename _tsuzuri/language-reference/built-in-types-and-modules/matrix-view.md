@@ -36,6 +36,8 @@ $"{MatrixView.rows flipped}x{MatrixView.cols flipped} {deref corner} {Matrix.row
 
 平らな配列も窓にできます。`MatrixView.of_array rows cols (ref values)` は、`values.length` が `rows * cols` に一致しないとトラップします。
 
+添字構文でも要素と部分窓を扱えます。`view[(r, c)]` は要素を確保なしに読み、`ref m[(Slice.range 0 2, Slice.every 2)]` や `ref view[(Slice.at 1, Slice.all())]` は `MatrixView<'a>` を確保なしに返します（窓を返す添字には `ref` が必要で、省くと `E1042` です）。書き込める窓 `mut_view[(r, c)] = val` はその場に書き込みます。
+
 ## ストライドで指す
 
 `MatrixView.strided offset rows cols row_stride col_stride (ref data)` は、配置を自分で決めた窓を作ります。引数が負のとき、`rows * cols` が `i64` に収まらないとき、窓のどこかの要素が `data` の外に出るときはトラップします。要素のない窓（`rows` か `cols` が 0）には、`offset` の上限がありません。

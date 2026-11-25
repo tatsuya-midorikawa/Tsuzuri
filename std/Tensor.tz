@@ -1590,8 +1590,8 @@ instance Display<'a> => Display<View<'a>> {
     fn rec display view = format_strided view.data (ref view.shape) (ref view.strides) view.offset
 }
 
-private def slice_raw { r } :: own [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> View<'a> { r }
-fn slice_raw axes data offset shape strides =
+private def slice_raw { r } :: ref [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> own bool -> View<'a> { r }
+fn slice_raw axes data offset shape strides row_major =
     let in_rank = shape.length
     let mut input_empty = false
     for d in 0i64 ..= (in_rank - 1) do
@@ -1609,7 +1609,7 @@ fn slice_raw axes data offset shape strides =
         | _ ->
             assert (in_axis < in_rank)
             let dim = shape[in_axis]
-            let stride = strides[in_axis]
+            let stride = if row_major then stride_of shape in_axis else strides[in_axis]
             match Slice.resolve dim (ref axes[i]) with
             | Slice.Resolved.Index pos ->
                 if !input_empty then
@@ -1638,7 +1638,11 @@ fn slice_raw axes data offset shape strides =
             in_axis = in_axis + 1
     while in_axis < in_rank do
         Vec.push_mut shape[in_axis] (ref mut out_shape)
-        Vec.push_mut (if input_empty then 0 else strides[in_axis]) (ref mut out_strides)
+        let tail_stride =
+            if input_empty then 0
+            elif row_major then stride_of shape in_axis
+            else strides[in_axis]
+        Vec.push_mut tail_stride (ref mut out_strides)
         in_axis = in_axis + 1
     let shape_arr = Vec.to_array out_shape
     assert (shape_arr.length <= 64)
@@ -1660,30 +1664,173 @@ fn slice_raw axes data offset shape strides =
 /// Tensor.to_array (Tensor.to_tensor (ref sub))
 /// ```
 def slice { r } :: own [Slice.Axis] -> ref View<'a> { r } -> View<'a> { r }
-fn slice axes view = slice_raw axes view.data view.offset (ref view.shape) (ref view.strides)
+fn slice axes view = slice_raw (ref axes) view.data view.offset (ref view.shape) (ref view.strides) false
+
+private def dense_offset :: ref [i64] -> ref [i64] -> i64
+fn dense_offset shape coords =
+    assert (coords.length == shape.length)
+    let mut offset = 0
+    for axis in 0i64 ..= (coords.length - 1) do
+        let c = coords[axis]
+        let dim = shape[axis]
+        assert (c >= 0 && c < dim)
+        offset = offset * dim + c
+    offset
+
+private def dense_offset_1 :: ref [i64] -> own i64 -> i64
+fn dense_offset_1 shape c0 =
+    assert (shape.length == 1)
+    assert (c0 >= 0 && c0 < shape[0])
+    c0
+
+private def dense_offset_2 :: ref [i64] -> own i64 -> own i64 -> i64
+fn dense_offset_2 shape c0 c1 =
+    assert (shape.length == 2)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1)
+    c0 * d1 + c1
+
+private def dense_offset_3 :: ref [i64] -> own i64 -> own i64 -> own i64 -> i64
+fn dense_offset_3 shape c0 c1 c2 =
+    assert (shape.length == 3)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    let d2 = shape[2]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1 && c2 >= 0 && c2 < d2)
+    (c0 * d1 + c1) * d2 + c2
+
+private def dense_offset_4 :: ref [i64] -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn dense_offset_4 shape c0 c1 c2 c3 =
+    assert (shape.length == 4)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    let d2 = shape[2]
+    let d3 = shape[3]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1 && c2 >= 0 && c2 < d2 && c3 >= 0 && c3 < d3)
+    ((c0 * d1 + c1) * d2 + c2) * d3 + c3
+
+private def strided_offset_1 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> i64
+fn strided_offset_1 offset shape strides c0 =
+    assert (shape.length == 1)
+    assert (c0 >= 0 && c0 < shape[0])
+    offset + c0 * strides[0]
+
+private def strided_offset_2 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> i64
+fn strided_offset_2 offset shape strides c0 c1 =
+    assert (shape.length == 2)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1])
+    offset + c0 * strides[0] + c1 * strides[1]
+
+private def strided_offset_3 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own i64 -> i64
+fn strided_offset_3 offset shape strides c0 c1 c2 =
+    assert (shape.length == 3)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1] && c2 >= 0 && c2 < shape[2])
+    offset + c0 * strides[0] + c1 * strides[1] + c2 * strides[2]
+
+private def strided_offset_4 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn strided_offset_4 offset shape strides c0 c1 c2 c3 =
+    assert (shape.length == 4)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1] && c2 >= 0 && c2 < shape[2] && c3 >= 0 && c3 < shape[3])
+    offset + c0 * strides[0] + c1 * strides[1] + c2 * strides[2] + c3 * strides[3]
 
 instance Copy<'a> => Index<Tensor<'a>, [i64], 'a> {
+    fn index coords self = self.data[dense_offset (ref self.shape) coords]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, i64, 'a> {
+    fn index c0 self = self.data[dense_offset_1 (ref self.shape) (deref c0)]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64), 'a> {
     fn index coords self =
-        let v = view self
-        deref (at (Array.copy coords) (ref v))
+        match coords with
+        | (c0, c1) -> self.data[dense_offset_2 (ref self.shape) c0 c1]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2) -> self.data[dense_offset_3 (ref self.shape) c0 c1 c2]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2, c3) -> self.data[dense_offset_4 (ref self.shape) c0 c1 c2 c3]
 }
 
 instance Copy<'a> => Index<View<'a>, [i64], 'a> {
-    fn index coords self = deref (at (Array.copy coords) self)
+    fn index coords self = self.data[offset_of self coords]
+}
+
+instance Copy<'a> => Index<View<'a>, i64, 'a> {
+    fn index c0 self = self.data[strided_offset_1 self.offset (ref self.shape) (ref self.strides) (deref c0)]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1) -> self.data[strided_offset_2 self.offset (ref self.shape) (ref self.strides) c0 c1]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2) -> self.data[strided_offset_3 self.offset (ref self.shape) (ref self.strides) c0 c1 c2]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2, c3) -> self.data[strided_offset_4 self.offset (ref self.shape) (ref self.strides) c0 c1 c2 c3]
 }
 
 instance Index<Tensor<'a>, [Slice.Axis], View<'a>> {
     fn index axes self =
-        let strides = dense_strides (ref self.shape)
-        slice_raw (Array.copy axes) (ref self.data) 0 (ref self.shape) (ref strides)
+        let no_strides: [i64] = []
+        slice_raw axes (ref self.data) 0 (ref self.shape) (ref no_strides) true
 }
 
 instance Index<View<'a>, [Slice.Axis], View<'a>> {
-    fn index axes self = slice (Array.copy axes) self
+    fn index axes self =
+        slice_raw axes self.data self.offset (ref self.shape) (ref self.strides) false
 }
 
 instance IndexMut<Mut<'a>, [i64], 'a> {
-    fn index_mut coords value self = write (Array.copy coords) value self
+    fn index_mut coords value self =
+        let slot = offset_of_mut (ref self) coords
+        Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, i64, 'a> {
+    fn index_mut c0 value self =
+        let slot = strided_offset_1 self.offset (ref self.shape) (ref self.strides) (deref c0)
+        Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1) ->
+            let slot = strided_offset_2 self.offset (ref self.shape) (ref self.strides) c0 c1
+            Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2) ->
+            let slot = strided_offset_3 self.offset (ref self.shape) (ref self.strides) c0 c1 c2
+            Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2, c3) ->
+            let slot = strided_offset_4 self.offset (ref self.shape) (ref self.strides) c0 c1 c2 c3
+            Array.write slot value self.data
 }
 
 // ---------------------------------------------------------------------------

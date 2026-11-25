@@ -125,7 +125,7 @@ flowchart TD
 | クラス | 役割 |
 | --- | --- |
 | `Add` `Sub` `Mul` `Div` `Rem` `Pow` `Neg` | 算術演算。ユーザー・標準ライブラリ型のインスタンスは引数を共有借用し、非 Copy 型も消費せずに使える。`Add` は文字列連結も担う |
-| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装）。`x[k]` は組み込みの添字と同じ順（土台、次にキー）で評価し、`x[k] = v` は右辺を評価した後に土台、キーの順で評価する |
+| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`ref x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装）。結果が土台を借りる窓は `ref x[k]` と書き（ないと `E1042`）、借りない添字に `ref` は付けない（`E1003`）。候補が 2 つ以上残るときは `E1043`。`x[k]` は組み込みの添字と同じ順（土台、次にキー）で評価し、`x[k] = v` は右辺を評価した後に土台、キーの順で評価する |
 | `Rem` `Bits` `Integer` | 剰余とビット演算、整数の分類。`Integer` は印 |
 | `Neg` `Pow` | 符号反転、べき乗。`Pow` は整数と `f32` / `f64` |
 | `Eq` `Ord` | 共有借用による等値と比較。`Ord` は `Eq` を要求する |
@@ -153,7 +153,21 @@ flowchart TD
 
 `Format` も、このプログラムのレコードと共用体だけが実装できます。印クラスの意味は[制約 と 属性](./constraints.md)にまとめています。
 
-結果が土台を借りる `Index`（`Output` が参照・関数・region を持つレコードなど、借用を運ぶ型）の `x[k]` は、`Index.index (ref k) (ref x)` と同じく土台の場所を借ります。土台が一時値なら、インスタンスが土台の中身だけを返すとき（標準ライブラリの `Tensor.View`・`MatrixView` の窓の窓）を除いて `E1013` です。
+結果が土台を借りる `Index`（`Output` が参照・関数・region を持つレコードなど、借用を運ぶ型）は、配列のスライスと同じく `ref x[k]` と書きます（`ref` は式に吸収され、型は `Output` そのものです。`ref` がないと `E1042`、`ref mut` で読み取り専用の窓を取ると `E1042`、土台を借りない添字に `ref` を付けると `E1003` です）。`ref x[k]` は `Index.index (ref k) (ref x)` と同じく土台の場所を借ります。土台が一時値なら、インスタンスが土台の中身だけを返すとき（標準ライブラリの `Tensor.View`・`MatrixView` の窓の窓 `ref t[[...]][[...]]`）を除いて `E1013` です。候補のインスタンスが 2 つ以上残るときは、先頭の候補を選ばず `E1043`（kind `ambiguous_instance_candidates`）になります。
+
+```tsuzuri run=8%20120%20110
+let t = Tensor.init [3, 4] (\i -> i * 10)
+let rows = ref t[[Slice.range 1 3]]
+let e = t[[1, 2]] + t[(1, 2)]
+let f = (ref t[[Slice.at 2]])[3]
+$"{Tensor.count rows} {e} {f}"
+```
+
+実行結果:
+
+```text
+8 120 110
+```
 
 <!-- rule: TYP-023 -->
 `Index`・`IndexMut` と算術演算子クラス（`Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg`）の利用者定義インスタンスには **orphan 規則**が適用されます。振り分けの位置（`Index`・`IndexMut` は `Self` と `Key`、1 引数の算術クラスは被演算子型 `T` で、出力型は数えません）のうち少なくとも 1 つの頭が、このプログラムで宣言した型（レコード・名前付きの共用体・`extern type`）でなければなりません。標準ライブラリの型、組み込みの型（数値・配列・タプルなど）、`ref`・`dyn`、型変数だけの頭は `E1016`（kind `orphan_instance`）になります（以前の版が受理していた標準ライブラリ型や組み込み型への算術インスタンスも `E1016` になります）。標準ライブラリの型に独自の演算を与えたいときは、`record Prices { t: Tensor<f64> }` のようにこのプログラムのレコードで包んで `instance Mul<Prices>` を定義します。

@@ -98,5 +98,5 @@ export def chained_view_order :: i64 -> i64
 fn chained_view_order _n =
     let mut log = 0
     let t = Tensor.init [3, 2] (\i -> i + 10)
-    let sub = (pick_tensor (ref t) (ref mut log))[[mark_range (ref mut log) 0 2]][[mark_at (ref mut log) 1]]
+    let sub = ref (pick_tensor (ref t) (ref mut log))[[mark_range (ref mut log) 0 2]][[mark_at (ref mut log) 1]]
     log * 100 + sub[[0]]
