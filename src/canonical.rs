@@ -5,7 +5,7 @@
 
 use crate::check::CheckedModule;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticKind, Edit};
-use crate::syntax::{FixLevel, Noncanonical, NoncanonicalKind};
+use crate::syntax::{Edition, FixLevel, Noncanonical, NoncanonicalKind};
 
 /// The most findings that one source records; later ones are not recorded.
 pub const MAX_FINDINGS: usize = 65_536;
@@ -44,10 +44,10 @@ fn diagnostic_kind(kind: NoncanonicalKind, rejected: bool) -> DiagnosticKind {
     }
 }
 
-fn message(finding: &Noncanonical, rejected: bool) -> String {
+fn message(finding: &Noncanonical, rejected_edition: Option<Edition>) -> String {
     let (spelling, canonical) = (&finding.spelling, &finding.canonical);
-    if rejected {
-        format!("'{spelling}' is not allowed in edition 2027; write '{canonical}'")
+    if let Some(edition) = rejected_edition {
+        format!("'{spelling}' is not allowed in edition {edition}; write '{canonical}'")
     } else {
         format!("'{spelling}' is not canonical; write '{canonical}'")
     }
@@ -101,10 +101,11 @@ pub fn warnings(module: &CheckedModule) -> Vec<Diagnostic> {
     module
         .noncanonical
         .iter()
+        .filter(|finding| finding.kind.code() == "W1007")
         .map(|finding| {
             let diagnostic = Diagnostic::of(
                 diagnostic_kind(finding.kind, false),
-                message(finding, false),
+                message(finding, None),
                 finding.span,
             )
             .with_help(help(finding));
@@ -126,15 +127,16 @@ pub fn warnings(module: &CheckedModule) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// `E0004` for each noncanonical spelling of a source that an edition from 2027 on reads, in
-/// parse order. They carry no rewrite: the migration rewrites with `W1007` first (D9).
-pub(crate) fn rejections(findings: &[Noncanonical]) -> Vec<Diagnostic> {
+/// `E0004` for each noncanonical spelling that `edition` rejects, in parse order.
+/// They carry no rewrite: the migration rewrites with `W1007` first (D9).
+pub(crate) fn rejections(findings: &[Noncanonical], edition: Edition) -> Vec<Diagnostic> {
     findings
         .iter()
+        .filter(|finding| finding.kind.rejected_in(edition))
         .map(|finding| {
             Diagnostic::of(
                 diagnostic_kind(finding.kind, true),
-                message(finding, true),
+                message(finding, Some(edition)),
                 finding.span,
             )
             .with_help(help(finding))
@@ -190,11 +192,11 @@ mod tests {
             edits: Vec::new(),
         };
         assert_eq!(
-            message(&finding, false),
+            message(&finding, None),
             "'86uy' is not canonical; write '86i8u'"
         );
         assert_eq!(
-            message(&finding, true),
+            message(&finding, Some(Edition::E2027)),
             "'86uy' is not allowed in edition 2027; write '86i8u'"
         );
         assert_eq!(title(&finding), "Replace the suffix 'uy' with 'i8u'");

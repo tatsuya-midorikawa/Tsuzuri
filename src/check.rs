@@ -17614,6 +17614,46 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Converts a derived range bound (an inclusive end `b + 1`, an open start `a + 1`, or a
+    /// from-end offset `k` in `^k`) to `i64`, saturating `i64u` values above `i64::MAX` via
+    /// `SaturatingIndex` so `2^64 - 1` cannot wrap to `-1` and become `0` after `+ 1` (NC17).
+    fn bound_operand(&mut self, bound: &Expr) -> Result<TypedExpr, Diagnostic> {
+        let bound = self.expression(bound, None)?;
+        let span = bound.span;
+        let cast = |value: TypedExpr, ty: Type| TypedExpr {
+            kind: TypedExprKind::Cast(Box::new(value)),
+            ty,
+            span,
+        };
+        match self.inference.resolve(&bound.ty) {
+            ty if ty.contains_error() => Ok(TypedExpr::error(span)),
+            Type::I64 => Ok(bound),
+            Type::Integer(bits, signed) if bits < 64 || (bits == 64 && signed) => {
+                Ok(cast(bound, Type::I64))
+            }
+            ty @ Type::Infer(_) => {
+                self.same(&ty, &Type::I64, span)?;
+                Ok(bound)
+            }
+            ty @ (Type::Integer(..) | Type::Variable(_)) => {
+                self.require("Integer", ty, span)?;
+                Ok(TypedExpr {
+                    kind: TypedExprKind::SaturatingIndex(Box::new(bound)),
+                    ty: Type::I64,
+                    span,
+                })
+            }
+            ty => Err(Diagnostic::of(
+                DiagnosticKind::IndexNotInteger,
+                format!(
+                    "an index must have an integer type (i8 to i128 or i8u to i128u), found {}",
+                    ty.display(&self.types)
+                ),
+                span,
+            )),
+        }
+    }
+
     fn slice(
         &mut self,
         source: &Expr,
@@ -17659,7 +17699,14 @@ impl<'a> Checker<'a> {
             .map(|value| self.index_operand(value).map(Box::new))
             .transpose()?;
         let end = end
-            .map(|value| self.index_operand(value).map(Box::new))
+            .map(|value| {
+                if inclusive {
+                    self.bound_operand(value)
+                } else {
+                    self.index_operand(value)
+                }
+                .map(Box::new)
+            })
             .transpose()?;
         // A22: `xs[a..=b]` ends at `b + 1`, a wrapping addition, so that the slice's unsigned
         // bounds checks reject `b = MAX` and negative ends as they reject any other bad end.

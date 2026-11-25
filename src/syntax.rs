@@ -44,12 +44,6 @@ impl Edition {
         matches!(self, Self::E2027)
     }
 
-    /// Whether the edition rejects the spellings that A22 replaced with canonical forms (`E0004`).
-    /// `>=` on purpose: a spelling that one edition rejects stays rejected in later ones.
-    pub fn rejects_noncanonical(self) -> bool {
-        self >= Self::E2027
-    }
-
     /// The supported edition that `text` names, such as `2026`.
     pub fn parse(text: &str) -> Option<Self> {
         Self::SUPPORTED
@@ -1438,6 +1432,38 @@ pub enum NoncanonicalKind {
     SymbolicReferenceType,
     /// `x -> e` and `x -> y -> e`: `\x -> e`, `\x y -> e`.
     LegacyLambda,
+}
+
+impl NoncanonicalKind {
+    /// Whether `edition` emits a warning for this kind (`W1007` under `--warn canonical`, or
+    /// `W1013` by default in Phase 2+).
+    pub fn warned_in(self, edition: Edition) -> bool {
+        match self {
+            Self::BareRange
+            | Self::ShortSuffix
+            | Self::SymbolicBorrow
+            | Self::SymbolicDeref
+            | Self::SymbolicReferenceType
+            | Self::LegacyLambda => edition == Edition::E2026,
+        }
+    }
+
+    /// Whether `edition` rejects this kind with `E0004`.
+    pub fn rejected_in(self, edition: Edition) -> bool {
+        match self {
+            Self::BareRange => edition == Edition::E2027,
+            Self::ShortSuffix
+            | Self::SymbolicBorrow
+            | Self::SymbolicDeref
+            | Self::SymbolicReferenceType
+            | Self::LegacyLambda => edition >= Edition::E2027,
+        }
+    }
+
+    /// The warning code associated with this kind when warned (`"W1007"` or `"W1013"`).
+    pub fn code(self) -> &'static str {
+        "W1007"
+    }
 }
 
 /// How sure a rewrite of a noncanonical spelling is to keep the program's meaning.

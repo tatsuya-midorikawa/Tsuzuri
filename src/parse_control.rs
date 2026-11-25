@@ -223,13 +223,9 @@ impl Parser<'_> {
     /// `$"a{x}b"`: one expression per hole between the interpolation tokens.
     /// Each hole's expression counts toward the nesting limit as in a group.
     pub(super) fn interpolation(&mut self) -> Result<Expr, Diagnostic> {
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let outer_slice = self.slice_context.take();
+        let outer = self.enter_delimited();
         let result = self.interpolation_holes();
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
-        self.slice_context = outer_slice;
+        self.leave_delimited(outer);
         result
     }
 
@@ -924,12 +920,10 @@ impl Parser<'_> {
         self.enter()?;
         let start = self.take().span;
         let indent = self.line_indent(start);
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer = self.enter_delimited();
         let outer_handler = std::mem::replace(&mut self.in_handler, false);
         let body = self.body_expression();
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
+        self.leave_delimited(outer);
         let body = Self::direct(body?);
         self.expect(
             &TokenKind::With,
@@ -1726,13 +1720,10 @@ impl Parser<'_> {
     }
 
     fn pattern_expression_argument(&mut self, start: Span) -> Result<Pattern, Diagnostic> {
-        let outer = self.stop_at_arm;
-        let outer_arrow = self.stop_at_arrow;
-        self.stop_at_arm = false;
-        self.stop_at_arrow = false;
-        let expression = self.expression(0, true)?;
-        self.stop_at_arm = outer;
-        self.stop_at_arrow = outer_arrow;
+        let outer = self.enter_delimited();
+        let expression = self.expression(0, true);
+        self.leave_delimited(outer);
+        let expression = expression?;
         let end = self.expect(
             &TokenKind::RightParen,
             "')' after the active pattern argument",

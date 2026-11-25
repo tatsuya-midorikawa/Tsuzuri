@@ -307,6 +307,25 @@ fn fmt_uses_the_manifest_edition() {
 }
 
 #[test]
+fn noncanonical_kinds_have_edition_ranges() {
+    use tsuzuri::syntax::NoncanonicalKind::*;
+    for (kind, w26, r26, w27, r27) in [
+        (BareRange, true, false, false, true),
+        (ShortSuffix, true, false, false, true),
+        (SymbolicBorrow, true, false, false, true),
+        (SymbolicDeref, true, false, false, true),
+        (SymbolicReferenceType, true, false, false, true),
+        (LegacyLambda, true, false, false, true),
+    ] {
+        assert_eq!(kind.warned_in(Edition::E2026), w26, "{kind:?} w26");
+        assert_eq!(kind.rejected_in(Edition::E2026), r26, "{kind:?} r26");
+        assert_eq!(kind.warned_in(Edition::E2027), w27, "{kind:?} w27");
+        assert_eq!(kind.rejected_in(Edition::E2027), r27, "{kind:?} r27");
+        assert_eq!(kind.code(), "W1007");
+    }
+}
+
+#[test]
 fn new_projects_declare_edition_2027() {
     let root = root("new", &[]);
     let project = root.join("hello-world");
