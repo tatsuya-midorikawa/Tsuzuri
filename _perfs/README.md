@@ -174,6 +174,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](_completed/PM09-stack-and-tail-calls.md) | P3 | L | PX01 | done |
+| PM10 | [std の所有を移す関数の要素の複製の除去と、借用の根になる局所の最後の使用での移動（A17 の X1 の精密化）](PM10-std-consume-copies.md) | P1 | M | A17, PM07 | todo |
 
 ### PB. ビルド速度
 
@@ -205,6 +206,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D07](../_features/_completed/D07-string-interpolation.md) 文字列補間 | 書式指定で `numeric.ll` に関数を足すのは D07（要承認）、数値の表示・解析の高速化は PR04 |
 | [G18](../_features/_completed/G18-bench-coverage.md) 言語内ベンチマーク | 利用者向けの `tsuzuri bench` は G18、リポジトリの計測基盤は PX01–PX03 |
 | [A15](../_features/_completed/A15-copy-cost-visibility.md) 暗黙の複製の可視化 | 複製の除去そのものは PM07 |
+| [A17](../_features/_completed/A17-last-use-move.md) 最後の使用での移動 | A17 の X1（借用の根の局所を関数全体で移動しない）の精密化は PM10。[A39](../_features/A39-field-exclusive-borrow.md) のフィールドの排他借用と [NC20](../_features/NC20-compound-assignment-and-mutable-index-views.md) の `+=` などの対象の借用が作る借用の根も PM10 が扱う。A39・NC20 の構文と意味はそれぞれのチケット |
 | [A16](../_features/_completed/A16-fixed-arrays.md) 固定長配列 | 値型の配列による確保の削減は A16、既存の型の配置は PM01 |
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 
@@ -551,6 +553,8 @@ graph LR
   PX01 --> PM06
   PX01 --> PM07
   PX01 --> PM09
+  PM07 --> PM10
+  A17 --> PM10
 ```
 
 ## 運用ルール
@@ -598,6 +602,7 @@ graph LR
 | PB07 | D1（既定の codegen unit 分割）、D10（Phase 2） |
 | PB08 | なし（D7（Phase 2: 言語サーバーも名前を書いた opt-in の std だけを読む。D-40 の変更）は 2026-11-19 に承認済み。Phase 1 の計測で目標に届かないときだけ行うという条件は、2026-11-20 の利用者の指示で外れた） |
 | PR01・PR02・PR07・PR08・PM07 | なし |
+| PM10 | なし（D1・D3〜D7 は 2026-11-25 に [GUIDE D-66](../_features/GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の委任で決定。D2 は既定案） |
 
 第2フェーズの 7 件（PB01・PB02・PR01・PM06・PM07・PR04・PR05）の `要承認` は 2026-10-14 の依頼で、第3フェーズの 8 件
 （PM01・PM05・PR03・PB03・PB04・PR06・PM08・PR02）の `要承認` は 2026-10-16 の全フェーズ実装の依頼で、第4フェーズの 7 件

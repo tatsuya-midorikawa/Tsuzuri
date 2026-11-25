@@ -44,7 +44,7 @@ Tsuzuri には `@no_trap` 属性があるが、`@no_trap` は配列添字・除�
 
 - `std/Maybe.tc` 45 行に `def get :: own Maybe<'a> -> 'a`、`std/Result.tc` に `def get :: own Result<'a, 'e> -> 'a` と `def get_error :: own Result<'a, 'e> -> 'e` があり、いずれも不一致時に `unreachable ()` でトラップする。
 - `src/main.rs` 3274 行: `const WARNINGS: [&str; 3] = ["implicit-copy", "canonical", "untrusted-extern"];`。未知の `--warn` 名や `--warn` 単体には、この配列から `supported: implicit-copy, canonical, untrusted-extern` を組み立てて `E2000`（終了コード 2）を返す。
-- D-55 の予約枠に `W1011`〜`W1015` が空いている。
+- D-55 の予約枠に `W1011`・`W1015` が空いている（`W1013`・`W1014` は D-66 で NC17 に割り当て済み）。
 
 ## 変えてはいけない意味
 

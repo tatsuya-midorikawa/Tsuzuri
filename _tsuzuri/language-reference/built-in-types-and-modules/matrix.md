@@ -10,7 +10,7 @@
 
 - 型は `Matrix<'a>`。要素型にかかわらず常に非 Copy 型です。コピーは明示的に書きます。
 - 内部は不透明です。構築・フィールド参照・パターン分解・`{ m with ... }` は `E1022` です。公開 C ABI への export は `E1008` です。
-- `of_array` と `to_array` は所有権を移すだけで、要素を複製しません。`at`・`row`・`as_array` は確保なしの共有借用です。`set` は行列を消費して 1 要素をその場で置き換えます。
+- `of_array` は所有権を移すだけで、要素を複製しません。`at`・`row`・`as_array` は確保なしの共有借用です。`to_array` と、行列を消費して 1 要素を置き換える `set` は、要素が Copy 型なら今は要素をすべて複製します（[既知の制限](#要素を置き換える)）。
 - `mul` の出力要素は `+0` から `k = 0, 1, …` の順に `total = total + (left * right)` を行った値です。積と和を別々に丸め、FMA にまとめません。実装は出力の行ごとに更新する形で、ベクトル化できますが、各要素の演算の列は変わりません。
 - `mul_fma` は、1 ステップごとに `Math.fma` を使う別名の積です。ビットは `mul` と違うことがあります。`Math.fma` がハードウェアの FMA 命令になるのは、AArch64 の native（ビルド機が AArch64 のときの `--target native`、または AArch64 の triple を名指しした `--target`）が `f32`・`f64` を生成するときだけです。それ以外（x86-64 や RISC-V の native と、wasm32）では、ソフトウェアのルーチンを積和ごとに呼ぶので、`mul` よりはるかに遅くなります。結果のビットは、どちらでも同じです。
 - `mul_parallel`・`mul_fma_parallel` は、行をチャンクに分けて並列に計算します。チャンクの境界は形だけで決まるので、結果は CPU の数によらず `mul`・`mul_fma` と同じビットです。
@@ -46,7 +46,7 @@ $"{flat[0]},{flat[1]},{flat[2]},{flat[3]},{flat[4]},{flat[5]}"
 | `Matrix.get row col (ref m)` | 要素のコピーの `Maybe<'a>`。範囲外は `None`（`Copy<'a>` が必要） |
 | `Matrix.row index (ref m)` | 1 行を `ref ['a]`（長さ `cols`、複製なし）。行番号が範囲外ならトラップ |
 | `Matrix.as_array (ref m)` | 全要素を行優先の `ref ['a]` で借用する |
-| `Matrix.to_array m` | 行列を消費して、バッファを複製せずに `['a]` で返す |
+| `Matrix.to_array m` | 行列を消費して、行優先のバッファを `['a]` で返す。要素が Copy 型なら要素を複製する |
 
 `at` は行と列を別々に検査します。`data` の添字検査だけに任せると、2 行 3 列の `(0, 3)` が `(1, 0)` を返してしまうためです。
 
@@ -67,7 +67,7 @@ ab:cd
 
 ## 要素を置き換える
 
-`Matrix.set row col value m` は、`m` を消費して、`(row, col)` を `value` に置き換えた行列を返します。バッファは複製せず、その場で書き換えます。行と列を別々に検査し、範囲外は `at` と同じくトラップです。
+`Matrix.set row col value m` は、`m` を消費して、`(row, col)` を `value` に置き換えた行列を返します。要素が Copy でない型なら、バッファを複製せずに書き換えます。要素が Copy 型なら、今のコンパイラはバッファ全体を複製するので、1 回の `set` の費用が要素数に比例します。行と列を別々に検査し、範囲外は `at` と同じくトラップです。
 
 ```tsuzuri run=0%2010%2020%203
 let m = Matrix.init 2 2 (\row col -> row * 2 + col)
@@ -84,6 +84,8 @@ $"{flat[0]} {flat[1]} {flat[2]} {flat[3]}"
 ```
 
 `set` の後で古い `m` を使うと `E1012`、`Matrix.row` などの借用が生きている間に `set` を呼ぶと `E1014` です。1 つずつ置き換える代わりに、行ごとや部分行列ごとにまとめて書き換えるときは、[MatrixView](./matrix-view.md) の書き込める窓を使います。
+
+> 既知の制限: 要素が Copy 型（`i64`・`f64` など）のとき、今のコンパイラは、行列を消費する `Matrix.set` と `Matrix.to_array` で要素をすべて複製します（`Tensor.of_matrix` も同じです）。`set` をループで呼ぶと、費用は要素数と回数の積に比例します。要素が Copy でない型（文字列など）では複製しません。`let mut` の配列から `MatrixView.of_array_mut` で作った書き込める窓は、複製せずに書き込みます。修正は [PM10](../../../_perfs/PM10-std-consume-copies.md) です。
 
 ## 変換と集計
 
@@ -348,7 +350,8 @@ top=101 last=77 found=99
 | 操作 | 計算量 |
 | --- | --- |
 | `at`・`row`・`as_array`・`rows`・`cols` | $O(1)$、確保なし |
-| `of_array`・`to_array`・`set` | $O(1)$、複製なし |
+| `of_array` | $O(1)$、複製なし |
+| `to_array`・`set` | 要素が Copy 型なら $O(\text{rows} \times \text{cols})$（今のコンパイラは要素を複製する）。要素が Copy でない型なら $O(1)$、複製なし |
 | `init`・`map`・`transpose`・`add` | $O(\text{rows} \times \text{cols})$ |
 | `mul`・`mul_fma` | $O(\text{rows} \times \text{inner} \times \text{cols})$ |
 | `mul_parallel`・`mul_fma_parallel` | 同じ仕事を複数のスレッドで分ける。2 チャンク以上のときは入力の複製 $O(\text{rows} \times \text{inner} + \text{inner} \times \text{cols})$ を足す |
