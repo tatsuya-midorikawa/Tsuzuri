@@ -15346,6 +15346,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::Parallel(operation, arguments) => {
                 let callback = operation.parallel_callback();
                 let scope = operation.is_scope();
+                let chunk_with = *operation == crate::check::Builtin::ParallelForEachChunkWith;
                 let input = if *operation == crate::check::Builtin::ParallelInit || scope {
                     None
                 } else {
@@ -15370,6 +15371,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                         {
                             return Err(error(DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
                                 "Routine.scope can share only values with proven owned environments",
+                                argument.span,
+                            ));
+                        }
+                    } else if chunk_with && index == 1 {
+                        // NC15: plain shared borrows (`ref [f64]`, `Tensor.View`, tuples thereof)
+                        // live for the synchronous call; only function/closure environments must
+                        // be proven owned.
+                        let referent = argument
+                            .ty
+                            .dereferenced()
+                            .expect("Parallel.for_each_chunk_with shares a borrow");
+                        if referent.reaches_unproven_function(&self.module.types())
+                            && self.shares_borrowed_environment(argument, &value)
+                        {
+                            return Err(error(
+                                DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
+                                "Parallel.for_each_chunk_with can share only values whose function environments are proven owned",
                                 argument.span,
                             ));
                         }
@@ -15424,7 +15442,21 @@ impl<'a, 'run> Checker<'a, 'run> {
                         },
                     };
                     let callee = Arg::of(Some(function), self.held[base + callback].clone());
-                    let sources = vec![Arg::of(None, others); arity];
+                    let sources = if chunk_with && arity == 3 && arguments.len() == 4 {
+                        vec![
+                            Arg::of(Some(&arguments[1]), self.held[base + 1].clone()),
+                            Arg::of(None, Value::default()),
+                            Arg::of(Some(&arguments[3]), self.held[base + 3].clone()),
+                        ]
+                    } else if chunk_with && arguments.len() > 1 {
+                        let shared_arg = Arg::of(Some(&arguments[1]), Value::default());
+                        let mut merged = Arg::of(None, others);
+                        merged.temporary |= shared_arg.temporary;
+                        merged.dying |= shared_arg.dying;
+                        vec![merged; arity]
+                    } else {
+                        vec![Arg::of(None, others); arity]
+                    };
                     self.apply_higher(&callee, &sources, expression.span, 0);
                 }
                 self.held.truncate(base);

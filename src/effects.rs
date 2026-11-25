@@ -535,8 +535,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         }
         // TZ11: the children may wait for each other, and a deadlock among them traps at the call.
         RoutineScope => facts(Some(Effect::Task), true, true, true, true, false, None),
-        // B24
-        ParallelForEachChunk => facts(Some(Effect::Task), true, true, false, true, false, None),
+        // B24 / NC15
+        ParallelForEachChunk | ParallelForEachChunkWith => {
+            facts(Some(Effect::Task), true, true, false, true, false, None)
+        }
         // TZ02: `Routine.go` spawns a tzroutine that calls the owned function it takes.
         RoutineGo => facts(Some(Effect::Task), true, false, false, true, false, None),
         // TZ06: a yield inside `Mutex.with_lock` is allowed (the lock is the G's).
@@ -3836,8 +3838,8 @@ mod tests {
             );
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 375);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 169);
+        assert_eq!(Builtin::ALL.len(), 376);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 170);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 206);
     }
 
@@ -3847,7 +3849,7 @@ mod tests {
         assert_eq!(by(Effect::Io), 2);
         assert_eq!(by(Effect::Os), 21);
         assert_eq!(by(Effect::Net), 7);
-        assert_eq!(by(Effect::Task), 16);
+        assert_eq!(by(Effect::Task), 17);
         assert_eq!(by(Effect::Atomic), 96);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
@@ -3857,12 +3859,12 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 76);
+        assert_eq!(count(|facts| facts.alloc), 77);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 58);
+        assert_eq!(count(|facts| facts.trap), 59);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
     }
 
@@ -3873,7 +3875,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 30);
+        assert_eq!(count(|facts| facts.callbacks), 31);
     }
 
     fn checked(source: &str) -> CheckedModule {

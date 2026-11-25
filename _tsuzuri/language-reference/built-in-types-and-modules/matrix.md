@@ -198,11 +198,11 @@ $"{deref (Matrix.at 0 0 (ref separate))} {deref (Matrix.at 0 0 (ref fused))}"
 
 ### 並列: mul_parallel
 
-`Matrix.mul_parallel` と `Matrix.mul_fma_parallel` は、出力の行を [Parallel.for_each_chunk](./parallel.md) で分けて計算します。要素型には `Send<'a>` も要ります。
+`Matrix.mul_parallel` と `Matrix.mul_fma_parallel` は、出力の行を [Parallel.for_each_chunk_with](./parallel.md) で分けて計算します。要素型には `Send<'a>` も要ります。
 
 - 1 つのチャンクは、およそ $2^{20}$ 回の積和になる行数の行です（`1048576 / (inner * cols)` 行、最低 1 行）。境界は形（`inner` と `cols`）だけで決まり、CPU の数・SIMD 幅・ターゲットで変わりません。
 - 各出力要素は `mul`（`mul_fma`）と同じ演算の列なので、結果は `mul`（`mul_fma`）と、スレッドの数によらずビット単位で一致します。
-- 積が 1 チャンクで済むとき（約 $2^{20}$ 回以下の積和）は、呼んだスレッドで `mul` と同じ処理をします。2 チャンク以上のときは、スレッドへ借用を渡せないので、両方の入力を 1 回複製して `Arc` で共有します。
+- 積が 1 チャンクで済むとき（約 $2^{20}$ 回以下の積和）は、呼んだスレッドで `mul` と同じ処理をします。2 チャンク以上のときも、`Parallel.for_each_chunk_with` で両方の入力配列の共有借用をそのまま渡すため、入力の複製は行いません。
 - 既定の WASM はスレッドを持たないので、チャンクを順に処理し、速さは `mul` と同じです。`--wasm-feature threads` を付けると、ワーカーで並列に動きます（この場合の結果が `mul` と一致することはテストしましたが、速さは測っていません）。
 
 ```tsuzuri run=130x128%20true%208
@@ -354,7 +354,7 @@ top=101 last=77 found=99
 | `to_array`・`set` | 要素が Copy 型なら $O(\text{rows} \times \text{cols})$（今のコンパイラは要素を複製する）。要素が Copy でない型なら $O(1)$、複製なし |
 | `init`・`map`・`transpose`・`add` | $O(\text{rows} \times \text{cols})$ |
 | `mul`・`mul_fma` | $O(\text{rows} \times \text{inner} \times \text{cols})$ |
-| `mul_parallel`・`mul_fma_parallel` | 同じ仕事を複数のスレッドで分ける。2 チャンク以上のときは入力の複製 $O(\text{rows} \times \text{inner} + \text{inner} \times \text{cols})$ を足す |
+| `mul_parallel`・`mul_fma_parallel` | $O(\text{rows} \times \text{inner} \times \text{cols})$ の仕事を複数のスレッドで分ける（入力の複製なし） |
 
 `mul` は再帰しないループです。stack の深さは大きさに依存しません。`mul_fma`・`mul_fma_parallel` の 1 積和あたりの費用は、`Math.fma` がハードウェアの命令かソフトウェアのルーチンかで約 1 万倍違います（[順序の違う積: mul_fma](#順序の違う積-mul_fma)）。性能は計測した事実だけを [ベンチマーク](../../../docs/benchmarks.md) に書いています。速度は API の約束ではありません。ブロッキングや pairwise の積、手書きの SIMD、BLAS のような最適化済みの積は提供しません。
 

@@ -275,7 +275,7 @@ let _action = deferred 42
 
 ### 明示した並行処理
 
-明示した `Parallel.*`（`Parallel.init`・`map`・`map_ref`・`reduce`・`for_each_chunk`）は使えます。呼び出し側から不透明な
+明示した `Parallel.*`（`Parallel.init`・`map`・`map_ref`・`reduce`・`for_each_chunk`・`for_each_chunk_with`）は使えます。呼び出し側から不透明な
 通常の関数・dyn を受け取らず、参照するコールバック全体の純粋性が検査される場合に限ります。
 利用者の共有可変状態を許すわけではありません。自動並列化は行わず、
 既存の並行 API の待機・トラップの意味はそのままです。失敗の順序や停止が逐次実行と同じだとは保証しません。

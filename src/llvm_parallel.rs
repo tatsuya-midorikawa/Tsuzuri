@@ -115,7 +115,7 @@ impl FunctionEmitter<'_, '_> {
         };
         let identity_type = match kernel.operation {
             Builtin::ParallelReduce => self.ty(kernel.element),
-            Builtin::ParallelForEachChunk => "i64".into(),
+            Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith => "i64".into(),
             _ => "i8".into(),
         };
         let mut fields = vec![
@@ -130,7 +130,14 @@ impl FunctionEmitter<'_, '_> {
                 },
                 data.input.into(),
             ),
-            ("ptr".into(), data.output.into()),
+            (
+                if kernel.operation == Builtin::ParallelForEachChunkWith {
+                    self.ty(kernel.input)
+                } else {
+                    "ptr".into()
+                },
+                data.output.into(),
+            ),
             (identity_type, data.identity.into()),
             (
                 "ptr".into(),
@@ -212,7 +219,10 @@ impl FunctionEmitter<'_, '_> {
         } else {
             (String::new(), None)
         };
-        if kernel.operation == Builtin::ParallelForEachChunk {
+        if matches!(
+            kernel.operation,
+            Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith
+        ) {
             emitter.parallel_chunk_body(&kernel, &loaded, &callback, direct.as_ref());
         } else if kernel.operation.is_scope() {
             emitter.parallel_scope_child(&kernel, &loaded, &callback, direct.as_ref());
@@ -273,7 +283,8 @@ impl FunctionEmitter<'_, '_> {
         callback: &str,
         direct: Option<&BorrowedCall>,
     ) {
-        let (length, jobs, data, size) = (&loaded[0], &loaded[1], &loaded[2], &loaded[4]);
+        let (length, jobs, data, shared, size) =
+            (&loaded[0], &loaded[1], &loaded[2], &loaded[3], &loaded[4]);
         let chunks = self.chunk_count(length, size);
         let begin = self.parallel_bound("%chunk", &chunks, jobs);
         let next = self.value("add i64 %chunk, 1");
@@ -295,12 +306,25 @@ impl FunctionEmitter<'_, '_> {
                 Box::new(Type::ArrayView(Box::new(kernel.element.clone()))),
                 true,
             );
-            emitter.parallel_apply(
-                callback,
-                kernel.callback,
-                direct,
-                &[(Type::I64, first), (view_type, view)],
-            );
+            if kernel.operation == Builtin::ParallelForEachChunkWith {
+                emitter.parallel_apply(
+                    callback,
+                    kernel.callback,
+                    direct,
+                    &[
+                        (kernel.input.clone(), shared.clone()),
+                        (Type::I64, first),
+                        (view_type, view),
+                    ],
+                );
+            } else {
+                emitter.parallel_apply(
+                    callback,
+                    kernel.callback,
+                    direct,
+                    &[(Type::I64, first), (view_type, view)],
+                );
+            }
         });
     }
 
@@ -435,8 +459,11 @@ impl FunctionEmitter<'_, '_> {
         arguments: &[TypedExpr],
         result_type: &Type,
     ) -> String {
-        if operation == Builtin::ParallelForEachChunk {
-            return self.parallel_chunks(arguments);
+        if matches!(
+            operation,
+            Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith
+        ) {
+            return self.parallel_chunks(operation, arguments);
         }
         if operation.is_scope() {
             return self.parallel_scope(operation, arguments, result_type);
@@ -678,39 +705,61 @@ impl FunctionEmitter<'_, '_> {
 
     /// `Parallel.for_each_chunk size callback values`: `ceil(length / size)` chunks of an
     /// exclusive slice, disjoint by construction, each lent to one callback run (C08 Phase 2).
-    fn parallel_chunks(&mut self, arguments: &[TypedExpr]) -> String {
-        let callback_type = &arguments[1].ty;
+    fn parallel_chunks(&mut self, operation: Builtin, arguments: &[TypedExpr]) -> String {
+        let with_shared = operation == Builtin::ParallelForEachChunkWith;
+        let cb_idx = if with_shared { 2 } else { 1 };
+        let val_idx = if with_shared { 3 } else { 2 };
+        let arity = if with_shared { 3 } else { 2 };
+        let callback_type = &arguments[cb_idx].ty;
         let size = self.expression(&arguments[0]);
-        let target = call_specialization::target(&arguments[1], &self.known_closures, self.module)
-            .filter(|target| {
-                target.bound + 2 == self.module.functions[target.function].parameters.len()
-            });
+        let mut operands = Vec::new();
+        let shared = if with_shared {
+            if let TypedExprKind::BorrowOperand(operand) = &arguments[1].kind {
+                self.operand_borrow(&arguments[1], operand, &mut operands)
+            } else {
+                self.expression(&arguments[1])
+            }
+        } else {
+            "null".into()
+        };
+        let target =
+            call_specialization::target(&arguments[cb_idx], &self.known_closures, self.module)
+                .filter(|target| {
+                    target.bound + arity == self.module.functions[target.function].parameters.len()
+                });
         let mut direct = None;
         let mut materialized = None;
         if target.is_some_and(|target| target.bound == 0) {
-            direct = self.prepare_known_call(&arguments[1], 2);
+            direct = self.prepare_known_call(&arguments[cb_idx], arity);
         } else {
             materialized = target;
         }
         let callback = if direct.is_some() {
             String::new()
         } else {
-            self.expression(&arguments[1])
+            self.expression(&arguments[cb_idx])
         };
-        let view = self.expression(&arguments[2]);
+        let view = self.expression(&arguments[val_idx]);
         if let Some(target) = materialized {
             direct = self.parallel_materialized_call(target, &callback);
         }
-        for value in [&size, &callback, &view] {
-            self.forget_temporary(value);
+        for value in [&size, &shared, &callback, &view] {
+            if value != "null" {
+                self.forget_temporary(value);
+            }
         }
         let positive = self.value(format!("icmp sgt i64 {size}, 0"));
         self.guard(&positive, TrapKind::RangeStepZero);
-        let element = arguments[2]
+        let element = arguments[val_idx]
             .ty
             .slice_element()
             .expect("the chunked input is a slice")
             .clone();
+        let shared_type = if with_shared {
+            &arguments[1].ty
+        } else {
+            &element
+        };
         let length = self.value(format!("extractvalue %tz.array {view}, 1"));
         let input = self.value(format!("extractvalue %tz.array {view}, 0"));
         let chunks = self.chunk_count(&length, &size);
@@ -720,8 +769,8 @@ impl FunctionEmitter<'_, '_> {
         let jobs = self.value(format!("select i1 {bounded}, i64 1024, i64 {chunks}"));
         self.parallel_launch(
             Kernel {
-                operation: Builtin::ParallelForEachChunk,
-                input: &element,
+                operation,
+                input: shared_type,
                 element: &element,
                 callback: callback_type,
                 direct: direct.as_ref(),
@@ -730,7 +779,7 @@ impl FunctionEmitter<'_, '_> {
                 length: &length,
                 chunks: &jobs,
                 input: &input,
-                output: "null",
+                output: &shared,
                 identity: &size,
                 callback: &callback,
             },
@@ -741,6 +790,7 @@ impl FunctionEmitter<'_, '_> {
         if !callback.is_empty() {
             self.drop_value(callback_type, &callback);
         }
+        self.release_operands(operands);
         "0".into()
     }
 }

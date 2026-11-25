@@ -948,6 +948,21 @@ impl Type {
         )
     }
 
+    /// Whether a value of this type (or behind any shared reference inside it) may hold a
+    /// function/closure environment not already proven owned (`Owned.Function`), or a borrowed
+    /// `dyn` / exclusive reference (NC15).
+    pub(crate) fn reaches_unproven_function(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches_closed(
+            self,
+            |ty| {
+                !ty.is_owned_function(types)
+                    && (matches!(ty, Self::Function(..) | Self::Reference(_, true))
+                        || matches!(ty, Self::Dyn(dyn_type) if dyn_type.borrowed))
+            },
+            |ty| ty.is_owned_function(types),
+        )
+    }
+
     pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
             !matches!(ty, Self::Reference(..))
@@ -1649,6 +1664,8 @@ pub enum Builtin {
     /// `Parallel.for_each_chunk :: Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit`
     /// runs the callback on disjoint chunks of an exclusive slice in parallel (C08 Phase 2).
     ParallelForEachChunk,
+    /// `Parallel.for_each_chunk_with :: (Sync<'s>, Send<'a>) => i64 -> ref 's -> (ref 's -> i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` (NC15).
+    ParallelForEachChunkWith,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
     Unreachable,
     ToString,
@@ -2319,6 +2336,7 @@ impl Builtin {
         Self::ParallelMapRef,
         Self::ParallelReduce,
         Self::ParallelForEachChunk,
+        Self::ParallelForEachChunkWith,
         Self::Unreachable,
         Self::ToString,
         Self::DebugPrintString,
@@ -2703,6 +2721,7 @@ impl Builtin {
             Self::ParallelMapRef => "Parallel.map_ref",
             Self::ParallelReduce => "Parallel.reduce",
             Self::ParallelForEachChunk => "Parallel.for_each_chunk",
+            Self::ParallelForEachChunkWith => "Parallel.for_each_chunk_with",
             Self::Unreachable => "unreachable",
             Self::ToString => "to_string",
             Self::DebugPrintString => "Debug.__print_string",
@@ -3875,6 +3894,32 @@ impl Builtin {
                     }],
                 )
             }
+            Self::ParallelForEachChunkWith => {
+                let shared = || Reference(Box::new(Var("s")), false);
+                let view = || Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true);
+                (
+                    vec![
+                        Concrete(Type::I64),
+                        shared(),
+                        BuiltinType::Function(
+                            vec![shared(), Concrete(Type::I64), view()],
+                            Box::new(Concrete(Type::Unit)),
+                        ),
+                        view(),
+                    ],
+                    Concrete(Type::Unit),
+                    vec![
+                        BuiltinConstraint {
+                            class: "Sync",
+                            ty: Var("s"),
+                        },
+                        BuiltinConstraint {
+                            class: "Send",
+                            ty: a(),
+                        },
+                    ],
+                )
+            }
             Self::Unreachable => (vec![Concrete(Type::Unit)], a(), Vec::new()),
             Self::ToString => (
                 vec![a()],
@@ -4296,6 +4341,7 @@ impl Builtin {
                 | Self::ParallelMapRef
                 | Self::ParallelReduce
                 | Self::ParallelForEachChunk
+                | Self::ParallelForEachChunkWith
                 | Self::RoutineScope
         )
     }
@@ -4303,7 +4349,7 @@ impl Builtin {
     /// The argument of a parallel operation that holds the callback.
     pub(crate) fn parallel_callback(self) -> usize {
         match self {
-            Self::RoutineScope => 2,
+            Self::RoutineScope | Self::ParallelForEachChunkWith => 2,
             Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk => 1,
             _ => 0,
         }
@@ -14165,7 +14211,7 @@ impl<'a> Checker<'a> {
             .map_err(|error| Self::operator_spacing_hint(error, arguments));
         let (mut parameters, result) =
             self.recover_signature(signature, arguments.len(), expression.span)?;
-        let parallel = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk) && arguments.len() == instance.builtin.scheme().parameters.len());
+        let parallel = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith) && arguments.len() == instance.builtin.scheme().parameters.len());
         let mut pending = None;
         if let Some(expected) = expected {
             if argument && !parallel && self.defers_argument_hint(&result, expected) {

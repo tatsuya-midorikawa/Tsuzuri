@@ -190,9 +190,21 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve | NetOpen | NetAccept | NetRead
         | NetWrite | NetClose | NetClassify => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
-        RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
-        | ParallelForEachChunk | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount
-        | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
+        RoutineScope
+        | ParallelInit
+        | ParallelMap
+        | ParallelMapRef
+        | ParallelReduce
+        | ParallelForEachChunk
+        | ParallelForEachChunkWith
+        | RoutineGo
+        | WaitGroupGo
+        | RoutineYield
+        | RoutineCount
+        | RoutineMaxProcs
+        | RoutineCpuCount
+        | TimeAfterFunc
+        | ContextAfterFunc => Some(Task),
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
@@ -490,6 +502,7 @@ fn closed_task_operation(builtin: Builtin) -> bool {
             | Builtin::ParallelMapRef
             | Builtin::ParallelReduce
             | Builtin::ParallelForEachChunk
+            | Builtin::ParallelForEachChunkWith
     )
 }
 
