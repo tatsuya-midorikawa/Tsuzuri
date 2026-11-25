@@ -2082,7 +2082,12 @@ fn joint_facts(
             .values()
             .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
     let mut contents_targets: BTreeSet<usize> = (0..count)
-        .filter(|id| module.functions[*id].origin.index_view)
+        .filter(|id| {
+            module.functions[*id]
+                .origin
+                .index_method
+                .is_some_and(crate::check::IndexMethodKind::is_view)
+        })
         .collect();
     let mut pending_contents: Vec<usize> = contents_targets.iter().copied().collect();
     let mut contents_callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
@@ -14305,6 +14310,129 @@ impl<'a, 'run> Checker<'a, 'run> {
         })
     }
 
+    fn is_guardable_index_place(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            E::Local(_) => true,
+            E::Field(inner, _) | E::Dereference(inner) => Self::is_guardable_index_place(inner),
+            _ => false,
+        }
+    }
+
+    fn collect_mutable_chain_locals(&self, expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+        match &expr.kind {
+            E::Local(id) => {
+                if self.declarations.get(id).is_some_and(|local| local.mutable) {
+                    out.insert(*id);
+                }
+            }
+            E::Field(inner, _) | E::Dereference(inner) => {
+                self.collect_mutable_chain_locals(inner, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_d9_mutable_ref_roots(&self, base_arg: &TypedExpr, out: &mut BTreeSet<usize>) {
+        fn walk(checker: &Checker<'_, '_>, expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+            match &expr.kind {
+                E::Field(inner, _) => walk(checker, inner, out),
+                E::Dereference(inner) => {
+                    checker.collect_mutable_chain_locals(inner, out);
+                    walk(checker, inner, out);
+                }
+                _ => {}
+            }
+        }
+        if let E::Borrow(raw_target, true) = &base_arg.kind {
+            walk(self, raw_target, out);
+        } else {
+            self.collect_mutable_chain_locals(base_arg, out);
+        }
+    }
+
+    fn index_base_guard(
+        &mut self,
+        index_method: crate::check::IndexMethodKind,
+        arguments: &[TypedExpr],
+        during: &BTreeSet<usize>,
+    ) -> Result<Option<Value>, Diagnostic> {
+        let key_is_const = match &arguments[0].kind {
+            E::BorrowOperand(inner) => inner.is_index_const(),
+            E::Borrow(inner, false) => matches!(inner.kind, E::Static(_)),
+            _ => false,
+        };
+        if key_is_const {
+            return Ok(None);
+        }
+        let base_arg = &arguments[index_method.base_param_index()];
+        match index_method {
+            crate::check::IndexMethodKind::Read { .. } => {
+                let (E::Borrow(base, false) | E::BorrowOperand(base)) = &base_arg.kind else {
+                    return Ok(None);
+                };
+                if matches!(base.kind, E::Local(id) if self.declarations.get(&id).is_some_and(|l| l.is_temp_index_base()))
+                    || !Self::is_guardable_index_place(base)
+                {
+                    return Ok(None);
+                }
+                let places = self.place(base, during)?;
+                let mut guard = Value::default();
+                for (place, via) in &places {
+                    self.access(place, via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place.clone(), false, via.clone(), base_arg.span));
+                }
+                Ok(Some(guard))
+            }
+            crate::check::IndexMethodKind::Write => {
+                let places = if let E::Borrow(raw_target, true) = &base_arg.kind {
+                    if !Self::is_guardable_index_place(raw_target) {
+                        return Ok(None);
+                    }
+                    self.shared_exclusive(raw_target, base_arg.span)?;
+                    self.exclusive_places(raw_target, during)?
+                } else {
+                    if !Self::is_guardable_index_place(base_arg) {
+                        return Ok(None);
+                    }
+                    let Some(inner_ty) = base_arg.ty.dereferenced() else {
+                        return Ok(None);
+                    };
+                    let deref_expr = TypedExpr {
+                        kind: E::Dereference(Box::new(base_arg.clone())),
+                        ty: inner_ty,
+                        span: base_arg.span,
+                    };
+                    self.shared_exclusive(&deref_expr, base_arg.span)?;
+                    self.exclusive_places(&deref_expr, during)?
+                };
+                let mut guard = Value::default();
+                for (place, via) in &places {
+                    self.access(place, via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place.clone(), false, via.clone(), base_arg.span));
+                }
+                let mut mut_ref_roots = BTreeSet::new();
+                self.collect_d9_mutable_ref_roots(base_arg, &mut mut_ref_roots);
+                for root in mut_ref_roots {
+                    let place = Place {
+                        root,
+                        fields: Vec::new(),
+                        through_drop: false,
+                    };
+                    let via = BTreeSet::new();
+                    self.access(&place, &via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place, false, via, base_arg.span));
+                }
+                Ok(Some(guard))
+            }
+        }
+    }
+
     fn eval_call(
         &mut self,
         expression: &TypedExpr,
@@ -14386,14 +14514,33 @@ impl<'a, 'run> Checker<'a, 'run> {
         current.regions = region_sources.and_then(call_slots);
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
-            // A37: a base-borrowing `Index` rejects a temporary base (`BorrowOperand` of a
-            // non-place) unless the instance body is proven to return only contents behind `self`
-            // (`returns_contents(id, 1)`).
+            // A38: while evaluating the key (`index == 0`) of an `Index` or `IndexMut` call,
+            // hold a shared guard on the base place so the key may read the base but cannot
+            // assign, move, or exclusively borrow it (`E1014`).
+            let index_guard = if index == 0
+                && let Some(id) = known
+                && let Some(index_method) = self.module.functions[id].origin.index_method
+                && arguments.len() > index_method.base_param_index()
+            {
+                self.index_base_guard(index_method, arguments, &during)?
+            } else {
+                None
+            };
+            if let Some(guard) = &index_guard {
+                self.held.push(guard.clone());
+            }
+            // A37/A38: a base-borrowing `Index` rejects a temporary base (`BorrowOperand` of a
+            // non-place, or a `$index.temp_base` local bound for evaluation order) unless the
+            // instance body is proven to return only contents behind `self` (`returns_contents(id, 1)`).
             if index == 1
                 && let Some(id) = known
-                && self.module.functions[id].origin.index_view
+                && self.module.functions[id]
+                    .origin
+                    .index_method
+                    .is_some_and(crate::check::IndexMethodKind::is_view)
                 && let E::BorrowOperand(inner) = &argument.kind
-                && !Self::is_place(inner)
+                && (!Self::is_place(inner)
+                    || matches!(inner.kind, E::Local(lid) if self.declarations.get(&lid).is_some_and(|l| l.is_temp_index_base())))
                 && !self.facts.returns_contents(id, 1)
             {
                 return Err(self.borrow_of_temporary(inner).with_help(
@@ -14406,6 +14553,9 @@ impl<'a, 'run> Checker<'a, 'run> {
             let site = self.drop_site.replace(expression.span);
             let value = self.eval(argument, Use::Consume, &during);
             self.drop_site = site;
+            if index_guard.is_some() {
+                self.held.pop();
+            }
             let value = value?;
             self.event_targets(mark, argument.span, callee);
             // A34 (`sharetype`): passing a fresh local's `Rc`/`Arc` (or `dyn`) to a callee other

@@ -125,7 +125,7 @@ flowchart TD
 | クラス | 役割 |
 | --- | --- |
 | `Add` `Sub` `Mul` `Div` `Rem` `Pow` `Neg` | 算術演算。ユーザー・標準ライブラリ型のインスタンスは引数を共有借用し、非 Copy 型も消費せずに使える。`Add` は文字列連結も担う |
-| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装） |
+| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装）。`x[k]` は組み込みの添字と同じ順（土台、次にキー）で評価し、`x[k] = v` は右辺を評価した後に土台、キーの順で評価する |
 | `Rem` `Bits` `Integer` | 剰余とビット演算、整数の分類。`Integer` は印 |
 | `Neg` `Pow` | 符号反転、べき乗。`Pow` は整数と `f32` / `f64` |
 | `Eq` `Ord` | 共有借用による等値と比較。`Ord` は `Eq` を要求する |

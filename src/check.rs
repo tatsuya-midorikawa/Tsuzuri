@@ -4886,6 +4886,26 @@ pub enum ModuleOrigin {
     Std,
 }
 
+/// Generated method role of an `Index` / `IndexMut` instance (A37, A38).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IndexMethodKind {
+    Read { borrows_base: bool },
+    Write,
+}
+
+impl IndexMethodKind {
+    pub(crate) fn base_param_index(self) -> usize {
+        match self {
+            Self::Read { .. } => 1,
+            Self::Write => 2,
+        }
+    }
+
+    pub(crate) fn is_view(self) -> bool {
+        matches!(self, Self::Read { borrows_base: true })
+    }
+}
+
 /// Where a function comes from (GUIDE D-22). Generated helpers inherit the
 /// module origin and test of the function that created them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4906,8 +4926,8 @@ pub struct FunctionOrigin {
     /// The `@trusted` mark of an extern function (E15): `None` without one, else the bits of its
     /// properties (`syntax::TRUSTED_PROPERTIES`). Other functions have none.
     pub trusted: Option<u8>,
-    /// A37: generated method of a base-borrowing `Index` instance (`ResolvedIndex::borrows_base`).
-    pub(crate) index_view: bool,
+    /// A37/A38: generated method role of an `Index` or `IndexMut` instance.
+    pub(crate) index_method: Option<IndexMethodKind>,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -4949,7 +4969,7 @@ impl FunctionOrigin {
             pure_values: false,
             asserts: Asserts(0),
             trusted: None,
-            index_view: false,
+            index_method: None,
         }
     }
 
@@ -4962,7 +4982,7 @@ impl FunctionOrigin {
             pure: false,
             asserts: Asserts(0),
             trusted: None,
-            index_view: false,
+            index_method: None,
             ..self
         }
     }
@@ -5375,7 +5395,15 @@ pub(crate) const NARROWED_PREFIX: &str = "$narrow.";
 /// value of a narrowing) gives the payload of a member.
 pub(crate) const RETAGGED_PREFIX: &str = "$retag";
 
+/// The start of the name of a binding that holds a temporary base of `Index` (A38).
+pub(crate) const TEMP_INDEX_BASE_PREFIX: &str = "$index.temp_base.";
+
 impl Local {
+    /// Whether this is a generated binding holding a temporary base of `Index` (A37, A38).
+    pub(crate) fn is_temp_index_base(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(TEMP_INDEX_BASE_PREFIX)
+    }
+
     /// Whether this is the binding of a member's payload in a retagging (A25, `Checker::retag`).
     /// The bindings of members that may be arrays share one span there, which is the key of
     /// `LastUses` for a binding's move.
@@ -5599,6 +5627,32 @@ impl TypedExpr {
             kind: TypedExprKind::Error,
             ty: Type::Error,
             span,
+        }
+    }
+
+    /// Whether this expression is a constant index expression (literals, negated numeric literals,
+    /// and tuples/arrays thereof; A38).
+    pub(crate) fn is_index_const(&self) -> bool {
+        match &self.kind {
+            TypedExprKind::Int(_)
+            | TypedExprKind::Float(_)
+            | TypedExprKind::String(_)
+            | TypedExprKind::Bool(_)
+            | TypedExprKind::Unit
+            | TypedExprKind::GenericInteger(_, _)
+            | TypedExprKind::GenericFloat(_)
+            | TypedExprKind::Static(_) => true,
+            TypedExprKind::Unary(UnaryOp::Negate, inner) => matches!(
+                inner.kind,
+                TypedExprKind::Int(_)
+                    | TypedExprKind::Float(_)
+                    | TypedExprKind::GenericInteger(_, _)
+                    | TypedExprKind::GenericFloat(_)
+            ),
+            TypedExprKind::Tuple(items) | TypedExprKind::Array(items) => {
+                items.iter().all(Self::is_index_const)
+            }
+            _ => false,
         }
     }
 
@@ -10125,7 +10179,7 @@ fn check_modules_collect(
                         trusted: trusted_by_id.get(&id).copied(),
                         pure: function.pure,
                         pure_values: checker.pure_values,
-                        index_view: classes.is_index_view(id),
+                        index_method: classes.index_method(id),
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -13049,6 +13103,7 @@ struct Checker<'a> {
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
+    mutable_locals: BTreeSet<usize>,
     default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
     read_conventions: bool,
@@ -13110,6 +13165,7 @@ impl<'a> Checker<'a> {
             shadowing_warnings: Vec::new(),
             contract_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
+            mutable_locals: BTreeSet::new(),
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
             read_conventions: names.borrowing_modules.contains(module),
@@ -13274,6 +13330,9 @@ impl<'a> Checker<'a> {
             provenance: name.provenance,
         };
         self.next_local += 1;
+        if mutable {
+            self.mutable_locals.insert(local.id);
+        }
         if name.text != "_" {
             if self.inference.is_open(&local.ty) {
                 self.open_locals.push((local.id, name.text.clone()));
@@ -14830,7 +14889,30 @@ impl<'a> Checker<'a> {
                     let key_ty = self.inference.resolve(&key.ty);
                     let val_span = value.span;
                     let val_ty = self.inference.resolve(&value.ty);
-                    let base_kind = if resolved.borrows_base && value.is_place() {
+                    let mut bindings = Vec::new();
+                    let (value, temp_base) =
+                        if key.is_index_const() || self.is_simple_index_place(&value) {
+                            (value, false)
+                        } else if !value.is_place() {
+                            let base_local = self.index_generated_local(
+                                TEMP_INDEX_BASE_PREFIX,
+                                val_ty.clone(),
+                                val_span,
+                            );
+                            let base_id = base_local.id;
+                            bindings.push((base_local, value));
+                            (
+                                TypedExpr {
+                                    kind: TypedExprKind::Local(base_id),
+                                    ty: val_ty.clone(),
+                                    span: val_span,
+                                },
+                                true,
+                            )
+                        } else {
+                            (self.hoist_index_read_place(value, &mut bindings), false)
+                        };
+                    let base_kind = if resolved.borrows_base && value.is_place() && !temp_base {
                         TypedExprKind::Borrow(Box::new(value), false)
                     } else {
                         TypedExprKind::BorrowOperand(Box::new(value))
@@ -14854,7 +14936,19 @@ impl<'a> Checker<'a> {
                             },
                         ],
                     );
-                    (call, resolved.output_ty)
+                    let kind = if bindings.is_empty() {
+                        call
+                    } else {
+                        TypedExprKind::Block {
+                            bindings,
+                            result: Box::new(TypedExpr {
+                                kind: call,
+                                ty: resolved.output_ty.clone(),
+                                span: expression.span,
+                            }),
+                        }
+                    };
+                    (kind, resolved.output_ty)
                 }
             }
             ExprKind::Borrow(value, mutable, notation) => {
@@ -14937,18 +15031,10 @@ impl<'a> Checker<'a> {
                             | Type::Utf8String
                     );
                     if !built_in_index {
-                        let target_arg = if matches!(raw_target.ty, Type::Reference(_, true)) {
-                            raw_target
-                        } else {
+                        let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
+                        if !raw_is_mut_ref {
                             Self::require_mutable_reference(&raw_target)?;
-                            let target_span = raw_target.span;
-                            let target_ty = self.inference.resolve(&raw_target.ty);
-                            TypedExpr {
-                                kind: TypedExprKind::Borrow(Box::new(raw_target), true),
-                                ty: Type::Reference(Box::new(target_ty), true),
-                                span: target_span,
-                            }
-                        };
+                        }
                         let hint = self.classes.index_key_hint(
                             &inner_ty,
                             true,
@@ -14982,6 +15068,66 @@ impl<'a> Checker<'a> {
                         };
                         self.constraints.extend(resolved.constraints);
                         let rhs = self.expression(value, Some(&resolved.output_ty))?;
+                        let mut bindings = Vec::new();
+                        let base_needs_hoist = !key.is_index_const()
+                            && if raw_is_mut_ref {
+                                !Self::is_local_ref_chain(&raw_target)
+                            } else {
+                                !Self::is_mut_target_simple_or_d9(&raw_target)
+                            };
+                        let rhs_needs_hoist = if base_needs_hoist {
+                            !rhs.is_index_const()
+                        } else {
+                            !self.is_rhs_key_order_unobservable(&rhs, &key)
+                        };
+                        let rhs = if rhs_needs_hoist {
+                            let rhs_ty = self.inference.resolve(&rhs.ty);
+                            let rhs_span = rhs.span;
+                            let rhs_local =
+                                self.index_generated_local("$index.rhs.", rhs_ty.clone(), rhs_span);
+                            let rhs_id = rhs_local.id;
+                            bindings.push((rhs_local, rhs));
+                            TypedExpr {
+                                kind: TypedExprKind::Local(rhs_id),
+                                ty: rhs_ty,
+                                span: rhs_span,
+                            }
+                        } else {
+                            rhs
+                        };
+                        let target_arg = if raw_is_mut_ref {
+                            if base_needs_hoist {
+                                let ref_ty = self.inference.resolve(&raw_target.ty);
+                                let ref_span = raw_target.span;
+                                let ref_local = self.index_generated_local(
+                                    "$index.ref.",
+                                    ref_ty.clone(),
+                                    ref_span,
+                                );
+                                let ref_id = ref_local.id;
+                                bindings.push((ref_local, raw_target));
+                                TypedExpr {
+                                    kind: TypedExprKind::Local(ref_id),
+                                    ty: ref_ty,
+                                    span: ref_span,
+                                }
+                            } else {
+                                raw_target
+                            }
+                        } else {
+                            let hoisted_target = if base_needs_hoist {
+                                self.hoist_index_mut_place(raw_target, &mut bindings)
+                            } else {
+                                raw_target
+                            };
+                            let target_span = hoisted_target.span;
+                            let target_ty = self.inference.resolve(&hoisted_target.ty);
+                            TypedExpr {
+                                kind: TypedExprKind::Borrow(Box::new(hoisted_target), true),
+                                ty: Type::Reference(Box::new(target_ty), true),
+                                span: target_span,
+                            }
+                        };
                         let callee_kind = if resolved.type_args.is_empty() {
                             TypedExprKind::Function(FunctionRef::User(resolved.function))
                         } else {
@@ -15005,7 +15151,19 @@ impl<'a> Checker<'a> {
                                 target_arg,
                             ],
                         );
-                        return self.finish_expression(call, Type::Unit, expected, expression.span);
+                        let kind = if bindings.is_empty() {
+                            call
+                        } else {
+                            TypedExprKind::Block {
+                                bindings,
+                                result: Box::new(TypedExpr {
+                                    kind: call,
+                                    ty: Type::Unit,
+                                    span: expression.span,
+                                }),
+                            }
+                        };
+                        return self.finish_expression(kind, Type::Unit, expected, expression.span);
                     }
                 }
                 let place = self.expression(place, None)?;
@@ -15520,6 +15678,258 @@ impl<'a> Checker<'a> {
             span,
             provenance: Provenance::Generated,
         }
+    }
+
+    fn index_generated_local(&mut self, prefix: &str, ty: Type, span: Span) -> Local {
+        let id = self.next_local;
+        self.next_local += 1;
+        Local {
+            id,
+            ty,
+            name: format!("{prefix}{id}"),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        }
+    }
+
+    fn is_simple_index_place(&self, expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) => self.is_simple_index_place(inner),
+            TypedExprKind::Dereference(inner) => self.is_immutable_ref_chain(inner),
+            _ => false,
+        }
+    }
+
+    fn is_immutable_ref_chain(&self, expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(id) => !self.mutable_locals.contains(id),
+            TypedExprKind::Field(inner, _) | TypedExprKind::Dereference(inner) => {
+                self.is_immutable_ref_chain(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_local_ref_chain(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) | TypedExprKind::Dereference(inner) => {
+                Self::is_local_ref_chain(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_mut_target_simple_or_d9(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) => Self::is_mut_target_simple_or_d9(inner),
+            TypedExprKind::Dereference(inner) => Self::is_local_ref_chain(inner),
+            _ => false,
+        }
+    }
+
+    fn hoist_index_read_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        if let TypedExprKind::Field(inner, field) = place.kind {
+            let hoisted = self.hoist_index_read_place(*inner, bindings);
+            return TypedExpr {
+                kind: TypedExprKind::Field(Box::new(hoisted), field),
+                ty: place.ty,
+                span: place.span,
+            };
+        }
+        if let TypedExprKind::Dereference(ref_expr) = place.kind {
+            if !ref_expr.is_place() {
+                let ref_ty = self.inference.resolve(&ref_expr.ty);
+                let ref_span = ref_expr.span;
+                let ref_local = self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                let ref_id = ref_local.id;
+                bindings.push((ref_local, *ref_expr));
+                return TypedExpr {
+                    kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                        kind: TypedExprKind::Local(ref_id),
+                        ty: ref_ty,
+                        span: ref_span,
+                    })),
+                    ty: place.ty,
+                    span: place.span,
+                };
+            }
+            let place = TypedExpr {
+                kind: TypedExprKind::Dereference(ref_expr),
+                ty: place.ty,
+                span: place.span,
+            };
+            return self.reborrow_index_place(place, bindings);
+        }
+        self.reborrow_index_place(place, bindings)
+    }
+
+    fn reborrow_index_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        let place_ty = self.inference.resolve(&place.ty);
+        let place_span = place.span;
+        let ptr_ty = Type::Reference(Box::new(place_ty.clone()), false);
+        let ptr_local = self.index_generated_local("$index.place.", ptr_ty.clone(), place_span);
+        let ptr_id = ptr_local.id;
+        bindings.push((
+            ptr_local,
+            TypedExpr {
+                kind: TypedExprKind::Borrow(Box::new(place), false),
+                ty: ptr_ty.clone(),
+                span: place_span,
+            },
+        ));
+        TypedExpr {
+            kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                kind: TypedExprKind::Local(ptr_id),
+                ty: ptr_ty,
+                span: place_span,
+            })),
+            ty: place_ty,
+            span: place_span,
+        }
+    }
+
+    fn hoist_index_mut_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        match place.kind {
+            TypedExprKind::Field(inner, field) => {
+                let hoisted = self.hoist_index_mut_place(*inner, bindings);
+                TypedExpr {
+                    kind: TypedExprKind::Field(Box::new(hoisted), field),
+                    ty: place.ty,
+                    span: place.span,
+                }
+            }
+            TypedExprKind::Dereference(ref_expr) => {
+                if Self::is_local_ref_chain(&ref_expr) {
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(ref_expr),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                } else if !ref_expr.is_place() {
+                    let ref_ty = self.inference.resolve(&ref_expr.ty);
+                    let ref_span = ref_expr.span;
+                    let ref_local =
+                        self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                    let ref_id = ref_local.id;
+                    bindings.push((ref_local, *ref_expr));
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                            kind: TypedExprKind::Local(ref_id),
+                            ty: ref_ty,
+                            span: ref_span,
+                        })),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                } else {
+                    let hoisted_ref = self.hoist_index_mut_place(*ref_expr, bindings);
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(Box::new(hoisted_ref)),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                }
+            }
+            other => TypedExpr {
+                kind: other,
+                ty: place.ty,
+                span: place.span,
+            },
+        }
+    }
+
+    fn is_side_effect_free_index_expr(expr: &TypedExpr) -> bool {
+        fn is_local_field_path(expr: &TypedExpr) -> bool {
+            match &expr.kind {
+                TypedExprKind::Local(_) => true,
+                TypedExprKind::Field(inner, _) => is_local_field_path(inner),
+                _ => false,
+            }
+        }
+        if expr.is_index_const() || is_local_field_path(expr) {
+            return true;
+        }
+        match &expr.kind {
+            TypedExprKind::Tuple(items) | TypedExprKind::Array(items) => {
+                items.iter().all(Self::is_side_effect_free_index_expr)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_rhs_key_order_unobservable(&self, rhs: &TypedExpr, key: &TypedExpr) -> bool {
+        if key.is_index_const() || rhs.is_index_const() {
+            return true;
+        }
+        if !Self::is_side_effect_free_index_expr(rhs) || !Self::is_side_effect_free_index_expr(key)
+        {
+            return false;
+        }
+        fn root_local(expr: &TypedExpr) -> Option<usize> {
+            match &expr.kind {
+                TypedExprKind::Local(id) => Some(*id),
+                TypedExprKind::Field(inner, _) => root_local(inner),
+                _ => None,
+            }
+        }
+        fn collect_reads(expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+            if let Some(id) = root_local(expr) {
+                out.insert(id);
+                return;
+            }
+            if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &expr.kind {
+                for item in items {
+                    collect_reads(item, out);
+                }
+            }
+        }
+        fn collect_moved_by_value(
+            checker: &Checker<'_>,
+            expr: &TypedExpr,
+            out: &mut BTreeSet<usize>,
+        ) {
+            if let Some(id) = root_local(expr) {
+                let ty = checker.inference.resolve(&expr.ty);
+                if !ty.is_copy(&checker.types) && !checker.inference.is_numeric_literal(&ty) {
+                    out.insert(id);
+                }
+                return;
+            }
+            if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &expr.kind {
+                for item in items {
+                    collect_moved_by_value(checker, item, out);
+                }
+            }
+        }
+        let mut rhs_reads = BTreeSet::new();
+        let mut key_reads = BTreeSet::new();
+        let mut rhs_moved = BTreeSet::new();
+        let mut key_moved = BTreeSet::new();
+        collect_reads(rhs, &mut rhs_reads);
+        collect_reads(key, &mut key_reads);
+        collect_moved_by_value(self, rhs, &mut rhs_moved);
+        if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &key.kind {
+            for item in items {
+                collect_moved_by_value(self, item, &mut key_moved);
+            }
+        }
+        rhs_moved.is_disjoint(&key_reads) && key_moved.is_disjoint(&rhs_reads)
     }
 
     fn callable_effect(

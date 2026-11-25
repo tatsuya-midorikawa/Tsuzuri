@@ -1043,10 +1043,19 @@ impl Classes {
             .and_then(|method| method.signature.as_ref().ok())
     }
 
-    pub(super) fn is_index_view(&self, function: usize) -> bool {
+    pub(super) fn index_method(&self, function: usize) -> Option<crate::check::IndexMethodKind> {
         self.index_instances
             .iter()
-            .any(|inst| inst.borrows_base && inst.function == function)
+            .find(|inst| inst.function == function)
+            .map(|inst| crate::check::IndexMethodKind::Read {
+                borrows_base: inst.borrows_base,
+            })
+            .or_else(|| {
+                self.index_mut_instances
+                    .iter()
+                    .any(|inst| inst.function == function)
+                    .then_some(crate::check::IndexMethodKind::Write)
+            })
     }
 
     pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
@@ -6424,12 +6433,12 @@ impl Specializer<'_> {
             let pure = function.origin.pure;
             // A20: an instance is checked against the attributes of its declaration.
             let asserts = function.origin.asserts;
-            let index_view = function.origin.index_view;
+            let index_method = function.origin.index_method;
             function.origin = function.origin.generated(instance);
             function.origin.cpu = cpu;
             function.origin.pure = pure;
             function.origin.asserts = asserts;
-            function.origin.index_view = index_view;
+            function.origin.index_method = index_method;
         }
         for constraint in &function.constraints {
             self.classes.validate(

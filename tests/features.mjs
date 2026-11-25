@@ -3083,6 +3083,18 @@ const suites = {
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },
+  // A38: Index / IndexMut evaluation order matches built-in indexing (base before key; RHS first on `=`).
+  index_order: {
+    cases: [
+      ["class_read", [0n], 12n],
+      ["array_read", [0n], 12n],
+      ["class_assign", [0n], 312n],
+      ["array_assign", [0n], 312n],
+      ["early_exit_temp_base", [5n, 1n], -1n],
+      ["early_exit_rhs_value", [5n, 1n], -1n],
+      ["chained_view_order", [0n], 12312n],
+    ],
+  },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative
   // updates and results in index order. WebAssembly builds the part of the fixture above its "native only"

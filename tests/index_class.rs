@@ -513,3 +513,432 @@ fn index_instances_on_std_types_need_a_key_of_this_program() {
         overlap_err.related
     );
 }
+
+fn run_main(tag: &str, source: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("tsuzuri-a38-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(&main_tz, source).unwrap();
+    let mut first = None;
+    for opt in ["-O0", "-O3"] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["run", "--no-cache", opt])
+            .arg(&main_tz)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{tag} {opt}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+        if let Some(prev) = &first {
+            assert_eq!(&text, prev, "{tag}: -O0 vs -O3 mismatch");
+        } else {
+            first = Some(text);
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    first.unwrap()
+}
+
+#[test]
+fn index_evaluates_the_base_before_the_key() {
+    let prog = "\
+record Foo { v: i64 }
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+def say :: string -> i64 -> i64 = \\label val ->
+    do! IO.writeln ($\"{label}\")
+    val
+def mk :: unit -> Foo = \\() ->
+    do! IO.writeln \"base\"
+    Foo { v: 100 }
+def arr :: unit -> [i64] = \\() ->
+    do! IO.writeln \"arr\"
+    [10, 20, 30]
+def pick { r } :: ref mut { r } Foo -> ref mut { r } Foo = \\foo ->
+    do! IO.writeln \"pick\"
+    foo
+def say_range :: i64 -> i64 -> Slice.Axis = \\a b ->
+    do! IO.writeln \"slice1\"
+    Slice.range a b
+def say_slice :: i64 -> Slice.Axis = \\i ->
+    do! IO.writeln \"slice2\"
+    Slice.at i
+def main :: unit -> i32 = \\() ->
+    let a = (mk ())[say \"key\" 1]
+    let mut foo = Foo { v: 200 }
+    let b = (pick (ref mut foo))[say \"pkey\" 2]
+    let t = Tensor.init [3, 2] (\\i -> i + 10)
+    let sub = t[[say_range 0 2]][[say_slice 1]]
+    let c = (arr ())[say \"akey\" 1]
+    do! IO.writeln ($\"{a}:{b}:{sub[[0]]}:{c}\")
+    0
+";
+    let out = run_main("eval-read", prog);
+    assert_eq!(
+        out.trim(),
+        "base\nkey\npick\npkey\nslice1\nslice2\narr\nakey\n101:202:12:20"
+    );
+}
+
+#[test]
+fn index_mut_evaluates_the_right_side_first() {
+    let prog = "\
+record Foo { v: i64 }
+instance IndexMut<Foo, i64, i64> {
+    fn index_mut k x self =
+        do! IO.writeln \"body\"
+        deref self = Foo { v: (deref k) * 100 + x }
+}
+def say :: string -> i64 -> i64 = \\label val ->
+    do! IO.writeln ($\"{label}\")
+    val
+def pick { r } :: ref mut { r } Foo -> ref mut { r } Foo = \\foo ->
+    do! IO.writeln \"pick\"
+    foo
+def pick_array { r } :: ref mut { r } [i64] -> ref mut { r } [i64] = \\xs ->
+    do! IO.writeln \"pick_arr\"
+    xs
+def main :: unit -> i32 = \\() ->
+    let mut foo = Foo { v: 0 }
+    (pick (ref mut foo))[say \"key\" 1] = say \"rhs\" 7
+    let v1 = foo.v
+    let mut xs = [1, 2, 3]
+    (deref (pick_array (ref mut xs)))[say \"akey\" 1] = say \"arhs\" 9
+    foo[0] = say \"const_key_rhs\" 5
+    let v2 = foo.v
+    foo[say \"const_rhs_key\" 2] = 8
+    let v3 = foo.v
+    let mut i = 0
+    foo[i] = { i = 2; 7 }
+    let v4 = foo.v
+    do! IO.writeln ($\"{v1}:{xs[1]}:{v2}:{v3}:{v4}\")
+    0
+";
+    let out = run_main("eval-write", prog);
+    assert_eq!(
+        out.trim(),
+        "rhs\npick\nkey\nbody\narhs\npick_arr\nakey\nconst_key_rhs\nbody\nconst_rhs_key\nbody\nbody\n107:9:5:208:207"
+    );
+
+    // Moving local in RHS read by key becomes E1012 (`use_after_move`), matching built-in `xs[s.length] = s`.
+    let check_e1012 = |source: &str, key_snip: &str| {
+        let err = analyze(source).expect_err(source).into_data();
+        assert_eq!(err.code, "E1012", "{source}\n{}", err.message);
+        assert_eq!(err.kind, Some("use_after_move"), "{source}");
+        assert!(
+            source[err.span.start..].starts_with(key_snip),
+            "{source}\nspan={:?}",
+            &source[err.span.start..]
+        );
+        assert!(
+            err.related
+                .iter()
+                .any(|r| r.role == tsuzuri::diagnostic::RelatedRole::MovedHere),
+            "{source}\nrelated={:?}",
+            err.related
+        );
+    };
+
+    check_e1012(
+        "record Boxed { items: [string] }\n\
+         instance IndexMut<Boxed, i64, string> {\n\
+             fn index_mut _k _v _self = ()\n\
+         }\n\
+         let mut b = Boxed { items: [] }\n\
+         let s = \"abc\"\n\
+         b[s.length] = s\n\
+         0",
+        "s.length",
+    );
+
+    check_e1012(
+        "record Pair { n: i64, tag: string }\n\
+         record PairBox { v: i64 }\n\
+         instance IndexMut<PairBox, i64, Pair> {\n\
+             fn index_mut _k _v _self = ()\n\
+         }\n\
+         let mut b = PairBox { v: 0 }\n\
+         let x = Pair { n: 1, tag: \"hi\" }\n\
+         b[x.n] = x\n\
+         0",
+        "x.n]",
+    );
+
+    check_e1012(
+        "record Pair { n: i64, tag: string }\n\
+         record PairBox { v: i64 }\n\
+         instance IndexMut<PairBox, (i64 * i64), Pair> {\n\
+             fn index_mut _k _v _self = ()\n\
+         }\n\
+         let mut b = PairBox { v: 0 }\n\
+         let x = Pair { n: 1, tag: \"hi\" }\n\
+         b[(x.n, 0)] = x\n\
+         0",
+        "x.n, 0",
+    );
+
+    // Key tuple moving `x` while RHS reads `x.n` is now accepted because RHS runs first!
+    emits(
+        "record Pair { n: i64, tag: string }\n\
+         record IBox { v: i64 }\n\
+         instance IndexMut<IBox, (Pair * i64), i64> {\n\
+             fn index_mut _k x self = deref self = IBox { v: x }\n\
+         }\n\
+         let mut b = IBox { v: 0 }\n\
+         let x = Pair { n: 42, tag: \"ok\" }\n\
+         b[(x, 0)] = x.n\n\
+         b.v",
+    );
+}
+
+#[test]
+fn index_key_reassigning_a_mutable_base_reference() {
+    let prog = "\
+record Foo { v: i64 }
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+instance IndexMut<Foo, i64, i64> {
+    fn index_mut k x self = deref self = Foo { v: (deref k) * 10 + x }
+}
+def main :: unit -> i32 = \\() ->
+    let a = Foo { v: 1 }
+    let b = Foo { v: 7 }
+    let mut r = ref a
+    let read_val = (deref r)[{ r = ref b; 0 }]
+    let mut m = Foo { v: 2 }
+    let mut rm = ref mut m
+    (deref rm)[rm.v - 1] = 5
+    do! IO.writeln ($\"{read_val}:{r.v}:{m.v}\")
+    0
+";
+    let out = run_main("d9-mut-ref", prog);
+    assert_eq!(out.trim(), "1:7:15");
+
+    // D9: reassigning `r` inside the key of `IndexMut` is E1014 (`borrow_conflict`).
+    let err = analyze(
+        "record Foo { v: i64 }\n\
+         instance IndexMut<Foo, i64, i64> {\n\
+             fn index_mut _k x self = deref self = Foo { v: x }\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         let mut other = Foo { v: 9 }\n\
+         let mut r = ref mut foo\n\
+         (deref r)[{ r = ref mut other; 0 }] = 5\n\
+         foo.v + other.v",
+    )
+    .unwrap_err()
+    .into_data();
+    assert_eq!(err.code, "E1014");
+    assert_eq!(err.kind, Some("borrow_conflict"));
+}
+
+#[test]
+fn index_key_cannot_write_its_base() {
+    let check_e1014 = |source: &str, key_access: &str| {
+        let err = analyze(source).expect_err(source).into_data();
+        assert_eq!(err.code, "E1014", "{source}\n{}", err.message);
+        assert_eq!(err.kind, Some("borrow_conflict"), "{source}");
+        assert!(
+            source[err.span.start..].starts_with(key_access),
+            "{source}\nspan={:?}",
+            &source[err.span.start..]
+        );
+        assert!(
+            err.related
+                .iter()
+                .any(|r| r.role == tsuzuri::diagnostic::RelatedRole::BorrowedHere),
+            "{source}\nrelated={:?}",
+            err.related
+        );
+    };
+
+    // 1. Read key assigns to base.
+    check_e1014(
+        "record Foo { v: i64 }\n\
+         instance Index<Foo, i64, i64> {\n\
+             fn index k self = self.v + deref k\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         foo[{ foo = Foo { v: 5 }; 0 }]",
+        "foo = Foo",
+    );
+
+    // 2. Read key exclusively borrows base.
+    check_e1014(
+        r#"record Foo { v: i64 }
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+def bump :: ref mut Foo -> i64 = \f ->
+    deref f = Foo { v: 50 }
+    0
+let mut foo = Foo { v: 1 }
+foo[bump (ref mut foo)]"#,
+        "(ref mut foo)",
+    );
+
+    // 3. Read key moves non-Copy base.
+    check_e1014(
+        "record Foo { s: string }\n\
+         instance Index<Foo, i64, i64> {\n\
+             fn index k self = self.s.length + deref k\n\
+         }\n\
+         def consume :: own Foo -> i64 = \\f -> f.s.length\n\
+         let foo = Foo { s: \"abc\" }\n\
+         foo[consume foo]",
+        "foo]",
+    );
+
+    // 4. Write target key assigns to base.
+    check_e1014(
+        "record Foo { v: i64 }\n\
+         instance IndexMut<Foo, i64, i64> {\n\
+             fn index_mut _k x self = deref self = Foo { v: x }\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         foo[{ foo = Foo { v: 5 }; 0 }] = 7\n\
+         foo.v",
+        "foo = Foo",
+    );
+
+    // 5. Target is `ref mut Foo` value (`let r = ref mut foo`) and key assigns `*r` (write & read).
+    check_e1014(
+        "record Foo { v: i64 }\n\
+         instance IndexMut<Foo, i64, i64> {\n\
+             fn index_mut _k x self = deref self = Foo { v: self.v * 100 + x }\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         let r = ref mut foo\n\
+         r[{ deref r = Foo { v: 5 }; 0 }] = 7\n\
+         foo.v",
+        "deref r = Foo",
+    );
+
+    check_e1014(
+        "record Foo { v: i64 }\n\
+         instance Index<Foo, i64, i64> {\n\
+             fn index k self = self.v + deref k\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         let r = ref mut foo\n\
+         r[{ deref r = Foo { v: 5 }; 0 }]",
+        "deref r = Foo",
+    );
+}
+
+#[test]
+fn index_key_may_read_its_base() {
+    emits(
+        "record Foo { v: i64 }\n\
+         instance Index<Foo, i64, i64> {\n\
+             fn index k self = self.v + deref k\n\
+         }\n\
+         instance IndexMut<Foo, i64, i64> {\n\
+             fn index_mut k x self = deref self = Foo { v: (deref k) + x }\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         let a = foo[foo.v]\n\
+         foo[foo.v - 1] = 3\n\
+         let t = Tensor.init [4] (\\i -> i + 10)\n\
+         let last = t[[Tensor.count (Tensor.view (ref t)) - 1]]\n\
+         a + foo.v + last",
+    );
+
+    // Direct place borrow of `foo.v` in `foo[foo.v] = 3` still lives through the call and conflicts
+    // with the exclusive borrow of `foo`.
+    rejects(
+        "record Foo { v: i64 }\n\
+         instance IndexMut<Foo, i64, i64> {\n\
+             fn index_mut _k x self = deref self = Foo { v: x }\n\
+         }\n\
+         let mut foo = Foo { v: 1 }\n\
+         foo[foo.v] = 3\n\
+         foo.v",
+        "E1014",
+    );
+}
+
+#[test]
+fn index_temporary_base_is_dropped_on_early_exit_in_key() {
+    emits(
+        r#"record Foo { tag: string }
+instance Index<Foo, i64, i64> {
+    fn index k self = self.tag.length + deref k
+}
+def mk :: i64 -> Foo
+fn mk n = Foo { tag: $"item-{n}" }
+def probe :: i64 -> i64 -> i64
+fn probe n k =
+    let huge = 9223372036854775807
+    match (try (mk n)[@checked (k + huge)] with | e -> e) with
+    | Result.Ok v -> v
+    | Result.Error _ -> -1
+probe 5 1"#,
+    );
+}
+
+#[test]
+fn index_simple_base_keeps_the_ir() {
+    use tsuzuri::check::TypedExprKind;
+    fn has_generated_index_local(expr: &tsuzuri::check::TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Block { bindings, result } => {
+                bindings.iter().any(|(local, val)| {
+                    local.name.starts_with("$index.") || has_generated_index_local(val)
+                }) || has_generated_index_local(result)
+            }
+            TypedExprKind::Call(callee, args) => {
+                has_generated_index_local(callee) || args.iter().any(has_generated_index_local)
+            }
+            TypedExprKind::Binary(_, a, b)
+            | TypedExprKind::Assign(a, b)
+            | TypedExprKind::Index(a, b) => {
+                has_generated_index_local(a) || has_generated_index_local(b)
+            }
+            TypedExprKind::Unary(_, a)
+            | TypedExprKind::Field(a, _)
+            | TypedExprKind::Borrow(a, _)
+            | TypedExprKind::BorrowOperand(a)
+            | TypedExprKind::Dereference(a) => has_generated_index_local(a),
+            _ => false,
+        }
+    }
+
+    let source = "\
+record Foo { v: i64 }
+record Holder { f: Foo }
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+instance IndexMut<Foo, i64, string> {
+    fn index_mut _k _s _self = ()
+}
+def mk :: i64 -> Foo
+fn mk n = Foo { v: n }
+def check_simple :: Foo -> Holder -> ref Foo -> i64 -> string -> i64
+fn check_simple a h r i s =
+    let mut m = Foo { v: 1 }
+    m[i] = s
+    m[0] = $\"x-{i}\"
+    a[i] + h.f[i] + r[i] + (mk i)[0]
+check_simple (Foo { v: 1 }) (Holder { f: Foo { v: 2 } }) (ref (Foo { v: 3 })) 0 \"hi\"
+";
+    let module = analyze(source).unwrap();
+    let func = module
+        .functions
+        .iter()
+        .find(|f| f.name.ends_with("check_simple"))
+        .unwrap();
+    assert!(
+        !has_generated_index_local(&func.body),
+        "expected zero $index.* locals in check_simple, got body: {:?}",
+        func.body
+    );
+}

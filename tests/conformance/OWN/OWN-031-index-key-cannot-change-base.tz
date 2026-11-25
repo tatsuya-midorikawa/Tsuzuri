@@ -1,0 +1,11 @@
+record Foo { v: i64 }
+
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+
+let mut foo = Foo { v: 1 }
+foo[{ foo = Foo { v: 5 }; 0 }]
+
+// rule: OWN-031
+// expect: check-error E1014 line=8 kind=borrow_conflict
