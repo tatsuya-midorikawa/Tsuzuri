@@ -267,7 +267,7 @@ a + b + c + d
   - 結果の型変数を含む仮引数（`Array.get` の `ref ['a]`、`Maybe.get` の `Maybe<'a>`）へ、名前やフィールドではなく呼び出しやリテラルを直接渡す呼び出し。内側の引数が借りられる場所なら、その参照が渡るので通ります（`String.length (Maybe.get (Maybe.Some s))` は `s` を借ります）。一時値や値の配列リテラルだと通りません。`String.length (Maybe.get (Maybe.Some "hi"))` は `E1013`、`id (Array.get 0 [a, b])` は `E1003` です。`let` で束縛しても通ります。
   - 結果の型を引数ではなく文脈だけが決める呼び出し（`ref Monoids.All` の仮引数へ渡す `Monoid.empty ()`、結果だけが型変数のクラスのメソッド）。`Monoid.Monoid<ref Monoids.All>` のような参照の型のインスタンスは無いので `E1005` です。型を書かない `let` で束縛しても同じなので、`let r: Monoids.All = Monoid.empty ()` と型を書きます。
   - 結果の型変数を型に含む局所の値から呼ぶ呼び出し（`let get = Array.get` のように多相の関数を局所に入れた `get 0 xs`）。局所の値を通して結果に触れられるので、推測を待ちません。`id (get 0 xs)` は `E1003` です。`let` で束縛すれば通ります（`let r = get 0 xs` と `id r`）。
-- 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。先に `let` で束縛します。
+- 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。結果が土台を借りる添字（`t[[Slice.range 1 3]]` など）の土台も、インスタンスが土台の中身だけを返す窓の連鎖を除いて一時値にはできません（[Tensor](../built-in-types-and-modules/tensor.md#借用規則と診断)）。先に `let` で束縛します。
 - `if`・`match`・`try`・ブロックの値の型は、仮引数の型から推論しません。edition 2027 で関数型の仮引数へ `if c then \p -> p.x else \p -> p.y` を渡すと、ラムダの仮引数の型が決まらずエラーになります。`\(p: Point) -> p.x` と型を書くか、`let pick: Point -> i64 = if c then …` と束縛してから渡します。
 - 規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置（`if n > 0 then text_length else …` の `else` の枝など）のラムダは、引数を値の型（`\(text: string) -> …`）でも参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`）でも注釈できます。値の型なら引数は参照先の値を読み、参照の型なら注釈のとおり参照になります（[ラムダ式](../values-and-functions/lambda-expressions.md#型注釈とパターン引数)）。
 

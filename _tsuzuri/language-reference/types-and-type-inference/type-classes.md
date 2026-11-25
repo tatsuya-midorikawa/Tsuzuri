@@ -153,7 +153,10 @@ flowchart TD
 
 `Format` も、このプログラムのレコードと共用体だけが実装できます。印クラスの意味は[制約 と 属性](./constraints.md)にまとめています。
 
-> 既知の不具合: 結果が土台を借りる添字（`t[[Slice.range 1 3]]`、`m[(Slice.range 0 2, Slice.all())]`、参照・関数・region を持つレコードなど借用を運ぶ型を返す利用者の `Index`）の土台に一時値を書くと、検査を通り、窓は解放した後のメモリを読みます。`(mk 100)[[Slice.range 1 3]]` ではなく、`let base = mk 100` と束縛してから `base[[Slice.range 1 3]]` と書いてください。また、`Tensor.Mut` など借用を持つ型に利用者が定義した `Index` の窓は、生きている間も土台への書き込みを止めません。修正は [A37](../../../_features/A37-index-base-place-borrow.md) です。
+結果が土台を借りる `Index`（`Output` が参照・関数・region を持つレコードなど、借用を運ぶ型）の `x[k]` は、`Index.index (ref k) (ref x)` と同じく土台の場所を借ります。土台が一時値なら、インスタンスが土台の中身だけを返すとき（標準ライブラリの `Tensor.View`・`MatrixView` の窓の窓）を除いて `E1013` です。
+
+<!-- rule: TYP-023 -->
+`Index`・`IndexMut` と算術演算子クラス（`Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg`）の利用者定義インスタンスには **orphan 規則**が適用されます。振り分けの位置（`Index`・`IndexMut` は `Self` と `Key`、1 引数の算術クラスは被演算子型 `T` で、出力型は数えません）のうち少なくとも 1 つの頭が、このプログラムで宣言した型（レコード・名前付きの共用体・`extern type`）でなければなりません。標準ライブラリの型、組み込みの型（数値・配列・タプルなど）、`ref`・`dyn`、型変数だけの頭は `E1016`（kind `orphan_instance`）になります（以前の版が受理していた標準ライブラリ型や組み込み型への算術インスタンスも `E1016` になります）。標準ライブラリの型に独自の演算を与えたいときは、`record Prices { t: Tensor<f64> }` のようにこのプログラムのレコードで包んで `instance Mul<Prices>` を定義します。
 
 ## deriving
 

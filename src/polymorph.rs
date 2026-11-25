@@ -900,6 +900,7 @@ pub(super) struct IndexInstanceTemplate {
     constraints: Vec<Constraint>,
     function: usize,
     span: Span,
+    origin: ModuleOrigin,
 }
 
 pub(super) struct ResolvedIndex {
@@ -919,6 +920,7 @@ struct InstanceTemplate {
     constraints: Vec<Constraint>,
     methods: Vec<(usize, Vec<Type>)>,
     span: Span,
+    origin: ModuleOrigin,
     derived: bool,
 }
 
@@ -2229,6 +2231,17 @@ impl Classes {
                     if class.builtin && class.name == "Format" {
                         validate_format_instance(&ty, types, instance.class.span)?;
                     }
+                    let current_origin = names.origin(module);
+                    if class.builtin {
+                        validate_orphan_instance(
+                            &class.name,
+                            std::slice::from_ref(&ty),
+                            types,
+                            names,
+                            current_origin,
+                            instance.class.span,
+                        )?;
+                    }
                     let key = head_constructor(&ty);
                     let candidates: Vec<usize> = if key.is_some() {
                         [key, None]
@@ -2266,14 +2279,15 @@ impl Classes {
                             .unify(&left, &right, types, instance.class.span)
                             .is_ok()
                         {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::OverlappingInstance,
-                                format!(
-                                    "overlapping instance for {}<{}>",
-                                    class.name,
-                                    ty.display(types)
-                                ),
+                            return Err(overlapping_instance_diagnostic(
+                                &class.name,
+                                std::slice::from_ref(&previous.head),
+                                previous.origin,
+                                previous.span,
+                                std::slice::from_ref(&ty),
+                                current_origin,
                                 instance.class.span,
+                                types,
                             ));
                         }
                     }
@@ -2386,6 +2400,7 @@ impl Classes {
                         constraints: context,
                         methods: implementations,
                         span: instance.class.span,
+                        origin: current_origin,
                         derived: is_derived,
                     });
                     heads
@@ -2583,6 +2598,16 @@ impl Classes {
             ));
         }
 
+        let current_origin = names.origin(module);
+        validate_orphan_instance(
+            class_name,
+            &[self_ty.clone(), key_ty.clone(), output_ty.clone()],
+            types,
+            names,
+            current_origin,
+            instance.class.span,
+        )?;
+
         let existing = if mutable {
             &self.index_mut_instances
         } else {
@@ -2611,14 +2636,15 @@ impl Classes {
                     .unify(&k1, &k2, types, instance.class.span)
                     .is_ok()
             {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::OverlappingInstance,
-                    format!(
-                        "overlapping instance for {class_name}<{}, {}>",
-                        self_ty.display(types),
-                        key_ty.display(types)
-                    ),
+                return Err(overlapping_instance_diagnostic(
+                    class_name,
+                    &[previous.self_ty.clone(), previous.key_ty.clone()],
+                    previous.origin,
+                    previous.span,
+                    &[self_ty, key_ty],
+                    current_origin,
                     instance.class.span,
+                    types,
                 ));
             }
         }
@@ -2686,6 +2712,7 @@ impl Classes {
             constraints: context,
             function: function_id,
             span: instance.class.span,
+            origin: current_origin,
         };
         if mutable {
             self.index_mut_instances.push(template);
@@ -3998,6 +4025,113 @@ fn validate_format_instance(
             "only records and unions declared in this program can implement Format",
             span,
         ))
+    }
+}
+
+/// A37 (D4): header argument indices that participate in dispatch and the orphan rule, shared
+/// across `Index`/`IndexMut`, 1-argument arithmetic, and future NC19/NC20 classes.
+pub(super) fn dispatch_positions(class_name: &str, arity: usize) -> &'static [usize] {
+    match (class_name, arity) {
+        ("Index" | "IndexMut", 3) => &[0, 1],
+        ("Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" | "Neg", 1) => &[0],
+        _ => &[],
+    }
+}
+
+fn is_program_type(ty: &Type, types: &TypeContext<'_>, names: &Names) -> bool {
+    match ty {
+        Type::Record(id, _) => types.records[*id].origin == ModuleOrigin::User,
+        Type::Union(id, _) => {
+            !names.is_anonymous_union(*id) && types.unions[*id].origin == ModuleOrigin::User
+        }
+        Type::Handle(qualified, _) => names.handle_origin(qualified) == ModuleOrigin::User,
+        _ => false,
+    }
+}
+
+fn validate_orphan_instance(
+    class_name: &str,
+    header: &[Type],
+    types: &TypeContext<'_>,
+    names: &Names,
+    instance_origin: ModuleOrigin,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    if instance_origin == ModuleOrigin::Std {
+        return Ok(());
+    }
+    let positions = dispatch_positions(class_name, header.len());
+    if positions.is_empty()
+        || positions
+            .iter()
+            .any(|&index| is_program_type(&header[index], types, names))
+    {
+        return Ok(());
+    }
+    let args: Vec<String> = header.iter().map(|ty| ty.display_with(names)).collect();
+    let header_text = format!("{class_name}<{}>", args.join(", "));
+    let message = if matches!(class_name, "Index" | "IndexMut") {
+        format!("{header_text} needs a type declared in this program as its self or key type")
+    } else {
+        format!("{header_text} needs a type declared in this program as its operand type")
+    };
+    Err(Diagnostic::of(DiagnosticKind::OrphanInstance, message, span).with_help(
+        "types from the standard library and built-in types such as tuples, arrays and references belong to the language; wrap the value in a record declared in this program, or call a function of the type's module",
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn overlapping_instance_diagnostic(
+    class_name: &str,
+    previous_args: &[Type],
+    previous_origin: ModuleOrigin,
+    previous_span: Span,
+    current_args: &[Type],
+    current_origin: ModuleOrigin,
+    current_span: Span,
+    types: &TypeContext<'_>,
+) -> Diagnostic {
+    let format_args = |args: &[Type]| {
+        args.iter()
+            .map(|ty| ty.display(types))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match (previous_origin, current_origin) {
+        (ModuleOrigin::User, ModuleOrigin::Std) => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(previous_args)
+            ),
+            previous_span,
+        )
+        .related(
+            crate::diagnostic::RelatedRole::DeclaredHere,
+            "standard library instance declared here",
+            current_span,
+        ),
+        (ModuleOrigin::Std, ModuleOrigin::User) => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(current_args)
+            ),
+            current_span,
+        )
+        .related(
+            crate::diagnostic::RelatedRole::DeclaredHere,
+            "standard library instance declared here",
+            previous_span,
+        ),
+        _ => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(current_args)
+            ),
+            current_span,
+        ),
     }
 }
 

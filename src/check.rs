@@ -6652,6 +6652,12 @@ impl Names {
             .unwrap_or(ModuleOrigin::User)
     }
 
+    pub(super) fn handle_origin(&self, qualified: &str) -> ModuleOrigin {
+        self.handles
+            .get(qualified)
+            .map_or(ModuleOrigin::Std, |info| self.origin(&info.module))
+    }
+
     /// The module origins whose declarations `requester` searches, in order;
     /// std code never sees user declarations (GUIDE D-07).
     fn tiers(&self, requester: &str) -> &'static [ModuleOrigin] {
@@ -11224,6 +11230,11 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
 #[cfg(test)]
 pub(crate) fn is_builtin_class(name: &str) -> bool {
     polymorph::BUILTIN_CLASSES.contains(&name)
+}
+
+#[cfg(test)]
+pub(crate) fn polymorph_dispatch_positions(class_name: &str, arity: usize) -> &'static [usize] {
+    polymorph::dispatch_positions(class_name, arity)
 }
 
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):

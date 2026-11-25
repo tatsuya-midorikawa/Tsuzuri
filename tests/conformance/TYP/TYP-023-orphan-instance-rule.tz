@@ -1,0 +1,7 @@
+instance Add<Maybe<i64>> {
+    fn add _a _b = Maybe.None
+}
+0
+
+// rule: TYP-023
+// expect: check-error E1016 line=1

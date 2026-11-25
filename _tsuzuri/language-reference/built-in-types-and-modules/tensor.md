@@ -152,10 +152,12 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 | 窓が生きている間に、持ち主のテンソルを move・置換する | `E1014` |
 | 窓を `let w = v` で move した後で `v` を使う | `E1012` |
 | 一時値を `ref` で借りる（`Tensor.rank (ref (Tensor.permute …))`） | `E1013`（`borrow requires a local place`） |
+| 一時値の土台から窓を取る（`(mk 100)[[Slice.range 1 3]]`） | `E1013`（`borrow requires a local place`） |
+| 窓が生きている間に、窓の土台の `View`・`Mut` を move・置換・排他借用する | `E1014` |
 | フィールド参照、パターン分解、リテラルでの構築 | `E1022` |
 | 非 Copy の要素に `get`・`fold`・`map`・`to_tensor` | `E1005` |
 
-> 既知の不具合: 結果が土台を借りる添字（`t[[Slice.range 1 3]]`、`m[(Slice.range 0 2, Slice.all())]`、参照・関数・region を持つレコードなど借用を運ぶ型を返す利用者の `Index`）の土台に一時値を書くと、検査を通り、窓は解放した後のメモリを読みます。`(mk 100)[[Slice.range 1 3]]` ではなく、`let base = mk 100` と束縛してから `base[[Slice.range 1 3]]` と書いてください。また、`Tensor.Mut` など借用を持つ型に利用者が定義した `Index` の窓は、生きている間も土台への書き込みを止めません。修正は [A37](../../../_features/A37-index-base-place-borrow.md) です。
+窓からさらに切り出す窓の連鎖（`t[[Slice.range 1 3]][[Slice.at 1]]`）と、一時値からの要素の読み出し（`(mk 100)[[2]]`）はそのまま書けます。
 
 ## トラップ
 

@@ -432,3 +432,84 @@ fn std_view_chains_on_temporary_views_stay_accepted() {
          $\"{Tensor.to_array (Tensor.to_tensor (ref row))} {corner (ref t)}\"",
     );
 }
+
+#[test]
+fn index_instances_on_std_types_need_a_key_of_this_program() {
+    let rejects_orphan = |source: &str| {
+        let error = analyze(source).expect_err(source).into_data();
+        assert_eq!(error.code, "E1016", "{source}\n{}", error.message);
+        assert_eq!(error.kind, Some("orphan_instance"), "{source}");
+        assert!(
+            error
+                .message
+                .ends_with("needs a type declared in this program as its self or key type"),
+            "{source}\n{}",
+            error.message
+        );
+        assert!(
+            source[error.span.start..].starts_with("Index"),
+            "{source}\nspan={:?}",
+            &source[error.span.start..]
+        );
+    };
+
+    rejects_orphan(
+        "instance Index<Tensor.Mut<i64>, [Slice.Axis], Tensor.View<i64>> {\n\
+             fn index _axes self = Tensor.freeze self\n\
+         }\n0",
+    );
+    rejects_orphan(
+        "instance IndexMut<Tensor<i64>, i64, i64> {\n\
+             fn index_mut _k _v _self = ()\n\
+         }\n0",
+    );
+    rejects_orphan(
+        "instance Index<(i64 * i64), i64, i64> {\n\
+             fn index _k _self = 0\n\
+         }\n0",
+    );
+
+    // User Key type on std Tensor is accepted.
+    emits(
+        "record Key { i: i64 }\n\
+         instance Copy<'a> => Index<Tensor<'a>, Key, 'a> {\n\
+             fn index k self =\n\
+                 let v = Tensor.view self\n\
+                 deref (Tensor.at [k.i] (ref v))\n\
+         }\n\
+         let t = Tensor.of_array [3] [10, 20, 30]\n\
+         t[Key { i: 1 }]",
+    );
+
+    // Built-in indexable override keeps `builtin_instance_override`.
+    let builtin_err = analyze("instance Index<[i64], string, i64> { fn index _k _self = 0 }\n0")
+        .unwrap_err()
+        .into_data();
+    assert_eq!(builtin_err.code, "E1016");
+    assert_eq!(builtin_err.kind, Some("builtin_instance_override"));
+
+    // Overlap between user instance and `std/Map.tz` reports at the user's `Index` span with
+    // `declared_here` pointing to `std/Map.tz`.
+    let map_src = "record K { v: i64 }\n\
+                   instance Index<Map<K, i64>, K, i64> {\n\
+                       fn index _k _self = 0\n\
+                   }\n0";
+    let overlap_err = analyze(map_src).unwrap_err().into_data();
+    assert_eq!(overlap_err.code, "E1016");
+    assert_eq!(overlap_err.kind, Some("overlapping_instance"));
+    assert!(
+        map_src
+            .get(overlap_err.span.start..)
+            .is_some_and(|tail| tail.starts_with("Index<Map<K, i64>")),
+        "expected user span, got {:?}",
+        overlap_err.span
+    );
+    assert!(
+        overlap_err
+            .related
+            .iter()
+            .any(|rel| rel.role == tsuzuri::diagnostic::RelatedRole::DeclaredHere),
+        "expected DeclaredHere related note: {:?}",
+        overlap_err.related
+    );
+}

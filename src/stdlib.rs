@@ -738,27 +738,41 @@ mod tests {
                 "{path}: OptIn aliases must list the '@alias' declarations of the module"
             );
             for instance in &program.instances {
-                use crate::syntax::TypeExprKind;
-                let head = match &instance.ty.kind {
-                    TypeExprKind::Named(name) => Some(name.as_str()),
-                    TypeExprKind::Apply(name, _) => Some(name.text.as_str()),
-                    _ => None,
+                let mut all_args = vec![&instance.ty];
+                all_args.extend(instance.extra_args.iter());
+                let positions = crate::check::polymorph_dispatch_positions(
+                    &instance.class.text,
+                    all_args.len(),
+                );
+                let check_args: Vec<&crate::syntax::TypeExpr> = if positions.is_empty() {
+                    vec![&instance.ty]
+                } else {
+                    positions.iter().map(|&i| all_args[i]).collect()
                 };
-                let own = head.is_some_and(|head| {
-                    let head = head
-                        .strip_prefix(&format!("{}.", module.module))
-                        .unwrap_or(head);
-                    program
-                        .records
-                        .iter()
-                        .any(|record| record.name.text == head)
-                        || program.unions.iter().any(|union| union.name.text == head)
-                        || program
-                            .type_aliases
+                fn head_of(ty_expr: &crate::syntax::TypeExpr) -> Option<&str> {
+                    match &ty_expr.kind {
+                        crate::syntax::TypeExprKind::Named(name) => Some(name.as_str()),
+                        crate::syntax::TypeExprKind::Apply(name, _) => Some(name.text.as_str()),
+                        _ => None,
+                    }
+                }
+                let own = check_args.iter().any(|ty_expr| {
+                    head_of(ty_expr).is_some_and(|head| {
+                        let head = head
+                            .strip_prefix(&format!("{}.", module.module))
+                            .unwrap_or(head);
+                        program
+                            .records
                             .iter()
-                            .any(|alias| alias.name.text == head)
+                            .any(|record| record.name.text == head)
+                            || program.unions.iter().any(|union| union.name.text == head)
+                            || program
+                                .type_aliases
+                                .iter()
+                                .any(|alias| alias.name.text == head)
+                    })
                 });
-                let pair_triggered = head.is_some_and(|head| {
+                let pair_triggered = head_of(&instance.ty).is_some_and(|head| {
                     PAIR_TRIGGERS.iter().any(|&(first, second, target)| {
                         target == module.module
                             && head == first
@@ -920,6 +934,44 @@ mod tests {
         assert!(!is_reserved_module("Async"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));
+    }
+
+    #[test]
+    fn std_instances_with_open_dispatch_positions_are_listed() {
+        use crate::syntax::TypeExprKind;
+        let mut open = Vec::new();
+        for &(path, source) in SOURCES {
+            let program = crate::parser::parse(source).unwrap();
+            for instance in &program.instances {
+                let mut all_args = vec![&instance.ty];
+                all_args.extend(instance.extra_args.iter());
+                let positions = crate::check::polymorph_dispatch_positions(
+                    &instance.class.text,
+                    all_args.len(),
+                );
+                if positions
+                    .iter()
+                    .any(|&i| matches!(all_args[i].kind, TypeExprKind::Variable(_)))
+                {
+                    let args: Vec<String> = all_args
+                        .iter()
+                        .map(|t| crate::docgen::type_text(t))
+                        .collect();
+                    open.push(format!(
+                        "{path}: {}<{}>",
+                        instance.class.text,
+                        args.join(", ")
+                    ));
+                }
+            }
+        }
+        assert_eq!(
+            open,
+            [
+                "std/HashMap.tz: Index<HashMap<'key, 'value>, 'key, 'value>",
+                "std/Map.tz: Index<Map<'key, 'value>, 'key, 'value>",
+            ]
+        );
     }
 
     #[test]
