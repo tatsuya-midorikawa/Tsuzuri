@@ -295,6 +295,179 @@ fn host_header_and_wrappers_are_deterministic_and_normalized() {
     }
 }
 
+/// The part of a header between its first line of `marker` and the end of the guard it opens.
+fn guarded_block<'a>(header: &'a str, marker: &str, end: &str) -> &'a str {
+    let start = header
+        .find(marker)
+        .unwrap_or_else(|| panic!("{marker}\n{header}"));
+    let length = header[start..].find(end).unwrap() + end.len();
+    &header[start..start + length]
+}
+
+#[test]
+fn headers_of_several_libraries_share_guarded_tagged_declarations() {
+    use std::{fs, process::Command};
+    // Two libraries that export the record and the handle of the same module, and a third whose
+    // record of that name has another field.
+    let shared = "extern type Counter\nrecord Point { x: f64, y: f64 }";
+    let first = tsuzuri::analyze_modules(&[
+        ("Geo.tz", shared),
+        (
+            "Main.tz",
+            "export def norm :: ref Geo.Point -> f64\nfn norm p = p.x + p.y\n\
+             export def keep :: Geo.Counter -> Geo.Counter\nfn keep counter = counter\n\
+             export def greet :: ref string -> string\nfn greet name = clone_string name",
+        ),
+    ])
+    .unwrap();
+    let second = tsuzuri::analyze_modules(&[
+        ("Geo.tz", shared),
+        (
+            "Main.tz",
+            "export def origin :: i64 -> Geo.Point\nfn origin n = Geo.Point { x: n as f64, y: 0.0 }\n\
+             export def pass :: Geo.Counter -> Geo.Counter\nfn pass counter = counter\n\
+             export def total :: ref [i64] -> i64\nfn total values = Array.sum values",
+        ),
+    ])
+    .unwrap();
+    let other = tsuzuri::analyze_modules(&[
+        ("Geo.tz", "record Point { x: f64, y: f64, z: f64 }"),
+        (
+            "Main.tz",
+            "export def lift :: i64 -> Geo.Point\nfn lift n = Geo.Point { x: 0.0, y: 0.0, z: n as f64 }",
+        ),
+    ])
+    .unwrap();
+    let scalars =
+        tsuzuri::analyze("export def add :: i64 -> i64 -> i64\nfn add a b = a + b").unwrap();
+    let a = tsuzuri::llvm::header(&first);
+    let b = tsuzuri::llvm::header(&second);
+    let a_trap = tsuzuri::llvm::header_with(&first, true);
+    let scalars_trap = tsuzuri::llvm::header_with(&scalars, true);
+    let c = tsuzuri::llvm::header(&other);
+    assert_eq!(
+        a,
+        tsuzuri::llvm::header(&first),
+        "the header is deterministic"
+    );
+    // Every header that names a shared type carries the same block, whatever its module uses.
+    let common = guarded_block(
+        &a,
+        "/* Shared by every Tsuzuri header",
+        "#endif\n#endif\n#endif\n",
+    );
+    for header in [&b, &a_trap, &scalars_trap, &c] {
+        assert_eq!(
+            guarded_block(
+                header,
+                "/* Shared by every Tsuzuri header",
+                "#endif\n#endif\n#endif\n"
+            ),
+            common
+        );
+    }
+    for line in [
+        "#ifndef TSUZURI_COMMON_DECLARATIONS_1\n#ifdef TSUZURI_COMMON_DECLARATIONS_VERSION\n#error ",
+        "#else\n#define TSUZURI_COMMON_DECLARATIONS_1\n#define TSUZURI_COMMON_DECLARATIONS_VERSION 1\n",
+        "typedef struct tsuzuri_i64_slice { const int64_t *ptr; int64_t len; } tsuzuri_i64_slice;\n",
+        "typedef struct tsuzuri_string_buffer { uint16_t *ptr; int64_t len; } tsuzuri_string_buffer;\n",
+        "typedef struct tsuzuri_utf8string_buffer { uint8_t *ptr; int64_t len; } tsuzuri_utf8string_buffer;\n",
+        "#ifndef TSUZURI_TRAP_INFO_DEFINED\n#define TSUZURI_TRAP_INFO_DEFINED\ntypedef struct tsuzuri_trap_info {\n",
+    ] {
+        assert!(common.contains(line), "{line}\n{common}");
+    }
+    // A header of scalars alone has nothing to share.
+    assert!(!tsuzuri::llvm::header(&scalars).contains("TSUZURI_"));
+    // Every struct has a tag: two untagged structs of one shape are two types in C and C++.
+    for header in [&a, &b, &a_trap, &scalars_trap, &c] {
+        assert!(!header.contains("typedef struct {"), "{header}");
+    }
+    // The record and the handle each stand behind a guard of their own, and the guard's value names
+    // the record's fields.
+    let record = |header: &str| {
+        guarded_block(
+            header,
+            "#ifndef TSUZURI_LAYOUT_tz_record_3Geo_5Point\n",
+            "#endif\n",
+        )
+        .to_owned()
+    };
+    assert_eq!(record(&a), record(&b));
+    assert!(record(&a).contains("typedef struct tz_record_3Geo_5Point {\n    double x;\n    double y;\n} tz_record_3Geo_5Point;\n#elif TSUZURI_LAYOUT_tz_record_3Geo_5Point != 0x"));
+    assert_ne!(record(&a).lines().nth(1), record(&c).lines().nth(1));
+    let handle = "#ifndef TSUZURI_HANDLE_tz_handle_3Geo_7Counter\n#define TSUZURI_HANDLE_tz_handle_3Geo_7Counter\ntypedef struct tz_handle_3Geo_7Counter_s *tz_handle_3Geo_7Counter;\n#endif\n";
+    assert!(a.contains(handle) && b.contains(handle));
+
+    // C11, C99 and C++17 read the headers together; a record of other fields and a block of another
+    // version stop with their #error.
+    let root = std::env::temp_dir().join(format!("tsuzuri-headers-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let version_2 = a
+        .replace(
+            "TSUZURI_COMMON_DECLARATIONS_1",
+            "TSUZURI_COMMON_DECLARATIONS_2",
+        )
+        .replace(
+            "TSUZURI_COMMON_DECLARATIONS_VERSION 1",
+            "TSUZURI_COMMON_DECLARATIONS_VERSION 2",
+        );
+    for (name, text) in [
+        ("a.h", &a),
+        ("b.h", &b),
+        ("a_trap.h", &a_trap),
+        ("scalars_trap.h", &scalars_trap),
+        ("c.h", &c),
+        ("version_2.h", &version_2),
+    ] {
+        fs::write(root.join(name), text).unwrap();
+    }
+    let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
+    let compile = |includes: &[&str], language: &[&str]| {
+        let source = root.join("unit.c");
+        let mut text: String = includes
+            .iter()
+            .map(|name| format!("#include \"{name}\"\n"))
+            .collect();
+        text.push_str("int main(void) { return 0; }\n");
+        fs::write(&source, text).unwrap();
+        Command::new(&clang)
+            .args(language)
+            .args(["-Wall", "-Wextra", "-pedantic", "-Werror", "-fsyntax-only"])
+            .arg(&source)
+            .output()
+            .unwrap()
+    };
+    let languages: [&[&str]; 3] = [&["-std=c11"], &["-std=c99"], &["-x", "c++", "-std=c++17"]];
+    for language in languages {
+        let output = compile(&["a.h", "b.h", "a_trap.h", "scalars_trap.h"], language);
+        assert!(
+            output.status.success(),
+            "{language:?}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for (includes, message) in [
+            (
+                ["a.h", "c.h"],
+                "tz_record_3Geo_5Point has other fields in another Tsuzuri header",
+            ),
+            (
+                ["version_2.h", "b.h"],
+                "Tsuzuri headers with different versions of the common declarations cannot be included together",
+            ),
+        ] {
+            let output = compile(&includes, language);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success() && stderr.contains(message),
+                "{language:?} {includes:?}\n{stderr}"
+            );
+            // The #error is the only error: the guard keeps the second definition out.
+            assert_eq!(stderr.matches("error:").count(), 1, "{stderr}");
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn record_header_names_keep_module_boundaries_and_type_arguments() {
     let module = tsuzuri::analyze_modules(&[

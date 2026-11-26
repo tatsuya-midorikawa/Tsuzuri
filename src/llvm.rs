@@ -2900,14 +2900,10 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
         output.push_str("#include <stddef.h>\n");
     }
     output.push_str("\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
-    if trap_return {
-        output.push_str(
-            "/* The trap of a tsuzuri_try_<name> call: `site` is an id of <output>.trap.json, `kind` a trap kind. */\n\
-             #ifndef TSUZURI_TRAP_INFO_DEFINED\n\
-             #define TSUZURI_TRAP_INFO_DEFINED\n\
-             typedef struct {\n    uint32_t site;\n    uint32_t kind;\n} tsuzuri_trap_info;\n\
-             #endif\n\n",
-        );
+    // The same bytes in every header that names one of them, so several libraries' headers can be
+    // included together (`common_declarations`); a header of scalars alone stays without them.
+    if host_abi::uses_host_abi(module) || trap_return {
+        output.push_str(&host_abi::common_declarations());
     }
     output.push_str(&host_abi::handle_typedefs(module));
     output.push_str(&host_abi::header_types(module));
@@ -10176,6 +10172,22 @@ fn console_main(
 mod tests {
     use super::*;
     use crate::analyze;
+
+    #[test]
+    fn common_header_declarations_change_only_with_their_version() {
+        // Headers of one version skip each other's copy of the block, so its text is a contract:
+        // a change to it raises `COMMON_DECLARATIONS_VERSION` and then updates this hash.
+        let mut hash = crate::cache::Sha256::new();
+        hash.update(host_abi::common_declarations().as_bytes());
+        assert_eq!(
+            (host_abi::COMMON_DECLARATIONS_VERSION, hash.hex()),
+            (
+                1,
+                String::from("f59c00550f4ae1620c1e4071a9e0f92c09e80c68e7149d4ba5dbdcbff56809c2")
+            ),
+            "the common declarations of the C header changed: raise COMMON_DECLARATIONS_VERSION"
+        );
+    }
 
     #[test]
     fn net_imports_name_only_the_declared_primitives() {

@@ -7,7 +7,7 @@
 ## この記事のポイント
 
 - スカラー、`bool`、`unit` の戻り値、一部の配列と文字列、スカラーだけのレコードが ABI に載ります。
-- `--emit header` と `--emit object` を対にして、C からリンクします。
+- `--emit header` と `--emit object` を対にして、C からリンクします。複数のライブラリのヘッダーを、1 つの翻訳単位で一緒に include できます。
 - 名前を書かない `extern` は `tsuzuri_host_<モジュール>_<名前>` になります。
 - 所有して返ったバッファは、ホストが `tsuzuri_free` で 1 回だけ解放します。
 - `tsuzuri bindgen` は、C ヘッダーから ABI の一致する `extern` を生成し、残りを `W2002` で報告します。
@@ -33,7 +33,7 @@
 
 `i128`、`f16`、`f128`、decimal、文字型、共用体、タプル、リスト、関数値、排他借用、戻り値としての借用は出せません。配列の要素として渡せるのは `i64`、`f64`、`ubyte` と、仕様が許す文字列です。固定長配列そのものは引数にできず、レコードで包みます。長さ 0 の配列フィールドも、ISO C に無いので拒否します。
 
-`bool` と 8 / 16 bit 整数は、境界で 32 bit に正規化されます。レコードのフィールドも同様で、C コンパイラごとの構造体の詰め方には依存しません。C の構造体のフィールドは、宣言の順に並びます。コンパイラが値を小さくするために格納の順を変えること（[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）は、境界で変換されるので、ホストからは見えません。生成される typedef 名は、モジュール名の長さと型引数で一意です。C の予約語になるフィールドには `tz_` が付き、それでも衝突すると `E1008` です。
+`bool` と 8 / 16 bit 整数は、境界で 32 bit に正規化されます。レコードのフィールドも同様で、C コンパイラごとの構造体の詰め方には依存しません。C の構造体のフィールドは、宣言の順に並びます。コンパイラが値を小さくするために格納の順を変えること（[Record](../built-in-types-and-modules/record.md#メモリ上の大きさ)）は、境界で変換されるので、ホストからは見えません。生成される typedef 名は、モジュール名の長さと型引数で一意です（別のライブラリのヘッダーと一緒に読むときは [複数のライブラリのヘッダーを一緒に読む](#複数のライブラリのヘッダーを一緒に読む)）。C の予約語になるフィールドには `tz_` が付き、それでも衝突すると `E1008` です。
 
 `export` と `private` は別の軸です。`private export` はコンパイルエラーで、private な関数はヘッダーにも公開シンボルにも出ません。公開名 `tz_add` はプロジェクト全体で 1 つです。
 
@@ -116,6 +116,58 @@ clang -O2 main.c add.o -o addhost
 ```
 
 AArch64 向けに出した IR は、`f16` の演算に LLVM の `half` 命令を含みます（[`f16` の計算の経路](../types-and-type-inference/basic-types.md#f16-の計算の経路)）。AArch64 では、`half` はライブラリ関数を呼ばずに機械語へ下がります。その IR のターゲットを x86-64 などに変えて `llc` や `clang` に渡すと、`half` は `__extendhfsf2` のようなライブラリ関数の呼び出しになり、リンクが解決できないことがあります。IR のターゲットは変えないでください。
+
+### 複数のライブラリのヘッダーを一緒に読む
+
+別々にビルドした Tsuzuri のライブラリのヘッダーを、1 つの C・C++ の翻訳単位で並べて include できます。C11・C99・C++17 で確かめています。
+
+```c
+#include "liba.h"
+#include "libb.h"
+```
+
+どのライブラリも使う型は、ヘッダーごとに同じ内容で、1 つのガードの中にあります。バッファの記述子（`tsuzuri_i64_slice`／`tsuzuri_i64_buffer` から `tsuzuri_utf8string_slice`／`tsuzuri_utf8string_buffer` まで）と、`--trap-mode return` の `tsuzuri_trap_info` です。2 つめのヘッダーはガードで読み飛ばされるので、型は翻訳単位に 1 つだけ定義されます。この共通の宣言は、ホスト ABI を使うヘッダーと `--trap-mode return` のヘッダーにだけ付き、スカラーだけのヘッダーには付きません。モジュールが使わない種類のバッファも、全部そろっています。
+
+```c
+#ifndef TSUZURI_COMMON_DECLARATIONS_1
+#ifdef TSUZURI_COMMON_DECLARATIONS_VERSION
+#error "Tsuzuri headers with different versions of the common declarations cannot be included together; generate them with the same Tsuzuri release"
+#else
+#define TSUZURI_COMMON_DECLARATIONS_1
+#define TSUZURI_COMMON_DECLARATIONS_VERSION 1
+typedef struct tsuzuri_i64_slice { const int64_t *ptr; int64_t len; } tsuzuri_i64_slice;
+typedef struct tsuzuri_i64_buffer { int64_t *ptr; int64_t len; } tsuzuri_i64_buffer;
+/* f64、ubyte、string、utf8string も同じ形 */
+#ifndef TSUZURI_TRAP_INFO_DEFINED
+#define TSUZURI_TRAP_INFO_DEFINED
+typedef struct tsuzuri_trap_info {
+    uint32_t site;
+    uint32_t kind;
+} tsuzuri_trap_info;
+#endif
+#endif
+#endif
+```
+
+struct にはどれも tag が付いています。tag のない `typedef struct { ... } T;` は、同じ形でも書くたびに別の型になり、2 回目は C でも C++ でもエラーだからです。
+
+ガードの名前の末尾の数字は、共通の宣言の版です。宣言の形が変わったときだけ上がり、同じ版のヘッダーどうしは、どの版のコンパイラが出したものでも一緒に読めます。版の違うヘッダーを一緒に読むと、上の `#error` で止まります。同じ名前の型が違う形を持つことになり、黙って片方を選ぶと、もう一方のライブラリの関数に違う配置を渡してしまうからです。この仕組みより前のコンパイラが出したヘッダーにはガードがないので、作り直してください。
+
+2 つのライブラリが同じモジュールのレコードやハンドルを export することもあります。たとえば、どちらも同じパッケージに依存しているときです。レコードの struct は、その名前のガード `TSUZURI_LAYOUT_<typedef 名>` の中にあり、ガードの値はフィールドの並びから決まる 64 bit の値です。同じフィールドなら 2 つめの定義は読み飛ばされ、フィールドが違えば（依存の版が違う、どちらのライブラリにも `Main` の `Point` があるなど）`#error "<typedef 名> has other fields in another Tsuzuri header: two libraries export different records of this name"` で止まります。ハンドルの `typedef` も `TSUZURI_HANDLE_<typedef 名>` のガードの中にあります。
+
+```c
+#ifndef TSUZURI_LAYOUT_tz_record_6Common_3Geo_5Point
+#define TSUZURI_LAYOUT_tz_record_6Common_3Geo_5Point 0xb01fe830ed3616a3
+typedef struct tz_record_6Common_3Geo_5Point {
+    double x;
+    double y;
+} tz_record_6Common_3Geo_5Point;
+#elif TSUZURI_LAYOUT_tz_record_6Common_3Geo_5Point != 0xb01fe830ed3616a3
+#error "tz_record_6Common_3Geo_5Point has other fields in another Tsuzuri header: two libraries export different records of this name"
+#endif
+```
+
+関数の宣言はガードの外です。`tsuzuri_alloc` と `tsuzuri_free` のように同じ宣言が 2 回現れても、C と C++ は受け付けます。`tz_<name>` の名前はライブラリをまたいで区別されないので、2 つのライブラリが同じ名前の関数を export するときは、どちらかの名前を変えてください。`--emit bindings-cpp` の C++ のバインディングはライブラリごとの名前空間 `tsuzuri::<name>` に入るので、2 つのライブラリの `.hpp` も一緒に include できます。
 
 ## ホスト関数を import する
 

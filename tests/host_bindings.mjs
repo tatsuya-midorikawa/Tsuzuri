@@ -2,7 +2,8 @@
 // target: the library exports only the public C ABI and links its extern imports from --link, each
 // binding passes the same calls (scalars, buffers, strings, records, fixed arrays, handles), owned
 // results leave no allocation behind (--allocator counting), a trap ends the process, and with
-// --trap-mode return a trap becomes an exception of the host language.
+// --trap-mode return a trap becomes an exception of the host language. The headers of two libraries
+// are read in one C or C++ translation unit and both libraries are called from it.
 // usage: node tests/host_bindings.mjs target/release/tsuzuri
 // Python 3 (PYTHON or python3), clang++ (TSUZURI_CLANGXX or clang++) and dotnet 8+ run when present.
 import assert from "node:assert/strict";
@@ -113,6 +114,45 @@ try {
     console.log("host bindings: C++ skipped (no clang++)");
   }
   if (!pythonVersion) console.log("host bindings: Python skipped (no python3)");
+
+  // Two libraries in one translation unit: every header carries the shared declarations behind one
+  // guard, and liba and libb both export the record of the package they depend on, which stands behind
+  // a guard of its own. C11, C++17 and the C++20 bindings of both read the headers together and call
+  // both libraries; libb is built with --trap-mode return.
+  const two = join(root, "two");
+  const twoOut = join(two, "out");
+  for (const directory of ["common", "liba", "libb", "out"]) mkdirSync(join(two, directory), { recursive: true });
+  writeFileSync(join(two, "common", "Tsuzuri.toml"), '[package]\nname = "common"\nversion = "0.1.0"\n');
+  writeFileSync(join(two, "common", "Geo.tz"), "record Point { x: f64, y: f64 }\n");
+  for (const name of ["liba", "libb"]) {
+    writeFileSync(join(two, name, "Tsuzuri.toml"), `[package]\nname = "${name}"\nversion = "0.1.0"\n\n[dependencies]\ncommon = { path = "../common" }\n`);
+  }
+  writeFileSync(join(two, "liba", "Lib.tz"), "export def coordinate_sum :: ref Common::Geo.Point -> f64\nfn coordinate_sum point = point.x + point.y\n\nexport def greet :: ref string -> string\nfn greet name = clone_string name\n");
+  writeFileSync(join(two, "libb", "Lib.tz"), "export def origin :: own i64 -> Common::Geo.Point\nfn origin x = Common::Geo.Point { x: x as f64, y: 0.5 }\n\nexport def total :: ref [i64] -> i64\nfn total values = Array.sum values\n\nexport def echo :: ref utf8string -> utf8string\nfn echo text = Utf8String.clone text\n\nexport def divide :: own i64 -> own i64 -> i64\nfn divide a b = a / b\n");
+  const libraries = { liba: [join(two, "liba", "Lib.tz")], libb: [join(two, "libb", "Lib.tz"), "--trap-mode", "return"] };
+  for (const [name, [source, ...flags]] of Object.entries(libraries)) {
+    execute(compiler, ["build", source, "--emit", "header", ...flags, "-o", join(twoOut, `${name}.h`)]);
+    execute(compiler, ["build", source, "--emit", "shared", ...flags, "-o", join(twoOut, `lib${name}.${extension}`)]);
+    if (clangxxVersion) execute(compiler, ["build", source, "--emit", "bindings-cpp", ...flags, "-o", join(twoOut, `${name}.hpp`)]);
+  }
+  execute(compiler, ["build", libraries.libb[0], "--emit", "header", "--trap-mode", "return", "-o", join(two, "again.h")]);
+  assert.deepEqual(readFileSync(join(two, "again.h")), readFileSync(join(twoOut, "libb.h")), "the header is deterministic");
+  const twoHost = join(repository, "tests/host_bindings_two_libraries.c");
+  const twoFlags = ["-Wall", "-Wextra", "-pedantic", "-Werror", "-I", twoOut];
+  const twoLink = [join(twoOut, `libliba.${extension}`), join(twoOut, `liblibb.${extension}`), `-Wl,-rpath,${twoOut}`];
+  const twoRuns = [[clang, "C11", ["-std=c11", ...twoFlags, twoHost]]];
+  if (clangxxVersion) {
+    twoRuns.push(
+      [clangxx, "C++17", ["-std=c++17", ...twoFlags, "-x", "c++", twoHost, "-x", "none"]],
+      [clangxx, "C++20 bindings", ["-std=c++20", "-DTSUZURI_CPP_BINDINGS", ...twoFlags, "-x", "c++", twoHost, "-x", "none"]],
+    );
+  }
+  for (const [tool, label, args] of twoRuns) {
+    const program = join(two, label.replace(/\W+/g, "_"));
+    execute(tool, [...args, ...twoLink, "-o", program]);
+    assert.match(execute(program, []).stdout, /^two libraries passed$/m, label);
+  }
+  console.log(`host bindings: two libraries in one translation unit passed (${twoRuns.map(([, label]) => label).join(", ")})`);
 
   // C#: one console project with both bindings, against both libraries.
   const dotnetVersion = available("dotnet", ["--version"]);
