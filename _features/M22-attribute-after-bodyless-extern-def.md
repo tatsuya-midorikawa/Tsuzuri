@@ -109,7 +109,7 @@ k1・k2 は `Main.tz` に書いたので、構文の誤りがなければ `E1018
 ### 一覧に名前を足す計画を書いているチケット
 
 - W16:122・229（`last_error`）と W17:122・238（`link`）は、「`signature` の次の宣言の属性の先読みに足す」手順と、足し忘れたときの落とし穴を書いている。起票の PR で、両方に「M22 が先に入っていれば足さなくてよい」という参照を足した。
-- W16:57 は「属性の読み込み口」で今の先読み（`name == "cpu" || name == "trusted"` と効果の属性。`count` は書いていない）を説明し、W16:20 は「最初に読む」に `signature` の先読みを挙げている。M22 の後は、どちらも今の規則と合わなくなる（手順 4）。
+- W16:57 は「属性の読み込み口」で今の先読み（`"cpu" | "trusted" | "count"` と効果の属性）を説明し、W16:20 は「最初に読む」に `signature` の先読みを挙げている。M22 の後は、どちらも今の規則と合わなくなる（手順 4）。
 - M01（`@returns_retained`・`@returns_not_retained`）・M17（`@weak`）・M20 の Phase 2（`@link(framework = …)`）は、M22 を弱い依存にし、「M22 が後なら先読みに足す」と書いている。
 
 ## 変えてはいけない意味
@@ -187,7 +187,7 @@ if self.newline_before_current()
    **内容**: 先読みの条件。
    **確認**: 手順 2 のテストが通る。T0。`cargo test --locked --test effects_attributes --test alias --test computations --test trusted --test c_layout`。手順 1 の集合と `cmp` で一致し、「現状」の行は仕様 6 のとおりにだけ変わる（S1・S2）。手順 1 の fixtures のうち IR を出さないもの（起票時は `domain`・`domain_host` の `E1038`）は、診断の文と終了コードで比べる。
 4. **変更**: `_features/W16-last-error-attribute.md`（20・57・122・229 行）、`_features/W17-link-attribute-dllimport.md`（122・238 行）。先に入ったチケットが一覧に名前を足していたら `src/parser.rs` のその名前も。
-   **内容**: 「`signature` の先読みに足す」段を、「M22 の後は `signature` の先読みは属性の名前を見ないので、足す段はない」に改める。落とし穴の行も同じく改める。W16:57 の「属性の読み込み口」は今の一覧（`name == "cpu" || name == "trusted"` と効果の属性。HEAD では `count` も入っている）を説明しているので、M22 の後の規則（`def` の列以下の `@` + 識別子で抜ける）に書き直す。W16:20 の「`signature` の先読み」も、読む必要がなくなったことに合わせる。行番号は着手時に `rg -n 'signature' _features/W16-*.md _features/W17-*.md` で取り直す。
+   **内容**: 「`signature` の先読みに足す」段を、「M22 の後は `signature` の先読みは属性の名前を見ないので、足す段はない」に改める。落とし穴の行も同じく改める。W16:57 の「属性の読み込み口」は今の一覧（`"cpu" | "trusted" | "count"` と効果の属性）を説明しているので、M22 の後の規則（`def` の列以下の `@` + 識別子で抜ける）に書き直す。W16:20 の「`signature` の先読み」も、読む必要がなくなったことに合わせる。行番号は着手時に `rg -n 'signature' _features/W16-*.md _features/W17-*.md` で取り直す。
    **確認**: `node scripts/check-guide-lite.mjs`。T1、T2。`target/scratch/m22/` を消す。
 
 ## テスト計画

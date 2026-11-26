@@ -5,7 +5,7 @@
 | ID | NC09 |
 | 優先度 | P2（信号処理・スペクトル解析・多項式フィッティング） |
 | 規模 | L（2 Phase: Phase 1 `std/Fft.tz`、Phase 2 `std/Polynomial.tz`） |
-| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
+| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -18,7 +18,7 @@
 - 範囲:
   - **Phase 1（`std/Fft.tz`）**: 任意長 $N$ に対する $O(N \log N)$ 高速フーリエ変換（2 のべき乗は反復 Radix-2 Cooley-Tukey、一般合成数・素数長は Bluestein チャープ Z 変換）。`fft`, `ifft`, `rfft`, `irfft`, `hfft`, `ihfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfftn`, `irfftn`, `fftfreq`, `rfftfreq`, `fftshift`, `ifftshift`（正規化 `Backward | Ortho | Forward` 指定、軸指定対応）。1 回のバッチ／ND 呼び出し内では軸ごとに回転因子と Bluestein チャープ FFT を 1 回だけ事前計算して共有し、複数回の呼び出しを跨ぐ反復用途向けに不変計画 `Fft.Plan<'a>`（`plan` / `execute` / `execute_into`）を提供する。Phase 1b（実測ベース）として混合基数 `{2, 3, 5}`（直接変換および Bluestein 内部畳み込みの滑らかな長さ選択）と、[NC15](NC15-parallel-borrowed-chunk-input.md) 完了後の並列バッチ/ND FFT（`fft_parallel` / `fft2_parallel`）を段階追加する。
   - **Phase 2（`std/Polynomial.tz`）**: 標準べき基底（および Chebyshev・Legendre 基底）の多項式演算 `eval`（Horner 法）, `add`, `sub`, `mul`, `divmod`, `deriv`, `integ`, `fit`（Vandermonde + `Linalg.lstsq`）, `roots`（コンパニオン行列の `Linalg.eigvals`）。
-- 最初に読む: ① [NC01](NC01-complex-and-extended-math.md) の `Complex` 仕様 ② [NC08](NC08-linalg-core-and-einsum.md) の `lstsq`・`eigvals` ③ 仕様 1〜2。
+- 最初に読む: ① [NC01](_completed/NC01-complex-and-extended-math.md) の `Complex` 仕様 ② [NC08](NC08-linalg-core-and-einsum.md) の `lstsq`・`eigvals` ③ 仕様 1〜2。
 - 最初に書くテスト: `tests/fft.rs`（素朴 DFT 参照実装との比較: 長さ 1, 2, 7, 8, 15, 16, 100、Parseval の等式、`ifft (fft x) ≈ x`、`irfft (rfft x) ≈ x`、2D/3D）と `tests/polynomial.rs`（`fit`・`roots`・`deriv`/`integ`）。
 - 触ってはいけない: `Fft`・`Polynomial` を名指さないプログラムの生成 IR（opt-in 維持）。
 - 完了の見分け方: 任意長の 1D/ND 実数・複素数 FFT と多項式フィッティング／求根が native と WASM の `-O0`・`-O3` で参照値と一致する。
@@ -31,7 +31,7 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 
 ### 着手条件
 
-- Phase 1 は [NC01](NC01-complex-and-extended-math.md) と [NC02](NC02-tensor-core-views-and-broadcasting.md) が done。
+- Phase 1 は [NC01](_completed/NC01-complex-and-extended-math.md) と [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done。
 - Phase 2 は [NC08](NC08-linalg-core-and-einsum.md)（Phase 2 の `lstsq` と Phase 3 の `eigvals`）が done。
 - 決定事項 D1 の承認。
 
@@ -89,8 +89,8 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 
 ## 前提とする他チケットのインターフェース
 
-- [NC01](NC01-complex-and-extended-math.md): `Complex<'a>`, `Math.cos`, `Math.sin`, `Math.pi`。
-- [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`。
+- [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<'a>`, `Math.cos`, `Math.sin`, `Math.pi`。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`。
 - [NC08](NC08-linalg-core-and-einsum.md): `Linalg.lstsq`, `Linalg.eigvals`（Phase 2 のみ）。
 - 弱い依存 [NC15](NC15-parallel-borrowed-chunk-input.md): `Parallel.for_each_chunk_with`（Phase 1b の並列バッチ/ND FFT 用）。
 

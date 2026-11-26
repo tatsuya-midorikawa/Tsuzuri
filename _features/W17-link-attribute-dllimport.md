@@ -119,7 +119,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" link_name "def" ident
 
 ### 構文と検査
 
-- `src/syntax.rs`: `LinkAttribute { target: Ident, library: String, span: Span, name_span: Span }` と `Program::links: Vec<LinkAttribute>`（`trusted` と同じ脇のリスト）。`src/parser.rs` の `attributes` に `link_attribute`、宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern`・`def`・明示の symbol を確かめる。`signature` の次の宣言の属性の先読み（`name == "cpu" || name == "trusted"`）に `link` を足す（[M22](M22-attribute-after-bodyless-extern-def.md) が先に入っていれば、先読みは属性の名前を見ないので足さなくてよい）。
+- `src/syntax.rs`: `LinkAttribute { target: Ident, library: String, span: Span, name_span: Span }` と `Program::links: Vec<LinkAttribute>`（`trusted` と同じ脇のリスト）。`src/parser.rs` の `attributes` に `link_attribute`、宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern`・`def`・明示の symbol を確かめる。`signature` の次の宣言の属性の先読み（`src/parser.rs` の `matches!(name.as_str(), "cpu" | "trusted" | "count")`）に `link` を足す（[M22](M22-attribute-after-bodyless-extern-def.md) が先に入っていれば、先読みは属性の名前を見ないので足さなくてよい）。
 - `src/syntax_codec.rs`: 符号化の末尾（その時点の最後の脇のリストの後）に足し、`FRONTEND_FORMAT` を着手時の値から 1 上げる。`src/formatter.rs` の正規化、`src/api_diff.rs` の `Program` の分解（`links: _`。ライブラリは API の型ではない）。
 - `src/check.rs`: `HostImport` に `library: Option<String>`。`@trusted` と同じく名前と位置で extern を探す。名前の検査は `driver::library_name_error` を呼ぶ（規則を 2 つにしない）。`CheckedModule` に `link_libraries: BTreeMap<String, BTreeSet<String>>`（symbol → 名前の集合）。
 

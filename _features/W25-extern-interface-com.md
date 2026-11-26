@@ -5,7 +5,7 @@
 | ID | W25 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [W19](_completed/W19-thread-bound-handles.md), [W21](W21-c-layout-records.md), [W24](W24-extern-view.md)（Phase ごとに使うほかのチケットの型は「着手条件」と「前提とする他チケットのインターフェース」に書く） |
+| 依存 | [W19](_completed/W19-thread-bound-handles.md), [W21](_completed/W21-c-layout-records.md), [W24](_completed/W24-extern-view.md)（Phase ごとに使うほかのチケットの型は「着手条件」と「前提とする他チケットのインターフェース」に書く） |
 | 後続 | [W26](W26-com-objects-in-tsuzuri.md), [W27](W27-win32-package-from-winmd.md), [W30](W30-windows-hardening.md) |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
@@ -53,7 +53,7 @@ D-63 で利用者は E12 D13 を狭く改め、`extern` として宣言する型
 
 ### 着手条件
 
-- Phase 1: [W19](_completed/W19-thread-bound-handles.md) が done（`local` の性質と効果 `pinned`）。[W21](W21-c-layout-records.md) の Phase 1 と [W24](W24-extern-view.md) の Phase 1 が done（`extern` の後の文脈キーワードの読み取りと、strategy.md・`_features/README.md` の「採用しない改善」の改訂が済んでいる）。確認: `grep -nE "^\| W(19\|21\|24) " _features/README.md`。
+- Phase 1: [W19](_completed/W19-thread-bound-handles.md) が done（`local` の性質と効果 `pinned`）。[W21](_completed/W21-c-layout-records.md) の Phase 1 と [W24](_completed/W24-extern-view.md) の Phase 1 が done（`extern` の後の文脈キーワードの読み取りと、strategy.md・`_features/README.md` の「採用しない改善」の改訂が済んでいる）。確認: `grep -nE "^\| W(19\|21\|24) " _features/README.md`。
 - Phase 2: [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut T`）・[W15](_completed/W15-abi-nullable-handles.md)（`Maybe<H>`・`Maybe<ref ZString>`）・[W18](_completed/W18-copy-extern-type.md)（`extern type copy`）・[W20](_completed/W20-zstring.md)（`ZString`）が done。Phase 3: [W14](_completed/W14-extern-multiple-declarations.md)（同じ symbol の複数の宣言）と [W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡し。Windows x64・Arm64）が done。どれも依存の欄（README の表）に無い Phase ごとの前提で、W14 は W19・W21・W24 のどの依存にも無い（W36 は W21 の後続）。
 - 決定事項の D3・D4・D7 が承認済み。Phase 2 は D9、Phase 3 は D10 も。
 - ベースライン: `tests/fixtures/*` と `examples/*` の `--emit llvm`（native・`--target wasm32`）、`--emit header`、`check --json` を保存する（受け入れ条件の比較に使う）。
@@ -185,7 +185,7 @@ Iid        = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  16 進 32 桁（大文字�
 
 ### 9. Phase 3: Direct2D・DirectWrite
 
-- **値渡しの `@c_layout` record の引数**: `ID2D1RenderTarget::DrawLine(D2D1_POINT_2F, D2D1_POINT_2F, …)` のため、メソッドの引数に `@c_layout` record の値（`ref` なし）を書けるようにする。分類と下げ方、対応する target、Phase の外の target の `E1008`（kind `abi_record_by_value_target`）と WASM の `E1008`（`abi_native_only`）は、すべて [W36](W36-c-layout-by-value.md) の `extern def` の規則（W36 の仕様 1・2・4）と同じである。スロットの呼び出しは `host_call` の引数の下げ方を共有する（停止条件 S2）ので、W36 の下げ方がそのまま効き、W25 は分類を持たない（W36 の「他チケットへ提供するインターフェース」）。`D2D1_POINT_2F` は x86-64 Windows では `i64`、AArch64 Windows では `[2 x float]` になる（W36 の参照表）。`extern def` の引数と結果の値渡しと、E05・[W21](W21-c-layout-records.md) D4 の改訂は W36 の範囲（W36 の D1）。
+- **値渡しの `@c_layout` record の引数**: `ID2D1RenderTarget::DrawLine(D2D1_POINT_2F, D2D1_POINT_2F, …)` のため、メソッドの引数に `@c_layout` record の値（`ref` なし）を書けるようにする。分類と下げ方、対応する target、Phase の外の target の `E1008`（kind `abi_record_by_value_target`）と WASM の `E1008`（`abi_native_only`）は、すべて [W36](W36-c-layout-by-value.md) の `extern def` の規則（W36 の仕様 1・2・4）と同じである。スロットの呼び出しは `host_call` の引数の下げ方を共有する（停止条件 S2）ので、W36 の下げ方がそのまま効き、W25 は分類を持たない（W36 の「他チケットへ提供するインターフェース」）。`D2D1_POINT_2F` は x86-64 Windows では `i64`、AArch64 Windows では `[2 x float]` になる（W36 の参照表）。`extern def` の引数と結果の値渡しと、E05・[W21](_completed/W21-c-layout-records.md) D4 の改訂は W36 の範囲（W36 の D1）。
 - **record の結果**: メソッドの `@c_layout` record の結果は、MSVC の C++ のメンバー関数の規則（大きさによらず、`this` の次の隠れたポインターで返し、そのポインターを返す）に下げる（`ID2D1RenderTarget::GetSize`）。W36 の値返しの分類は使わない（W36 の対象外）。`extern def` の record の結果は、印のない record は今の out ポインターの規則のまま、`@c_layout` record は W36 の C の値返し（W36 の仕様 2）。
 - **interface の本体の `@count`**（W13）: `IDWriteFactory::CreateTextLayout(WCHAR const *, UINT32, …)` の長さの型を選ぶため、メソッドの前に `@count` を書けるようにする（D-53 の属性の置き場の追加。決定事項 D10）。
 - 工場: `D2D1CreateFactory`・`DWriteCreateFactory` は `Com.Iid<I>` で宣言する（同じ symbol を別の `I` で宣言するのは W14）。
@@ -225,8 +225,8 @@ Iid        = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"  16 進 32 桁（大文字�
 
 - [W18](_completed/W18-copy-extern-type.md): `syntax::HandleKind`（`Owned`・`Copy`）と `Type::Handle(Box<str>, HandleKind)`、修飾の語を読む `Parser::extern_declaration` の枠。W25 は `HandleKind::Interface` を足す。名前が違えば止めて報告する（GUIDE-LITE §11）。
 - [W19](_completed/W19-thread-bound-handles.md): `HandleKind::Local` の性質（Send・Sync・捕捉が偽）、`Type::holds_thread_bound`、`effects::Effect::Pinned`、`pinned_rules::builtin_position`、`E1013` の kind `pinned_code_spawned`・`pinned_function_value`。固定された文脈は `main`・`export def`・`test`・`bench` の本体と `with_locked_thread`・コールバック・`FnPtr.of` の本体（W19 の D5）。
-- [W24](W24-extern-view.md): `extern` の後の文脈キーワードの分岐（`view`）、「0・整列の検査 → 型付きの load」の規則とトラップ、監査の表示の `HostImport` の種類の分岐、strategy.md・`_features/README.md` の「採用しない改善」の改訂。W25 の PR はその文に `extern interface` の出荷を足す。
-- [W21](W21-c-layout-records.md): `@c_layout record`（Phase 3 のメソッドの値渡しの引数と record の結果）。
+- [W24](_completed/W24-extern-view.md): `extern` の後の文脈キーワードの分岐（`view`）、「0・整列の検査 → 型付きの load」の規則とトラップ、監査の表示の `HostImport` の種類の分岐、strategy.md・`_features/README.md` の「採用しない改善」の改訂。W25 の PR はその文に `extern interface` の出荷を足す。
+- [W21](_completed/W21-c-layout-records.md): `@c_layout record`（Phase 3 のメソッドの値渡しの引数と record の結果）。
 - [W36](W36-c-layout-by-value.md)（Phase 3）: `llvm_byvalue::{ByValue, classify}` と `FunctionEmitter::{by_value_slot, by_value_to_abi}`、kind `abi_record_by_value_target`。メソッドの値渡しの引数は `host_call` の共有でこの下げ方に乗る。
 - [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) の `ref mut T` と `@count`、[W15](_completed/W15-abi-nullable-handles.md) の `Maybe<H>`・`Maybe<ref ZString>`、[W18](_completed/W18-copy-extern-type.md) の `extern type copy`、[W20](_completed/W20-zstring.md) の `ZString`（Phase 2）。[W14](_completed/W14-extern-multiple-declarations.md) の同じ symbol の複数の宣言（Phase 3）。
 - [W06](_completed/W06-windows-gui-test-harness.md): `tests/windows_gui_shim.c` と `tests/windows.mjs` の `buildGui`（仕様 4）。W06 の shim には別のスレッドから任意の窓へ `WM_CLOSE` を送る関数が無い（`tz_gui_post` は `WM_APP` だけ）ので、Phase 2 の任意の検査に使う関数（案 `tz_gui_close_later(delay_ms)`: 別のスレッドで待ってから前面のダイアログの窓へ `WM_CLOSE` を送る）は W25 が W06 の仕様 4 の形で shim に足す。

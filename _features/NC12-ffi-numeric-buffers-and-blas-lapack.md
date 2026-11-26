@@ -5,20 +5,20 @@
 | ID | NC12 |
 | 優先度 | P2（大規模行列積・分解でネイティブ最高速を得るための外部数値ライブラリ接続基盤） |
 | 規模 | L（`abi.rs` の数値バッファ拡張＋`Linalg.*_blas` の明示オプトイン接続） |
-| 依存 | [W13](W13-extern-ref-mut-and-mutable-buffers.md), [NC01](NC01-complex-and-extended-math.md), [NC08](NC08-linalg-core-and-einsum.md) |
+| 依存 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md), [NC01](_completed/NC01-complex-and-extended-math.md), [NC08](NC08-linalg-core-and-einsum.md) |
 | 後続 | [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（C ABI バッファ要素型の拡張と、外部 BLAS/LAPACK 経路の API 契約・能力検査。決定事項 D1・D2 が要承認、ほかは既定案） |
-| 手本にする既存実装 | [W13](W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、`src/abi.rs`（`Buffer`）、`src/llvm_imports.rs`（`host_call`）、`std/Matrix.tz`（`mul` vs `mul_fma` の明示分離） |
+| 手本にする既存実装 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、`src/abi.rs`（`Buffer`）、`src/llvm_imports.rs`（`host_call`）、`std/Matrix.tz`（`mul` vs `mul_fma` の明示分離） |
 | 主な影響ファイル | `src/abi.rs`、`src/llvm_abi.rs`、`src/llvm_imports.rs`、`src/bindings.rs`（WASM バインディングの `Buffer` 網羅マッチ）、`src/bindings_native.rs`、`std/Linalg.tz`、`tests/ffi_numeric_buffers.rs`（新規）、`tests/ffi_extensions.mjs`、`tests/host_bindings.mjs`、`spec/rules/ABI.md`、`docs/language.md`、`docs/benchmarks.md`、`_tsuzuri/language-reference/compiler/native-interop.md`、`_tsuzuri/language-reference/built-in-types-and-modules/linalg.md` |
 
 ## 実装者向け早見
 
 - 範囲:
-  1. **C FFI 数値バッファ型の拡充**: [W13](W13-extern-ref-mut-and-mutable-buffers.md) が `ref mut [T..]` へ追加する `i64`/`f64`/`ubyte`/`i16u`/`i32`/`i32u` に加えて、`f32`・`i8`・`i16`・`i64u`・`Complex<f32>`・`Complex<f64>` を `ref [T]` および `ref mut [T..]` の C FFI バッファ（コピーなしポインタ渡し、W13 の `@count` 対応）として受理するようにする。これにより CBLAS (`cblas_sgemm`, `cblas_dgemm`, `cblas_cgemm`, `cblas_zgemm`)・LAPACKE (`LAPACKE_dgesdd`, `LAPACKE_dgesv` 等)・FFTW を Tsuzuri の `@trusted extern` からゼロコピーで直接呼べるようになる。
+  1. **C FFI 数値バッファ型の拡充**: [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) が `ref mut [T..]` へ追加する `i64`/`f64`/`ubyte`/`i16u`/`i32`/`i32u` に加えて、`f32`・`i8`・`i16`・`i64u`・`Complex<f32>`・`Complex<f64>` を `ref [T]` および `ref mut [T..]` の C FFI バッファ（コピーなしポインタ渡し、W13 の `@count` 対応）として受理するようにする。これにより CBLAS (`cblas_sgemm`, `cblas_dgemm`, `cblas_cgemm`, `cblas_zgemm`)・LAPACKE (`LAPACKE_dgesdd`, `LAPACKE_dgesv` 等)・FFTW を Tsuzuri の `@trusted extern` からゼロコピーで直接呼べるようになる。
   2. **明示的 BLAS / LAPACK バックエンドの提供**: 決定論的な純 Tsuzuri 経路（`Linalg.matmul`, `Linalg.svd`, `Linalg.solve` 等）とは明確に名前を分けたオプトイン経路（または外部パッケージ／ビルド時リンク構成による `Linalg.matmul_blas` 等）を設計・提供し、未リンク・未検出時に黙って純 Tsuzuri へフォールバックせず明示エラーを返す（AGENTS.md「明示要求した利用不可バックエンドはエラー報告」）。
-- 最初に読む: ① [W13](W13-extern-ref-mut-and-mutable-buffers.md) 全文 ② `src/abi.rs` の `Buffer` ③ 仕様 1〜2。
+- 最初に読む: ① [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) 全文 ② `src/abi.rs` の `Buffer` ③ 仕様 1〜2。
 - 最初に書くテスト: `tests/ffi_numeric_buffers.rs`（`ref [f32]`・`ref mut [f32..]`・`ref [Complex<f64>]`・`ref mut [Complex<f64>..]` の IR がコピーなしで `ptr` を渡すこと、WASM では `abi_native_only` `E1008` になること）。
 - 触ってはいけない: 既定のビルドに BLAS/LAPACK リンク依存を混入させること（既定バイナリ・WASM の依存ゼロを厳守）。純 Tsuzuri の `Matrix.mul` / `Linalg.matmul` の決定論ビット契約。
 - 完了の見分け方: Tsuzuri から CBLAS の `cblas_dgemm` / `cblas_sgemm` / `cblas_zgemm` を `@trusted extern` でゼロコピー呼び出しでき、参照 C 実装と同等の GFLOP/s かつ `Linalg.matmul`（純 Tsuzuri）と許容誤差内で一致する。
@@ -31,7 +31,7 @@
 
 ### 着手条件
 
-- [W13](W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](NC01-complex-and-extended-math.md)（`Complex`）、[NC08](NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](_completed/NC01-complex-and-extended-math.md)（`Complex`）、[NC08](NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -56,7 +56,7 @@
 
 ### 1. C FFI 数値バッファ型の拡充（`src/abi.rs`・`src/llvm_abi.rs`・`src/llvm_imports.rs`）
 
-- [W13](W13-extern-ref-mut-and-mutable-buffers.md) がすでに対応する `i64`/`f64`/`ubyte`/`i16u`/`i32`/`i32u` に加えて、`ref [T]`（読み取り専用）および `ref mut [T..]`（W13 の可変バッファ、native のみ）で追加受理する要素型 `T`:
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md) がすでに対応する `i64`/`f64`/`ubyte`/`i16u`/`i32`/`i32u` に加えて、`ref [T]`（読み取り専用）および `ref mut [T..]`（W13 の可変バッファ、native のみ）で追加受理する要素型 `T`:
   - `f32`（C 型 `const float *` / `float *`）
   - `i8`（`int8_t *`）, `i16`（`int16_t *`）, `i64u`（`uint64_t *`）
   - `Complex<f32>`（C 型 `const float *` / `float *` または `void *` の 2 要素連続配置。CBLAS の `const void *` / C99 `float _Complex *` と ABI 互換）
@@ -78,8 +78,8 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [W13](W13-extern-ref-mut-and-mutable-buffers.md): `abi::extern_parameter`, `ref mut [T..]`, `@count`, `abi_native_only`。
-- [NC01](NC01-complex-and-extended-math.md): `Complex<'a>`。
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `abi::extern_parameter`, `ref mut [T..]`, `@count`, `abi_native_only`。
+- [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<'a>`。
 - [NC08](NC08-linalg-core-and-einsum.md): `Linalg` の基準実装（精度照合用）。
 
 ## 他チケットへ提供するインターフェース

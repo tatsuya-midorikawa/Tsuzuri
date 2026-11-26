@@ -5,7 +5,7 @@
 | ID | NC11 |
 | 優先度 | P2（他ツール・Python/NumPy・機械学習モデルとのデータ交換に必須） |
 | 規模 | L（2 Phase: Phase 1 純粋 `[ubyte]` コーデック `TensorCodec`、Phase 2 ファイル読み書き・ネイティブ `mmap` の `TensorIO`） |
-| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), ([W11](W11-windows-os-api.md)) |
+| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([W11](_completed/W11-windows-os-api.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -37,8 +37,8 @@
 
 ### 着手条件
 
-- [NC01](NC01-complex-and-extended-math.md) と [NC02](NC02-tensor-core-views-and-broadcasting.md) が done。
-- Phase 2 の Windows 側 `mmap` は [W11](W11-windows-os-api.md) が done（現行 `src/target.rs:397` の `os_apis()` は macOS/Linux のみ対応。macOS/Linux の Phase 2 は W11 なしでも着手可能）。
+- [NC01](_completed/NC01-complex-and-extended-math.md) と [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done。
+- Phase 2 の Windows 側 `mmap` は [W11](_completed/W11-windows-os-api.md) が done（現行 `src/target.rs:397` の `os_apis()` は macOS/Linux のみ対応。macOS/Linux の Phase 2 は W11 なしでも着手可能）。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -92,9 +92,9 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC01](NC01-complex-and-extended-math.md): `Complex<f32>`, `Complex<f64>`。
-- [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `is_f_contiguous`, 64 軸。
-- 弱い依存 [W11](W11-windows-os-api.md): Phase 2 の Windows 側 `mmap`。
+- [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<f32>`, `Complex<f64>`。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `is_f_contiguous`, 64 軸。
+- 弱い依存 [W11](_completed/W11-windows-os-api.md): Phase 2 の Windows 側 `mmap`。
 
 ## 他チケットへ提供するインターフェース
 
