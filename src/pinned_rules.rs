@@ -16,6 +16,8 @@ use super::effects::{self, Effect, EffectSet, FunctionEffects};
 use super::*;
 use crate::diagnostic::{Diagnostic, DiagnosticKind, RelatedRole, Span};
 
+pub(crate) const MAIN_THREAD_ADVICE: &str = "an API that needs the process main thread (AppKit on macOS) must run in 'main' or in a callback that the main thread calls";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Position {
     /// Pins the OS thread before running its callback (`Routine.with_locked_thread`, `FnPtr.of`).
@@ -712,7 +714,7 @@ impl<'a> Checker<'a> {
         let span = self.override_span.unwrap_or(span);
         let handle = self.source_handle_name(target_id);
         let message = format!(
-            "this starts code that uses the thread-bound extern type '{handle}' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread"
+            "this starts code that uses the thread-bound extern type '{handle}' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread; {MAIN_THREAD_ADVICE}"
         );
         let diagnostic = self.attach_witness(
             Diagnostic::of(DiagnosticKind::PinnedCodeSpawned, message, span),

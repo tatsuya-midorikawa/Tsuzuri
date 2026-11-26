@@ -658,3 +658,73 @@ fn programs_without_local_handles_compute_nothing() {
     let _ = std::fs::remove_dir_all(plain_dir);
     let _ = std::fs::remove_dir_all(local_dir);
 }
+
+#[test]
+fn main_thread_advice_in_thread_bound_messages() {
+    let spawned_src = "\
+extern type local Window
+
+@trusted
+extern \"host_window_create\" def window_create :: unit -> Window
+
+@trusted
+extern \"host_window_close\" def window_close :: own Window -> unit
+
+def open_window :: unit -> unit = \\() ->
+    let w = window_create ()
+    window_close w
+
+def main :: unit -> i32 = \\() ->
+    tzroutine {
+        open_window ()
+    }
+    0
+";
+    let spawned = check_err(spawned_src);
+    assert_eq!(spawned.code, "E1013");
+    assert_eq!(spawned.kind, Some(DiagnosticKind::PinnedCodeSpawned.id()));
+    assert_eq!(
+        spawned.message,
+        "this starts code that uses the thread-bound extern type 'Window' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread; an API that needs the process main thread (AppKit on macOS) must run in 'main' or in a callback that the main thread calls"
+    );
+    assert_eq!(spawned.span.start, spawned_src.find("tzroutine").unwrap());
+    assert_eq!(spawned.related.len(), 2);
+
+    let send_src = "\
+extern type local Window
+
+@trusted
+extern \"host_window_create\" def window_create :: unit -> Window
+
+def main :: unit -> i32 = \\() ->
+    let _w = window_create ()
+    let _windows: Channel<Window> = Channel.make 1
+    0
+";
+    let send_err = check_err(send_src);
+    assert_eq!(send_err.code, "E1013");
+    assert_eq!(send_err.kind, Some(DiagnosticKind::TaskRequiresSend.id()));
+    assert_eq!(
+        send_err.message,
+        "values that move to another tzroutine or thread must be Send; Main.Window holds a thread-bound extern handle ('extern type local'), which must stay on the OS thread that received it; use it there, or do the work inside 'Routine.with_locked_thread'; an API that needs the process main thread (AppKit on macOS) must run in 'main' or in a callback that the main thread calls"
+    );
+
+    let fn_val = check_err(
+        "\
+extern type local Window
+@trusted
+extern \"host_window_create\" def window_create :: unit -> Window
+@trusted
+extern \"host_window_close\" def window_close :: own Window -> unit
+def open_window :: unit -> unit = \\() -> window_close (window_create ())
+let _f = open_window
+0
+",
+    );
+    assert_eq!(fn_val.kind, Some(DiagnosticKind::PinnedFunctionValue.id()));
+    assert!(
+        !fn_val.message.contains("main thread"),
+        "{}",
+        fn_val.message
+    );
+}

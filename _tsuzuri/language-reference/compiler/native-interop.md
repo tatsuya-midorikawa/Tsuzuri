@@ -680,7 +680,9 @@ export とコールバックは、利用者から共有して変更する大域�
 
 tzroutine の中の `extern` の呼び出しは、OS を待つ呼び出しとして扱います。呼び出しの間、その tzroutine の OS スレッドは P を手放せる状態になり、呼び出しが 20 µs ほど続くと、スケジューラーが P を別の OS スレッドに渡して、ほかの tzroutine を走らせます（[OS を待つ呼び出し](../async-tasks-and-lazy/tzroutine.md#os-を待つ呼び出し)）。印は呼び出しごとに 2 回の atomic な書き込みで、tzroutine を起動しないプログラムの生成コードは変わりません。呼び出しの中でホストが [静的コールバック](#静的コールバック) か `export` 関数（`tz_<name>`）を呼ぶと、その間は P を取り戻し、その中で待っても、tzroutine はホストの frame を持つその OS スレッドで続きます。`errno`（Windows では `GetLastError`）は、P を取り戻す間も呼び出しの値を保ちます。
 
-スレッドに結び付いたホストの API（GUI の UI スレッド、OpenGL の文脈、スレッドローカルな状態を持つ C のライブラリ）を tzroutine から呼ぶときは、[`Routine.with_locked_thread`](../built-in-types-and-modules/routine.md#routinewith_locked_thread) で、関数の間その tzroutine を OS スレッドに固定します。
+スレッドに結び付いたホストの API（OpenGL の文脈、スレッドローカルな状態を持つ C のライブラリ）を tzroutine から呼ぶときは、[`Routine.with_locked_thread`](../built-in-types-and-modules/routine.md#routinewith_locked_thread) で、関数の間その tzroutine を OS スレッドに固定します。固定する先は、呼んだ時点でその tzroutine を走らせている OS スレッドであり、起動された tzroutine の中ではランタイムのワーカーのスレッドです。
+
+プロセスのメインスレッドでしか呼べない API（macOS の AppKit など）は、実行ファイルでは `main`（トップレベルのコードや `def main`）の本体と、メインスレッドで呼ばれるコールバック（AppKit のデリゲート、`NSTimer`、メインのディスパッチキューに積まれた関数など）から呼びます。実行ファイルの `main` はプロセスのメインスレッドで走ります（`--emit object`・`shared` のライブラリ構成では、ホスト側がどのスレッドをメインスレッドとして呼ぶかを決めます）。起動された tzroutine の中で `Routine.with_locked_thread` を使って呼ぶと、型検査は通りますが実行時に壊れます（例えば `NSWindow` の生成は `NSInternalInconsistencyException` を投げてプロセスを終わらせ、実行時に検査しない API でもメインスレッドの外での呼び出しは保証されません）。tzroutine からプロセスのメインスレッドへ処理を戻す標準 API は今はありません（計画は [M09](../../../_features/M09-main-thread-dispatch-and-handles.md)）。
 
 GUI は言語の一部ではありません。デスクトップの画面は、ホストがオブジェクトを呼ぶ側に置きます。
 

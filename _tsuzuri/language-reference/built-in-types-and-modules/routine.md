@@ -9,7 +9,7 @@
 - `Routine.yield ()` は、実行をほかの tzroutine に譲ります（Go の `runtime.Gosched`）。
 - `Routine.count ()` は、生きている tzroutine の数に、呼んだスレッドの 1 を足した数です（Go の `runtime.NumGoroutine` は `main` を数えます）。
 - `Routine.max_procs ()` は同時に tzroutine を走らせる OS スレッドの数、`Routine.cpu_count ()` はオンラインの CPU 数です。
-- `Routine.with_locked_thread f` は、`f ()` を呼ぶ間、呼んだ tzroutine をその OS スレッドに固定します（Go の `runtime.LockOSThread`）。スレッドに結び付いたホストの API を `extern` で呼ぶときに使います。
+- `Routine.with_locked_thread f` は、`f ()` を呼ぶ間、呼んだ tzroutine をその OS スレッドに固定します（Go の `runtime.LockOSThread`）。スレッドに結び付いたホストの API を `extern` で呼ぶときに使います。tzroutine の中で呼んでも、プロセスのメインスレッドへは移りません。
 - `Routine.scope` 以外は関数値として渡せます（`let f: unit -> unit = Routine.yield`）。`Routine.scope` は引数をすべて渡す直接の呼び出しだけです（`E1013`）。`pure def` の中では使えません（`E1029`）。`Routine.yield` は `Mutex.with_lock` の中でも譲れます（ロックは tzroutine のもの。TZ06）。
 
 ## 提供 API 一覧
@@ -127,7 +127,9 @@ results[0]
 
 ## Routine.with_locked_thread
 
-GUI の UI スレッド、OpenGL の文脈、スレッドローカルな状態を持つ C のライブラリなど、呼んだ OS スレッドに結び付いたホストの API は、同じスレッドから呼び続けなければなりません。tzroutine は待つたびに別の OS スレッドで続くことがあるので、そうした API を呼ぶ間は `Routine.with_locked_thread` でスレッドに固定します。
+OpenGL の文脈、スレッドローカルな状態を持つ C のライブラリなど、呼んだ OS スレッドに結び付いたホストの API は、同じスレッドから呼び続けなければなりません。tzroutine は待つたびに別の OS スレッドで続くことがあるので、そうした API を呼ぶ間は `Routine.with_locked_thread` でスレッドに固定します。
+
+固定する先は呼んだ時点の OS スレッドであり、起動された tzroutine の中ではランタイムのワーカーのスレッド、`main` の中では何もしません（`main` のスレッドのまま走ります）。プロセスのメインスレッドでしか呼べない API（macOS の AppKit など）は、`main` かメインスレッドで呼ばれるコールバックから呼びます（[スレッドとホストの責任](../compiler/native-interop.md#スレッドとホストの責任)）。tzroutine からプロセスのメインスレッドへ処理を戻す API は今はありません（計画は [M09](../../../_features/M09-main-thread-dispatch-and-handles.md)）。
 
 ```tsuzuri run=main%20100
 let results: Channel<i64> = Channel.make 4
