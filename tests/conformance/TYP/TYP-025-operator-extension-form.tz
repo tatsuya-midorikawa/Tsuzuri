@@ -1,0 +1,9 @@
+record Money { cents: i64 }
+
+instance Mul<Money, 'b, Money> {
+    fn mul l _r = deref l
+}
+0
+
+// rule: TYP-025
+// expect: check-error E1016 line=3 kind=operator_instance_form

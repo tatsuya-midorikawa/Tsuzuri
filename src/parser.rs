@@ -953,23 +953,46 @@ impl Parser<'_> {
                 let constraints = self.constraints()?;
                 let class = self.qualified_ident()?;
                 let mut arguments = self.angle_list(Self::type_expr)?;
-                let (ty, extra_args) = if matches!(class.text.as_str(), "Index" | "IndexMut") {
-                    if arguments.len() != 3 {
-                        return Err(self.error_of(
-                            DiagnosticKind::ExpectedSingleTypeArgument,
-                            "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
-                        ));
+                let (ty, extra_args) = match class.text.as_str() {
+                    "Index" | "IndexMut" => {
+                        if arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
                     }
-                    let ty = arguments.remove(0);
-                    (ty, arguments)
-                } else {
-                    if arguments.len() != 1 {
-                        return Err(self.error_of(
-                            DiagnosticKind::ExpectedSingleTypeArgument,
-                            "expected exactly one type argument",
-                        ));
+                    "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" => {
+                        if arguments.len() != 1 && arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Add, Sub, Mul, Div, Rem and Pow instances take one type argument, or three: Add<Left, Right, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
                     }
-                    (arguments.remove(0), Vec::new())
+                    "Neg" => {
+                        if arguments.len() != 1 && arguments.len() != 2 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Neg instances take one type argument, or two: Neg<Self, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    _ => {
+                        if arguments.len() != 1 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "expected exactly one type argument",
+                            ));
+                        }
+                        (arguments.remove(0), Vec::new())
+                    }
                 };
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();

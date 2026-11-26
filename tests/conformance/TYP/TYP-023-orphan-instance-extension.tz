@@ -1,0 +1,7 @@
+instance Mul<Tensor<f64>, f64, Tensor<f64>> {
+    fn mul l _r = Tensor.clone l
+}
+0
+
+// rule: TYP-023
+// expect: check-error E1016 line=1 kind=orphan_instance

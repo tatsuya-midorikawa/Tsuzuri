@@ -464,11 +464,14 @@ fn to_tensor view =
 def map :: Copy<'a> => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
 fn map transform view =
     let total = volume (ref view.shape)
-    if total > 0 && is_contiguous view then
-        Tensor { shape: Array.copy (ref view.shape), data: Array.map_owned transform (ref view.data[view.offset ..< view.offset + total]) }
+    if total == 0 then
+        Tensor { shape: Array.copy (ref view.shape), data: [] }
+    elif is_contiguous view then
+        let start = view.offset
+        Tensor { shape: Array.copy (ref view.shape), data: new ['b](total, \i -> transform view.data[start + i]) }
     else
         let packed = to_tensor view
-        Tensor { shape: Array.copy (ref packed.shape), data: Array.map_owned transform (ref packed.data) }
+        Tensor { shape: packed.shape, data: new ['b](total, \i -> transform packed.data[i]) }
 
 /// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2 and both
 /// strides are non-negative (materialize negative-stride views with `to_tensor` first).
@@ -5346,5 +5349,180 @@ instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>> {
 instance (Neg<'a>, Copy<'a>) => Neg<Tensor<'a>> {
     fn rec neg value = Tensor.neg (ref (view value))
 }
+
+// generated:tensor-operators
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, View<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap left right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap (ref (view left)) right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap left (ref (view right))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<'a, Tensor<'a>, Tensor<'a>> {
+    fn add left right = radd_scalar (deref left) (ref (view right))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>, 'a, Tensor<'a>> {
+    fn add left right = add_scalar (deref right) (ref (view left))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<'a, View<'a>, Tensor<'a>> {
+    fn add left right = radd_scalar (deref left) right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, 'a, Tensor<'a>> {
+    fn add left right = add_scalar (deref right) left
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, View<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap left right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap (ref (view left)) right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap left (ref (view right))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<'a, Tensor<'a>, Tensor<'a>> {
+    fn sub left right = rsub_scalar (deref left) (ref (view right))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<Tensor<'a>, 'a, Tensor<'a>> {
+    fn sub left right = sub_scalar (deref right) (ref (view left))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<'a, View<'a>, Tensor<'a>> {
+    fn sub left right = rsub_scalar (deref left) right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, 'a, Tensor<'a>> {
+    fn sub left right = sub_scalar (deref right) left
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, View<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap left right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap (ref (view left)) right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap left (ref (view right))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<'a, Tensor<'a>, Tensor<'a>> {
+    fn mul left right = scale (deref left) (ref (view right))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<Tensor<'a>, 'a, Tensor<'a>> {
+    fn mul left right = mul_scalar (deref right) (ref (view left))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<'a, View<'a>, Tensor<'a>> {
+    fn mul left right = scale (deref left) right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, 'a, Tensor<'a>> {
+    fn mul left right = mul_scalar (deref right) left
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, View<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap left right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap (ref (view left)) right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap left (ref (view right))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<'a, Tensor<'a>, Tensor<'a>> {
+    fn div left right = rdiv_scalar (deref left) (ref (view right))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<Tensor<'a>, 'a, Tensor<'a>> {
+    fn div left right = div_scalar (deref right) (ref (view left))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<'a, View<'a>, Tensor<'a>> {
+    fn div left right = rdiv_scalar (deref left) right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, 'a, Tensor<'a>> {
+    fn div left right = div_scalar (deref right) left
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, View<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap left right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap (ref (view left)) right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap left (ref (view right))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<'a, Tensor<'a>, Tensor<'a>> {
+    fn rem left right = rrem_scalar (deref left) (ref (view right))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<Tensor<'a>, 'a, Tensor<'a>> {
+    fn rem left right = rem_scalar (deref right) (ref (view left))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<'a, View<'a>, Tensor<'a>> {
+    fn rem left right = rrem_scalar (deref left) right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, 'a, Tensor<'a>> {
+    fn rem left right = rem_scalar (deref right) left
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, View<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap left right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap (ref (view left)) right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap left (ref (view right))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<'a, Tensor<'a>, Tensor<'a>> {
+    fn pow left right = rpow_scalar (deref left) (ref (view right))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>, 'a, Tensor<'a>> {
+    fn pow left right = pow_scalar (deref right) (ref (view left))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<'a, View<'a>, Tensor<'a>> {
+    fn pow left right = rpow_scalar (deref left) right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, 'a, Tensor<'a>> {
+    fn pow left right = pow_scalar (deref right) left
+}
+
+instance (Neg<'a>, Copy<'a>) => Neg<View<'a>, Tensor<'a>> {
+    fn neg value = neg value
+}
+// /generated:tensor-operators
+
 
 

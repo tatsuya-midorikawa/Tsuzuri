@@ -12,6 +12,7 @@ import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
+import { cases as tensorOperatorCases, traps as tensorOperatorTraps } from "./tensor-operator-cases.mjs";
 import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
@@ -3157,6 +3158,16 @@ const suites = {
       ["trap_phase2_back_oob", [3n]],
     ],
     trapKind: "assertion failed",
+  },
+  // NC19: 43 Tensor operator extension instances (View/Tensor/Scalar +, -, *, /, %, **, unary -).
+  tensor_operators: {
+    cases: tensorOperatorCases,
+    traps: tensorOperatorTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Tensor\.\$instance\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
   },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative

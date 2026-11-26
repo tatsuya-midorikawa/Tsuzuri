@@ -389,6 +389,39 @@ NumPy との違いは次のとおりです。
 - **負の数は末尾から数えない**: 末尾からの位置は `^k`（`^0` が最後の要素）です。範囲の境界や窓の整数の成分に負の整数リテラル（`ref t[..-1, 0]`・`ref t[-1, ..]`）を書くと警告 `W1014` が出ます（要素の読み出し `t[-1, 0]` は `Index` のキーなので警告は出ず、実行時にトラップします）。
 - **位置・境界・刻みの型は `i64`**: `i32` などを渡すと `E1003`・`E1005` になるため、`a as i64` で明示変換します。ブールマスクと範囲を同じキーに混ぜることはできません（`E1003`）。
 
+## 算術演算子
+
+`Tensor<'a>` と `Tensor.View<'a>` は、同じ型どうしの `Tensor<'a>` 算術インスタンス（7 個）と、[演算子の拡張インスタンス](../types-and-type-inference/type-classes.md#演算子の拡張インスタンスoei)（6 二項演算子 × 7 形 + 単項 `Neg<View<'a>, Tensor<'a>>` = 43 個）により、所有テンソル・借用の窓・要素スカラーを自由に組み合わせて `+`・`-`・`*`・`/`・`%`・`**`・単項 `-` で計算できます。結果は常に新しい所有 `Tensor<'a>` です。
+
+| 左辺 × 右辺（`op` は `+` `-` `*` `/` `%` `**`） | インスタンスの形 | 呼び出すカーネル（`Sub` の例） |
+| --- | --- | --- |
+| `Tensor<'a>` × `Tensor<'a>` | `Sub<Tensor<'a>>` | `sub_or_trap (ref (view l)) (ref (view r))` |
+| `View<'a>` × `View<'a>` | `Sub<View<'a>, View<'a>, Tensor<'a>>` | `sub_or_trap l r` |
+| `Tensor<'a>` × `View<'a>` / `View<'a>` × `Tensor<'a>` | `Sub<Tensor<'a>, View<'a>, Tensor<'a>>` / `Sub<View<'a>, Tensor<'a>, Tensor<'a>>` | `sub_or_trap`（`Tensor` 側は `view`） |
+| `'a` × `Tensor<'a>` / `Tensor<'a>` × `'a` | `Sub<'a, Tensor<'a>, Tensor<'a>>` / `Sub<Tensor<'a>, 'a, Tensor<'a>>` | `rsub_scalar` / `sub_scalar`（`*` の左スカラーは `scale`） |
+| `'a` × `View<'a>` / `View<'a>` × `'a` | `Sub<'a, View<'a>, Tensor<'a>>` / `Sub<View<'a>, 'a, Tensor<'a>>` | `rsub_scalar` / `sub_scalar` |
+| 単項 `-t` / `-v` | `Neg<Tensor<'a>>` / `Neg<View<'a>, Tensor<'a>>` | `Tensor.neg` |
+
+- 被演算子は共有借用で受け取るため、`a - b` の後も `a`・`b` をそのまま再利用できます。接尾辞のない数値リテラル（`2.0 * x + 1.0`、`x - 1`、`x ** 2`）は相手のテンソル要素型 `'a` として読まれます。
+- 2 つのテンソル／窓の演算は NumPy 互換のブロードキャストを行い、形が合わなければ出力を確保する前にトラップします（`Result` で受け取りたいときは `Tensor.add`・`Tensor.sub` などの関数版を使います）。整数の `/` と `%` は要素ごとに 0 方向の切り捨てです。
+
+```tsuzuri edition=2028 run=%5B10%2C%2010%2C%2010%2C%2010%5D%20%5B2%2C%204%2C%206%5D%20%5B10%2C%2021%2C%2032%2C%2013%2C%2024%2C%2035%5D
+let a = Tensor.of_array [5] [10.0, 20.0, 30.0, 40.0, 50.0]
+let d = ref a[1..] - ref a[..^1]
+let x = Tensor.of_array [3] [0.5, 1.5, 2.5]
+let y = 2.0 * x + 1.0
+let t = Tensor.init [2, 3] (\i -> i)
+let row = Tensor.init [3] (\i -> (i + 1) * 10)
+let s = t + Tensor.view (ref row)
+$"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
+```
+
+実行結果:
+
+```text
+[10, 10, 10, 10] [2, 4, 6] [10, 21, 32, 13, 24, 35]
+```
+
 ## 計算量
 
 | 操作 | 計算量 |
@@ -399,13 +432,14 @@ NumPy との違いは次のとおりです。
 | `view`・`borrow`・`permute`・`index_axis`・`narrow`・`reshape_view`・`is_contiguous`・`count`・`at`・`get` | $O(\text{rank})$。窓を返す API は、形とストライドの配列を新しく確保する |
 | 添字 `t[i, j]`・`t[^0, 0]`・`t[[…]]`・`t[(i, j)]`・`m[i, j] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保 0 回 |
 | 添字 `ref t[i, a..b, ..]`・`ref t[[Slice…]]`（窓） | $O(\text{rank})$、要素はコピーせず、結果の形とストライドの 2 配列を確保 |
+| 算術演算子 `v - w`・`2.0 * v`・`t + v`・`-v` | $O(\text{count})$、結果の `Tensor`（形とデータ配列）と `Tensor` 被演算子ごとの一時 `view`（2 配列）を確保。確保なしの再利用は `add_into`・`add_in_place` を使う |
 | `init`・`fold`・`map`・`to_tensor` | $O(\text{count})$ |
 
 軸は 64 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。
 
 ## できないこと
 
-- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、`View` やスカラーとの混在算術演算子（[NC19](../../../_features/NC19-operator-extension-instances.md)）、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクと範囲を 1 つの角括弧に混ぜることはできません（`E1003`）。
+- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
 - 要素が Copy 型の所有するテンソルから、複製せずにバッファを取り出すことと、複製せずに書き換えることは今はできません（[所有者の操作と Matrix との変換](#所有者の操作と-matrix-との変換)の既知の制限）。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。

@@ -216,6 +216,7 @@ impl Checker<'_> {
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
+        soft: Option<usize>,
     ) -> Result<TypedExpr, Diagnostic> {
         let kind = match &expression.kind {
             ExprKind::While { condition, body } => {
@@ -378,12 +379,13 @@ impl Checker<'_> {
                 origin,
             } => {
                 let value = self.expression(value, None)?;
-                return self.match_value(
+                return self.match_value_with_soft(
                     value,
                     arms,
                     expected,
                     expression.span,
                     origin.checks_coverage().then_some(*origin),
+                    soft,
                 );
             }
             _ => unreachable!("control expression kinds checked by expression"),
@@ -828,6 +830,18 @@ impl Checker<'_> {
         span: Span,
         coverage: Option<MatchOrigin>,
     ) -> Result<TypedExpr, Diagnostic> {
+        self.match_value_with_soft(matched, arms, expected, span, coverage, None)
+    }
+
+    pub(super) fn match_value_with_soft(
+        &mut self,
+        matched: TypedExpr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+        span: Span,
+        coverage: Option<MatchOrigin>,
+        soft: Option<usize>,
+    ) -> Result<TypedExpr, Diagnostic> {
         if matched.ty.contains_error() {
             return Ok(TypedExpr::error(span));
         }
@@ -994,6 +1008,7 @@ impl Checker<'_> {
                 .as_ref()
                 .map(|guard| self.expression(guard, Some(&Type::Bool)))
                 .transpose()?;
+            self.soft_hint_class = soft;
             let mut body = self.expression(&arm.body, result.as_ref())?;
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();

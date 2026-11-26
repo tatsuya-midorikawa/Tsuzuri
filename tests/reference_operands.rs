@@ -843,6 +843,28 @@ fn editions_2026_and_2027_support_reference_operands() {
     )
     .unwrap();
 
+    // NC19 + A40: `ref v - ref w` and edition 2028 borrowed parameters `a - b` / `-a` / `2.0 * a`
+    // strip one reference layer and dispatch to OEI without moving or copying inputs.
+    let oei_ref = "\
+def view_diff { r1, r2 } :: Tensor.View<f64> { r1 } -> Tensor.View<f64> { r2 } -> Tensor<f64>
+fn view_diff a b = a - b
+
+def neg_view { r } :: Tensor.View<f64> { r } -> Tensor<f64>
+fn neg_view a = -a
+
+def main :: unit -> i32 = \\() ->
+    let x = Tensor.of_array [3] [10.0, 20.0, 30.0]
+    let y = Tensor.of_array [3] [1.0, 2.0, 3.0]
+    let vx = Tensor.view (ref x)
+    let vy = Tensor.view (ref y)
+    let d1 = (ref vx) - (ref vy)
+    let d2 = view_diff vx vy
+    let n1 = neg_view vy
+    if d1 == d2 && d1[2] == 27.0 && n1[1] == -2.0 then 0i32 else 1i32
+";
+    emits(oei_ref);
+    assert_eq!(run_exit_code(oei_ref, false), 0);
+
     let errs = check_all(
         "2027",
         "record Foo { n: i64, tag: string }\ndef plus :: Foo -> Foo -> Foo\nfn plus a b = a + b\n",

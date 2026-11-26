@@ -499,6 +499,7 @@ diagnostic_kinds! {
         (InstanceUnknownMethod, "instance_unknown_method", "E1016"),
         (InternalEffectiveApiUnavailable, "internal_effective_api_unavailable", "E1016"),
         (MissingExplicitConstraint, "missing_explicit_constraint", "E1016"),
+        (OperatorInstanceForm, "operator_instance_form", "E1016"),
         (OrphanInstance, "orphan_instance", "E1016"),
         (OverlappingInstance, "overlapping_instance", "E1016"),
         (UnknownTypeClass, "unknown_type_class", "E1016"),
