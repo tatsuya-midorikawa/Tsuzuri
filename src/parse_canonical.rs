@@ -6,10 +6,19 @@ use super::*;
 
 impl Parser<'_> {
     fn push_noncanonical(&mut self, finding: Noncanonical) {
-        if (finding.kind.warned_in(self.edition) || finding.kind.rejected_in(self.edition))
-            && self.noncanonical.len() < crate::canonical::MAX_FINDINGS
-        {
+        let rejected = finding.kind.rejected_in(self.edition);
+        if !rejected && !finding.kind.warned_in(self.edition) {
+            return;
+        }
+        if self.noncanonical.len() < crate::canonical::MAX_FINDINGS {
             self.noncanonical.push(finding);
+        } else if rejected
+            && let Some(slot) = self
+                .noncanonical
+                .iter_mut()
+                .find(|existing| !existing.kind.rejected_in(self.edition))
+        {
+            *slot = finding;
         }
     }
 

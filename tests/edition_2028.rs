@@ -340,7 +340,7 @@ fn manifest_less_sources_note_the_meaning_change() {
     tsuzuri::repl::run(
         tsuzuri::repl::ReplOptions::default(),
         Cursor::new(
-            "let xs = [10, 20, 30, 40]\n(ref xs[1..2]).length\n(ref xs[1..<2]).length\n:quit\n",
+            "let xs = [10, 20, 30, 40]\n(ref xs[1..2]).length\n(ref xs[0..xs.length]).length\n(ref xs[1..<2]).length\n:quit\n",
         ),
         &mut repl_out,
         &mut repl_err,
@@ -351,11 +351,23 @@ fn manifest_less_sources_note_the_meaning_change() {
     let repl_stderr = String::from_utf8(repl_err).unwrap();
     assert!(repl_stdout.contains("it: i64 = 2"), "{repl_stdout}");
     assert!(repl_stdout.contains("it: i64 = 1"), "{repl_stdout}");
+    // Both `(ref xs[1..2]).length` and the trapping `(ref xs[0..xs.length]).length` emit W1013
     assert_eq!(
         repl_stderr.matches("warning[W1013]").count(),
-        1,
+        2,
         "{repl_stderr}"
     );
+
+    // Saturating MAX_FINDINGS (65,536) with warning-only W1013 entries must never suppress E0004
+    let mut compact = String::with_capacity(800_000);
+    compact.push_str("let x = [0, 1]\n");
+    for _ in 0..65_536 {
+        compact.push_str("ref x[0..1];");
+    }
+    compact.push_str("()\n86uy\n");
+    let err = tsuzuri::parser::parse_with_source(&compact, 0, tsuzuri::syntax::Edition::E2028)
+        .expect_err("saturated W1013 must not drop E0004");
+    assert_eq!(err.code, "E0004", "{err:?}");
 
     let _ = std::fs::remove_dir_all(&root);
 }
