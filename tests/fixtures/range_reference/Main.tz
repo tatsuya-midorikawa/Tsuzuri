@@ -547,3 +547,80 @@ export def utf8string_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
 export def utf8string_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
     let s = make_utf8 n
     ((s[^(pack128 khi klo)] as i64) - 64) * 10
+
+// --- NC18: 1D Tensor slices, stepped windows, and `^k` element reads (i64) ---
+
+private def fold_tensor_view :: ref Tensor.View<i64> -> i64 = \part ->
+    Tensor.fold (\acc v -> acc * 31 + v) 0 part
+
+private def make_tensor :: i64 -> Tensor<i64> = \n ->
+    Tensor.of_array [n] (make_array n)
+
+export def tensor_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. b])
+
+export def tensor_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a ..< b])
+
+export def tensor_open_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <.. b])
+
+export def tensor_open_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <..< b])
+
+export def tensor_to_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. b])
+
+export def tensor_to_open_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[..< b])
+
+export def tensor_from_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a ..])
+
+export def tensor_from_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <..])
+
+export def tensor_drop_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. ^b])
+
+export def tensor_from_end_start_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[^a ..])
+
+export def tensor_from_end_start_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[^a <..])
+
+export def tensor_between_from_end_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. ^b])
+
+export def tensor_until_from_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[..< ^b])
+
+export def tensor_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let t = make_tensor n
+    t[^k]
+
+export def tensor_step_whole_i64 :: i64 -> i64 -> i64 = \n s ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. s ..])
+
+export def tensor_step_closed_i64 :: i64 -> i64 -> i64 -> i64 -> i64 = \n a s b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. s .. b])
+
+export def tensor_step_open_i64 :: i64 -> i64 -> i64 -> i64 -> i64 = \n a s b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. s ..< b])
+

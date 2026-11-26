@@ -1900,6 +1900,16 @@ impl Wire for ExprKind {
                 out.tag("ExprKind", 49);
                 offset.put(out)
             }
+            MultiIndex {
+                value,
+                keys,
+                borrow,
+            } => {
+                out.tag("ExprKind", 50);
+                value.put(out)?;
+                keys.put(out)?;
+                borrow.put(out)
+            }
         }
     }
 
@@ -2058,7 +2068,14 @@ impl Wire for ExprKind {
             47 => variant(input, |input| Ok(Routine(Box::get(input)?))),
             48 => variant(input, |input| Ok(Select(Vec::get(input)?))),
             49 => variant(input, |input| Ok(FromEnd(Box::get(input)?))),
-            50..=u8::MAX => Err(Invalid),
+            50 => variant(input, |input| {
+                Ok(MultiIndex {
+                    value: Box::get(input)?,
+                    keys: Box::<[IndexComponent]>::get(input)?,
+                    borrow: Option::<bool>::get(input)?,
+                })
+            }),
+            51..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2098,6 +2115,34 @@ impl Wire for RangeKey {
             step: Option::get(input)?,
             ends: RangeEnds::get(input)?,
         })
+    }
+}
+
+impl Wire for IndexComponent {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        match self {
+            IndexComponent::Expr(expr) => {
+                out.tag("IndexComponent", 0);
+                expr.put(out)
+            }
+            IndexComponent::Range(range) => {
+                out.tag("IndexComponent", 1);
+                range.put(out)
+            }
+            IndexComponent::Whole(span) => {
+                out.tag("IndexComponent", 2);
+                span.put(out)
+            }
+        }
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        match input.byte()? {
+            0 => variant(input, |input| Ok(IndexComponent::Expr(Expr::get(input)?))),
+            1 => variant(input, |input| Ok(IndexComponent::Range(Box::get(input)?))),
+            2 => variant(input, |input| Ok(IndexComponent::Whole(Span::get(input)?))),
+            3..=u8::MAX => Err(Invalid),
+        }
     }
 }
 
@@ -2894,6 +2939,24 @@ mod tests {
                 origin: MatchOrigin::Internal,
             }),
             made(ExprKind::FromEnd(Box::new(body.clone()))),
+            made(ExprKind::MultiIndex {
+                value: Box::new(body.clone()),
+                keys: vec![
+                    IndexComponent::Expr(body.clone()),
+                    IndexComponent::Range(Box::new(RangeKey {
+                        start: None,
+                        end: None,
+                        step: None,
+                        ends: RangeEnds {
+                            start_open: false,
+                            end_closed: true,
+                        },
+                    })),
+                    IndexComponent::Whole(Span::default()),
+                ]
+                .into_boxed_slice(),
+                borrow: Some(false),
+            }),
         ]);
         let mut out = Writer::new(Mode::Full, 0, MAX_DEPTH);
         program.put(&mut out).unwrap();
@@ -2907,7 +2970,8 @@ mod tests {
             ("Kind", 2),
             ("TypeExprKind", 19),
             ("StringLiteral", 2),
-            ("ExprKind", 50),
+            ("ExprKind", 51),
+            ("IndexComponent", 3),
             ("SelectHead", 3),
             ("PatternKind", 15),
             ("ComputationStatementKind", 9),

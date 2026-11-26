@@ -976,6 +976,11 @@ impl Canonical {
                 | ExprKind::Borrow(..)
                 | ExprKind::Dereference(..)
                 | ExprKind::FromEnd(_)
+                | ExprKind::Slice { .. }
+                | ExprKind::MultiIndex {
+                    borrow: Some(_),
+                    ..
+                }
         ) {
             self.hints.prefixes.insert(expression.span.start);
         }
@@ -1130,6 +1135,25 @@ impl Canonical {
                     .chain(range.step.iter_mut())
                 {
                     self.expression(bound);
+                }
+            }
+            MultiIndex { value, keys, .. } => {
+                self.expression(value);
+                for key in keys {
+                    match key {
+                        IndexComponent::Expr(expr) => self.expression(expr),
+                        IndexComponent::Range(range) => {
+                            for bound in range
+                                .start
+                                .iter_mut()
+                                .chain(range.end.iter_mut())
+                                .chain(range.step.iter_mut())
+                            {
+                                self.expression(bound);
+                            }
+                        }
+                        IndexComponent::Whole(_) => {}
+                    }
                 }
             }
             Array(values) | List(values) | Tuple(values) => {

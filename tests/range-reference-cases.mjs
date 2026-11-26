@@ -98,32 +98,32 @@ const E = (v) => ({ v: BigInt(v), fromEnd: true });
 
 // Canonical Specification §1 table (`n = 5`, `xs = [10, 20, 30, 40, 50]`).
 export const rows = [
-  { label: "xs[^0]", n: 5n, mode: "item", k: 0n, fromEnd: true, expected: 4n, containers: ["array", "fixed", "list", "vec", "string", "utf8string"], tensor: { pending: "NC18" } },
-  { label: "xs[^1]", n: 5n, mode: "item", k: 1n, fromEnd: true, expected: 3n, containers: ["array", "fixed", "list", "vec", "string", "utf8string"], tensor: { pending: "NC18" } },
-  { label: "ref xs[1..3]", n: 5n, mode: "slice", form: { kind: "closed", a: F(1), b: F(3) }, expected: [1n, 4n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[1..<3]", n: 5n, mode: "slice", form: { kind: "open", a: F(1), b: F(3) }, expected: [1n, 3n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[1<..3]", n: 5n, mode: "slice", form: { kind: "open_closed", a: F(1), b: F(3) }, expected: [2n, 4n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[1<..<3]", n: 5n, mode: "slice", form: { kind: "open_open", a: F(1), b: F(3) }, expected: [2n, 3n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[..2]", n: 5n, mode: "slice", form: { kind: "to", b: F(2) }, expected: [0n, 3n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[..<2]", n: 5n, mode: "slice", form: { kind: "to_open", b: F(2) }, expected: [0n, 2n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[2..]", n: 5n, mode: "slice", form: { kind: "from", a: F(2) }, expected: [2n, 5n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[2<..]", n: 5n, mode: "slice", form: { kind: "from_open", a: F(2) }, expected: [3n, 5n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[..^1]", n: 5n, mode: "slice", form: { kind: "to", b: E(1) }, expected: [0n, 4n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[1..^1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(1), b: E(1) }, expected: [1n, 4n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[^2..]", n: 5n, mode: "slice", form: { kind: "from", a: E(2) }, expected: [2n, 5n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[^2<..]", n: 5n, mode: "slice", form: { kind: "from_open", a: E(2) }, expected: [3n, 5n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[0..^0]", n: 5n, mode: "slice", form: { kind: "closed", a: F(0), b: E(0) }, expected: [0n, 5n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[..<^0]", n: 5n, mode: "slice", form: { kind: "to_open", b: E(0) }, expected: [0n, 4n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[2..1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(2), b: F(1) }, expected: [2n, 2n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[2..<2]", n: 5n, mode: "slice", form: { kind: "open", a: F(2), b: F(2) }, expected: [2n, 2n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[3..1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(3), b: F(1) }, expected: null, containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[0..5]", n: 5n, mode: "slice", form: { kind: "closed", a: F(0), b: F(5) }, expected: null, containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[..^5]", n: 5n, mode: "slice", form: { kind: "to", b: E(5) }, expected: [0n, 0n], containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref xs[^5..]", n: 5n, mode: "slice", form: { kind: "from", a: E(5) }, expected: null, containers: ["array", "fixed"], tensor: { pending: "NC18" } },
-  { label: "ref t[0 .. 2 .. 4]", n: 5n, mode: "stepped", form: { a: F(0), step: 2n, b: F(4), endClosed: true }, expected: [0n, 2n, 4n], containers: [], pending: "NC18" },
-  { label: "ref t[.. 2 ..]", n: 5n, mode: "stepped", form: { a: null, step: 2n, b: null, endClosed: true }, expected: [0n, 2n, 4n], containers: [], pending: "NC18" },
-  { label: "ref t[.. -1 ..]", n: 5n, mode: "stepped", form: { a: null, step: -1n, b: null, endClosed: true }, expected: [4n, 3n, 2n, 1n, 0n], containers: [], pending: "NC18" },
-  { label: "ref t[3 .. -1 .. 1]", n: 5n, mode: "stepped", form: { a: F(3), step: -1n, b: F(1), endClosed: true }, expected: [3n, 2n, 1n], containers: [], pending: "NC18" },
+  { label: "xs[^0]", n: 5n, mode: "item", k: 0n, fromEnd: true, expected: 4n, containers: ["array", "fixed", "list", "vec", "string", "utf8string", "tensor"] },
+  { label: "xs[^1]", n: 5n, mode: "item", k: 1n, fromEnd: true, expected: 3n, containers: ["array", "fixed", "list", "vec", "string", "utf8string", "tensor"] },
+  { label: "ref xs[1..3]", n: 5n, mode: "slice", form: { kind: "closed", a: F(1), b: F(3) }, expected: [1n, 4n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[1..<3]", n: 5n, mode: "slice", form: { kind: "open", a: F(1), b: F(3) }, expected: [1n, 3n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[1<..3]", n: 5n, mode: "slice", form: { kind: "open_closed", a: F(1), b: F(3) }, expected: [2n, 4n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[1<..<3]", n: 5n, mode: "slice", form: { kind: "open_open", a: F(1), b: F(3) }, expected: [2n, 3n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[..2]", n: 5n, mode: "slice", form: { kind: "to", b: F(2) }, expected: [0n, 3n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[..<2]", n: 5n, mode: "slice", form: { kind: "to_open", b: F(2) }, expected: [0n, 2n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[2..]", n: 5n, mode: "slice", form: { kind: "from", a: F(2) }, expected: [2n, 5n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[2<..]", n: 5n, mode: "slice", form: { kind: "from_open", a: F(2) }, expected: [3n, 5n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[..^1]", n: 5n, mode: "slice", form: { kind: "to", b: E(1) }, expected: [0n, 4n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[1..^1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(1), b: E(1) }, expected: [1n, 4n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[^2..]", n: 5n, mode: "slice", form: { kind: "from", a: E(2) }, expected: [2n, 5n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[^2<..]", n: 5n, mode: "slice", form: { kind: "from_open", a: E(2) }, expected: [3n, 5n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[0..^0]", n: 5n, mode: "slice", form: { kind: "closed", a: F(0), b: E(0) }, expected: [0n, 5n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[..<^0]", n: 5n, mode: "slice", form: { kind: "to_open", b: E(0) }, expected: [0n, 4n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[2..1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(2), b: F(1) }, expected: [2n, 2n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[2..<2]", n: 5n, mode: "slice", form: { kind: "open", a: F(2), b: F(2) }, expected: [2n, 2n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[3..1]", n: 5n, mode: "slice", form: { kind: "closed", a: F(3), b: F(1) }, expected: null, containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[0..5]", n: 5n, mode: "slice", form: { kind: "closed", a: F(0), b: F(5) }, expected: null, containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[..^5]", n: 5n, mode: "slice", form: { kind: "to", b: E(5) }, expected: [0n, 0n], containers: ["array", "fixed", "tensor"] },
+  { label: "ref xs[^5..]", n: 5n, mode: "slice", form: { kind: "from", a: E(5) }, expected: null, containers: ["array", "fixed", "tensor"] },
+  { label: "ref t[0 .. 2 .. 4]", n: 5n, mode: "stepped", form: { a: F(0), step: 2n, b: F(4), endClosed: true }, expected: [0n, 2n, 4n], containers: ["tensor"] },
+  { label: "ref t[.. 2 ..]", n: 5n, mode: "stepped", form: { a: null, step: 2n, b: null, endClosed: true }, expected: [0n, 2n, 4n], containers: ["tensor"] },
+  { label: "ref t[.. -1 ..]", n: 5n, mode: "stepped", form: { a: null, step: -1n, b: null, endClosed: true }, expected: [4n, 3n, 2n, 1n, 0n], containers: ["tensor"] },
+  { label: "ref t[3 .. -1 .. 1]", n: 5n, mode: "stepped", form: { a: F(3), step: -1n, b: F(1), endClosed: true }, expected: [3n, 2n, 1n], containers: ["tensor"] },
 ];
 
 for (const row of rows) {
@@ -134,7 +134,7 @@ for (const row of rows) {
   } else if (row.mode === "stepped") {
     assert.deepEqual(stepped(row.n, row.form), row.expected, row.label);
   }
-  assert.ok(row.containers.length > 0 || row.pending === "NC18", `untested row without pending marker: ${row.label}`);
+  assert.ok(row.containers.length > 0, `untested row: ${row.label}`);
 }
 
 const INT_TYPES = [
@@ -189,12 +189,12 @@ export const cases = [];
 export const traps = [];
 
 const seenCalls = new Set();
-function recordCall(isTrap, fnName, args, expected) {
+function recordCall(isTrap, fnName, args, expected, trapReason = "index out of bounds") {
   const key = `${isTrap ? "T" : "C"}:${fnName}:${args.map(String).join(",")}`;
   if (seenCalls.has(key)) return;
   seenCalls.add(key);
   if (isTrap) {
-    traps.push([fnName, args, "index out of bounds"]);
+    traps.push([fnName, args, trapReason]);
   } else {
     cases.push([fnName, args, expected]);
   }
@@ -254,6 +254,48 @@ for (const ty of INT_TYPES) {
         }
         if (n === 5n && (!isTrap || ty.name === "i64" || tuple.some((v) => v === ty.max || v === -1n))) {
           recordCall(isTrap, `fixed_${form.fn}_${ty.name}`, encoded, expected);
+        }
+        if (ty.name === "i64" && (!isTrap || n === 5n || tuple.some((v) => v === ty.max || v === ty.min || v === -1n))) {
+          recordCall(isTrap, `tensor_${form.fn}_i64`, [n, ...encoded], expected, "assertion failed");
+        }
+      }
+    }
+
+    if (ty.name === "i64") {
+      for (const v of vals) {
+        const pos = item(n, v, true);
+        const isTrap = pos === null;
+        const expected = isTrap ? 0n : xs[Number(pos)];
+        recordCall(isTrap, "tensor_item_from_end_i64", [n, ...ty.encode(v)], expected, "assertion failed");
+      }
+      for (const s of [1n, 2n, -1n, -2n, 0n]) {
+        const wholeIdx = stepped(n, { a: null, step: s, b: null, endClosed: true });
+        recordCall(
+          wholeIdx === null,
+          "tensor_step_whole_i64",
+          [n, s],
+          wholeIdx === null ? 0n : foldValues(wholeIdx.map((i) => xs[Number(i)])),
+          "assertion failed",
+        );
+        for (const [a, b] of [[0n, 4n], [3n, 1n], [1n, 3n], [0n, 5n], [-1n, 2n]]) {
+          const closedIdx = stepped(n, { a: F(a), step: s, b: F(b), endClosed: true });
+          recordCall(
+            closedIdx === null,
+            "tensor_step_closed_i64",
+            [n, a, s, b],
+            closedIdx === null ? 0n : foldValues(closedIdx.map((i) => xs[Number(i)])),
+            "assertion failed",
+          );
+          if (s >= 0n) {
+            const openIdx = stepped(n, { a: F(a), step: s, b: F(b), endClosed: false });
+            recordCall(
+              openIdx === null,
+              "tensor_step_open_i64",
+              [n, a, s, b],
+              openIdx === null ? 0n : foldValues(openIdx.map((i) => xs[Number(i)])),
+              "assertion failed",
+            );
+          }
         }
       }
     }

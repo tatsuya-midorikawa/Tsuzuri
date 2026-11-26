@@ -720,6 +720,25 @@ impl TypeReferences<'_> {
                     self.expression(bound);
                 }
             }
+            MultiIndex { value, keys, .. } => {
+                self.expression(value);
+                for key in keys {
+                    match key {
+                        crate::syntax::IndexComponent::Expr(expr) => self.expression(expr),
+                        crate::syntax::IndexComponent::Range(range) => {
+                            for bound in range
+                                .start
+                                .iter()
+                                .chain(range.step.iter())
+                                .chain(range.end.iter())
+                            {
+                                self.expression(bound);
+                            }
+                        }
+                        crate::syntax::IndexComponent::Whole(_) => {}
+                    }
+                }
+            }
             Array(values) | List(values) | Tuple(values) => {
                 for value in values {
                     self.expression(value);

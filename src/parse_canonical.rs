@@ -294,6 +294,11 @@ impl Parser<'_> {
             ExprKind::Field(base, _)
             | ExprKind::Index(base, _)
             | ExprKind::Slice { value: base, .. }
+            | ExprKind::MultiIndex {
+                value: base,
+                borrow: None,
+                ..
+            }
             | ExprKind::Borrow(base, ..)
             | ExprKind::Dereference(base, _) => {
                 self.is_group(expression) || self.is_term_shaped(base)
@@ -342,7 +347,8 @@ fn is_place_path(expression: &Expr) -> bool {
         ExprKind::Field(place, _)
         | ExprKind::Index(place, _)
         | ExprKind::Dereference(place, _)
-        | ExprKind::Slice { value: place, .. } => is_place_path(place),
+        | ExprKind::Slice { value: place, .. }
+        | ExprKind::MultiIndex { value: place, .. } => is_place_path(place),
         _ => false,
     }
 }

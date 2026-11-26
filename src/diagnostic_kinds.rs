@@ -222,6 +222,7 @@ diagnostic_kinds! {
         (FixedArrayLiteralLength, "fixed_array_literal_length", "E1003"),
         (FormatSpecTypeMismatch, "format_spec_type_mismatch", "E1003"),
         (FormatSpecTypeUnknown, "format_spec_type_unknown", "E1003"),
+        (IndexComponentType, "index_component_type", "E1003"),
         (IndexNotInteger, "index_not_integer", "E1003"),
         (IndexRefOnValue, "index_ref_on_value", "E1003"),
         (TypeMismatch, "type_mismatch", "E1003"),
@@ -242,6 +243,7 @@ diagnostic_kinds! {
         // E1005
         (ArraySliceWithStep, "array_slice_with_step", "E1005"),
         (AtomicElementType, "atomic_element_type", "E1005"),
+        (BuiltinIndexOneComponent, "builtin_index_one_component", "E1005"),
         (CallNonFunction, "call_non_function", "E1005"),
         (CaptureExclusiveInReusableFunction, "capture_exclusive_in_reusable_function", "E1005"),
         (CaptureRcInFunctionValue, "capture_rc_in_function_value", "E1005"),

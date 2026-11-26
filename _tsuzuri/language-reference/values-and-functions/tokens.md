@@ -59,7 +59,7 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 flowchart TD
     parens["( ) 丸括弧<br/>式のグループ化、タプル (a, b)、unit ()"]
     braces["{ } 波括弧<br/>明示ブロック { ... }、レコード構築 Point { x: 1 }"]
-    brackets["[ ] 角括弧<br/>配列 [1, 2, 3]、添字 arr[0]、型 [T]"]
+    brackets["[ ] 角括弧<br/>配列 [1, 2, 3]、添字 arr[0]・t[i, j]、型 [T]"]
     lists["[| |] 棒付き角括弧<br/>連結リスト [| 1, 2 |]、空リスト [||]、型 [|T|]"]
     angles["&lt; &gt; 山括弧<br/>型引数 List&lt;i64&gt;、型クラス Show&lt;'a&gt;"]
 ```

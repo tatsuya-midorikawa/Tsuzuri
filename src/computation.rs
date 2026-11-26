@@ -308,6 +308,21 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             .chain(range.step.iter_mut().map(Box::as_mut))
             .chain(range.end.iter_mut().map(Box::as_mut))
             .collect(),
+        ExprKind::MultiIndex { value, keys, .. } => {
+            let mut sub = vec![value.as_mut()];
+            for key in keys {
+                match key {
+                    crate::syntax::IndexComponent::Expr(expr) => sub.push(expr),
+                    crate::syntax::IndexComponent::Range(range) => {
+                        sub.extend(range.start.iter_mut().map(Box::as_mut));
+                        sub.extend(range.step.iter_mut().map(Box::as_mut));
+                        sub.extend(range.end.iter_mut().map(Box::as_mut));
+                    }
+                    crate::syntax::IndexComponent::Whole(_) => {}
+                }
+            }
+            sub
+        }
         ExprKind::RecordUpdate { base, fields } => std::iter::once(base.as_mut())
             .chain(fields.iter_mut().map(|(_, value)| value))
             .collect(),

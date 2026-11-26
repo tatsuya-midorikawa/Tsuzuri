@@ -3112,7 +3112,7 @@ const suites = {
       ["scalar_refs", [], 41n],
     ],
   },
-  // NC17: edition 2028 inclusive range family and `^k` from-end positions against BigInt reference.
+  // NC17 / NC18: edition 2028 inclusive range family, `^k`, and 1D Tensor slices against BigInt reference.
   range_reference: {
     cases: rangeReferenceCases,
     traps: rangeReferenceTraps,
@@ -3122,6 +3122,41 @@ const suites = {
       assert.ok(match, "array_closed_i64 is emitted");
       assert.match(match[1], /add i64 %[\w.]+, 1/);
     },
+  },
+  // NC18: multi-axis bracket indexing (`t[i, j]`, `ref t[i, a..b, ..]`, `Slice.Sel`, Phase 2 `^k`, A38 order).
+  multi_index: {
+    cases: (() => {
+      const fold = (vals) => vals.reduce((acc, v) => acc * 31n + BigInt(v), 0n);
+      return [
+        ["tensor_2d_element", [], 6n],
+        ["tensor_2d_row", [], fold([4, 5, 6, 7])],
+        ["tensor_2d_col", [], fold([0, 4, 8])],
+        ["tensor_2d_last_row", [], fold([8, 9, 10, 11])],
+        ["tensor_2d_subblock", [], 2n * 100000n + 2n * 10000n + fold([1, 2, 5, 6])],
+        ["tensor_2d_open_start_tail", [], 1n * 100000n + 2n * 10000n + fold([10, 11])],
+        ["tensor_2d_rev_rows", [], fold([8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3])],
+        ["tensor_2d_even_cols", [], fold([0, 2, 4, 6, 8, 10])],
+        ["tensor_2d_rest_col0", [], fold([0, 4, 8])],
+        ["tensor_2d_add_axis", [], 134n],
+        ["tensor_chained_windows", [], fold([5, 6]) * 100n + 10n],
+        ["matrix_2d_element", [], 6n],
+        ["matrix_2d_row_window", [], 1000000n + 400000n + fold([4, 5, 6, 7])],
+        ["matrix_2d_trailing_fill", [], 204n],
+        ["phase2_from_end_elements", [], 8n * 1000000n + 11n * 10000n + 99n * 100n + 77n + 88n + 21n],
+        ["multi_axis_key_evaluates_base_then_components", [], 123n * 1000000000000n + 1234n * 100000000n + 12345n * 1000n + 1234n],
+      ];
+    })(),
+    traps: [
+      ["trap_tensor_row_oob", [3n]],
+      ["trap_tensor_col_hi_oob", [4n]],
+      ["trap_tensor_too_many_axes", [1n]],
+      ["trap_tensor_wrong_elem_rank_1", [0n]],
+      ["trap_tensor_wrong_elem_rank_3", [0n]],
+      ["trap_matrix_neg_step", [-1n]],
+      ["trap_matrix_add_axis", []],
+      ["trap_phase2_back_oob", [3n]],
+    ],
+    trapKind: "assertion failed",
   },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative

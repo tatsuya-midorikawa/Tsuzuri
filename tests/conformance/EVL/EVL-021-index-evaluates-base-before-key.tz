@@ -8,6 +8,16 @@ instance IndexMut<Foo, i64, i64> {
     fn index_mut _k x self = deref self = Foo { v: x }
 }
 
+instance Index<Foo, (i64 * i64), i64> {
+    fn index k self =
+        match k with
+        | (a, b) -> self.v + a + b
+}
+
+instance IndexMut<Foo, (i64 * i64), i64> {
+    fn index_mut _k x self = deref self = Foo { v: x }
+}
+
 def mark :: ref mut i64 -> i64 -> i64 -> i64 = \log tag value ->
     deref log = deref log * 10 + tag
     value
@@ -50,7 +60,18 @@ test "array_assign" =
     (deref (pick_array (ref mut xs) (ref mut log)))[mark (ref mut log) 2 0] = mark (ref mut log) 3 7
     Test.equal log 312
 
+test "multi_axis_read" =
+    let mut log = 0
+    let _v = (mk (ref mut log))[mark (ref mut log) 2 1, mark (ref mut log) 3 2]
+    Test.equal log 123
+
+test "multi_axis_assign" =
+    let mut log = 0
+    let mut foo = Foo { v: 100 }
+    (pick (ref mut foo) (ref mut log))[mark (ref mut log) 2 0, mark (ref mut log) 3 1] = mark (ref mut log) 4 7
+    Test.equal log 4123
+
 0
 
 // rule: EVL-021
-// expect: tests-pass 4
+// expect: tests-pass 6

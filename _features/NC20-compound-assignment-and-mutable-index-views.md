@@ -401,7 +401,7 @@ a[1..] += prev                                   // [0, 10, 30, 50, 70]
 - [A40](A40-reference-operands.md): `op=` の右辺の参照の被演算子は A40 の規則に従う（NC20 と A40 は、後に入る方が合わせる）。組み込み型の `s += r`（`r: ref string`）は `s = s + r` と同じ型付き IR に下がるので、A40 の `string` の `+` の 3 つの道（`src/llvm.rs` の `binary`、`src/llvm_frame.rs` の `frame_concat` と `concat_length`）の規則に従う。参照の被演算子 `r` を `take_operand`・`drop_framed` に渡さない（A40 の仕様 3 の `string` の `+` の行）。
 - [NC16](NC16-index-ref-and-zero-alloc-element-reads.md): 土台を借りる添字の `ref` の吸収（`ref t[[…]]` が `Tensor.View`）、`E1042`・`E1043`、要素のタプルのキー（あれば）。
 - [NC17](NC17-edition-2028-inclusive-range-family.md): edition 2028 の範囲の形と `^k`（例と、範囲の成分の意味）。
-- [NC18](NC18-multi-axis-bracket-indexing.md): 角括弧のキーのノード `ExprKind::MultiIndex { value, keys, borrow }`（成分は NC17 の `IndexComponent`）、`Slice.Sel`（`Item`・`Span`・`All`・`Rest`・`NewAxis`）、`[Slice.Sel]` のキーの解決（`slice_raw` 相当）、成分の規則（足りない末尾の成分は軸全体）。
+- [NC18](NC18-multi-axis-bracket-indexing.md): 角括弧のキーのノード `ExprKind::MultiIndex { value, keys, borrow }`（成分は NC17 の `IndexComponent`）、`Slice.Sel`（`Item`・`Span`・`Whole`・`Rest`・`AddAxis`）、`[Slice.Sel]` のキーの解決（`slice_raw` 相当）、成分の規則（足りない末尾の成分は軸全体）。
 - [NC19](NC19-operator-extension-instances.md): 演算子の解決の規則（リテラルを要素型に合わせる、1 つの表、`E1043`）。`AddAssign` の解決はこれを使う。orphan 規則は A37 の D4 と同じ 1 つの規則で、NC19 と NC20 は `dispatch_positions` の行が違うだけ。
 - [NC06](NC06-tensor-ufuncs-and-elementwise.md): 累積のインプレース版 `*_in_place`（D8）と非公開の双子 `*_in_place_or_trap`（仕様 5・D6。形の不一致は書く前に `assertion failed`）、共有の要素のループ（`map2_in_place_kernel`）、要素の演算の定義と `left -> right` の順（D4）。
 - 依存しない関連: [PM10](../_perfs/PM10-std-consume-copies.md)（std の所有を移す関数の複製の除去と、A17 の X1 の精密化。Phase 2 は NC20 の `+=`・`IndexMut`・`IndexBorrowMut` の対象の借用の根にも当てる。NC20 は PM10 を待たない）。

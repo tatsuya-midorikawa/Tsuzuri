@@ -566,3 +566,64 @@ fn new_project_edition_can_be_chosen() {
     assert!(!root.join("other").exists());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn multi_axis_bracket_indexing_follows_the_edition_matrix() {
+    use tsuzuri::syntax::Edition;
+
+    // Expression-only multi-axis keys (`t[i, j]`, `ref t[Slice.rest(), 0]`) work in every edition.
+    for ed in [Edition::E2026, Edition::E2027, Edition::E2028] {
+        tsuzuri::analyze_with_edition(
+            "let t = Tensor.zeros [3, 4]\n\
+             let x: f64 = t[1, 2]\n\
+             let w = ref t[Slice.rest(), 0]\n\
+             x + w[0]\n",
+            ed,
+        )
+        .unwrap_or_else(|e| panic!("{ed:?}: {e:?}"));
+
+        // Built-in array `ref xs[1..<3]` stays accepted in every edition.
+        tsuzuri::analyze_with_edition(
+            "let xs = [10, 20, 30, 40]\n\
+             (ref xs[1..<3]).length\n",
+            ed,
+        )
+        .unwrap_or_else(|e| panic!("{ed:?} array slice: {e:?}"));
+    }
+
+    // Range, `..`, and `^k` components in multi-axis keys require edition 2028 (`E0002` in 2026/2027).
+    for src in [
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[1..<3, 0]\nw[0]\n",
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[.., 0]\nw[0]\n",
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[^0, ..]\nw[0]\n",
+    ] {
+        for ed in [Edition::E2026, Edition::E2027] {
+            let err = tsuzuri::analyze_with_edition(src, ed).unwrap_err();
+            assert_eq!(err.code, "E0002", "{ed:?}: {src} -> {err:?}");
+            assert_eq!(
+                err.kind,
+                Some("range_form_needs_edition_2028"),
+                "{ed:?}: {err:?}"
+            );
+        }
+        tsuzuri::analyze_with_edition(src, Edition::E2028)
+            .unwrap_or_else(|e| panic!("2028: {src} -> {e:?}"));
+    }
+
+    // One-component non-array range window `ref t[1..<3]` requires edition 2028 (`E1005` in 2026/2027).
+    let one_comp = "let t: Tensor<i64> = Tensor.zeros [5]\nlet w = ref t[1..<3]\nw[0]\n";
+    for ed in [Edition::E2026, Edition::E2027] {
+        let err = tsuzuri::analyze_with_edition(one_comp, ed).unwrap_err();
+        assert_eq!(err.code, "E1005", "{ed:?}: {err:?}");
+        assert_eq!(err.kind, Some("slice_non_array"), "{ed:?}: {err:?}");
+        assert!(
+            err.into_data()
+                .help
+                .as_deref()
+                .unwrap_or("")
+                .contains("in edition 2028"),
+            "{ed:?} help missing"
+        );
+    }
+    tsuzuri::analyze_with_edition(one_comp, Edition::E2028).unwrap();
+}

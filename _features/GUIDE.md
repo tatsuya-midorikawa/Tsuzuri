@@ -1827,7 +1827,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 組み込みクラス | `AddAssign`・`SubAssign`・`MulAssign`・`DivAssign`・`RemAssign` | NC20 | 複合代入の組み込みでない型の更新（承認済み。D-66 の委任で決定、2026-11-25。NC20 の D1。メソッドは `ref Rhs -> ref mut Target -> unit`。`BUILTIN_CLASSES` 36 → 41） |
 | 組み込みクラス | `IndexBorrowMut` | NC20 | 書き込み窓 `ref mut t[…]`（std のインスタンスだけ。承認済み。D-66 の委任で決定、2026-11-25。NC20 の D3。`BUILTIN_CLASSES` 41 → 42） |
 | 構文 | 演算子の拡張インスタンス（3 引数のヘッダ `Add<L, R, O>`〜`Pow<L, R, O>`、2 引数の `Neg<S, O>`） | NC19（NC21 も使う） | 組み込みの算術クラスに限り、演算子の構文だけに効く（承認済み。D-66 の委任で決定、2026-11-25。NC19 の D1。新しいクラス名はない） |
-| std | `Slice.Sel`（union。`Item`・`Span`・`All`・`Rest`・`NewAxis`）・`Slice.Pos`（`Front`・`Back`）・`Slice.Bound`（`Unbounded`・`Included`・`Excluded`）・`Slice.rest`・`Slice.resolve_sel` | NC18 | 範囲外を丸めず、負の数を末尾から数えない厳格なキー。`Slice.Axis` には case を足さない |
+| std | `Slice.Sel`（union。`Item`・`Span`・`Whole`・`Rest`・`AddAxis`、`Slice.Axis` の `All`・`NewAxis` との同一モジュール内 case 名重複 `E1001` を避けた名前）・`Slice.Pos`（`Front`・`Back`）・`Slice.Bound`（`Unbounded`・`Included`・`Excluded`）・`Slice.rest`・`Slice.resolve_sel` | NC18 | 範囲外を丸めず、負の数を末尾から数えない厳格なキー。`Slice.Axis` には case を足さない |
 | std | `Tensor.add_scalar_in_place`・`sub_scalar_in_place`・`mul_scalar_in_place`・`div_scalar_in_place`・`rem_scalar_in_place` | NC20 | スカラーの右辺の確保なしの更新（`+=` の本体） |
 | edition・CLI | edition `2028`（`Edition::E2028`）、`--edition 2026\|2027\|2028`、`tsuzuri fix --edition 2028` | NC17 | スライスの素の `..` を終端を含む意味にする（D-66c）。`MANIFEST_DEFAULT` は 2026 のまま |
 | 予約（未割り当て） | `E1035`・`E1044`〜`E1049`・`E2012`〜`E2015`・`W1011`・`W1015` | — | 実装中に必要になったら、この表に追記してから使う（`W1011` は NS05 が計画で使う予定）。D-66 の委任による決定は新しいコードを使わない（2026-11-25 に `src/` に使われていないことを確認） |

@@ -36,7 +36,7 @@ $"{MatrixView.rows flipped}x{MatrixView.cols flipped} {deref corner} {Matrix.row
 
 平らな配列も窓にできます。`MatrixView.of_array rows cols (ref values)` は、`values.length` が `rows * cols` に一致しないとトラップします。
 
-添字構文でも要素と部分窓を扱えます。`view[(r, c)]` は要素を確保なしに読み、`ref m[(Slice.range 0 2, Slice.every 2)]` や `ref view[(Slice.at 1, Slice.all())]` は `MatrixView<'a>` を確保なしに返します（窓を返す添字には `ref` が必要で、省くと `E1042` です）。書き込める窓 `mut_view[(r, c)] = val` はその場に書き込みます。
+添字構文でも要素と部分窓を扱えます。`view[r, c]`・`view[(r, c)]`（edition 2028 では `view[^0, c]` も可）は要素を確保なしに読み、edition 2028 の角括弧窓 `ref m[0..<2, .. 2 ..]`・`ref view[1, ..]`（および丸めありの長い形 `ref m[(Slice.range 0 2, Slice.every 2)]`）は `MatrixView<'a>` を確保なしに返します（窓を返す添字には `ref` が必要で、省くと `E0002` または `E1042` です）。`MatrixView` は常に 2 次元なので、整数の成分 `1` は軸を落とさず長さ 1 の行または列として残し、1 成分の窓 `ref m[0..<2]` は列全体を補います。負の刻みと `Slice.Sel.AddAxis` は `MatrixView` ではトラップするため、反転や軸追加が要るときは [`Tensor`](./tensor.md) を使います。書き込める窓 `mut_view[r, c] = val`（および `mut_view[^0, c] = val`）はその場に書き込みます。
 
 ## ストライドで指す
 

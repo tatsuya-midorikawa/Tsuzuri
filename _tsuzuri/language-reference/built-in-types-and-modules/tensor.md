@@ -10,7 +10,7 @@
 - 軸は 64 本までです。長さは 0 以上で、長さが 0 の軸があれば要素は 0 個です。軸が 0 本のテンソルは要素を 1 個持ちます。長さが 0 の軸を除いた長さの積は、`i64` に収まる必要があります。
 - 窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` です。`View` は負のストライド（逆順・反転）と 0 ストライド（ブロードキャスト軸）を安全に扱え、`strided` がオーバーフローしない境界検査で全要素が `data` の中にあることを保証します。`Mut` は単射性（異なる座標が同じスロットを指さないこと）を保つ操作だけを提供します。
 - 窓は借用を持つので、持ち主を move・置換すると `E1014`、持ち主より長く使うと `E1013` です。窓自身は非 Copy で、API は `ref` / `ref mut` で受け取ります。
-- `Index` / `IndexMut` インスタンスを備え、`t[[i, j]]`・`t[(i, j)]`（確保なしの要素読み出し）・`ref t[[Slice.step 1 4 2, Slice.rev()]]`（ゼロコピー `View`）・`t[mask]`（ブールマスク抽出）・`m[[i, j]] = v` / `m[(i, j)] = v` / `m[mask] = v`（`Mut` への書き込み）が使えます。`Eq` と `Display`（要素数 1000 超は `...` 省略表示）も実装しています。
+- `Index` / `IndexMut` インスタンスを備え、`t[i, j]`・`t[^0, 0]`・`t[[i, j]]`（確保なしの要素読み出し）、`ref t[i, a..b, ..]`・`ref t[.. -1 .., ..]`・`ref t[[Slice.step 1 4 2, Slice.rev()]]`（要素をコピーしない `View`、形とストライドの 2 配列を確保）、`t[mask]`（ブールマスク抽出）、`m[i, j] = v` / `m[^0, 0] = v` / `m[mask] = v`（`Mut` への書き込み）が使えます。`Eq` と `Display`（要素数 1000 超は `...` 省略表示）も実装しています。
 - `Tensor` という名前を書いたプログラムだけが、このモジュールと `Matrix`・`MatrixView`・`Slice` を読み込みます。書かないプログラムの生成コードは変わりません。ファイル名 `Tensor.tz` は予約名で `E1011` です。
 
 ## 作る
@@ -327,9 +327,11 @@ $"{Tensor.to_array updated} {Tensor.to_array picked}"
 ```tsuzuri run=23%20-1%2012
 let t = Tensor.init [2, 3, 4] (\i -> i)
 let v = Tensor.view (ref t)
-let rotated = ref v |> Tensor.permute [2, 0, 1]
-let corner = ref rotated |> Tensor.at [3, 1, 2]
-let missing = ref rotated |> Tensor.get [4, 0, 0] |> Maybe.default_value (-1)
+let rotated = ref v |> Tensor.permute [1, 0, 2]
+let _ = rotated
+let rotated2 = ref v |> Tensor.permute [2, 0, 1]
+let corner = ref rotated2 |> Tensor.at [3, 1, 2]
+let missing = ref rotated2 |> Tensor.get [4, 0, 0] |> Maybe.default_value (-1)
 let plane_count = ref v |> (Tensor.index_axis 0 1 >> Tensor.count)
 $"{deref corner} {missing} {plane_count}"
 ```
@@ -340,7 +342,52 @@ $"{deref corner} {missing} {plane_count}"
 23 -1 12
 ```
 
-`>>` で合成した関数は、前の関数が返した窓を、次の関数が借りて受け取ります。借りた一時の窓の中を指す参照を返す関数（`at`、`shape`、`strides`）につなぐと、参照が一時の窓より長生きしてしまうので `E1013` です。窓を `let` に束縛してから、上の例のように `ref rotated |> Tensor.at [3, 1, 2]` と書きます。
+`>>` で合成した関数は、前の関数が返した窓を、次の関数が借りて受け取ります。借りた一時の窓の中を指す参照を返す関数（`at`、`shape`、`strides`）につなぐと、参照が一時の窓より長生きしてしまうので `E1013` です。窓を `let` に束縛してから、上の例のように `ref rotated2 |> Tensor.at [3, 1, 2]` と書きます。
+
+## 角括弧の添字
+
+`Tensor`・`Tensor.View`・`Tensor.Mut` は、カンマ区切りの角括弧で要素の読み書きと厳格な窓の切り出しを行えます（範囲・単独 `..`・`^k` を含むキーと 1 成分の範囲窓 `ref t[a..b]` は edition 2028 から、`t[i, j]` と `Slice.Sel` の値だけのキーは全 edition で使えます）。
+
+- **要素の読み書き（確保 0 回）**: 位置だけ（整数と `^k`）のキー `t[1, 2]`・`t[^0, 0]` は要素を返し、`mt[1, 2] = v`・`mt[^0, 0] = v` は `Tensor.Mut` へその場で書き込みます。1〜4 軸はタプルのインスタンス、5 軸以上はスタック配列で解決され、ヒープ確保は 0 回です。位置の数が軸の数と一致しないとトラップします（2 次元の `t[0]` は行ではなくトラップです。行は `ref t[0, ..]` と書きます）。
+- **厳格な窓 `ref t[…]`（要素をコピーせず、shape と strides の 2 配列を確保）**: 範囲・単独 `..`・[`Slice.Sel`](./slice.md) の成分を 1 つでも含むキーは `Tensor.View` を返します。整数の成分はその軸を除き、範囲と `..` は軸を残します。足りない末尾の軸は軸全体（`..`）で補われ、`Slice.rest()` は残りの軸すべてに展開されます（キーに 1 つまで）。`Slice.Sel.AddAxis` は長さ 1・ストライド 0 の新しい軸を挿入します。刻み付きの範囲 `ref t[0 .. 2 ..< 6, ..]` や負の刻みによる反転 `ref t[.. -1 .., ..]` も同じ構文で書けます。
+- **窓の連鎖と要素の読み出し**: `View` から `View` を切り出す連鎖 `ref t[1..2, ..][0, ..]` はそのまま書けます。切り出した窓から要素を読むときは `(ref t[1..2, ..])[0, 1]` のように窓の部分だけを括弧で囲みます。
+
+```tsuzuri edition=2028 run=6%208%20%5B4%2C%205%2C%206%2C%207%5D%20%5B1%2C%202%2C%205%2C%206%5D%20%5B8%2C%204%2C%200%5D%20%5B1%2C%203%2C%204%5D
+let t = Tensor.init [3, 4] (\i -> i)
+let elem = t[1, 2]
+let bottom_left = t[^0, 0]
+let row1 = Tensor.to_array (Tensor.to_tensor (ref (ref t[1, ..])))
+let block = Tensor.to_array (Tensor.to_tensor (ref (ref t[0..1, 1..<3])))
+let rev_col0 = Tensor.to_array (Tensor.to_tensor (ref (ref t[.. -1 .., 0])))
+let expanded_view = ref t[Slice.Sel.AddAxis, ..]
+let expanded = Tensor.shape (ref expanded_view)
+$"{elem} {bottom_left} {row1} {block} {rev_col0} {expanded}"
+```
+
+実行結果:
+
+```text
+6 8 [4, 5, 6, 7] [1, 2, 5, 6] [8, 4, 0] [1, 3, 4]
+```
+
+### NumPy との対応と違い
+
+| NumPy | 旧来の `Slice.Axis` 長い形 | 角括弧の構文（edition 2028） |
+| --- | --- | --- |
+| `a[i, j]` / `a[-1, 0]` | `t[[i, j]]` / – | `t[i, j]` / `t[^0, 0]` |
+| `a[1:4]` | `ref t[[Slice.range 1 4]]` | `ref t[1..<4]` または `ref t[1..3]` |
+| `a[0]`（2 次元の行） | `ref t[[Slice.at 0]]` | `ref t[0, ..]`（`t[0]` はトラップ） |
+| `a[:, 0]` / `a[-1, :]` | `ref t[[Slice.all(), Slice.at 0]]` / `ref t[[Slice.at (-1)]]` | `ref t[.., 0]` / `ref t[^0, ..]` |
+| `a[:-1]` / `a[1:-1]` / `a[-3:]` | `Slice.until (-1)` / `Slice.range 1 (-1)` / `Slice.from (-3)` | `ref t[..^1]` / `ref t[1..^1]` / `ref t[^2..]` |
+| `a[1:7:2]` / `a[::2]` / `a[::-1]` / `a[4:0:-1]` | `Slice.step 1 7 2` / `Slice.every 2` / `Slice.rev()` / `Slice.step 4 0 (-1)` | `ref t[1 .. 2 ..< 7]` / `ref t[.. 2 ..]` / `ref t[.. -1 ..]` / `ref t[4 .. -1 .. 1]` |
+| `a[None, :]` / `a[..., 0]` | `Slice.new_axis()` / – | `ref t[Slice.Sel.AddAxis, ..]` / `ref t[Slice.rest(), 0]` |
+| `a[mask]` | `t[mask]` | `t[mask]`（コピー、`ref` なし） |
+
+NumPy との違いは次のとおりです。
+
+- **範囲外は切り詰めずトラップ**: 長さ 0 の軸への `ref t[1..]` や、長さ 1 以下の軸への `ref t[1..^1]`、`n = 9` への `ref t[0 .. 4 ..< 10]` はすべてトラップします。丸めるスライスが要るときは `ref t[[Slice.range …]]` を使います。
+- **負の数は末尾から数えない**: 末尾からの位置は `^k`（`^0` が最後の要素）です。範囲の境界や窓の整数の成分に負の整数リテラル（`ref t[..-1, 0]`・`ref t[-1, ..]`）を書くと警告 `W1014` が出ます（要素の読み出し `t[-1, 0]` は `Index` のキーなので警告は出ず、実行時にトラップします）。
+- **位置・境界・刻みの型は `i64`**: `i32` などを渡すと `E1003`・`E1005` になるため、`a as i64` で明示変換します。ブールマスクと範囲を同じキーに混ぜることはできません（`E1003`）。
 
 ## 計算量
 
@@ -350,15 +397,15 @@ $"{deref corner} {missing} {plane_count}"
 | `of_array` | $O(\text{rank})$（形の検査だけ）、要素の複製なし |
 | `to_array`・`reshape`・`reshape_infer`・`try_reshape`・`of_matrix`・`to_matrix`・`update` | 要素が Copy 型なら $O(\text{count})$（今のコンパイラは要素を複製する。`update` は 2 回）。要素が Copy でない型なら要素を複製せず、形の検査の $O(\text{rank})$ だけ。`update` は、どちらの場合もこれに `writer` の費用が加わる |
 | `view`・`borrow`・`permute`・`index_axis`・`narrow`・`reshape_view`・`is_contiguous`・`count`・`at`・`get` | $O(\text{rank})$。窓を返す API は、形とストライドの配列を新しく確保する |
-| 添字 `t[[…]]`・`t[(i, j)]`・`m[(i, j)] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保なし |
-| 添字 `ref t[[Slice…]]`・`ref v[[Slice…]]`（窓） | $O(\text{rank})$、結果の形とストライドの 2 配列のみ確保 |
+| 添字 `t[i, j]`・`t[^0, 0]`・`t[[…]]`・`t[(i, j)]`・`m[i, j] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保 0 回 |
+| 添字 `ref t[i, a..b, ..]`・`ref t[[Slice…]]`（窓） | $O(\text{rank})$、要素はコピーせず、結果の形とストライドの 2 配列を確保 |
 | `init`・`fold`・`map`・`to_tensor` | $O(\text{count})$ |
 
 軸は 64 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。
 
 ## できないこと
 
-- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、`View` やスカラーとの混在算術演算子（[NC19](../../../_features/NC19-operator-extension-instances.md)）と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。
+- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、`View` やスカラーとの混在算術演算子（[NC19](../../../_features/NC19-operator-extension-instances.md)）、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクと範囲を 1 つの角括弧に混ぜることはできません（`E1003`）。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
 - 要素が Copy 型の所有するテンソルから、複製せずにバッファを取り出すことと、複製せずに書き換えることは今はできません（[所有者の操作と Matrix との変換](#所有者の操作と-matrix-との変換)の既知の制限）。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。
@@ -366,13 +413,14 @@ $"{deref corner} {missing} {plane_count}"
 ## まとめ
 
 - `Tensor` は形と行優先のバッファを所有し、`Tensor.View`（読み取り専用・負/0 ストライド対応）と `Tensor.Mut`（単射な書き込み専用）が同じバッファを見ます。
-- `Matrix` とは `of_matrix`・`to_matrix` で行き来できます（要素が Copy 型なら、今は要素を複製します）。[`Slice`](./slice.md) やブールマスクを使った `t[k]` / `m[k] = v` の汎用添字が使えます。
+- `Matrix` とは `of_matrix`・`to_matrix` で行き来できます（要素が Copy 型なら、今は要素を複製します）。`t[i, j]`・`t[^0, 0]`・`ref t[i, a..b, ..]` や [`Slice`](./slice.md)・ブールマスクを使った汎用添字が使えます。
 - 窓は持ち主を動かすと `E1014`、持ち主より長く使うと `E1013` です。
 
 ## 関連項目
 
-- [Slice](./slice.md) — スライス記述子 `Slice.Axis`
+- [Slice](./slice.md) — 厳格なセレクタ `Slice.Sel` と丸める記述子 `Slice.Axis`
 - [Matrix](./matrix.md) — 2 次元の持ち主と、行列積
 - [MatrixView](./matrix-view.md) — 2 次元の窓と、書き込める窓
 - [Array](./array.md) — 平らな配列とスライス
+- [演算子と式](../values-and-functions/op-and-expressions.md) — 角括弧の範囲と評価順序
 - [言語リファレンスの目次](../index.md)

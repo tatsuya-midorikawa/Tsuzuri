@@ -529,6 +529,65 @@ fn member_triggers(text: &str, triggered: &mut Vec<&'static str>) {
     }
 }
 
+/// NC18 D11: whether `text` contains an index bracket (`[` right after an identifier, `)` or `]`)
+/// whose top-level components contain a range operator or a prefix `^` (`^k`). Checked only when
+/// `Matrix` is already needed so non-`Matrix` programs never change their loaded modules.
+fn has_bracket_selector(text: &str) -> bool {
+    if !text.contains('[') || (!text.contains("..") && !text.contains('^')) {
+        return false;
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Group {
+        IndexBracket,
+        Other,
+    }
+    let (tokens, _) = crate::lexer::lex_all(text, crate::syntax::Edition::LATEST);
+    let mut stack: Vec<Group> = Vec::new();
+    let mut prev: Option<&TokenKind> = None;
+    for token in &tokens {
+        match &token.kind {
+            TokenKind::LeftBracket => {
+                let is_index = matches!(
+                    prev,
+                    Some(TokenKind::Ident(_) | TokenKind::RightParen | TokenKind::RightBracket)
+                );
+                stack.push(if is_index {
+                    Group::IndexBracket
+                } else {
+                    Group::Other
+                });
+            }
+            TokenKind::LeftParen | TokenKind::LeftBrace | TokenKind::LeftList => {
+                stack.push(Group::Other);
+            }
+            TokenKind::RightBracket
+            | TokenKind::RightParen
+            | TokenKind::RightBrace
+            | TokenKind::RightList => {
+                stack.pop();
+            }
+            TokenKind::DotDot
+            | TokenKind::DotDotLess
+            | TokenKind::DotDotEqual
+            | TokenKind::LessDotDot
+            | TokenKind::LessDotDotLess
+                if stack.last() == Some(&Group::IndexBracket) =>
+            {
+                return true;
+            }
+            TokenKind::Caret
+                if stack.last() == Some(&Group::IndexBracket)
+                    && matches!(prev, Some(TokenKind::LeftBracket | TokenKind::Comma)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        prev = Some(&token.kind);
+    }
+    false
+}
+
 /// Whether `module` is an opt-in std module, whose declarations user code names
 /// only qualified (D-40).
 pub(crate) fn is_opt_in(module: &str) -> bool {
@@ -541,13 +600,14 @@ pub(crate) fn is_opt_in(module: &str) -> bool {
 pub fn sources_for<'a>(
     texts: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(&'static str, &'static str)> {
+    let texts: Vec<&'a str> = texts.into_iter().collect();
     let aliases: Vec<&str> = OPT_IN
         .iter()
         .flat_map(|module| module.aliases.iter().copied())
         .collect();
     let mut words = std::collections::BTreeSet::new();
     let mut triggered = Vec::new();
-    for text in texts {
+    for &text in &texts {
         member_triggers(text, &mut triggered);
         let bytes = text.as_bytes();
         let mut index = 0;
@@ -590,6 +650,12 @@ pub fn sources_for<'a>(
         if !needed.contains(&module) {
             needed.push(module);
         }
+    }
+    if needed.contains(&"Matrix")
+        && !needed.contains(&"Slice")
+        && texts.iter().copied().any(has_bracket_selector)
+    {
+        needed.push("Slice");
     }
     for &(first, second, target) in PAIR_TRIGGERS {
         if needed.contains(&first) && needed.contains(&second) && !needed.contains(&target) {

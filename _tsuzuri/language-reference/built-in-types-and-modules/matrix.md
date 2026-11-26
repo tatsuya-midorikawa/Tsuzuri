@@ -63,7 +63,7 @@ $"{first}:{second}"
 ab:cd
 ```
 
-要素が文字列のような非 Copy 型でも、`init`・`at`・`row`・`to_array` は使えます。値で読む `get`・`map`・`fold`・`transpose` と、算術の `add`・`mul` は、`Array` の同名の API と同じく `Copy<'a>`・`Numeric<'a>` を要求します。満たさない要素型は `E1005` です。
+要素が文字列のような非 Copy 型でも、`init`・`at`・`row`・`to_array` は使えます。値で読む `get`・`map`・`fold`・`transpose` と、算術の `add`・`mul` は、`Array` の同名の API と同じく `Copy<'a>`・`Numeric<'a>` を要求します。満たさない要素型は `E1005` です。Copy 要素の行列は角括弧 `m[row, col]`（edition 2028 では末尾からの `m[^0, col]` も可）で確保なしに要素を読め、edition 2028 では `ref m[1, ..]`（1 行 `cols` 列の [`MatrixView`](./matrix-view.md)）や `ref m[0..<2, 1..3]` のように厳格な 2 次元の窓も直接借りられます（1 成分の要素読み出し `m[0]` は誤りなので、行の窓は `ref m[i, ..]`、配列スライスは `Matrix.row i (ref m)` と書きます）。
 
 ## 要素を置き換える
 

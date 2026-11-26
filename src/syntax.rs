@@ -1129,6 +1129,25 @@ impl Expr {
                     bound.visit_mut(visitor);
                 }
             }
+            MultiIndex { value, keys, .. } => {
+                value.visit_mut(visitor);
+                for key in keys {
+                    match key {
+                        IndexComponent::Expr(expr) => expr.visit_mut(visitor),
+                        IndexComponent::Range(range) => {
+                            for bound in range
+                                .start
+                                .iter_mut()
+                                .chain(range.end.iter_mut())
+                                .chain(range.step.iter_mut())
+                            {
+                                bound.visit_mut(visitor);
+                            }
+                        }
+                        IndexComponent::Whole(_) => {}
+                    }
+                }
+            }
             FromEnd(offset) => offset.visit_mut(visitor),
             Computation(_, body) => body.visit_expressions_mut(visitor),
             Interpolated(interpolation) => {
@@ -1277,6 +1296,20 @@ impl Expr {
                     bound.visit(visitor);
                 }
             }
+            MultiIndex { value, keys, .. } => {
+                value.visit(visitor);
+                for key in keys {
+                    match key {
+                        IndexComponent::Expr(expr) => expr.visit(visitor),
+                        IndexComponent::Range(range) => {
+                            for bound in range.start.iter().chain(&range.end).chain(&range.step) {
+                                bound.visit(visitor);
+                            }
+                        }
+                        IndexComponent::Whole(_) => {}
+                    }
+                }
+            }
             FromEnd(offset) => offset.visit(visitor),
             Computation(_, body) => body.visit_expressions(visitor),
             Interpolated(interpolation) => {
@@ -1391,6 +1424,13 @@ pub enum ExprKind {
         value: Box<Expr>,
         range: Box<RangeKey>,
         mutable: bool,
+    },
+    /// `base[c1, ..., cn]` with two or more components (NC18). `borrow` is `Some(false)` for
+    /// `ref`, `Some(true)` for `ref mut`, as `Slice::mutable` is for one-component slices.
+    MultiIndex {
+        value: Box<Expr>,
+        keys: Box<[IndexComponent]>,
+        borrow: Option<bool>,
     },
     /// `^k`: position `n - 1 - k` from the end; only at the start of an index component or slice bound (NC17).
     FromEnd(Box<Expr>),

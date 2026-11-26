@@ -2804,6 +2804,188 @@ impl Classes {
         found
     }
 
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key
+    /// unifies with an `arity`-tuple of non-selector element types (`selector_unions` excludes
+    /// `Slice.Axis`, `Slice.Sel`, and `Slice.Pos`).
+    pub(super) fn has_element_tuple_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        arity: usize,
+        selector_unions: &[usize],
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) || arity < 2 {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let probe_elems: Vec<Type> = (0..arity).map(|_| inference.fresh()).collect();
+        let actual_pair = Type::Tuple(vec![self_resolved, Type::Tuple(probe_elems)]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let cand_pair = Type::Tuple(vec![substitute(&cand.self_ty, &subs), cand_key.clone()]);
+            inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                let Type::Tuple(items) = trial.resolve(&cand_key) else {
+                    return false;
+                };
+                items.len() == arity
+                    && !items.iter().any(
+                        |item| matches!(item, Type::Union(uid, _) if selector_unions.contains(uid)),
+                    )
+            })
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key
+    /// unifies with `[T]` for a non-selector element type `T`.
+    pub(super) fn has_element_array_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        selector_unions: &[usize],
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let elem = inference.fresh();
+        let actual_pair = Type::Tuple(vec![self_resolved, Type::Array(Box::new(elem))]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let cand_pair = Type::Tuple(vec![substitute(&cand.self_ty, &subs), cand_key.clone()]);
+            inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                let Type::Array(item) = trial.resolve(&cand_key) else {
+                    return false;
+                };
+                !matches!(item.as_ref(), Type::Union(uid, _) if selector_unions.contains(uid))
+            })
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key,
+    /// once `self_ty` unifies with the candidate head, is already non-variable and unifies with
+    /// `probe_key` (used for `[Slice.Sel]`, `Slice.Pos` tuples, and `[Slice.Pos]`).
+    pub(super) fn has_exact_index_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        probe_key: &Type,
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_self = substitute(&cand.self_ty, &subs);
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut key_concrete = false;
+            if !inference.unifies(&self_resolved, &cand_self, types, |trial| {
+                key_concrete = !is_unknown(&trial.resolve(&cand_key));
+                true
+            }) || !key_concrete
+            {
+                return false;
+            }
+            let actual_pair = Type::Tuple(vec![self_resolved.clone(), probe_key.clone()]);
+            let cand_pair = Type::Tuple(vec![cand_self, cand_key]);
+            inference.unifies(&actual_pair, &cand_pair, types, |_| true)
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: smallest `m >= min_arity.max(1)` for which `self_ty` has an `Index` candidate whose
+    /// key (after unifying `self_ty`) is `Slice.Sel` (`m == 1`) or an `m`-tuple of `Slice.Sel`.
+    pub(super) fn min_sel_tuple_arity(
+        &self,
+        self_ty: &Type,
+        min_arity: usize,
+        sel_ty: &Type,
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> Option<usize> {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return None;
+        }
+        let need = min_arity.max(1);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut best: Option<usize> = None;
+        for cand in &self.index_instances {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_self = substitute(&cand.self_ty, &subs);
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut found_arity: Option<usize> = None;
+            if inference.unifies(&self_resolved, &cand_self, types, |trial| {
+                let resolved_key = trial.resolve(&cand_key);
+                if &resolved_key == sel_ty && need <= 1 {
+                    found_arity = Some(1);
+                } else if let Type::Tuple(items) = &resolved_key
+                    && items.len() >= need
+                    && items.iter().all(|item| item == sel_ty)
+                {
+                    found_arity = Some(items.len());
+                }
+                true
+            }) && let Some(arity) = found_arity
+            {
+                best = Some(best.map_or(arity, |cur| cur.min(arity)));
+            }
+        }
+        inference.quiet = was_quiet;
+        best
+    }
+
     /// Returns a key type hint when every `Index`/`IndexMut` candidate matching `self_ty` yields
     /// the same key shape (so untyped literals like `m[(1, 2)]` or `grid[0]` unify cleanly without
     /// breaking multi-key types like `Tensor`).

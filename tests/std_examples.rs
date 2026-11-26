@@ -71,7 +71,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("SendOnly", 0),
     ("Seq", 7),
     ("Set", 15),
-    ("Slice", 10),
+    ("Slice", 12),
     ("String", 21),
     ("SyncMap", 8),
     ("Tensor", 27),

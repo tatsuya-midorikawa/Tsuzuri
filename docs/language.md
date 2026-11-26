@@ -3033,7 +3033,7 @@ def calculate :: i64 -> i64 = \value -> {
 <!-- rule: EVL-016 --> <!-- rule: EVL-009 --> <!-- rule: EVL-010 --> <!-- rule: EVL-011 -->
 通常の二項演算、関数呼び出しにおける呼び出し先式（callee）から各実引数への評価、配列やリストの要素式、
 ならびにレコードリテラルの初期化フィールド式は、すべて **ソースコードに記述された順序に従って左から右へ** と厳密に正格評価されます。
-添字式 `b[k]` は組み込みの型でも `Index`・`IndexMut` の型でも常に土台 `b`、次にキーの成分を左から右の順に評価し、キーの評価中は土台に共有の守りが置かれます。
+添字式 `b[k]`・`b[c1, …]` は組み込みの型でも `Index`・`IndexMut` の型でも常に土台 `b`、次にキーの成分を左から右（範囲の成分の中は始点、刻み、終点）の順に評価し、キーの評価中は土台に共有の守りが置かれます。
 パイプライン演算子 `a |> f` は、まず左辺 `a` を評価した後に右辺 `f` を評価し、関数 `f` に対して単一の引数として `a` を適用します（結果がカリー化の残りの関数値となる場合もあります）。
 論理演算子 `&&` および `||` は厳格な短絡評価（short-circuit evaluation）を行います。
 式の位置の `?` と `?名前`（`?` の直後に空白のない識別子）は型つき穴です。穴は常に `E1030` の誤りで、その位置で期待される型・見える局所・候補を報告し、型の誤りとして回復するので連鎖する誤りを出さず、穴を含むプログラムはコードを生成しません。`?` は誤りの伝播の演算子ではなく、パターン・型・宣言の位置では構文の誤り（`E0002`）です。全 edition が受理します。
@@ -3082,7 +3082,7 @@ def choose :: bool -> [i32] = \flag -> if flag { [1] } else { [2, 3, 4] }
 単一の所有者しか持たないヒープ配列であれば内部バッファが効率的にインプレース再利用され、スタック上に配置された配列が渡された場合は事前にヒープ領域へと安全に昇格されます。
 `let mut` や可変参照 `ref mut [T]` からは配列全体を置換でき、2027 では既存要素への代入もできます。排他スライス `ref mut [T..]` の `Array.write` なども全版で使えます。
 
-スライス式は、edition 2026・2027 では `ref values[start..<end]`（素の `ref values[start..end]` も半開で `W1013` を出す）が半開区間、`ref values[start..=end]` が終端を含む閉区間の共有スライス参照を返却します。edition 2028 では、素の `ref values[start..end]`・`ref values[..end]` が終端を含む閉区間になり、半開区間は `..<`、始端を含まない区間は `<..`・`<..<`、末尾からの位置は `^k`（`^0` が末尾）で記述します（範囲の意味は構文解析の段でソースの edition から `RangeEnds` に決まるため、異なる edition のパッケージを結合しても各ソースの意味が保たれます）。
+スライス式は、edition 2026・2027 では `ref values[start..<end]`（素の `ref values[start..end]` も半開で `W1013` を出す）が半開区間、`ref values[start..=end]` が終端を含む閉区間の共有スライス参照を返却します。edition 2028 では、素の `ref values[start..end]`・`ref values[..end]` が終端を含む閉区間になり、半開区間は `..<`、始端を含まない区間は `<..`・`<..<`、末尾からの位置は `^k`（`^0` が末尾）で記述します（範囲の意味は構文解析の段でソースの edition から `RangeEnds` に決まるため、異なる edition のパッケージを結合しても各ソースの意味が保たれます）。組み込みの 6 型の角括弧は常に 1 成分であり、カンマ区切りの多成分キー `b[c1, …]` は `Index`・`IndexMut` を実装する型に対する構文です（組み込みの 6 型に 2 成分以上を書くと `E1005` `builtin_index_one_component`）。
 開始位置や終了位置を省略した `ref values[start..]`、`ref values[start<..]`、`ref values[..end]`、`ref values[..<end]` も使用可能であり、その静的型は配列全体の共有参照と同一の `ref [T]` 型となります。
 元の配列、開始インデックス式、終了インデックス式は左から右の順序で正格評価され、半開境界 $(lo, hi)$ に直した境界条件 $0 \le lo \le hi \le length$ に違反した場合は安全にトラップします（スライスの境界または `^` の被演算子に 0 でない負の整数リテラルを直接書いた場合は警告 `W1014` の `negative_literal_range_bound` が出ます）。開始・終了インデックスには添字と同じくどの整数型の値も書け、派生する境界（`..=`・2028 の `..`・`<..`・`<..<`・`^k`）では `i64u` も `i64` の範囲に飽和させてから計算します。
 開始位置と終了位置が一致する長さ 0 の空スライスも正当な値として受け入れられます。スライスに対するインデックス読み取り、`.length` の参照、および `for` ループによる走査は、要素のディープコピーを一切伴わず高速に行われます。
@@ -3531,11 +3531,10 @@ API は `of_matrix`・`of_array`・`strided`・`rows`・`cols`・`offset`・`row
 
 ### Tensor
 
-`Tensor<'a>` は形（`[i64]`）と行優先のバッファを所有する非 Copy の不透明レコード、`Tensor.View<'a> { r }` は `(data, offset, shape, strides)` を持つ借用の窓です（`Tensor` モジュール。opt-in で、`Matrix` と `MatrixView` を使います）。軸は 16 本までで、長さは 0 以上、長さが 0 の軸を除いた積は `i64` に収まる必要があります。長さが 0 の軸があれば要素は 0 個、軸が 0 本なら 1 個です。
-窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` で、ストライドは負にならず、全要素は `data` の中にあります。窓は非 Copy で、API は `ref` で受け取ります。
-所有者の API は `of_array`・`init`・`of_matrix`・`to_matrix`・`as_array`・`to_array`・`reshape`・`view`・`borrow`、窓の API は `rank`・`shape`・`count`・`strides`・`offset`・`data`・`at`・`get`・`permute`・`index_axis`・`narrow`・`is_contiguous`・`reshape_view`・`fold`・`to_tensor`・`map`・`as_matrix_view`・`of_matrix_view` です。
-`permute`・`index_axis`・`narrow`・`reshape_view` は複製せずに `(shape, strides, offset)` を変えます。`reshape_view` は連続な窓だけで、連続でなければトラップです。`at` と `get` は添字の配列を 1 つ確保します。
-書き込める N 次元の窓、ブロードキャスト、軸に沿った集計、並列・SIMD・GPU のカーネルは提供しません。
+`Tensor<'a>` は形（`[i64]`）と行優先のバッファを所有する非 Copy の不透明レコード、`Tensor.View<'a> { r }` は読み取り専用の借用の窓、`Tensor.Mut<'a> { r }` は単射な排他借用の書き込める窓です（`Tensor` モジュール。opt-in で、`Complex`・`Matrix`・`MatrixView`・`Slice` を使います）。軸は 64 本までで、長さは 0 以上、長さが 0 の軸を除いた積は `i64` に収まる必要があります。長さが 0 の軸があれば要素は 0 個、軸が 0 本なら 1 個です。
+窓の要素 `(i0, i1, …)` は `data[offset + i0 * strides[0] + i1 * strides[1] + …]` で、`View` は負のストライドと 0 ストライドを扱え、全要素は `data` の中にあります。窓は非 Copy で、API は `ref` / `ref mut` で受け取ります。
+`Index`・`IndexMut` により、要素の読み書き `t[i, j]`・`t[^0, 0]`・`m[i, j] = v`・`m[^0, 0] = v`（1〜4 軸はタプル、5 軸以上はスタック配列でヒープ確保 0 回）、厳格な窓 `ref t[i, a..b, ..]`・`ref t[.. -1 .., ..]`・`ref t[Slice.rest(), 0]`・`ref t[Slice.Sel.AddAxis, ..]`（`[Slice.Sel]` へ脱糖、要素をコピーせず shape と strides の 2 配列を確保）、丸めありの長い形 `ref t[[Slice.range …]]`、およびブールマスク `t[mask]`・`m[mask] = v` を提供します。
+窓の並列・SIMD・GPU のカーネルは提供しません。
 
 ### HashMap / HashSet
 

@@ -4,8 +4,14 @@ instance Index<Foo, i64, i64> {
     fn index k self = self.v + deref k
 }
 
+instance Index<Foo, (i64 * i64), i64> {
+    fn index k self =
+        match k with
+        | (a, b) -> self.v + a + b
+}
+
 let mut foo = Foo { v: 1 }
-foo[{ foo = Foo { v: 5 }; 0 }]
+foo[0, { foo = Foo { v: 5 }; 0 }]
 
 // rule: OWN-031
-// expect: check-error E1014 line=8 kind=borrow_conflict
+// expect: check-error E1014 line=14 kind=borrow_conflict

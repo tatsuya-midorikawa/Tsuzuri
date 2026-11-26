@@ -14764,7 +14764,48 @@ impl<'a> Checker<'a> {
                 value,
                 range,
                 mutable,
-            } => self.slice(value, range, *mutable, expression.span)?,
+            } => {
+                let (checked, _absorbed) = self.slice_expr(
+                    value,
+                    range,
+                    *mutable,
+                    expression.span,
+                    IndexBorrowCover::Direct {
+                        mutable: *mutable,
+                        borrow_span: expression.span,
+                        operand_span: Span {
+                            start: value.span.start,
+                            end: expression.span.end,
+                            source: expression.span.source,
+                        },
+                        notation: Notation::Keyword,
+                    },
+                    expected,
+                )?;
+                return Ok(checked);
+            }
+            ExprKind::MultiIndex {
+                value,
+                keys,
+                borrow,
+            } => {
+                let cover = match borrow {
+                    Some(mutable) => IndexBorrowCover::Direct {
+                        mutable: *mutable,
+                        borrow_span: expression.span,
+                        operand_span: Span {
+                            start: value.span.start,
+                            end: expression.span.end,
+                            source: expression.span.source,
+                        },
+                        notation: Notation::Keyword,
+                    },
+                    None => IndexBorrowCover::Uncovered,
+                };
+                let (expr, _absorbed) =
+                    self.multi_index(expression.span, value, keys, cover, expected)?;
+                return Ok(expr);
+            }
             ExprKind::FromEnd(_) => {
                 return Err(Diagnostic::of(
                     DiagnosticKind::FromEndOutsideIndex,
@@ -14991,7 +15032,10 @@ impl<'a> Checker<'a> {
                 return Ok(expr);
             }
             ExprKind::Borrow(value, mutable, notation) => {
-                if matches!(value.kind, ExprKind::Index(..)) {
+                if matches!(
+                    value.kind,
+                    ExprKind::Index(..) | ExprKind::MultiIndex { borrow: None, .. }
+                ) {
                     let (checked, _absorbed) = self.borrow_index_expression(
                         expression.span,
                         value,
@@ -15081,7 +15125,27 @@ impl<'a> Checker<'a> {
                             | Type::Utf8String
                     );
                     if !built_in_index {
-                        if matches!(key_expr.kind, ExprKind::FromEnd(_)) {
+                        let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
+                        if !raw_is_mut_ref {
+                            Self::require_mutable_reference(&raw_target)?;
+                        }
+                        if let ExprKind::FromEnd(offset) = &key_expr.kind {
+                            if let Some(key) = self.one_component_from_end_key(
+                                &inner_ty,
+                                true,
+                                offset,
+                                key_expr.span,
+                            )? {
+                                return self.assign_index_mut_typed(
+                                    expression.span,
+                                    raw_target,
+                                    raw_is_mut_ref,
+                                    inner_ty,
+                                    key,
+                                    value,
+                                    expected,
+                                );
+                            }
                             return Err(Diagnostic::of(
                                 DiagnosticKind::FromEndNeedsLength,
                                 format!(
@@ -15090,10 +15154,6 @@ impl<'a> Checker<'a> {
                                 ),
                                 key_expr.span,
                             ));
-                        }
-                        let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
-                        if !raw_is_mut_ref {
-                            Self::require_mutable_reference(&raw_target)?;
                         }
                         let hint = self.classes.index_key_hint(
                             &inner_ty,
@@ -15105,128 +15165,56 @@ impl<'a> Checker<'a> {
                         if key.ty.contains_error() {
                             return Ok(TypedExpr::error(expression.span));
                         }
-                        let Some(resolved) = self.classes.resolve_index(
-                            &inner_ty,
-                            &key.ty,
-                            true,
-                            &mut self.inference,
-                            &self.constraints,
-                            &self.types,
-                            self.names,
+                        return self.assign_index_mut_typed(
                             expression.span,
-                            key.span,
-                        )?
-                        else {
-                            let key_ty = self.inference.resolve(&key.ty);
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::NoInstance,
-                                format!(
-                                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
-                                    inner_ty.display_with(self.names),
-                                    key_ty.display_with(self.names)
-                                ),
-                                expression.span,
-                            ));
-                        };
-                        self.constraints.extend(resolved.constraints);
-                        let rhs = self.expression(value, Some(&resolved.output_ty))?;
-                        let mut bindings = Vec::new();
-                        let base_needs_hoist = !key.is_index_const()
-                            && if raw_is_mut_ref {
-                                !Self::is_local_ref_chain(&raw_target)
-                            } else {
-                                !Self::is_mut_target_simple_or_d9(&raw_target)
-                            };
-                        let rhs_needs_hoist = if base_needs_hoist {
-                            !rhs.is_index_const()
-                        } else {
-                            !self.is_rhs_key_order_unobservable(&rhs, &key)
-                        };
-                        let rhs = if rhs_needs_hoist {
-                            let rhs_ty = self.inference.resolve(&rhs.ty);
-                            let rhs_span = rhs.span;
-                            let rhs_local =
-                                self.index_generated_local("$index.rhs.", rhs_ty.clone(), rhs_span);
-                            let rhs_id = rhs_local.id;
-                            bindings.push((rhs_local, rhs));
-                            TypedExpr {
-                                kind: TypedExprKind::Local(rhs_id),
-                                ty: rhs_ty,
-                                span: rhs_span,
-                            }
-                        } else {
-                            rhs
-                        };
-                        let target_arg = if raw_is_mut_ref {
-                            if base_needs_hoist {
-                                let ref_ty = self.inference.resolve(&raw_target.ty);
-                                let ref_span = raw_target.span;
-                                let ref_local = self.index_generated_local(
-                                    "$index.ref.",
-                                    ref_ty.clone(),
-                                    ref_span,
-                                );
-                                let ref_id = ref_local.id;
-                                bindings.push((ref_local, raw_target));
-                                TypedExpr {
-                                    kind: TypedExprKind::Local(ref_id),
-                                    ty: ref_ty,
-                                    span: ref_span,
-                                }
-                            } else {
-                                raw_target
-                            }
-                        } else {
-                            let hoisted_target = if base_needs_hoist {
-                                self.hoist_index_mut_place(raw_target, &mut bindings)
-                            } else {
-                                raw_target
-                            };
-                            let target_span = hoisted_target.span;
-                            let target_ty = self.inference.resolve(&hoisted_target.ty);
-                            TypedExpr {
-                                kind: TypedExprKind::Borrow(Box::new(hoisted_target), true),
-                                ty: Type::Reference(Box::new(target_ty), true),
-                                span: target_span,
-                            }
-                        };
-                        let callee_kind = if resolved.type_args.is_empty() {
-                            TypedExprKind::Function(FunctionRef::User(resolved.function))
-                        } else {
-                            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
-                        };
-                        let key_span = key.span;
-                        let key_ty = self.inference.resolve(&key.ty);
-                        let call = TypedExprKind::Call(
-                            Box::new(TypedExpr {
-                                kind: callee_kind,
-                                ty: resolved.call_signature,
-                                span: expression.span,
-                            }),
-                            vec![
-                                TypedExpr {
-                                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
-                                    ty: Type::Reference(Box::new(key_ty), false),
-                                    span: key_span,
-                                },
-                                rhs,
-                                target_arg,
-                            ],
+                            raw_target,
+                            raw_is_mut_ref,
+                            inner_ty,
+                            key,
+                            value,
+                            expected,
                         );
-                        let kind = if bindings.is_empty() {
-                            call
-                        } else {
-                            TypedExprKind::Block {
-                                bindings,
-                                result: Box::new(TypedExpr {
-                                    kind: call,
-                                    ty: Type::Unit,
-                                    span: expression.span,
-                                }),
-                            }
-                        };
-                        return self.finish_expression(kind, Type::Unit, expected, expression.span);
                     }
+                } else if let ExprKind::MultiIndex {
+                    value: target,
+                    keys,
+                    borrow: None,
+                } = &place.kind
+                {
+                    let raw_target = self.expression(target, None)?;
+                    if raw_target.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let inner_ty = self.inference.resolve(
+                        &raw_target
+                            .ty
+                            .dereferenced()
+                            .unwrap_or_else(|| raw_target.ty.clone()),
+                    );
+                    if Self::is_builtin_six_indexable(&inner_ty) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::BuiltinIndexOneComponent,
+                            "arrays, lists, Vec, and strings take one index; write 'xs[i][j]' for an element of a nested array",
+                            place.span,
+                        ));
+                    }
+                    let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
+                    if !raw_is_mut_ref {
+                        Self::require_mutable_reference(&raw_target)?;
+                    }
+                    let Some(key) = self.multi_index_assign_key(place.span, &inner_ty, keys)?
+                    else {
+                        return Ok(TypedExpr::error(expression.span));
+                    };
+                    return self.assign_index_mut_typed(
+                        expression.span,
+                        raw_target,
+                        raw_is_mut_ref,
+                        inner_ty,
+                        key,
+                        value,
+                        expected,
+                    );
                 }
                 let place = self.expression(place, None)?;
                 if place.ty.contains_error() {
@@ -15329,6 +15317,8 @@ impl<'a> Checker<'a> {
             | ExprKind::TypeFunction(..)
             | ExprKind::Field(..)
             | ExprKind::Index(..)
+            | ExprKind::Slice { .. }
+            | ExprKind::MultiIndex { .. }
             | ExprKind::Dereference(..)
                 if !expected.contains_error() =>
             {
@@ -15365,7 +15355,10 @@ impl<'a> Checker<'a> {
                 self.place_argument(expression, expected)
             }
             ExprKind::Borrow(ref inner, false, notation)
-                if matches!(inner.kind, ExprKind::Index(..)) && self.shared_reference(expected) =>
+                if matches!(
+                    inner.kind,
+                    ExprKind::Index(..) | ExprKind::MultiIndex { borrow: None, .. }
+                ) && self.shared_reference(expected) =>
             {
                 let (checked, absorbed) = self.borrow_index_expression(
                     expression.span,
@@ -15673,6 +15666,8 @@ impl<'a> Checker<'a> {
                 | ExprKind::TypeFunction(..)
                 | ExprKind::Field(..)
                 | ExprKind::Index(..)
+                | ExprKind::Slice { .. }
+                | ExprKind::MultiIndex { .. }
                 | ExprKind::Dereference(..)
                 | ExprKind::Borrow(_, false, Notation::Keyword)
         )
@@ -15755,9 +15750,6 @@ impl<'a> Checker<'a> {
         expected: Option<&Type>,
         shared_arg: bool,
     ) -> Result<(TypedExpr, bool), Diagnostic> {
-        let ExprKind::Index(base_expr, key_expr) = &value.kind else {
-            unreachable!("index operand checked")
-        };
         let built_in_hint = match notation {
             Notation::Symbol => match expected {
                 Some(reference @ Type::Reference(_, expected_mutable))
@@ -15770,18 +15762,27 @@ impl<'a> Checker<'a> {
             },
             Notation::Keyword => None,
         };
-        let (indexed, absorbed) = self.index_access(
-            value.span,
-            base_expr,
-            key_expr,
-            IndexBorrowCover::Direct {
-                mutable,
-                borrow_span,
-                operand_span: value.span,
-                notation,
-            },
-            built_in_hint.as_ref(),
-        )?;
+        let cover = IndexBorrowCover::Direct {
+            mutable,
+            borrow_span,
+            operand_span: value.span,
+            notation,
+        };
+        let (indexed, absorbed) = match &value.kind {
+            ExprKind::Index(base_expr, key_expr) => self.index_access(
+                value.span,
+                base_expr,
+                key_expr,
+                cover,
+                built_in_hint.as_ref(),
+            )?,
+            ExprKind::MultiIndex {
+                value: base_expr,
+                keys,
+                borrow: None,
+            } => self.multi_index(value.span, base_expr, keys, cover, built_in_hint.as_ref())?,
+            _ => unreachable!("index operand checked"),
+        };
         if absorbed {
             let absorbed_expected = if shared_arg { None } else { expected };
             let finished =
@@ -15817,6 +15818,200 @@ impl<'a> Checker<'a> {
         Ok((finished, false))
     }
 
+    fn eval_index_base(
+        &mut self,
+        base_expr: &Expr,
+        cover: IndexBorrowCover,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        if !matches!(cover, IndexBorrowCover::Uncovered) {
+            match &base_expr.kind {
+                ExprKind::Index(inner_base, inner_key) => {
+                    return self.index_access(
+                        base_expr.span,
+                        inner_base,
+                        inner_key,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                ExprKind::MultiIndex {
+                    value: inner_base,
+                    keys: inner_keys,
+                    borrow: None,
+                } => {
+                    return self.multi_index(
+                        base_expr.span,
+                        inner_base,
+                        inner_keys,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                ExprKind::Slice {
+                    value: inner_base,
+                    range: inner_range,
+                    mutable: false,
+                } => {
+                    return self.slice_expr(
+                        inner_base,
+                        inner_range,
+                        false,
+                        base_expr.span,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok((self.expression(base_expr, None)?, false))
+    }
+
+    fn is_builtin_six_indexable(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Array(_)
+                | Type::List(_)
+                | Type::Vec(_)
+                | Type::FixedArray(..)
+                | Type::String
+                | Type::Utf8String
+        )
+    }
+
+    fn std_slice_union(&self, short: &str) -> Option<usize> {
+        let target = format!("Slice.{short}");
+        self.types
+            .unions
+            .iter()
+            .position(|u| u.origin == ModuleOrigin::Std && u.name == target)
+    }
+
+    fn std_slice_pos_type(&self) -> Option<(usize, Type)> {
+        let id = self.std_slice_union("Pos")?;
+        Some((id, Type::Union(id, Box::new([]))))
+    }
+
+    fn is_std_slice_sel(&self, ty: &Type) -> bool {
+        let resolved = self.inference.resolve(ty);
+        self.std_slice_union("Sel")
+            .is_some_and(|id| matches!(resolved, Type::Union(uid, _) if uid == id))
+    }
+
+    fn std_selector_unions(&self) -> Vec<usize> {
+        ["Axis", "Sel", "Pos"]
+            .into_iter()
+            .filter_map(|short| self.std_slice_union(short))
+            .collect()
+    }
+
+    fn is_std_matrix_family(&self, ty: &Type) -> bool {
+        matches!(
+            self.inference.resolve(ty),
+            Type::Record(rec_id, _)
+                if self.types.records[rec_id].origin == ModuleOrigin::Std
+                    && matches!(
+                        self.types.records[rec_id].name.as_str(),
+                        "Matrix.Matrix" | "MatrixView.MatrixView" | "MatrixView.Mut"
+                    )
+        )
+    }
+
+    fn construct_union_unit(union_id: usize, case_id: usize, ty: Type, span: Span) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Construct {
+                union_id,
+                case_id,
+                payload: None,
+            },
+            ty,
+            span,
+        }
+    }
+
+    fn construct_union_payload(
+        union_id: usize,
+        case_id: usize,
+        ty: Type,
+        payload: TypedExpr,
+        span: Span,
+    ) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Construct {
+                union_id,
+                case_id,
+                payload: Some(Box::new(payload)),
+            },
+            ty,
+            span,
+        }
+    }
+
+    fn window_i64_bound(&mut self, expr: &Expr) -> Result<TypedExpr, Diagnostic> {
+        let was_recovering = std::mem::replace(&mut self.recovering, false);
+        let res = self.expression(expr, Some(&Type::I64));
+        self.recovering = was_recovering;
+        match res {
+            Ok(typed) => Ok(typed),
+            Err(diag) => {
+                if diag.code == "E1003" {
+                    Err(diag.with_help("Tensor and Matrix positions are i64; write 'a as i64'"))
+                } else {
+                    Err(diag)
+                }
+            }
+        }
+    }
+
+    fn one_component_from_end_key(
+        &mut self,
+        self_ty: &Type,
+        mutable: bool,
+        offset: &Expr,
+        span: Span,
+    ) -> Result<Option<TypedExpr>, Diagnostic> {
+        let Some((pos_uid, pos_ty)) = self.std_slice_pos_type() else {
+            return Ok(None);
+        };
+        if self.classes.has_exact_index_key(
+            self_ty,
+            mutable,
+            &pos_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            self.negative_from_end_warning(offset);
+            let off = self.window_i64_bound(offset)?;
+            if off.ty.contains_error() {
+                return Ok(Some(TypedExpr::error(span)));
+            }
+            return Ok(Some(Self::construct_union_payload(
+                pos_uid, 1, pos_ty, off, span,
+            )));
+        }
+        let arr_pos_ty = Type::Array(Box::new(pos_ty.clone()));
+        if self.classes.has_exact_index_key(
+            self_ty,
+            mutable,
+            &arr_pos_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            self.negative_from_end_warning(offset);
+            let off = self.window_i64_bound(offset)?;
+            if off.ty.contains_error() {
+                return Ok(Some(TypedExpr::error(span)));
+            }
+            let elem = Self::construct_union_payload(pos_uid, 1, pos_ty, off, span);
+            return Ok(Some(TypedExpr {
+                kind: TypedExprKind::Array(vec![elem]),
+                ty: arr_pos_ty,
+                span,
+            }));
+        }
+        Ok(None)
+    }
+
     /// Checks `base_expr[key_expr]` under `cover`. Returns `(typed_expr, absorbed_ref)` where
     /// `absorbed_ref` is `true` when an enclosing `ref` was absorbed by a base-borrowing `Index`
     /// (and `false` for the 6 built-in indexable types or error recovery).
@@ -15828,19 +16023,7 @@ impl<'a> Checker<'a> {
         cover: IndexBorrowCover,
         built_in_expected: Option<&Type>,
     ) -> Result<(TypedExpr, bool), Diagnostic> {
-        let (raw_base, inner_was_view) = if !matches!(cover, IndexBorrowCover::Uncovered)
-            && let ExprKind::Index(inner_base, inner_key) = &base_expr.kind
-        {
-            self.index_access(
-                base_expr.span,
-                inner_base,
-                inner_key,
-                IndexBorrowCover::ChainInner,
-                None,
-            )?
-        } else {
-            (self.expression(base_expr, None)?, false)
-        };
+        let (raw_base, inner_was_view) = self.eval_index_base(base_expr, cover)?;
         let value = Self::autoderef(raw_base);
         if value.ty.contains_error() {
             return Ok((TypedExpr::error(span), true));
@@ -15883,7 +16066,38 @@ impl<'a> Checker<'a> {
             return Ok((finished, false));
         }
         let self_ty = self.inference.resolve(&value.ty);
-        if matches!(key_expr.kind, ExprKind::FromEnd(_)) {
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => built_in_expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        if let ExprKind::FromEnd(offset) = &key_expr.kind {
+            if let Some(key) =
+                self.one_component_from_end_key(&self_ty, false, offset, key_expr.span)?
+            {
+                if key.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                return self.index_access_typed(
+                    span,
+                    value,
+                    key,
+                    cover,
+                    inner_was_view,
+                    false,
+                    expected_after,
+                );
+            }
+            if self.is_std_matrix_family(&self_ty) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for Index<{}, Slice.Pos>; define an instance or use a supported key type",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                )
+                .with_help("write 'ref m[i, ..]' for a row"));
+            }
             return Err(Diagnostic::of(
                 DiagnosticKind::FromEndNeedsLength,
                 format!(
@@ -15896,17 +16110,62 @@ impl<'a> Checker<'a> {
         let hint = self
             .classes
             .index_key_hint(&self_ty, false, &mut self.inference, &self.types);
-        let key = self.expression(key_expr, hint.as_ref())?;
+        let key = if self.is_std_matrix_family(&self_ty)
+            && !matches!(key_expr.kind, ExprKind::Tuple(_))
+            && hint.is_some()
+        {
+            let was_recovering = std::mem::replace(&mut self.recovering, false);
+            let res = self.expression(key_expr, hint.as_ref());
+            self.recovering = was_recovering;
+            match res {
+                Ok(key) => key,
+                Err(diag) => return Err(diag.with_help("write 'ref m[i, ..]' for a row")),
+            }
+        } else {
+            self.expression(key_expr, hint.as_ref())?
+        };
         if key.ty.contains_error() {
             return Ok((TypedExpr::error(span), true));
         }
-        let expected = match cover {
-            IndexBorrowCover::Uncovered => built_in_expected,
-            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
-        };
-        self.index_access_typed(span, value, key, cover, inner_was_view, expected)
+        if self.is_std_slice_sel(&key.ty) {
+            let direct = self.classes.resolve_index(
+                &self_ty,
+                &key.ty,
+                false,
+                &mut self.inference,
+                &self.constraints,
+                &self.types,
+                self.names,
+                span,
+                key.span,
+            )?;
+            if direct.is_none()
+                && let Some(wrapped) =
+                    self.wrap_window_sels_opt(vec![key.clone()], &self_ty, key.span)
+            {
+                return self.index_access_typed(
+                    span,
+                    value,
+                    wrapped,
+                    cover,
+                    inner_was_view,
+                    false,
+                    expected_after,
+                );
+            }
+        }
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            false,
+            expected_after,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn index_access_typed(
         &mut self,
         span: Span,
@@ -15914,6 +16173,7 @@ impl<'a> Checker<'a> {
         key: TypedExpr,
         cover: IndexBorrowCover,
         inner_was_view: bool,
+        multi_all_expr: bool,
         expected: Option<&Type>,
     ) -> Result<(TypedExpr, bool), Diagnostic> {
         let self_ty = self.inference.resolve(&value.ty);
@@ -15934,7 +16194,7 @@ impl<'a> Checker<'a> {
                 .classes
                 .has_index_instances(&self_ty, false, &mut self.inference, &self.types)
             {
-                return Err(Diagnostic::of(
+                let mut diag = Diagnostic::of(
                     DiagnosticKind::NoInstance,
                     format!(
                         "no instance for Index<{}, {}>; define an instance or use a supported key type",
@@ -15942,7 +16202,14 @@ impl<'a> Checker<'a> {
                         key_ty.display_with(self.names)
                     ),
                     span,
-                ));
+                );
+                if !multi_all_expr
+                    && self.is_std_matrix_family(&self_ty)
+                    && !matches!(key_ty, Type::Tuple(_))
+                {
+                    diag = diag.with_help("write 'ref m[i, ..]' for a row");
+                }
+                return Err(diag);
             }
             return Err(Diagnostic::of(
                 DiagnosticKind::IndexNonIndexable,
@@ -16100,6 +16367,10 @@ impl<'a> Checker<'a> {
                         text: String::new(),
                     });
                 }
+                if multi_all_expr && !mutable {
+                    diag =
+                        diag.with_help("add a range component such as 'ref t[i, ..]' for a window");
+                }
                 diag = diag.fix(
                     format!("remove '{kw}'"),
                     crate::diagnostic::Applicability::Likely,
@@ -16176,6 +16447,945 @@ impl<'a> Checker<'a> {
         };
         let finished = self.finish_expression(kind, resolved.output_ty, expected, span)?;
         Ok((finished, resolved.borrows_base))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assign_index_mut_typed(
+        &mut self,
+        span: Span,
+        raw_target: TypedExpr,
+        raw_is_mut_ref: bool,
+        inner_ty: Type,
+        key: TypedExpr,
+        value_expr: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let Some(resolved) = self.classes.resolve_index(
+            &inner_ty,
+            &key.ty,
+            true,
+            &mut self.inference,
+            &self.constraints,
+            &self.types,
+            self.names,
+            span,
+            key.span,
+        )?
+        else {
+            let key_ty = self.inference.resolve(&key.ty);
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
+                    inner_ty.display_with(self.names),
+                    key_ty.display_with(self.names)
+                ),
+                span,
+            ));
+        };
+        self.constraints.extend(resolved.constraints);
+        let rhs = self.expression(value_expr, Some(&resolved.output_ty))?;
+        let mut bindings = Vec::new();
+        let base_needs_hoist = !key.is_index_const()
+            && if raw_is_mut_ref {
+                !Self::is_local_ref_chain(&raw_target)
+            } else {
+                !Self::is_mut_target_simple_or_d9(&raw_target)
+            };
+        let rhs_needs_hoist = if base_needs_hoist {
+            !rhs.is_index_const()
+        } else {
+            !self.is_rhs_key_order_unobservable(&rhs, &key)
+        };
+        let rhs = if rhs_needs_hoist {
+            let rhs_ty = self.inference.resolve(&rhs.ty);
+            let rhs_span = rhs.span;
+            let rhs_local = self.index_generated_local("$index.rhs.", rhs_ty.clone(), rhs_span);
+            let rhs_id = rhs_local.id;
+            bindings.push((rhs_local, rhs));
+            TypedExpr {
+                kind: TypedExprKind::Local(rhs_id),
+                ty: rhs_ty,
+                span: rhs_span,
+            }
+        } else {
+            rhs
+        };
+        let target_arg = if raw_is_mut_ref {
+            if base_needs_hoist {
+                let ref_ty = self.inference.resolve(&raw_target.ty);
+                let ref_span = raw_target.span;
+                let ref_local = self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                let ref_id = ref_local.id;
+                bindings.push((ref_local, raw_target));
+                TypedExpr {
+                    kind: TypedExprKind::Local(ref_id),
+                    ty: ref_ty,
+                    span: ref_span,
+                }
+            } else {
+                raw_target
+            }
+        } else {
+            let hoisted_target = if base_needs_hoist {
+                self.hoist_index_mut_place(raw_target, &mut bindings)
+            } else {
+                raw_target
+            };
+            let target_span = hoisted_target.span;
+            let target_ty = self.inference.resolve(&hoisted_target.ty);
+            TypedExpr {
+                kind: TypedExprKind::Borrow(Box::new(hoisted_target), true),
+                ty: Type::Reference(Box::new(target_ty), true),
+                span: target_span,
+            }
+        };
+        let callee_kind = if resolved.type_args.is_empty() {
+            TypedExprKind::Function(FunctionRef::User(resolved.function))
+        } else {
+            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+        };
+        let key_span = key.span;
+        let key_ty = self.inference.resolve(&key.ty);
+        let call = TypedExprKind::Call(
+            Box::new(TypedExpr {
+                kind: callee_kind,
+                ty: resolved.call_signature,
+                span,
+            }),
+            vec![
+                TypedExpr {
+                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                    ty: Type::Reference(Box::new(key_ty), false),
+                    span: key_span,
+                },
+                rhs,
+                target_arg,
+            ],
+        );
+        let kind = if bindings.is_empty() {
+            call
+        } else {
+            TypedExprKind::Block {
+                bindings,
+                result: Box::new(TypedExpr {
+                    kind: call,
+                    ty: Type::Unit,
+                    span,
+                }),
+            }
+        };
+        self.finish_expression(kind, Type::Unit, expected, span)
+    }
+
+    fn component_hints(
+        &mut self,
+        self_ty: &Type,
+        mutable: bool,
+        count: usize,
+    ) -> Vec<Option<Type>> {
+        let selectors = self.std_selector_unions();
+        let hint = self
+            .classes
+            .index_key_hint(self_ty, mutable, &mut self.inference, &self.types);
+        match hint {
+            Some(Type::Tuple(items))
+                if items.len() == count
+                    && !items
+                        .iter()
+                        .any(|t| matches!(t, Type::Union(uid, _) if selectors.contains(uid))) =>
+            {
+                items.into_iter().map(Some).collect()
+            }
+            Some(Type::Array(elem)) if !matches!(elem.as_ref(), Type::Union(uid, _) if selectors.contains(uid)) =>
+            {
+                vec![Some(*elem); count]
+            }
+            _ => vec![None; count],
+        }
+    }
+
+    fn check_not_slice_axis(&mut self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
+        let resolved = self.inference.resolve(ty);
+        if self
+            .std_slice_union("Axis")
+            .is_some_and(|id| matches!(resolved, Type::Union(uid, _) if uid == id))
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::IndexComponentType,
+                "a bracket key takes positions, ranges, or Slice.Sel values, not Slice.Axis; keep Slice.Axis in the long form 't[[...]]'",
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn build_element_or_pos_key(
+        &mut self,
+        span: Span,
+        self_ty: &Type,
+        mutable: bool,
+        items: Vec<(TypedExpr, bool)>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let n = items.len();
+        let has_from_end = items.iter().any(|(_, is_back)| *is_back);
+        if has_from_end {
+            let class_name = if mutable { "IndexMut" } else { "Index" };
+            let Some((pos_uid, pos_ty)) = self.std_slice_pos_type() else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for {class_name}<{}, [Slice.Pos]>; define an instance with Slice.Pos keys to support '^' positions",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                ));
+            };
+            let mut pos_exprs = Vec::with_capacity(n);
+            for (mut expr, is_back) in items {
+                let expr_span = expr.span;
+                if !is_back {
+                    if self
+                        .inference
+                        .unify(&expr.ty, &Type::I64, &self.types, expr_span)
+                        .is_err()
+                    {
+                        let shown = self.inference.resolve(&expr.ty).display_with(self.names);
+                        let mut diag = Diagnostic::of(
+                            DiagnosticKind::TypeMismatch,
+                            format!("expected i64, found {shown}"),
+                            expr_span,
+                        );
+                        if self.inference.resolve(&expr.ty).is_integer() {
+                            diag = diag
+                                .with_help("Tensor and Matrix positions are i64; write 'a as i64'");
+                        }
+                        return Err(diag);
+                    }
+                    expr =
+                        self.finish_expression(expr.kind, expr.ty, Some(&Type::I64), expr_span)?;
+                }
+                let case_id = usize::from(is_back);
+                pos_exprs.push(Self::construct_union_payload(
+                    pos_uid,
+                    case_id,
+                    pos_ty.clone(),
+                    expr,
+                    expr_span,
+                ));
+            }
+            let tuple_probe = if n == 1 {
+                pos_ty.clone()
+            } else {
+                Type::Tuple(vec![pos_ty.clone(); n])
+            };
+            if self.classes.has_exact_index_key(
+                self_ty,
+                mutable,
+                &tuple_probe,
+                &mut self.inference,
+                &self.types,
+            ) {
+                return Ok(if n == 1 {
+                    pos_exprs.pop().expect("single pos")
+                } else {
+                    TypedExpr {
+                        kind: TypedExprKind::Tuple(pos_exprs),
+                        ty: tuple_probe,
+                        span,
+                    }
+                });
+            }
+            let arr_probe = Type::Array(Box::new(pos_ty));
+            if self.classes.has_exact_index_key(
+                self_ty,
+                mutable,
+                &arr_probe,
+                &mut self.inference,
+                &self.types,
+            ) {
+                return Ok(TypedExpr {
+                    kind: TypedExprKind::Array(pos_exprs),
+                    ty: arr_probe,
+                    span,
+                });
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for {class_name}<{}, {}>; define an instance with Slice.Pos keys to support '^' positions",
+                    self_ty.display_with(self.names),
+                    tuple_probe.display_with(self.names)
+                ),
+                span,
+            )
+            .with_help("use Slice.Pos keys, or compute the position from the container's shape"));
+        }
+
+        let exprs: Vec<TypedExpr> = items.into_iter().map(|(e, _)| e).collect();
+        let selectors = self.std_selector_unions();
+        if self.classes.has_element_tuple_key(
+            self_ty,
+            mutable,
+            n,
+            &selectors,
+            &mut self.inference,
+            &self.types,
+        ) {
+            let tys = exprs.iter().map(|e| e.ty.clone()).collect();
+            return Ok(TypedExpr {
+                kind: TypedExprKind::Tuple(exprs),
+                ty: Type::Tuple(tys),
+                span,
+            });
+        }
+        if self.classes.has_element_array_key(
+            self_ty,
+            mutable,
+            &selectors,
+            &mut self.inference,
+            &self.types,
+        ) {
+            let elem_ty = self.inference.fresh();
+            for item in &exprs {
+                self.same(&item.ty, &elem_ty, item.span)?;
+            }
+            let resolved_elem = self.inference.resolve(&elem_ty);
+            return Ok(TypedExpr {
+                kind: TypedExprKind::Array(exprs),
+                ty: Type::Array(Box::new(resolved_elem)),
+                span,
+            });
+        }
+        let class_name = if mutable { "IndexMut" } else { "Index" };
+        let tuple_ty = Type::Tuple(
+            exprs
+                .iter()
+                .map(|e| self.inference.resolve(&e.ty))
+                .collect(),
+        );
+        if self
+            .classes
+            .has_index_instances(self_ty, mutable, &mut self.inference, &self.types)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for {class_name}<{}, {}>; define an instance or use a supported key type",
+                    self_ty.display_with(self.names),
+                    tuple_ty.display_with(self.names)
+                ),
+                span,
+            ));
+        }
+        Err(Diagnostic::of(
+            DiagnosticKind::IndexNonIndexable,
+            "indexing requires an array, list, string, utf8string, or a type implementing Index",
+            span,
+        ))
+    }
+
+    fn multi_index_assign_key(
+        &mut self,
+        span: Span,
+        inner_ty: &Type,
+        keys: &[crate::syntax::IndexComponent],
+    ) -> Result<Option<TypedExpr>, Diagnostic> {
+        let has_from_end = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Expr(Expr {
+                    kind: ExprKind::FromEnd(_),
+                    ..
+                })
+            )
+        });
+        let hints = if has_from_end {
+            vec![None; keys.len()]
+        } else {
+            self.component_hints(inner_ty, true, keys.len())
+        };
+        let mut items = Vec::with_capacity(keys.len());
+        for (comp, hint) in keys.iter().zip(hints) {
+            let crate::syntax::IndexComponent::Expr(expr) = comp else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::IndexComponentType,
+                    "cannot assign through a range component; index an element position",
+                    span,
+                ));
+            };
+            if let ExprKind::FromEnd(offset) = &expr.kind {
+                self.negative_from_end_warning(offset);
+                let mut off = self.window_i64_bound(offset)?;
+                if off.ty.contains_error() {
+                    return Ok(None);
+                }
+                off.span = expr.span;
+                items.push((off, true));
+            } else {
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok(None);
+                }
+                self.check_not_slice_axis(&typed.ty, expr.span)?;
+                items.push((typed, false));
+            }
+        }
+        self.build_element_or_pos_key(span, inner_ty, true, items)
+            .map(Some)
+    }
+
+    fn expr_to_sel_item(
+        &mut self,
+        raw: &Expr,
+        mut typed: TypedExpr,
+        pos_uid: usize,
+        sel_uid: usize,
+    ) -> Result<TypedExpr, Diagnostic> {
+        self.check_not_slice_axis(&typed.ty, raw.span)?;
+        if self.is_std_slice_sel(&typed.ty) {
+            return Ok(typed);
+        }
+        self.negative_window_index_warning(raw);
+        if self
+            .inference
+            .unify(&typed.ty, &Type::I64, &self.types, raw.span)
+            .is_err()
+        {
+            let resolved = self.inference.resolve(&typed.ty);
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::IndexComponentType,
+                format!(
+                    "expected an i64 position or a Slice.Sel, found {}",
+                    resolved.display_with(self.names)
+                ),
+                raw.span,
+            );
+            if resolved.is_integer() {
+                diag = diag.with_help("Tensor and Matrix positions are i64; write 'a as i64'");
+            }
+            return Err(diag);
+        }
+        let span = typed.span;
+        typed = self.finish_expression(typed.kind, typed.ty, Some(&Type::I64), span)?;
+        let pos_ty = Type::Union(pos_uid, Box::new([]));
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        let pos = Self::construct_union_payload(pos_uid, 0, pos_ty, typed, span);
+        Ok(Self::construct_union_payload(sel_uid, 0, sel_ty, pos, span))
+    }
+
+    fn range_bound_to_slice_bound(
+        &mut self,
+        bound: Option<&Expr>,
+        excluded: bool,
+        pos_uid: usize,
+        bound_uid: usize,
+        fallback_span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let bound_ty = Type::Union(bound_uid, Box::new([]));
+        let Some(expr) = bound else {
+            return Ok(Self::construct_union_unit(
+                bound_uid,
+                0,
+                bound_ty,
+                fallback_span,
+            ));
+        };
+        let pos_ty = Type::Union(pos_uid, Box::new([]));
+        let pos = if let ExprKind::FromEnd(offset) = &expr.kind {
+            let off = self.window_i64_bound(offset)?;
+            Self::construct_union_payload(pos_uid, 1, pos_ty, off, expr.span)
+        } else {
+            let val = self.window_i64_bound(expr)?;
+            Self::construct_union_payload(pos_uid, 0, pos_ty, val, expr.span)
+        };
+        let case_id = if excluded { 2 } else { 1 };
+        Ok(Self::construct_union_payload(
+            bound_uid, case_id, bound_ty, pos, expr.span,
+        ))
+    }
+
+    fn component_to_sel(
+        &mut self,
+        component: &crate::syntax::IndexComponent,
+        pos_uid: usize,
+        bound_uid: usize,
+        sel_uid: usize,
+        fallback_span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        match component {
+            crate::syntax::IndexComponent::Whole(span) => {
+                Ok(Self::construct_union_unit(sel_uid, 2, sel_ty, *span))
+            }
+            crate::syntax::IndexComponent::Expr(expr) => {
+                if let ExprKind::FromEnd(offset) = &expr.kind {
+                    self.negative_from_end_warning(offset);
+                    let off = self.window_i64_bound(offset)?;
+                    if off.ty.contains_error() {
+                        return Ok(TypedExpr::error(expr.span));
+                    }
+                    let pos_ty = Type::Union(pos_uid, Box::new([]));
+                    let pos = Self::construct_union_payload(pos_uid, 1, pos_ty, off, expr.span);
+                    return Ok(Self::construct_union_payload(
+                        sel_uid, 0, sel_ty, pos, expr.span,
+                    ));
+                }
+                let is_int_lit = matches!(&expr.kind, ExprKind::Integer(_, None))
+                    || matches!(
+                        &expr.kind,
+                        ExprKind::Unary(UnaryOp::Negate, inner)
+                            if matches!(inner.kind, ExprKind::Integer(_, None))
+                    );
+                let hint = is_int_lit.then_some(Type::I64);
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok(TypedExpr::error(expr.span));
+                }
+                self.expr_to_sel_item(expr, typed, pos_uid, sel_uid)
+            }
+            crate::syntax::IndexComponent::Range(range) => {
+                self.negative_bound_warnings(range);
+                let span = range
+                    .start
+                    .as_ref()
+                    .map(|s| s.span)
+                    .or_else(|| range.step.as_ref().map(|s| s.span))
+                    .or_else(|| range.end.as_ref().map(|e| e.span))
+                    .unwrap_or(fallback_span);
+                let start_bound = self.range_bound_to_slice_bound(
+                    range.start.as_deref(),
+                    range.ends.start_open,
+                    pos_uid,
+                    bound_uid,
+                    span,
+                )?;
+                let step_expr = match range.step.as_deref() {
+                    Some(step) => Some(self.window_i64_bound(step)?),
+                    None => None,
+                };
+                let end_bound = self.range_bound_to_slice_bound(
+                    range.end.as_deref(),
+                    !range.ends.end_closed,
+                    pos_uid,
+                    bound_uid,
+                    span,
+                )?;
+                if start_bound.ty.contains_error()
+                    || end_bound.ty.contains_error()
+                    || step_expr.as_ref().is_some_and(|s| s.ty.contains_error())
+                {
+                    return Ok(TypedExpr::error(span));
+                }
+                let bound_ty = Type::Union(bound_uid, Box::new([]));
+                let payload_ty = Type::Tuple(vec![bound_ty.clone(), bound_ty.clone(), Type::I64]);
+                // NC18 §5: evaluate start, then step, then end when both `step` and `end` exist,
+                // while `Span` stores `(start_bound, end_bound, step)`.
+                if range.end.is_some()
+                    && let Some(step_val) = step_expr
+                {
+                    let mut bindings = Vec::new();
+                    let start_ref = if range.start.is_some() {
+                        let s_span = start_bound.span;
+                        let s_local =
+                            self.index_generated_local("$sel.start.", bound_ty.clone(), s_span);
+                        let s_id = s_local.id;
+                        bindings.push((s_local, start_bound));
+                        TypedExpr {
+                            kind: TypedExprKind::Local(s_id),
+                            ty: bound_ty.clone(),
+                            span: s_span,
+                        }
+                    } else {
+                        start_bound
+                    };
+                    let st_span = step_val.span;
+                    let st_local = self.index_generated_local("$sel.step.", Type::I64, st_span);
+                    let st_id = st_local.id;
+                    bindings.push((st_local, step_val));
+                    let e_span = end_bound.span;
+                    let e_local = self.index_generated_local("$sel.end.", bound_ty.clone(), e_span);
+                    let e_id = e_local.id;
+                    bindings.push((e_local, end_bound));
+                    let payload = TypedExpr {
+                        kind: TypedExprKind::Tuple(vec![
+                            start_ref,
+                            TypedExpr {
+                                kind: TypedExprKind::Local(e_id),
+                                ty: bound_ty,
+                                span: e_span,
+                            },
+                            TypedExpr {
+                                kind: TypedExprKind::Local(st_id),
+                                ty: Type::I64,
+                                span: st_span,
+                            },
+                        ]),
+                        ty: payload_ty,
+                        span,
+                    };
+                    let constructed =
+                        Self::construct_union_payload(sel_uid, 1, sel_ty.clone(), payload, span);
+                    return Ok(TypedExpr {
+                        kind: TypedExprKind::Block {
+                            bindings,
+                            result: Box::new(constructed),
+                        },
+                        ty: sel_ty,
+                        span,
+                    });
+                }
+                let step_val = step_expr.unwrap_or(TypedExpr {
+                    kind: TypedExprKind::Int(1),
+                    ty: Type::I64,
+                    span,
+                });
+                let payload = TypedExpr {
+                    kind: TypedExprKind::Tuple(vec![start_bound, end_bound, step_val]),
+                    ty: payload_ty,
+                    span,
+                };
+                Ok(Self::construct_union_payload(
+                    sel_uid, 1, sel_ty, payload, span,
+                ))
+            }
+        }
+    }
+
+    fn wrap_window_sels_opt(
+        &mut self,
+        mut sels: Vec<TypedExpr>,
+        self_ty: &Type,
+        span: Span,
+    ) -> Option<TypedExpr> {
+        let sel_uid = self.std_slice_union("Sel")?;
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        let arr_sel_ty = Type::Array(Box::new(sel_ty.clone()));
+        if self.classes.has_exact_index_key(
+            self_ty,
+            false,
+            &arr_sel_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            return Some(TypedExpr {
+                kind: TypedExprKind::Array(sels),
+                ty: arr_sel_ty,
+                span,
+            });
+        }
+        let arity = self.classes.min_sel_tuple_arity(
+            self_ty,
+            sels.len(),
+            &sel_ty,
+            &mut self.inference,
+            &self.types,
+        )?;
+        while sels.len() < arity {
+            sels.push(Self::construct_union_unit(sel_uid, 2, sel_ty.clone(), span));
+        }
+        if arity == 1 {
+            sels.pop()
+        } else {
+            Some(TypedExpr {
+                kind: TypedExprKind::Tuple(sels),
+                ty: Type::Tuple(vec![sel_ty; arity]),
+                span,
+            })
+        }
+    }
+
+    fn finish_window_sels(
+        &mut self,
+        span: Span,
+        value: TypedExpr,
+        sels: Vec<TypedExpr>,
+        cover: IndexBorrowCover,
+        inner_was_view: bool,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        if sels.iter().any(|s| s.ty.contains_error()) {
+            return Ok((TypedExpr::error(span), true));
+        }
+        let self_ty = self.inference.resolve(&value.ty);
+        let Some(key) = self.wrap_window_sels_opt(sels, &self_ty, span) else {
+            if self
+                .classes
+                .has_index_instances(&self_ty, false, &mut self.inference, &self.types)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                ));
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::IndexNonIndexable,
+                "indexing requires an array, list, string, utf8string, or a type implementing Index",
+                value.span,
+            ));
+        };
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            false,
+            expected_after,
+        )
+    }
+
+    fn validate_window_components_without_slice_module(
+        &mut self,
+        keys: &[crate::syntax::IndexComponent],
+    ) -> Result<(), Diagnostic> {
+        for comp in keys {
+            match comp {
+                crate::syntax::IndexComponent::Whole(_) => {}
+                crate::syntax::IndexComponent::Expr(expr) => {
+                    if let ExprKind::FromEnd(offset) = &expr.kind {
+                        self.negative_from_end_warning(offset);
+                        self.window_i64_bound(offset)?;
+                    } else {
+                        self.negative_window_index_warning(expr);
+                        let typed = self.expression(expr, None)?;
+                        if !typed.ty.contains_error()
+                            && self
+                                .inference
+                                .unify(&typed.ty, &Type::I64, &self.types, expr.span)
+                                .is_err()
+                        {
+                            let resolved = self.inference.resolve(&typed.ty);
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::IndexComponentType,
+                                format!(
+                                    "expected an i64 position or a Slice.Sel, found {}",
+                                    resolved.display_with(self.names)
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                }
+                crate::syntax::IndexComponent::Range(range) => {
+                    self.negative_bound_warnings(range);
+                    for bound in [
+                        range.start.as_deref(),
+                        range.step.as_deref(),
+                        range.end.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if let ExprKind::FromEnd(offset) = &bound.kind {
+                            self.window_i64_bound(offset)?;
+                        } else {
+                            self.window_i64_bound(bound)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn multi_index(
+        &mut self,
+        span: Span,
+        base_expr: &Expr,
+        keys: &[crate::syntax::IndexComponent],
+        cover: IndexBorrowCover,
+        built_in_expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let (raw_base, inner_was_view) = self.eval_index_base(base_expr, cover)?;
+        let value = Self::autoderef(raw_base);
+        if value.ty.contains_error() {
+            return Ok((TypedExpr::error(span), true));
+        }
+        let self_ty = self.inference.resolve(&value.ty);
+        if Self::is_builtin_six_indexable(&self_ty) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinIndexOneComponent,
+                "arrays, lists, Vec, and strings take one index; write 'xs[i][j]' for an element of a nested array",
+                span,
+            ));
+        }
+
+        let has_syntax_window = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Range(_) | crate::syntax::IndexComponent::Whole(_)
+            )
+        });
+        if has_syntax_window {
+            let (Some(pos_uid), Some(bound_uid), Some(sel_uid)) = (
+                self.std_slice_union("Pos"),
+                self.std_slice_union("Bound"),
+                self.std_slice_union("Sel"),
+            ) else {
+                self.validate_window_components_without_slice_module(keys)?;
+                if self.classes.has_index_instances(
+                    &self_ty,
+                    false,
+                    &mut self.inference,
+                    &self.types,
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoInstance,
+                        format!(
+                            "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                            self_ty.display_with(self.names)
+                        ),
+                        span,
+                    ));
+                }
+                return Err(Diagnostic::of(
+                    DiagnosticKind::IndexNonIndexable,
+                    "indexing requires an array, list, string, utf8string, or a type implementing Index",
+                    value.span,
+                ));
+            };
+            let mut sels = Vec::with_capacity(keys.len());
+            for comp in keys {
+                sels.push(self.component_to_sel(comp, pos_uid, bound_uid, sel_uid, span)?);
+            }
+            return self.finish_window_sels(
+                span,
+                value,
+                sels,
+                cover,
+                inner_was_view,
+                built_in_expected,
+            );
+        }
+
+        let has_from_end = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Expr(Expr {
+                    kind: ExprKind::FromEnd(_),
+                    ..
+                })
+            )
+        });
+        let hints = if has_from_end {
+            vec![None; keys.len()]
+        } else {
+            self.component_hints(&self_ty, false, keys.len())
+        };
+        enum PreChecked<'a> {
+            FromEnd { offset: TypedExpr, span: Span },
+            Expr { raw: &'a Expr, typed: TypedExpr },
+        }
+        let mut pre = Vec::with_capacity(keys.len());
+        let mut any_sel = false;
+        for (comp, hint) in keys.iter().zip(hints) {
+            let crate::syntax::IndexComponent::Expr(expr) = comp else {
+                unreachable!("syntax window handled above");
+            };
+            if let ExprKind::FromEnd(offset) = &expr.kind {
+                self.negative_from_end_warning(offset);
+                let off = self.window_i64_bound(offset)?;
+                if off.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                pre.push(PreChecked::FromEnd {
+                    offset: off,
+                    span: expr.span,
+                });
+            } else {
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                self.check_not_slice_axis(&typed.ty, expr.span)?;
+                if self.is_std_slice_sel(&typed.ty) {
+                    any_sel = true;
+                }
+                pre.push(PreChecked::Expr { raw: expr, typed });
+            }
+        }
+
+        if any_sel {
+            let (Some(pos_uid), Some(sel_uid)) =
+                (self.std_slice_union("Pos"), self.std_slice_union("Sel"))
+            else {
+                unreachable!("Slice.Sel value present implies Slice unions exist");
+            };
+            let pos_ty = Type::Union(pos_uid, Box::new([]));
+            let sel_ty = Type::Union(sel_uid, Box::new([]));
+            let mut sels = Vec::with_capacity(pre.len());
+            for item in pre {
+                match item {
+                    PreChecked::FromEnd {
+                        offset,
+                        span: comp_span,
+                    } => {
+                        let pos = Self::construct_union_payload(
+                            pos_uid,
+                            1,
+                            pos_ty.clone(),
+                            offset,
+                            comp_span,
+                        );
+                        sels.push(Self::construct_union_payload(
+                            sel_uid,
+                            0,
+                            sel_ty.clone(),
+                            pos,
+                            comp_span,
+                        ));
+                    }
+                    PreChecked::Expr { raw, typed } => {
+                        sels.push(self.expr_to_sel_item(raw, typed, pos_uid, sel_uid)?);
+                    }
+                }
+            }
+            return self.finish_window_sels(
+                span,
+                value,
+                sels,
+                cover,
+                inner_was_view,
+                built_in_expected,
+            );
+        }
+
+        let items: Vec<(TypedExpr, bool)> = pre
+            .into_iter()
+            .map(|item| match item {
+                PreChecked::FromEnd {
+                    mut offset,
+                    span: comp_span,
+                } => {
+                    offset.span = comp_span;
+                    (offset, true)
+                }
+                PreChecked::Expr { typed, .. } => (typed, false),
+            })
+            .collect();
+        let key = self.build_element_or_pos_key(span, &self_ty, false, items)?;
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => built_in_expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            true,
+            expected_after,
+        )
     }
 
     fn callback_local(&mut self, ty: Type, span: Span) -> Local {
@@ -17826,6 +19036,29 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn negative_window_index_warning(&mut self, index: &Expr) {
+        if let Some((k, text, span)) = Self::negative_literal(index) {
+            let k_minus_1 = k - 1;
+            let help = if self.module_edition().range_family() {
+                format!(
+                    "'^0' is the last element: write '^{k_minus_1}' (for example 'ref t[^{k_minus_1}, ..]')"
+                )
+            } else {
+                format!(
+                    "write 'Slice.Sel.Item (Slice.Pos.Back {k_minus_1})'; edition 2028 writes '^{k_minus_1}'"
+                )
+            };
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralIndex,
+                    format!("'{text}' is a negative position; an index never counts from the end"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
     fn wrapping_add_one(bound: TypedExpr, span: Span) -> TypedExpr {
         TypedExpr {
             kind: TypedExprKind::Binary(
@@ -17842,18 +19075,20 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn slice(
+    fn slice_expr(
         &mut self,
-        source: &Expr,
+        source_expr: &Expr,
         range: &crate::syntax::RangeKey,
         mutable: bool,
         span: Span,
-    ) -> Result<(TypedExprKind, Type), Diagnostic> {
-        let mut source = self.expression(source, None)?;
-        source.ty = self.inference.resolve(&source.ty);
-        let source = Self::autoderef(source);
+        cover: IndexBorrowCover,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let (mut raw_source, inner_was_view) = self.eval_index_base(source_expr, cover)?;
+        raw_source.ty = self.inference.resolve(&raw_source.ty);
+        let source = Self::autoderef(raw_source);
         if source.ty == Type::Error {
-            return Ok((TypedExprKind::Error, Type::Error));
+            return Ok((TypedExpr::error(span), true));
         }
         let element = match &source.ty {
             Type::Array(element) => element.clone(),
@@ -17869,12 +19104,61 @@ impl<'a> Checker<'a> {
                     span,
                 ));
             }
-            _ => {
+            Type::List(_) | Type::Vec(_) | Type::String | Type::Utf8String => {
                 return Err(Diagnostic::of(
                     DiagnosticKind::SliceNonArray,
                     "a slice requires an array; lists and strings do not support array slicing",
                     span,
                 ));
+            }
+            _ => {
+                let self_ty = self.inference.resolve(&source.ty);
+                let has_index = self.classes.has_index_instances(
+                    &self_ty,
+                    false,
+                    &mut self.inference,
+                    &self.types,
+                );
+                if has_index && self.module_edition().range_family() {
+                    let comp = crate::syntax::IndexComponent::Range(Box::new(range.clone()));
+                    let (Some(pos_uid), Some(bound_uid), Some(sel_uid)) = (
+                        self.std_slice_union("Pos"),
+                        self.std_slice_union("Bound"),
+                        self.std_slice_union("Sel"),
+                    ) else {
+                        self.validate_window_components_without_slice_module(
+                            std::slice::from_ref(&comp),
+                        )?;
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::NoInstance,
+                            format!(
+                                "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                                self_ty.display_with(self.names)
+                            ),
+                            span,
+                        ));
+                    };
+                    let sel = self.component_to_sel(&comp, pos_uid, bound_uid, sel_uid, span)?;
+                    return self.finish_window_sels(
+                        span,
+                        source,
+                        vec![sel],
+                        cover,
+                        inner_was_view,
+                        expected,
+                    );
+                }
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::SliceNonArray,
+                    "a slice requires an array; lists and strings do not support array slicing",
+                    span,
+                );
+                if has_index {
+                    diag = diag.with_help(
+                        "in edition 2028, 'ref t[a..b]' takes a window of a type with an Index instance for [Slice.Sel]",
+                    );
+                }
+                return Err(diag);
             }
         };
         if let Some(step) = &range.step {
@@ -17946,14 +19230,13 @@ impl<'a> Checker<'a> {
         } else {
             Type::Reference(Box::new(Type::Array(element)), false)
         };
-        Ok((
-            TypedExprKind::Slice {
-                value: Box::new(source),
-                start,
-                end,
-            },
-            ty,
-        ))
+        let kind = TypedExprKind::Slice {
+            value: Box::new(source),
+            start,
+            end,
+        };
+        let finished = self.finish_expression(kind, ty, expected, span)?;
+        Ok((finished, false))
     }
 
     /// An exclusive slice borrows a named array: a local, a field path, or a dereference.

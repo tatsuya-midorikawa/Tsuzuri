@@ -4435,48 +4435,55 @@ impl Parser<'_> {
         allow_record: bool,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
+        let outer_slice = self.slice_context.take();
         let mut arguments = Vec::new();
-        while self.space_argument() {
-            if self.at(&TokenKind::LeftParen) {
-                let start = self.take().span;
-                if self.eat(&TokenKind::RightParen) {
-                    arguments.push(self.make(
-                        ExprKind::Unit,
-                        start.through(self.tokens[self.position - 1].span),
-                        1,
-                    )?);
-                } else {
-                    let outer = self.stop_at_arm;
-                    let outer_arrow = self.stop_at_arrow;
-                    self.stop_at_arm = false;
-                    self.stop_at_arrow = false;
-                    let mut grouped = self.expressions(TokenKind::RightParen)?;
-                    self.stop_at_arm = outer;
-                    self.stop_at_arrow = outer_arrow;
-                    if grouped.len() == 1 {
-                        let mut argument = grouped.pop().unwrap();
-                        argument.span = start.through(self.tokens[self.position - 1].span);
-                        while !(stop_at_newline && self.newline_before_current())
-                            && (self.at(&TokenKind::Dot)
-                                || (matches!(
-                                    self.current().kind,
-                                    TokenKind::LeftParen | TokenKind::LeftBracket
-                                ) && self.tokens[self.position - 1].span.end
-                                    == self.current().span.start))
-                        {
-                            argument = self.postfix(argument)?;
-                        }
-                        arguments.push(argument);
+        let res = (|| -> Result<(), Diagnostic> {
+            while self.space_argument() {
+                if self.at(&TokenKind::LeftParen) {
+                    let start = self.take().span;
+                    if self.eat(&TokenKind::RightParen) {
+                        arguments.push(self.make(
+                            ExprKind::Unit,
+                            start.through(self.tokens[self.position - 1].span),
+                            1,
+                        )?);
                     } else {
-                        let span = start.through(self.tokens[self.position - 1].span);
-                        let depth = grouped.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
-                        arguments.push(self.make(ExprKind::Tuple(grouped), span, depth)?);
+                        let outer = self.stop_at_arm;
+                        let outer_arrow = self.stop_at_arrow;
+                        self.stop_at_arm = false;
+                        self.stop_at_arrow = false;
+                        let mut grouped = self.expressions(TokenKind::RightParen)?;
+                        self.stop_at_arm = outer;
+                        self.stop_at_arrow = outer_arrow;
+                        if grouped.len() == 1 {
+                            let mut argument = grouped.pop().unwrap();
+                            argument.span = start.through(self.tokens[self.position - 1].span);
+                            while !(stop_at_newline && self.newline_before_current())
+                                && (self.at(&TokenKind::Dot)
+                                    || (matches!(
+                                        self.current().kind,
+                                        TokenKind::LeftParen | TokenKind::LeftBracket
+                                    ) && self.tokens[self.position - 1].span.end
+                                        == self.current().span.start))
+                            {
+                                argument = self.postfix(argument)?;
+                            }
+                            arguments.push(argument);
+                        } else {
+                            let span = start.through(self.tokens[self.position - 1].span);
+                            let depth =
+                                grouped.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
+                            arguments.push(self.make(ExprKind::Tuple(grouped), span, depth)?);
+                        }
                     }
+                } else {
+                    arguments.push(self.term(allow_record, stop_at_newline)?);
                 }
-            } else {
-                arguments.push(self.term(allow_record, stop_at_newline)?);
             }
-        }
+            Ok(())
+        })();
+        self.slice_context = outer_slice;
+        res?;
         let span = left.span.through(self.tokens[self.position - 1].span);
         let depth = arguments
             .iter()
@@ -4768,77 +4775,167 @@ impl Parser<'_> {
         Ok(IndexComponent::Range(Box::new(key)))
     }
 
+    fn require_window_borrow(
+        borrowed: Option<bool>,
+        multi_axis: bool,
+        span: Span,
+    ) -> Result<bool, Diagnostic> {
+        borrowed.ok_or_else(|| {
+            Diagnostic::of(
+                DiagnosticKind::SliceMustBeBorrowed,
+                if multi_axis {
+                    "index windows must be borrows; write 'ref t[...]' for a shared window"
+                } else {
+                    "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice"
+                },
+                span,
+            )
+        })
+    }
+
+    fn component_depth(component: &IndexComponent) -> usize {
+        match component {
+            IndexComponent::Expr(expr) => expr.depth,
+            IndexComponent::Range(range) => range
+                .start
+                .iter()
+                .chain(&range.end)
+                .chain(&range.step)
+                .map(|value| value.depth)
+                .max()
+                .unwrap_or(0),
+            IndexComponent::Whole(_) => 0,
+        }
+    }
+
     fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
         let outer = self.enter_delimited();
         let borrowed = outer.slice_context;
-        self.stop_at_slice_dotdot = true;
-        let parsed = (|| {
-            let component = self.index_component()?;
+        let parsed = (|| -> Result<(Vec<(IndexComponent, Span)>, Token), Diagnostic> {
+            let mut components = Vec::new();
+            loop {
+                self.stop_at_arm = false;
+                self.stop_at_arrow = false;
+                self.stop_at_slice_dotdot = true;
+                self.slice_context = None;
+                let comp_start = self.current().span;
+                let component = self.index_component()?;
+                let comp_span = Span {
+                    start: comp_start.start,
+                    end: self.previous_end.max(comp_start.end),
+                    source: comp_start.source,
+                };
+                components.push((component, comp_span));
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                if self.at(&TokenKind::RightBracket) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExpectedToken,
+                        "expected an index component after ','; remove the trailing comma",
+                        self.current().span,
+                    ));
+                }
+            }
             let end = self.expect(&TokenKind::RightBracket, "']'")?;
-            Ok((component, end))
+            Ok((components, end))
         })();
-        self.leave_delimited(DelimitedFlags {
-            slice_context: None,
-            ..outer
-        });
-        let (component, end) = parsed?;
+        self.leave_delimited(outer);
+        let (mut components, end) = parsed?;
         let span = left.span.through(end.span);
-        match component {
-            IndexComponent::Expr(index) => {
-                let depth = left.depth.max(index.depth) + 1;
-                self.make(
-                    ExprKind::Index(Box::new(left), Box::new(index)),
-                    span,
-                    depth,
-                )
-            }
-            IndexComponent::Whole(_) => {
-                let Some(mutable) = borrowed else {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::SliceMustBeBorrowed,
-                        "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice",
+        if components.len() == 1 {
+            let (component, _) = components.pop().expect("single component");
+            return match component {
+                IndexComponent::Expr(index) => {
+                    let depth = left.depth.max(index.depth) + 1;
+                    self.make(
+                        ExprKind::Index(Box::new(left), Box::new(index)),
                         span,
-                    ));
-                };
-                Err(Diagnostic::of(
+                        depth,
+                    )
+                }
+                IndexComponent::Whole(_) => {
+                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    Err(Diagnostic::of(
+                        DiagnosticKind::SliceWithoutBounds,
+                        if mutable {
+                            "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
+                        } else {
+                            "a slice needs at least one bound; borrow the whole array with 'ref xs'"
+                        },
+                        span,
+                    ))
+                }
+                IndexComponent::Range(range) => {
+                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    let depth = range
+                        .start
+                        .iter()
+                        .chain(&range.end)
+                        .chain(&range.step)
+                        .map(|value| value.depth)
+                        .max()
+                        .unwrap_or(0)
+                        .max(left.depth)
+                        + 1;
+                    self.make(
+                        ExprKind::Slice {
+                            value: Box::new(left),
+                            range,
+                            mutable,
+                        },
+                        span,
+                        depth,
+                    )
+                }
+            };
+        }
+
+        if !self.edition.range_family()
+            && let Some((_, range_span)) = components.iter().find(|(comp, _)| {
+                matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_))
+            })
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                "range components in a multi-axis key need edition 2028; set 'edition = \"2028\"' in Tsuzuri.toml",
+                *range_span,
+            ));
+        }
+
+        let has_range_or_whole = components
+            .iter()
+            .any(|(comp, _)| matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_)));
+        if has_range_or_whole {
+            Self::require_window_borrow(borrowed, true, span)?;
+            if components
+                .iter()
+                .all(|(comp, _)| matches!(comp, IndexComponent::Whole(_)))
+            {
+                return Err(Diagnostic::of(
                     DiagnosticKind::SliceWithoutBounds,
-                    if mutable {
-                        "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
-                    } else {
-                        "a slice needs at least one bound; borrow the whole array with 'ref xs'"
-                    },
+                    "a key made only of '..' selects everything; borrow the value itself with 'ref t'",
                     span,
-                ))
-            }
-            IndexComponent::Range(range) => {
-                let Some(mutable) = borrowed else {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::SliceMustBeBorrowed,
-                        "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice",
-                        span,
-                    ));
-                };
-                let depth = range
-                    .start
-                    .iter()
-                    .chain(&range.end)
-                    .chain(&range.step)
-                    .map(|value| value.depth)
-                    .max()
-                    .unwrap_or(0)
-                    .max(left.depth)
-                    + 1;
-                self.make(
-                    ExprKind::Slice {
-                        value: Box::new(left),
-                        range,
-                        mutable,
-                    },
-                    span,
-                    depth,
-                )
+                ));
             }
         }
+
+        let max_key_depth = components
+            .iter()
+            .map(|(comp, _)| Self::component_depth(comp))
+            .max()
+            .unwrap_or(0);
+        let depth = left.depth.max(max_key_depth) + 1;
+        let keys: Box<[IndexComponent]> = components.into_iter().map(|(comp, _)| comp).collect();
+        self.make(
+            ExprKind::MultiIndex {
+                value: Box::new(left),
+                keys,
+                borrow: None,
+            },
+            span,
+            depth,
+        )
     }
 
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
@@ -5460,18 +5557,30 @@ impl Parser<'_> {
         let mut_span = mutable.then(|| self.take().span);
         let borrow = (token.kind == TokenKind::Ampersand).then_some(mutable);
         let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
-        let value = if term {
+        let mut value = if term {
             self.term(allow_record, stop_at_newline)?
         } else {
             self.expression_inner(PREFIX, allow_record, stop_at_newline)?
         };
         self.slice_context = outer_slice;
         self.record_symbolic_prefix(&token, mut_span, term, &value);
-        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
-            return Ok(Expr {
-                span: token.span.through(value.span),
-                ..value
-            });
+        if let Some(mutable) = borrow {
+            match &mut value.kind {
+                ExprKind::Slice { .. } => {
+                    return Ok(Expr {
+                        span: token.span.through(value.span),
+                        ..value
+                    });
+                }
+                ExprKind::MultiIndex { borrow: slot, .. } => {
+                    *slot = Some(mutable);
+                    return Ok(Expr {
+                        span: token.span.through(value.span),
+                        ..value
+                    });
+                }
+                _ => {}
+            }
         }
         let span = token.span.through(value.span);
         self.prefix_node(&token.kind, value, mutable, span)
@@ -5520,7 +5629,7 @@ impl Parser<'_> {
         let mutable = token.kind == TokenKind::Ref && self.eat(&TokenKind::Mut);
         let borrow = (token.kind == TokenKind::Ref).then_some(mutable);
         let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
-        let value = self.term(allow_record, stop_at_newline)?;
+        let mut value = self.term(allow_record, stop_at_newline)?;
         self.slice_context = outer_slice;
         if self.space_argument() {
             let keyword = if token.kind == TokenKind::Ref {
@@ -5539,8 +5648,17 @@ impl Parser<'_> {
             )));
         }
         let span = token.span.through(value.span);
-        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
-            return Ok(Expr { span, ..value });
+        if let Some(mutable) = borrow {
+            match &mut value.kind {
+                ExprKind::Slice { .. } => {
+                    return Ok(Expr { span, ..value });
+                }
+                ExprKind::MultiIndex { borrow: slot, .. } => {
+                    *slot = Some(mutable);
+                    return Ok(Expr { span, ..value });
+                }
+                _ => {}
+            }
         }
         let depth = value.depth + 1;
         let value = Box::new(value);
