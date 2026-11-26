@@ -4,19 +4,19 @@
 | --- | --- |
 | ID | W36 |
 | 優先度 | P2 |
-| 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
+| 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する。Phase 2（System V x86-64 と AAPCS64）は、D-67 の分岐 4 で人間が求めた（2026-11-26）。停止条件 S1 の選択（A・B）は未決で、Phase 1 の着手の前に要る（W21 が `ref` の無い record をポインターで渡して出荷したので、S1 は Phase 1 にも当たる） |
 | 依存 | W21 |
-| 後続 | W25 |
+| 後続 | W25（弱い後続: [M02](M02-objc-typed-message-send.md)・[M03](M03-objc-classes-defined-in-tsuzuri.md) の Phase 2（D-67 の分岐 4）, [M07](M07-apple-sdk-bindgen-and-package.md), [M18](M18-intel-mac-and-universal2.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 要承認（E05 と W21 の値渡しの除外の改訂）。D1・D2 が要承認、ほかは既定案 |
+| 承認 | 要承認（E05 と W21 の値渡しの除外の改訂）。D1・D2 が要承認、ほかは既定案。Phase 2（System V x86-64 と AAPCS64）は、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 4 で人間が求めた（2026-11-26）。停止条件 S1 の選択（A・B）は未決で、Phase 1 の着手の前に要る（W21 が `ref` の無い record をポインターで渡して出荷したので、S1 は Phase 1 にも当たる） |
 | 改善する劣位 | C/C++・Rust（`#[repr(C)]`）・C#（P/Invoke）比: C の関数が構造体を値で取る・返す API（Win32 の `WindowFromPoint`・`PtInRect` の `POINT`、Direct2D の `D2D1_POINT_2F`、raylib の `Vector2`）を宣言できない。今の書き方（`ref` のない record）は診断なしにポインターを渡す |
 | 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`・`host_result_slot`・`read_host_result`（record の一時領域）、[W21](W21-c-layout-records.md) の `llvm_abi::record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`@c_layout` の配置を 1 か所で求める）、`src/target.rs` の `current_platform`（IR の生成中の target）、`clang -S -emit-llvm`（独立した参照。GUIDE-LITE §2 規則 10） |
 | 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm_imports.rs`, `src/llvm_byvalue.rs`（新規）, `src/llvm_abi.rs`, `src/llvm.rs`, `src/diagnostic_kinds.rs`, `src/explain/codes/E1008.md`, `tests/c_layout_by_value.rs`（新規）, `tests/c_layout_by_value.mjs`（新規）, `tests/c_layout_by_value_host.c`（新規）, `tests/fixtures/c_layout_by_value/Main.tz`（新規）, `tests/windows.mjs`, `.github/workflows/windows.yml`, `docs/language.md`, `docs/architecture.md`, 言語リファレンスの 4 ページ |
 
 ## 実装者向け早見
 
-- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
+- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。D-67 の分岐 3 で方針を改めないと決めたので、入れない（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
 - 最初に読む: 「現状」の再現（`PtInRect`）→ 仕様 2 の分類 → 「現状」の参照表 → W21 の仕様 3・4 と D4・D8。
 - 最初に書くテスト: `tests/c_layout_by_value.rs` の `windows_x64_passes_by_size` と `windows_arm64_passes_hfa_in_float_registers`（`build --emit llvm --target <triple>` の `declare` の行を、参照表から手で書いた期待と比べる）→ `tests/c_layout_by_value.mjs` の C のホスト。
 - 触ってはいけない: `@c_layout` の無い record の ABI（[E05](_completed/E05-host-abi-buffers.md)）、`ref R`（`const T *`）と `ref mut R`（`T *`）、`export def` の IR とヘッダー、WASM の出力、値渡しを使わないプログラムの IR・ヘッダー・診断（1 byte も変えない）。
@@ -161,7 +161,7 @@ record の大きさ `s` と整列は W21 の `record_layout`、葉（入れ子�
 ### 3. Phase 2 の分類（System V x86-64、AAPCS64）
 
 - AAPCS64（Linux、macOS）: Windows Arm64 と同じ形で、Linux だけ HFA の引数の配列に `alignstack(8)` を付ける（宣言と呼び出しの地点の両方）。macOS は付けない。
-- System V x86-64（Linux、Intel の macOS）: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
+- System V x86-64（Linux、Intel の macOS。Intel の macOS は今は target がなく、D-67 の分岐 3 で入れないと決めた（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked））: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
 - 規則の正は参照の Clang の出力で、表にない形を足すときも手順 1 の参照表に行を足してから実装する。
 
 ### 4. target と診断
@@ -251,6 +251,8 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
 6. **変更**: 文書。**確認**: T2、`node scripts/check-docs.mjs <変更したページ>`、`node scripts/gen-docs.mjs --check`、`node scripts/check-cli-docs.mjs`。PR に `ci:full` を付け、`windows.yml` の x64・Arm64 で E2E が通る。
 
 ### Phase 2（人間が求めたとき）
+
+Phase 2 は、D-67 の分岐 4 で人間が求めた（2026-11-26）。停止条件 S1 の選択（A・B）は未決で、Phase 1 の着手の前に要る（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷した（`src/` に `c_layout_by_value_pending` が無い）ので、S1 は W36 の Phase 1 にも当たる）。
 
 7. **変更**: `src/llvm_byvalue.rs`・`src/llvm_imports.rs`。**内容**: System V（`classify_call` のレジスターの数え方、`byval`）と AAPCS64（`alignstack(8)`）。Phase の外の target が無くなるので、`abi_record_by_value_target` が届かなくなる（kind の扱いは手順 2 と同じ規則）。`--backend fast` が `sret`・`byval`・集成体の引数を翻訳できなければ、既存の `E2002`（`fast_backend_unsupported_construct`）になることを確かめる。**確認**: `targets.yml` の Linux・macOS で E2E と参照との突き合わせ。
 
