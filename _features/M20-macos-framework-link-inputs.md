@@ -31,7 +31,7 @@ macOS のアプリは AppKit・Foundation・Metal などの framework をリン�
 
 `.app` に dylib を同梱するアプリ（M15 の `embed`）と、`--emit shared` の dylib（install name が `@rpath/<file>`）を使う実行ファイルは、`LC_RPATH` を要る。これを足す口もない。
 
-[W17](W17-link-attribute-dllimport.md) の `@link("name")` は、git・registry のパッケージにもシステムライブラリを要求させるが、W17:247 は framework を対象外にしている。M07 の公式の `apple` パッケージと M14 は git のパッケージなので、framework を名前で要求する形が要る。NC12:70 は外部 BLAS の選び方に「`-framework Accelerate` 等のビルドフラグ」を挙げるが、その口は存在しない。このチケットがその口を作る。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の、分岐 1 に依らない土台の 1 つである。
+[W17](W17-link-attribute-dllimport.md) の `@link("name")` は、git・registry のパッケージにもシステムライブラリを要求させるが、W17:247 は framework を対象外にしている。M07 の公式の `apple` パッケージと M14 は git のパッケージなので（D-67 の分岐 5。2026-11-26 に承認済み）、framework を名前で要求する形が要る。NC12:70 は外部 BLAS の選び方に「`-framework Accelerate` 等のビルドフラグ」を挙げるが、その口は存在しない。このチケットがその口を作る。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の、分岐 1 に依らない土台の 1 つである。
 
 ## 着手条件と停止条件
 

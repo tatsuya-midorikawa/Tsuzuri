@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（std にクリップボード・ダイアログ・通知・設定・バンドルの資源がなく、チケットもない）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 5（公式パッケージの配布の形。W27 の D3・D9、M07 の D8 と共有）。パッケージの API の名前（モジュールの道筋、型と関数の名前、直接の関数にする形）と、GUI フレームワークを同梱しないという非目標との関係の記述。分岐 5 と置き場は決定事項 D1、API の名前と形は D4、非目標の記述は D8、分岐 1 との関係は D10 に写した（どれも要承認）。Phase 2 の名前は Phase 2 の着手の前に別に承認する（D9） |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 5（公式パッケージの配布の形）と分岐 1（X′）は承認済み（2026-11-26）。W27 の D3・D9 は W27 自身の決定として残る。分岐 1 との関係は決定事項 D10 に写した（承認済み）。要承認: 置き場（`apple` のリポジトリ）、パッケージの API の名前（モジュールの道筋、型と関数の名前、直接の関数にする形）と、GUI フレームワークを同梱しないという非目標との関係の記述。分岐 5 と置き場は決定事項 D1（分岐 5 は承認済み、置き場と名前は要承認）、API の名前と形は D4、非目標の記述は D8 に写した（どれも要承認）。Phase 2 の名前は Phase 2 の着手の前に別に承認する（D9） |
 | 改善する劣位 | Swift（AppKit・Foundation を直接）・Electron と Tauri（`clipboard`・`dialog`・`Notification`・設定の保存の API）・Rust（`arboard`・`rfd`・`directories`）比: クリップボード、ファイルを選ぶダイアログと保存のダイアログ、通知、設定の保存、バンドルの資源のパスを、型付きで失敗を値で返す API で書けない。今は外のコマンドを `Process.run` で呼ぶか、`objc_msgSend` を ABI の知識で呼ぶしかない |
 | 手本にする既存実装 | [W27](W27-win32-package-from-winmd.md) の Phase 2（std の外の公式の git パッケージ、出どころと利用条件を書いた README、パッケージのリポジトリの CI）、[M07](M07-apple-sdk-bindgen-and-package.md) の Phase 2（同じリポジトリの `apple` パッケージ、`namespace = "Apple"`、核の一覧）、`std/Net.tz`（私的な直接の関数 `*_with` と公開の関数の分け方、`error_kind`）、`std/Process.tz` の `join_arguments`（引数の検査を `Result` で返す形）、`std/ZString.tz`（文字列を外の表現に変える関数の形）、言語リファレンスの std のモジュールの「引数の順序」の節（`_tsuzuri/language-reference/built-in-types-and-modules/anchor.md` の 27〜30 行） |
 | 主な影響ファイル | このリポジトリ: `_tsuzuri/language-reference/compiler/native-interop.md`（632 行の非目標の段落の後に、公式パッケージへの案内を足す）、`_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作るページ。あれば同じ案内）、`docs/language.md`（同じ案内の 1 文）。コンパイラ・std・テストのコードは変えない。パッケージのリポジトリ（M07 の Phase 2 の `apple`。このリポジトリの外なので、パスは repo-kb が展開しないよう引用符なしで書く）: Desktop.tz と Desktop/ の Clipboard.tz・FileDialog.tz・Preferences.tz・Resources.tz（新規）、api.txt（核の一覧に宣言を足す）、tests/desktop.mjs と tests/desktop/（新規）、README。Phase 2: Desktop/Notifications.tz |
@@ -63,7 +63,7 @@ TLS を std に入れず公式パッケージにする E09 の D13 と同じ形�
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。
-- **承認が記録されるまで、該当する Phase に着手しない**（GUIDE §0 の 1）。D1（分岐 5 と置き場）と D10（分岐 1）が承認されるまでチケット全体に着手しない。D4（API の名前と形）が承認されるまで手順 2 に着手しない。D8（非目標との関係の記述）は手順 7 の文書の前に承認を受ける。Phase 2 は D9、Phase 3 は D3 の承認の後。
+- **承認が記録されるまで、該当する Phase に着手しない**（GUIDE §0 の 1）。D1（置き場と名前。分岐 5 は承認済み）が承認されるまでチケット全体に着手しない（D10 の分岐 1 は承認済み（2026-11-26））。D4（API の名前と形）が承認されるまで手順 2 に着手しない。D8（非目標との関係の記述）は手順 7 の文書の前に承認を受ける。Phase 2 は D9、Phase 3 は D3 の承認の後。
 - Phase 1: M07 の Phase 2 が done（`apple` パッケージのリポジトリと macOS のランナーの CI がある）。そのために M01・M02 の Phase 1・M06 の Phase 1・M20 の Phase 2・W17 も done である。確認: `grep -nE "^\| (M01|M02|M06|M07|M20|W17) " _features/README.md` の状態の列。
 - M09 は弱い依存。M09 の Phase 2 が done なら、M07 は `NSOpenPanel`・`NSSavePanel` を `extern class main` に写し、FileDialog の呼び出しの場所はコンパイル時に限られる。done でなければ、FileDialog は実行時に `pthread_main_np` を確かめる（仕様「Phase 1: スレッド」）。M09 の Phase 1 があれば、その検査は `MainThread.is_current ()` で書く。
 - Phase 2: M04 の Phase 1 と M15 が done。M09 の Phase 1 が done（完了ハンドラーの結果を main へ戻す `MainThread.post`）。
@@ -76,7 +76,7 @@ TLS を std に入れず公式パッケージにする E09 の D13 と同じ形�
 - **S2** コンパイラの変更（新しい構文・組み込み関数・診断）が要る。このチケットの範囲を出るので、止めて該当するチケットを報告する。
 - **S3** `Desktop` のモジュールを足した後、`apple` を依存にした hello の `check` の時間が目に見えて伸びる（依存のモジュールはすべて型検査される。W27 の現状）。計測の値を書いて報告する（D1 の別案の別リポジトリに移すかを人間が決める。CI に速度の閾値は入れない）。
 - **S4** パッケージのリポジトリの CI の macOS のランナーで、headless の E2E（現状 3 の 2・3 の形）が動かない（ウィンドウサーバーがない、パネルのサービスが起動しない）。検査を手元だけにして通ったことにせず、報告する。
-- **S5** 分岐 5 が否決される（公式パッケージにしない）か、分岐 1 が Y′・Z′ になる。D10 のとおり止める。
+- **S5** 分岐 5 が否決される（公式パッケージにしない）か、分岐 1 が Y′・Z′ になる。D10 のとおり止める。分岐 5 は「認める」、分岐 1 は X′ に決まった（2026-11-26）ので、今は当たらない。
 - **S6** GUIDE-LITE §9 の共通の条件。
 
 ## 現状（HEAD `804b7970` で確認）
@@ -97,7 +97,7 @@ git grep -n -i -E 'clipboard|pasteboard|クリップボード|NSBundle|UserDefau
 
 - `_features/README.md:117`（「採用しない改善」）: 「GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する」。
 - native-interop.md:632: 「GUI は言語の一部ではありません。デスクトップの画面は、ホストがオブジェクトを呼ぶ側に置きます。」
-- [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「改めないもの」（この起票で足す草案。HEAD `804b7970` にはまだない）: AppKit・Foundation の宣言は std に入れず公式パッケージにする（M07。分岐 5）。デスクトップの OS サービス（M13）と TLS・HTTP（M14）も std に入れない。
+- [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「改めないもの」（この起票で足した。D-67 とともに 2026-11-26 に承認済み。HEAD `804b7970` にはまだない）: AppKit・Foundation の宣言は std に入れず公式パッケージにする（M07。分岐 5）。デスクトップの OS サービス（M13）と TLS・HTTP（M14）も std に入れない。
 - 前例: E09 の D13（`_features/_completed/E09-network.md:165`）は、HTTP と TLS を std に入れず公式パッケージにすると決めた。
 
 ### 3. 今の回避策
@@ -303,7 +303,7 @@ notify: calling +[UNUserNotificationCenter currentNotificationCenter]
 
 | Phase | 内容 | 規模 | 前提 |
 | --- | --- | --- | --- |
-| 1 | `Apple::Desktop.Error`、`Clipboard`（文字列）、`FileDialog`（開くと保存の `runModal`、結果はパスの `string`）、`Preferences`（string・i64・bool）、`Resources`（main bundle の資源のパス）、headless の E2E、README | L | M07 の Phase 2。D1・D4・D10 の承認 |
+| 1 | `Apple::Desktop.Error`、`Clipboard`（文字列）、`FileDialog`（開くと保存の `runModal`、結果はパスの `string`）、`Preferences`（string・i64・bool）、`Resources`（main bundle の資源のパス）、headless の E2E、README | L | M07 の Phase 2。D1・D4 の承認（D10 は承認済み） |
 | 2 | `Notifications`（UserNotifications。bundle の識別子と許可が要り、完了ハンドラーは M04 の Block） | M | M04 の Phase 1・M09 の Phase 1・M15。D9 の承認 |
 | 3 | Windows・Linux の版を同じ API で足すかの判断（W27 の `win32` パッケージの上） | S（判断の記録） | D3 の承認 |
 
@@ -591,8 +591,8 @@ record SaveOptions { title: Maybe<string>, message: Maybe<string>, directory: Ma
 
 ## 決定事項
 
-- **D1（要承認）置き場と名前（D-67 の分岐 5 を含む）**: 決定（推奨）: std の外の公式パッケージとし、M07 の Phase 2 の `apple` パッケージのリポジトリに、`Desktop.tz`（`Apple::Desktop`）と `Desktop/` の 4 つのモジュール（`Apple::Desktop::Clipboard` など）を置く。共通の型は `Apple::Desktop.Error`。採らない案: (a) std のモジュール（非目標、すべての OS に配られる、std はパッケージに依存できない）。(b) 別のリポジトリ `apple-desktop`（版の組が 2 つに増え、M07 の CI で一緒に検査できない。S3 のときの退き先）。(c) 契約の案の `AppleDesktop.*` の名前（git のパッケージはルートの 1 つで、既定の名前空間 `Apple` の下にしか置けない。現状 5）。理由: 包みが呼ぶ宣言と同じリポジトリにあれば、SDK の版を上げたときの生成し直しと包みの検査が同じ CI で済む。分岐 5 は W27 の D3・D9、M07 の D8 と共有する決定なので、承認前はチケット全体に着手しない。
-- **D2（既定案）失敗の表し方**: 決定: 失敗は `Result<T, Apple::Desktop.Error>` で返し、取り消しと無い値は `Maybe` で返す。例外にしない。ObjC の例外になる呼び方（メインスレッドの外のパネル、bundle のない通知）は呼ぶ前に検査する。採らない案: M05 の `Result<R, ObjC.Exception>` で受ける（M05 は分岐 2 の承認待ちで、包みの依存が増える）、トラップする（利用者が回復できない）。理由: D-10。std の OS の関数と同じく、失敗を値で返す。
+- **D1（要承認。分岐 5 は承認済み（2026-11-26））置き場と名前（D-67 の分岐 5 を含む）**: 決定（推奨）: std の外の公式パッケージとし、M07 の Phase 2 の `apple` パッケージのリポジトリに、`Desktop.tz`（`Apple::Desktop`）と `Desktop/` の 4 つのモジュール（`Apple::Desktop::Clipboard` など）を置く。共通の型は `Apple::Desktop.Error`。採らない案: (a) std のモジュール（非目標、すべての OS に配られる、std はパッケージに依存できない）。(b) 別のリポジトリ `apple-desktop`（版の組が 2 つに増え、M07 の CI で一緒に検査できない。S3 のときの退き先）。(c) 契約の案の `AppleDesktop.*` の名前（git のパッケージはルートの 1 つで、既定の名前空間 `Apple` の下にしか置けない。現状 5）。理由: 包みが呼ぶ宣言と同じリポジトリにあれば、SDK の版を上げたときの生成し直しと包みの検査が同じ CI で済む。std の外の公式パッケージにすること（D-67 の分岐 5。M07 の D8 と同じ）は承認済み（2026-11-26）で、W27 の D3・D9 は W27 自身の決定として残る。置き場と名前は要承認のままで、承認前はチケット全体に着手しない。
+- **D2（既定案）失敗の表し方**: 決定: 失敗は `Result<T, Apple::Desktop.Error>` で返し、取り消しと無い値は `Maybe` で返す。例外にしない。ObjC の例外になる呼び方（メインスレッドの外のパネル、bundle のない通知）は呼ぶ前に検査する。採らない案: M05 の `Result<R, ObjC.Exception>` で受ける（分岐 2 は 2026-11-26 に承認されたが、包みが M05 に依存する）、トラップする（利用者が回復できない）。理由: D-10。std の OS の関数と同じく、失敗を値で返す。
 - **D3（既定案）Phase 3 の時期**: 決定: Windows・Linux の版を足すかの判断は、W27 の `win32` パッケージの配布の形（W27 の D3・D9）が決まってから行う。採らない案: 先に多 OS の抽象の API を決める（使う OS の API が見えないまま名前を固定する）。理由: Windows の版は W27 の公式パッケージの上にしか作れない。Linux はデスクトップの環境ごとに API が違い、対象にするかから決める必要がある。
 - **D4（要承認）API の名前と形**: 決定（推奨）: 仕様の表の名前と型。すべて直接の関数（`IO` を返さない）で、対象（`Board`・`Store`・`Options`）を最後に置く。採らない案: (a) std の `File` と同じく `IO<Result<…>>` を返す（`Drop` の物体を `IO` に持ち出せない。M09 の Phase 2 がメインスレッドの関数値を拒む。現状 5）。(b) 板と保存先を持たず、general と standard だけの関数にする（検査が利用者の状態を書き換える。現状 3 の 2 は使い捨ての板と suite で検査できた）。(c) 資源のハンドルとして板を先頭に置く（D-59 の例外は要らず、対象を最後に置く規則に従える）。理由: 公開の API になり、後から変えると利用者のコードが壊れる。承認前は手順 2 に着手しない。
 - **D5（既定案）Error の case**: 決定: Phase 2 の `NoBundle`・`NotAuthorized` も Phase 1 から union に入れる。採らない案: Phase 2 で足す（網羅的な `match` が壊れる）、`Other of i64` の逃げ道を置く（意味のない case が増える）。理由: net.md の「エラーの読み方」と同じく、case の追加を互換でない変更として避ける。
@@ -600,4 +600,4 @@ record SaveOptions { title: Maybe<string>, message: Maybe<string>, directory: Ma
 - **D7（既定案）設定の値の型**: 決定: getter は保存された物体の型（`NSString`・`NSNumber`）を確かめ、違えば `Maybe.None`。`integerForKey:` などの暗黙の変換を使わない。空の key は getter が `None`、setter が何もしない。採らない案: `integerForKey:` の変換をそのまま使う（`"42"` を 42 と読み、無い key と 0 を区別できない）、空の key を `InvalidInput` にする（getter の型が `Result<Maybe<T>, …>` に重くなる）。理由: 値の有無と型の違い（文字列と数。bool と整数はどちらも `NSNumber` なので区別しない）を、利用者が `Maybe` だけで扱える。
 - **D8（要承認）非目標との関係の記述**: 決定（推奨）: README の「採用しない改善」の「GUI・Web フレームワークの同梱」の行と native-interop.md:632 の文言は変えない。このパッケージは「OS のサービスの薄い包みで、ウィジェット・レイアウト・描画を持たず、std の外にある」と、パッケージの README とこのリポジトリの案内の文に書く。採らない案: 非目標の行に例外を書き足す（非目標が弱まって見える）、案内を書かない（利用者が見つけられない）。理由: D-67 の「改めないもの」。言語リファレンスはコンパイラの機能だけを書くので、案内は std の外のパッケージとして分けて書く。
 - **D9（要承認）Phase 2 の名前と形**: 決定: 仕様の案（`Notifications.request_authorization`・`post`・`Content`・`Pending`）を Phase 2 の着手の前に承認を受けて決める。採らない案: Phase 1 と一緒に決める（M04・M09 の形が出荷される前に名前を固定する）。理由: 完了ハンドラーの受け方は M04 と M09 の出荷した形に依る。
-- **D10（要承認）D-67 の分岐 1 との関係**: 決定（推奨）: X′ を前提にする（M07 の `extern class` の宣言を呼ぶ）。Y′ ならこのチケットを閉じる（AppKit の宣言を Tsuzuri で持たない）。Z′ なら、M07 の計画し直しの結果に合わせて計画し直す。承認前はチケット全体に着手しない。
+- **D10（承認済み（2026-11-26。D-67 の分岐 1））D-67 の分岐 1 との関係**: 決定: X′ を前提にする（M07 の `extern class` の宣言を呼ぶ）。選ばれなかった案での扱いは、Y′ ならこのチケットを閉じ（AppKit の宣言を Tsuzuri で持たない）、Z′ なら M07 の計画し直しの結果に合わせて計画し直す、だった。

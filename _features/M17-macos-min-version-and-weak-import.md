@@ -9,7 +9,7 @@
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md), [M15](M15-macos-app-bundle.md), [M18](M18-intel-mac-and-universal2.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 2（既定の native ビルドの minos がビルド機の版 27.2 になり、古い macOS で起動しない。版を選ぶ正式な手段も弱い import もない）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 6（既定の native ビルドの最低 OS 版）。D-55（`[macos]` の節とキー `min_version`、属性 `@weak`）。決定事項 D1（分岐 6）・D2（`[macos]`・`min_version`）・D3（`@weak` と検査の形、版の問い合わせの API）が要承認、ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 6（既定の native ビルドの最低 OS 版。12.0 に固定）は承認済み（2026-11-26）。決定事項 D1（分岐 6）は承認済み。要承認: D-55（`[macos]` の節とキー `min_version`、属性 `@weak`）。決定事項 D2（`[macos]`・`min_version`）・D3（`@weak` と検査の形、版の問い合わせの API）が要承認、ほかは既定案 |
 | 改善する劣位 | C（clang の `-mmacosx-version-min` と `__attribute__((weak_import))`）・Swift（Deployment Target と `#available`）比: 最低 OS 版を manifest で選べず、既定の native ビルドがビルド機の版（実測 27.2）になって古い macOS で起動しない。新しい OS にだけある関数を参照すると、呼ばない経路でも古い OS で dyld が起動を止める |
 | 手本にする既存実装 | [W09](_completed/W09-windows-gui-subsystem.md) の `[windows]`（`src/package.rs` の `WindowsSettings`・`parse_manifest`、`src/driver.rs` の `with_manifest_windows`）、`src/target.rs` の `Triple::clang_target`、`src/driver.rs` の `compile_args`・`target_args`、`scripts/toolchain/clang.rs` の `resolve`、`src/cache.rs` の `runtime_key`、[W17](W17-link-attribute-dllimport.md) の `@link`（属性、`signature` の先読み、symbol ごとの `declare` の表）、`src/llvm.rs` の `@tz.callback.after_main`（報告してからトラップする） |
 | 主な影響ファイル | `src/package.rs`, `src/driver.rs`, `src/target.rs`, `src/main.rs`, `src/test_runner.rs`, `scripts/toolchain/clang.rs`, `scripts/toolchain/runtime.mjs`, `src/syntax.rs`, `src/parser.rs`, `src/syntax_codec.rs`, `src/frontend_cache.rs`, `src/formatter.rs`, `src/check.rs`, `src/llvm.rs`, `src/llvm_imports.rs`, `src/effects.rs`, `src/capabilities.rs`, `src/diagnostic_kinds.rs`, `std/Env.tz`（D3）, `src/runtime/os.c`（D3）, `src/runtime/os-windows.h`（D3）, `src/runtime/os-wasi.c`（D3）, `src/llvm_io.rs`（D3）, `src/polymorph.rs`（D3）, `src/pinned_rules.rs`（D3）, `tests/capabilities.rs`（D3）, `tests/fixtures/capabilities/std-table.txt`（D3）, `tests/fixtures/effects_sweep/Main.tz`（D3）, `tests/os.mjs`（D3）, `tests/os-wasi-host.mjs`（D3）, `_tsuzuri/language-reference/built-in-types-and-modules/env.md`（D3）, `tests/macos_min_version.rs`（新規）, `tests/weak_import.rs`（新規）, `tests/weak_import.mjs`（新規）, `tests/targets.rs`, `tests/targets.mjs`, `tests/packages.rs`, `docs/stability.md`, `docs/language.md`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/organizing-tsuzuri/packages.md`, `_tsuzuri/language-reference/values-and-functions/attributes.md`, `_tsuzuri/language-reference/compiler/option.md` |
@@ -41,14 +41,14 @@ macOS の実行ファイルは `LC_BUILD_VERSION` の `minos` より古い OS �
 
 新しい OS の API を使いながら古い OS でも動くアプリは、その symbol を弱い参照にし、無ければ使わない。Tsuzuri には弱い参照を宣言する口がない。
 
-このチケットは、最低 OS 版を manifest に書けるようにしてすべての経路に同じ版を効かせ、既定の版を分岐 6 のとおりに決め、`@weak` と呼び出しの地点の検査を足す。[M15](M15-macos-app-bundle.md) の `LSMinimumSystemVersion` と [M07](M07-apple-sdk-bindgen-and-package.md) の availability の写し方がこれを使う。
+このチケットは、最低 OS 版を manifest に書けるようにしてすべての経路に同じ版を効かせ、既定の版を D-67 の分岐 6 で決めた 12.0 にし（2026-11-26）、`@weak` と呼び出しの地点の検査を足す。[M15](M15-macos-app-bundle.md) の `LSMinimumSystemVersion` と [M07](M07-apple-sdk-bindgen-and-package.md) の availability の写し方がこれを使う。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
 - `node scripts/repo-kb.mjs brief M17` を読む。
-- 承認が記録されるまで、該当する手順に着手しない（Phase はない）: 手順 2 は D2、手順 3 は D1（分岐 6）と D2、手順 4〜7 は D3。
+- 承認が記録されるまで、該当する手順に着手しない（Phase はない）: 手順 2・3 は D2、手順 4〜7 は D3。手順 3 の既定の変更（D1。D-67 の分岐 6）は承認済み（2026-11-26）。
 - [M22](M22-attribute-after-bodyless-extern-def.md) が done でなければ、`signature` の先読み（`src/parser.rs:2397` の `"cpu" | "trusted" | "count"`）に `weak` を足す（M22 が後なら M22 が消す）。[M06](M06-extern-data-symbols-and-zutf8string.md) の Phase 1・[M01](M01-objc-class-types.md) が done ならデータシンボル・クラスの段も実装し、後なら後のチケットが足す。確認: `grep -nE "^\| (M01|M06|M22) " _features/README.md`。
 - `scripts/toolchain/` を変えるので `.github/instructions/ci.instructions.md` を読み、PR に `ci:full` を付ける。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1`（native と `wasm32`）と診断、macOS の native・`--target aarch64-apple-darwin` の実行ファイルの `LC_BUILD_VERSION` を `target/scratch/m17/base/` に保存する。D3 の `Env.os_version` を実装するときは、`Env.current_dir` だけを使うプログラムの `--emit object`（native の `-O0`・`-O3`）と `--target wasm32 --wasm-host wasi` の `.wasm` も保存する。macOS では D1 の既定の版の変化を除くため、前後とも `MACOSX_DEPLOYMENT_TARGET=13.0` を設定して Apple clang でビルドする（仕様 2・3 の 2 段目で、clang の引数は今と同じ）。
@@ -128,7 +128,7 @@ none:
 - Apple clang で `MACOSX_DEPLOYMENT_TARGET` を設定した native のビルドの版。名前付きの target の、環境変数も manifest もないときの `arm64-apple-macosx12.0.0`（prebuilt とキャッシュの一致）。
 - `@weak` のない extern の `declare` と呼び出し。トラップの終了コード（W07 の範囲）。
 - `Env.os_version`（D3）に到達しないプログラムのランタイムの部分（実行ファイル、`--emit object`、`--wasm-host wasi` の `.wasm`）。OS API を使っていても変えない。`Os.__read` の操作の一覧（0〜5）も変えない。
-- 例外: 仕様 4 の表の `LC_BUILD_VERSION` と、manifest の節の順序の誤りの文（`[macos]` を足す。W09 の `[windows]` と同じ）。
+- 例外: 仕様 4 の表の `LC_BUILD_VERSION`（D1。D-67 の分岐 6 で承認済み（2026-11-26））と、manifest の節の順序の誤りの文（`[macos]` を足す。W09 の `[windows]` と同じ）。
 
 ## 仕様
 
@@ -157,7 +157,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 
 | 経路 | 渡し方 |
 | --- | --- |
-| Apple clang の native | 1 か 3 で決まったとき `-mmacosx-version-min=<版>` を `compile_args`（IR とランタイムの C の compile、実行ファイルのリンク）と `target_args`（リンクだけの run）の両方に足す。2 のときと、D1 でビルド機の版を既定に残したときの 3 は足さない |
+| Apple clang の native | 1 か 3 で決まったとき `-mmacosx-version-min=<版>` を `compile_args`（IR とランタイムの C の compile、実行ファイルのリンク）と `target_args`（リンクだけの run）の両方に足す。2 のときは足さない（3 の既定は D1 の 12.0。ビルド機の版を既定に残す案は、D-67 の分岐 6 で選ばれなかった） |
 | `--target aarch64-apple-darwin` | Clang の target を `arm64-apple-macosx<major>.<minor>.<patch>` にする（compile とリンク）。12.0 では今の文字列のまま |
 | 同梱の zig（`scripts/toolchain/clang.rs`） | `arm64-apple-macosx<版>` を zig の `aarch64-macos.<版>` に写す（文字列の一致をやめる）。target のない run は `-mmacosx-version-min=` があればその版、なければ `MACOSX_DEPLOYMENT_TARGET`、なければ 12.0。LLVM の clang には `-target aarch64-apple-macosx<版>` だけを渡す |
 | ランタイムの object | 上の引数で compile するので `runtime_key` が版を区別する。`scripts/toolchain/runtime.mjs:43` の native の引数をコンパイラと同じにする |
@@ -167,7 +167,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 
 ### 4. 既定の版（D1。分岐 6）
 
-推奨案（12.0）で、`[macos]` を書かないプログラムの変わる出力:
+D-67 の分岐 6 で、既定の版を 12.0 に固定すると決めた（2026-11-26。D1）。`[macos]` を書かないプログラムの変わる出力:
 
 | ビルド | 今 | 後 |
 | --- | --- | --- |
@@ -175,7 +175,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 | `--target aarch64-apple-darwin`、環境変数あり | 12.0 | 環境変数の版 |
 | 同梱の zig、環境変数あり | 12.0 | 環境変数の版 |
 
-ほかの組み合わせと IR は変わらない。`docs/stability.md` の「既知の例外」に記録する。今のままを選んだときは 1 行目が変わらず、文書に配布の注意を書く。
+ほかの組み合わせと IR は変わらない。実装の PR が `docs/stability.md` の「既知の例外」に記録する。ビルド機の版のままにする案（1 行目を変えず、文書に配布の注意を書く）は、分岐 6 で選ばれなかった。
 
 ### 5. `@weak` の構文と位置
 
@@ -222,7 +222,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 
 ## 他チケットへ提供するインターフェース
 
-- `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`。[M15](M15-macos-app-bundle.md) は `LSMinimumSystemVersion` をリンクした実行ファイルの `LC_BUILD_VERSION` の minos から作る（M15 の D10。M17 の後はこの関数の有効な版と一致し、M15 のテストが一致を確かめる）。M15・[M16](M16-macos-signing-notarization-hardening.md) が `[macos]` にキーを足す。[M18](M18-intel-mac-and-universal2.md) は x86_64 にも同じ版を渡す。
+- `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`。[M15](M15-macos-app-bundle.md) は `LSMinimumSystemVersion` をリンクした実行ファイルの `LC_BUILD_VERSION` の minos から作る（M15 の D10。M17 の後はこの関数の有効な版と一致し、M15 のテストが一致を確かめる）。M15・[M16](M16-macos-signing-notarization-hardening.md) が `[macos]` にキーを足す。[M18](M18-intel-mac-and-universal2.md) は、方針を改めて着手するときに x86_64 にも同じ版を渡す（D-67 の分岐 3 で改めないと決めたので、今は blocked）。
 - `@weak`・`CheckedModule::weak_symbols`（[M07](M07-apple-sdk-bindgen-and-package.md) が availability から付ける）、`Env.os_version`（D3 で採ったとき）。
 
 ## 実装手順
@@ -274,7 +274,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 ## 対象外
 
 - Swift の `#available` に当たる、流れに依存する型の検査。
-- 12.0 より前の macOS、Intel の macOS（[M18](M18-intel-mac-and-universal2.md)）、CI での古い macOS の実行。
+- 12.0 より前の macOS、Intel の macOS（[M18](M18-intel-mac-and-universal2.md)。D-67 の分岐 3 で入れないと決めた（2026-11-26））、CI での古い macOS の実行。
 - Linux の ELF の弱い参照、Windows の遅延読み込み、`dlsym`・`GetProcAddress` の糖衣。
 - 依存パッケージの最低 OS 版の要求とルートの版の照合（D2 の退けた案）。
 
@@ -282,7 +282,7 @@ macOS の target（Apple のホストの native と `aarch64-apple-darwin`）の
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 既定の native ビルドの最低 OS 版を 12.0 に固定する（分岐 6）。名前付きの target と同梱の zig も `MACOSX_DEPLOYMENT_TARGET` を読む。変わる出力は仕様 4 の表で、IR は変わらない。`docs/stability.md` に記録する | ビルド機の版を既定にすると、配布先がビルド機の OS の更新で黙って狭くなる。名前付きの target の 12.0 と揃う。退けた案: ビルド機の版のまま（文書に注意を書くだけ。ビルドの警告はノイズなので出さない）。名前付きの target で環境変数を無視し続ける案は、優先順が経路ごとに違うまま | 要承認（D-67 の分岐 6。承認前は手順 3 の既定の変更に着手しない） |
+| D1 | 既定の native ビルドの最低 OS 版を 12.0 に固定する（D-67 の分岐 6）。上げるときは `[macos] min_version` と `MACOSX_DEPLOYMENT_TARGET` を使い、名前付きの target と同梱の zig も `MACOSX_DEPLOYMENT_TARGET` を読む。変わる出力は仕様 4 の表で、IR は変わらない。実装の PR が `docs/stability.md` に記録する | ビルド機の版を既定にすると、配布先がビルド機の OS の更新で黙って狭くなる。名前付きの target の 12.0 と揃う。退けた案（分岐 6 で選ばれなかった）: ビルド機の版のまま（文書に注意を書くだけ。ビルドの警告はノイズなので出さない）。名前付きの target で環境変数を無視し続ける案は、優先順が経路ごとに違うまま | 承認済み（2026-11-26。D-67 の分岐 6） |
 | D2 | `[macos]` の節とキー `min_version` を足す（D-55）。ルートの節だけを読み、依存の `[macos]` は読まない | W09 の `[windows]` と同じくアプリの性質を manifest に置く。依存の節を読まないのは `[windows]`・`[wasm]`・`[capabilities]` と同じ規則で、M15 のキーを持つアプリのパッケージも依存にできる。退けた案: 依存の `[macos]` を `E0002` にする（アプリのパッケージを依存にできない）、依存の要求とルートの版の照合（範囲が広がる） | 要承認（D-55。承認前は手順 2 に着手しない） |
 | D3 | `@weak` を足す（D-55）。関数は呼び出しの地点で NULL を検査し、報告の 1 行の後に `TrapKind::Assert` でトラップ、クラスは classref を読むたびに検査、データシンボルは `Maybe`。問い合わせに `Env.os_version` を足す。そのランタイムは、独立した入口 `tsuzuri_os_version` と std だけが呼ぶ内部の組み込み `Os.__os_version` にし、到達したプログラムでだけ `-DTZ_OS_VERSION` でコンパイルする（driver の native と WASI、`src/test_runner.rs`。M15 の D13 と同じ形） | 新しい `TrapKind` を足さずに、無い symbol の名前を見せる。`NullHandle` は handle の値の誤りの意味なので使わない。問い合わせがないと、呼ぶ前に分岐できない。define の門は、`Env.os_version` に到達しないプログラムのランタイムの object を変えない（D-67 の「1 byte も変えない」の例外にしない）。退けた案: 関数の結果を `Maybe` にする（C の型とずれ、W14 の照合と食い違う）、symbol の有無を問う組み込み（新しいモジュール名が要り、extern を関数値にする規則と衝突する）、`Os.__read` に操作を足す（OS API に到達するすべてのプログラムのランタイムの object が変わる） | 要承認（D-55 と検査の形。承認前は手順 4 以降に着手しない） |
 | D4 | 版は manifest、`MACOSX_DEPLOYMENT_TARGET`、既定の順。manifest の誤りは `E0002`、名前付きの target の環境変数の誤りは `E2000`、Apple clang の native の環境変数は clang に任せる | manifest はアプリの性質、環境変数は 1 回のビルドの上書き。Apple clang の native を検査しないのは、今動く `10.15`（minos 11.0）のビルドを壊さないため | 既定案（実装者はこの案に従う） |

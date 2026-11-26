@@ -1,22 +1,22 @@
-# M18: Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針の改訂が要承認）
+# M18: Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針を改める決定が要る。D-67 の分岐 3 では改めないと決めた）
 
 | 項目 | 内容 |
 | --- | --- |
 | ID | M18 |
-| 優先度 | P3（D-67 の分岐 3 は「改めない」を推奨している。承認まで着手しない。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実。着手時に確かめる）） |
-| 規模 | XL（Phase 1・2。承認まで着手しない） |
+| 優先度 | P3（D-67 の分岐 3 で方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実。着手時に確かめる）） |
+| 規模 | XL（Phase 1・2。方針を改める決定があるまで着手しない） |
 | 依存 | ([W36](W36-c-layout-by-value.md)), ([M17](M17-macos-min-version-and-weak-import.md)), ([M02](M02-objc-typed-message-send.md)) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | blocked（D-67 の分岐 3 で、d719cf68 の「5 つのプラットフォーム」の方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 3（Intel Mac 向けの出力と Universal 2 が作れない）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 3（d719cf68 と README.md:877・platforms.md:15 の方針の改訂、tier と CI の機械）。承認まで状態は todo のまま着手しない。D-55 の登録（target の名前 `x86_64-apple-darwin` を戻すこと、Universal 2 の綴り、`TSUZURI_LIPO`）も要る。決定事項 D1・D2・D3 が要承認、ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 3（d719cf68 と README.md:877・platforms.md:15 の方針の改訂、tier と CI の機械）は承認済み（2026-11-26。改めない）。決定事項 D1（方針を改める案）は却下で、状態は `blocked`。方針を改める決定があるまで着手しない。そのときは、D-55 の登録（target の名前 `x86_64-apple-darwin` を戻すこと、Universal 2 の綴り、`TSUZURI_LIPO`）と決定事項 D2・D3 も要承認。ほかは既定案 |
 | 改善する劣位 | C・Swift（Xcode の `ARCHS` と `lipo`）・Go（`GOARCH=amd64`）・Rust（`x86_64-apple-darwin`）比: Intel Mac で動く実行ファイルと、1 つのファイルで Apple シリコンと Intel の両方で動く Universal 2 のバイナリを作れない。Apple シリコン専用として配るしかない |
 | 手本にする既存実装 | d719cf68 より前の `x86_64-apple-darwin`（`git show d719cf68^:src/target.rs` の `X86_64AppleDarwin`、`git show d719cf68^:scripts/toolchain/clang.rs` の `NATIVE_TARGETS`、`git show d719cf68^:tests/targets.mjs` の 249〜262 行の Rosetta の実行、`git show d719cf68^:.github/workflows/targets.yml` の `macos-15-intel`）、`src/target.rs` の `Triple::spec`・`cpu_levels`・`ForeignRunner`（`TSUZURI_RUNNER`）、`src/driver.rs` の `tool("TSUZURI_DSYMUTIL", "dsymutil")`（外部のツールの探し方。`resolve_tool`）、[W36](W36-c-layout-by-value.md) の Phase 2（System V x86-64 の分類） |
 | 主な影響ファイル | `src/target.rs`, `src/driver.rs`, `src/main.rs`, `src/test_runner.rs`, `src/diagnostic_kinds.rs`, `scripts/toolchain/clang.rs`, `src/runtime/tzroutine.c`, `src/runtime/cpu.c`, `tests/targets.rs`, `tests/targets.mjs`, `tests/platforms.mjs`, `.github/workflows/targets.yml`, `README.md`, `docs/architecture.md`, `docs/language.md`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/built-in-types-and-modules/net.md`, `_features/W36-c-layout-by-value.md` |
 
 ## 実装者向け早見
 
-- **承認まで着手しない。** D-67 の分岐 3 は「改めない」を推奨している。利用者が分岐 3 で「改める」を選び、その承認が記録されるまで、状態は `todo` のまま、どの Phase にも着手しない。承認されなければ、このチケットは方針の記録として残す（README の表で `closed` にするかは利用者が決める）。
+- **着手しない（blocked）。** D-67 の分岐 3 で、d719cf68 の「5 つのプラットフォーム」の方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで、状態は `blocked` のまま、どの Phase にも着手しない。このチケットは、方針を改める場合に何が要るかの記録として残す（`scripts/repo-kb/tickets.mjs` が読む状態は `todo`・`doing`・`done`・`blocked` で、`closed` は使わない）。
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。
 - 範囲:
   - Phase 1: native の target の表に `x86_64-apple-darwin`（Clang の target `x86_64-apple-macosx12.0.0`）を出力の target として戻す。ホストとしての Intel Mac（コンパイラ自身・配布物・VS Code）は足さない。同梱の launcher が Intel の macOS の target を拒む検査を外す。ランタイムの C は今のまま使う見込み（実験で x86_64 の Mach-O にリンクできた）。x86_64 の Mach-O は macOS のホストで ad-hoc に署名する（D6）。M02 が入っていれば ObjC の x86_64 の差（BOOL と `_stret`）を足す（D4）。CI の範囲は D2。
@@ -32,13 +32,13 @@
 
 Intel の CPU の Mac で Tsuzuri のアプリを動かすには、x86_64 の出力が要る。Mac のアプリを Intel と Apple シリコンの両方に配る標準の形は、2 つのスライスを 1 つのファイルに持つ Universal 2 のバイナリである。Tsuzuri は 2026-10-21 の d719cf68（Restrict native support and CI to five platforms）で、`x86_64-apple-darwin` の target、Intel Mac の配布物、`macos-15-intel` の CI を外した。今の Tsuzuri で作ったアプリは Apple シリコンの Mac でしか動かない。
 
-このチケットは、方針を改める場合に何が要るかを記録し、判断を明示する。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実）。対象の利用者は今後減るので、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 3 は「改めない」を推奨している。改める場合も、足すのは出力の target だけで、コンパイラを Intel Mac で動かすことは足さない。
+このチケットは、方針を改める場合に何が要るかを記録し、判断を明示する。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実）。対象の利用者は今後減るので、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 3 は推奨の案の「改めない」に決まった（2026-11-26）。後に方針を改める場合も、足すのは出力の target だけで、コンパイラを Intel Mac で動かすことは足さない。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- **D-67 の分岐 3 の承認（D1）。** 承認が記録されるまで、該当する Phase に着手しない。D2（tier と CI）と D3（Universal 2 の綴りと `TSUZURI_LIPO`。D-55）の承認も要る。D3 の承認前は Phase 2 に着手しない。
+- **方針を改める決定（D1）。** D-67 の分岐 3 で、d719cf68 の「5 つのプラットフォーム」の方針を改めないと決め、D1 は却下した（2026-11-26）。状態は `blocked` で、方針を改める決定が記録されるまで、どの Phase にも着手しない。そのときは D2（tier と CI）と D3（Universal 2 の綴りと `TSUZURI_LIPO`。D-55）の承認も要る。D3 の承認前は Phase 2 に着手しない。
 - **人間が求めない限り Phase 1 だけを実装する。**
 - P3 で独立レビューを受けていないので、着手前にその時点のコードと台帳に対してこのチケットをレビューし、指摘を反映してから実装する（GUIDE §0 の 2）。`node scripts/repo-kb.mjs brief M18` を読む。
 - リポジトリの外の事実を確かめ、チケットに日付とともに記録する:
@@ -69,7 +69,7 @@ macOS 27.2.1 arm64、Apple clang 21.0.0（clang-2100.4.1.1）、Apple ld（ld-27
 - d719cf68（2026-10-21、Restrict native support and CI to five platforms）: `src/target.rs` の `X86_64AppleDarwin`（`x86_64-apple-darwin`、Clang の target `x86_64-apple-macosx12.0.0`）、launcher の `("x86_64-apple-macosx12.0.0", "x86_64-macos.12.0")`、`targets.yml` の `macos-15-intel` の job、Intel Mac の配布物を外し、`src/lib.rs` に 5 つのホストの `compile_error!` を足した。
 - `_features/_completed/G14-toolchain-distribution.md:593`: 配布物（ツールチェーン）の universal binary は対象外。プログラムの出力の Universal 2 を扱うチケットは、未完了にも完了にもない。
 - docs/architecture.md:443-450、docs/language.md:4951-4954、net.md:381 も Intel の macOS を対象外と書く。
-- W36:19・164 は、Phase 2 の System V x86-64 の対象を「Linux・Intel の macOS」と書く。今は target がないので、起票の PR が W36:19 に、M18（分岐 3）に従うという注記を足す。
+- W36:19・164 は、Phase 2 の System V x86-64 の対象を「Linux・Intel の macOS」と書く。今は target がないので、起票の PR が W36:19・164 に注記を足した。D-67 の分岐 3 で方針を改めないと決めたので、注記は「Intel の macOS の target は入れない」である（2026-11-26）。
 
 ### 再現
 
@@ -313,7 +313,7 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 
 ## 受け入れ条件
 
-- [ ] D-67 の分岐 3 と D2・D3 の承認が記録されている。
+- [ ] 方針を改める決定（D-67 の分岐 3 は「改めない」に決まったので、それを改める新しい決定）と D2・D3 の承認が記録されている。
 - [ ] 仕様 1 のとおりに `x86_64-apple-darwin` をビルドでき、Rosetta か Intel の機械で `-O0`・`-O3` の `run`・`test` が aarch64 と同じ出力を出す（実行した手段を記録した）。
 - [ ] x86_64 の `--emit llvm` が `x86_64-unknown-linux-gnu` と一致し、既存の 9 個の target の出力が変わらない（比べた件数を記録した）。
 - [ ] macOS のホストの x86_64 の Mach-O が `codesign --verify --strict` を通る。
@@ -348,7 +348,7 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | D-67 の分岐 3: d719cf68 の方針を改め、`x86_64-apple-darwin` を出力の target として戻す。ホスト（コンパイラ・配布物・VS Code・CI の 5 環境）は変えない。改めないと決まったら、このチケットは方針の記録として残す | Intel Mac の利用者に配るには、出力の target と Universal 2 が要る。ホストまで戻すと、CI の時間（d719cf68 の前は 1 回約 220 分）と配布物の維持が戻る。分岐 3 の推奨は「改めない」: Apple の Intel 対応は macOS 26 で終わるとされ（リポジトリの外の事実）、対象の利用者は減る | 要承認（D-67 の分岐 3。承認前はどの Phase にも着手しない） |
+| D1 | D-67 の分岐 3: d719cf68 の方針を改め、`x86_64-apple-darwin` を出力の target として戻す。ホスト（コンパイラ・配布物・VS Code・CI の 5 環境）は変えない。分岐 3 で改めないと決まったので、このチケットは方針の記録として残す | Intel Mac の利用者に配るには、出力の target と Universal 2 が要る。ホストまで戻すと、CI の時間（d719cf68 の前は 1 回約 220 分）と配布物の維持が戻る。分岐 3 は推奨の案の「改めない」に決まった: Apple の Intel 対応は macOS 26 で終わるとされ（リポジトリの外の事実）、対象の利用者は減る | 却下（2026-11-26。D-67 の分岐 3） |
 | D2 | tier 2 にする（案 a）。CI は 3 つの job でリンクと形式を検査し、`macos-15` の job で Rosetta 2 を使って `-O0`・`-O3` の `build`・`run`・`test` を実行する。Intel の runner を足さない | d719cf68 の前に `macos-15` の job で Rosetta の実行が動いていた（「現状」。そのときは `examples/tasks` の `run` 1 回だけで、`-O0`・`-O3` の `build`・`run`・`test` への拡張はこのチケットで足す）。退けた案: (b) tier 1（`macos-15-intel` の runner）。その runner の上でコンパイラを動かすには Intel のホストを戻すか（D1 と矛盾）、arm64 でビルドした出力を別の job で走らせる仕組みが要り、時間も約 220 分かかる。(c) リンクだけ（実行しない）。BOOL・`_stret`・System V の差は実行しないと確かめられない | 要承認（承認前は手順 5 に着手しない） |
 | D3 | Universal 2 の綴りは `--target universal2-apple-darwin`（D-55）。`lipo` は `TSUZURI_LIPO`（D-55）、配布物の `bin/`、`PATH` の順に探す | 「どこで動く出力か」を選ぶのは `--target` の役目で、1 つの値で表せる。`universal2` は Python の wheel の `macosx_11_0_universal2` と同じ語で、古い universal（PowerPC・i386）と区別できる。`TSUZURI_DSYMUTIL` と同じ探し方。退けた案: 専用のフラグ `--universal`（`--target` との組み合わせの規則が要る）、`--target` の繰り返し（今は同じオプションの 2 回目が `E2000`）、`universal-apple-darwin`（古い universal と紛れる） | 要承認（D-55。承認前は Phase 2 に着手しない） |
 | D4 | M02 の ObjC の x86_64 の差（BOOL の `i8 signext` と正規化、メモリーで返す構造体の `objc_msgSend_stret`・`objc_msgSendSuper2_stret`）は、M02 の下げ方の target ごとの分岐として足す。`fpret` は使わない | 差は clang の参照で確かめた 2 点だけで、セレクターやモジュールのフラグは同じ。M02 の型付きの送信の上に分岐を置けば、arm64 の IR を変えない | 既定案（実装者はこの案に従う） |

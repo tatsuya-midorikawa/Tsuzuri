@@ -109,11 +109,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 候補 | 理由 |
 |---|---|
 | GC・サイクルコレクター | 所有権による決定的な解放という設計目標と矛盾する。循環は C10 の Arena／Handle と Weak で扱う |
-| 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Maybe／Result で表す |
+| 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Maybe／Result で表す。2026-11-26 の [D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) で、Objective-C の例外を `Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで値に変えることを、D-10 の狭い解釈として認めた（[M05](M05-objc-exception-boundary.md)、計画中）。Tsuzuri のフレームの巻き戻しは入れない |
 | 暗黙の fast-math・再結合、GPU・SIMD での黙った精度変更 | 数値の意味を変える。緩い演算は名前で区別した別 API にする（F09、C11） |
-| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルと、2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) に基づく型付きの `extern view`（[W24](_completed/W24-extern-view.md)、完了）・`extern interface`（W25）に限って許可する。生ポインター型と `unsafe` は引き続き入れない |
+| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルと、2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) に基づく型付きの `extern view`（[W24](_completed/W24-extern-view.md)、完了）・`extern interface`（W25）に限って許可する。2026-11-26 の [D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) で、同じ原則の下で Objective-C のための型付きの `extern class` などを足すことを決めた（M01〜M05・M10・M23、計画中）。生ポインター型と `unsafe` は引き続き入れない |
 | 利用者が境界検査を無効にするオプション・unchecked API | 安全性を下げる。検査のコストは F12 の証明と計測で減らす |
-| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う |
+| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う。[D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の `extern class`（[M01](M01-objc-class-types.md)、計画中）は、ホストの Objective-C のクラスの階層を型の検査に写すだけで、Tsuzuri の型に継承は入れない |
 | GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する |
 
 ## 一覧
@@ -419,7 +419,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC20 | [複合代入 `+=`・`-=`・`*=`・`/=`・`%=` と書き込み窓 `ref mut t[…]`（組み込みの `AddAssign` 系と `IndexBorrowMut`）](NC20-compound-assignment-and-mutable-index-views.md) | P2 | L | A37, A38, A39, NC18, NC19, (A40) | todo |
 | NC21 | [`Complex` と実数のスカラーの演算子（演算子の拡張インスタンス 8 個）](NC21-complex-real-scalar-operators.md) | P2 | S | NC19 | todo |
 
-### M. Tsuzuri だけで macOS のデスクトップアプリを書く（D-67。分岐は未承認）
+### M. Tsuzuri だけで macOS のデスクトップアプリを書く（D-67）
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
@@ -427,7 +427,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | M02 | [型付きのメッセージ送信（`extern class` のメンバー、`objc_msgSend` を宣言どおりの C の型で呼ぶ、`BOOL`・`f32`・`f64`・構造体の結果、カテゴリー、定数の NSString）](M02-objc-typed-message-send.md) | P1 | XL | M01, (W36) | todo |
 | M03 | [Objective-C のクラスを Tsuzuri で定義する（`extern class export`・オーバーライド・プロトコル・`Super` への送信・`Anchor` の状態・構造体を受け返す IMP）](M03-objc-classes-defined-in-tsuzuri.md) | P2 | XL | M02, (W36), (M09) | todo |
 | M04 | [Block（`^{}`）を作る・受け取る（`ObjC.Block<F>`）](M04-objc-blocks.md) | P2 | L | M01, (M02), (M03), (M09) | todo |
-| M05 | [Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 との関係は要承認）](M05-objc-exception-boundary.md) | P2 | M | M02 | todo |
+| M05 | [Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 の狭い解釈。D-67 の分岐 2 で承認）](M05-objc-exception-boundary.md) | P2 | M | M02 | todo |
 | M06 | [C の大域データシンボルの `extern` と NUL 終端の UTF-8 文字列 `ZUtf8String`](M06-extern-data-symbols-and-zutf8string.md) | P1 | L | (M01), (NS07) | todo |
 | M07 | [Apple SDK のヘッダーからの宣言の生成器（`tsuzuri bindgen --objc`）と公式の `apple` パッケージ（W27 の macOS 版）](M07-apple-sdk-bindgen-and-package.md) | P2 | XL | M01, M02, M06, M20, W17, (M03), (M04), (M05), (M09), (M17), (W27), (W36) | todo |
 | M08 | [macOS の GUI に `Routine.with_locked_thread` を勧める文書と `E1013` の誤り（with_locked_thread はワーカー M に固定し、メインスレッドにはならない）](M08-macos-main-thread-docs-and-e1013.md) | P1 | S | (W28) | todo |
@@ -440,7 +440,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | M15 | [`.app` バンドルの生成（`--emit app`）と `[macos]` の manifest の節・`.dSYM`・`Env.executable_path`](M15-macos-app-bundle.md) | P2 | L | (M17), (M20) | todo |
 | M16 | [Developer ID 署名・hardened runtime・公証（`tsuzuri notarize`）と生成コードの硬化の記録（W30 の macOS 版）](M16-macos-signing-notarization-hardening.md) | P2 | M | M15 | todo |
 | M17 | [最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）](M17-macos-min-version-and-weak-import.md) | P1 | M | (M22), (M01), (M06) | todo |
-| M18 | [Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針の改訂が要承認）](M18-intel-mac-and-universal2.md) | P3 | XL | (W36), (M17), (M02) | todo |
+| M18 | [Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針を改める決定が要る。D-67 の分岐 3 では改めないと決めた）](M18-intel-mac-and-universal2.md) | P3 | XL | (W36), (M17), (M02) | blocked（D-67 の分岐 3 で方針を改めないと決めた） |
 | M19 | [GUI として起動したときのトラップとランタイムの報告を unified logging（`os_log`）へ送る](M19-macos-trap-report-os-log.md) | P2 | M | – | todo |
 | M20 | [macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）](M20-macos-framework-link-inputs.md) | P1 | M | (W17), (M22) | todo |
 | M21 | [`extern view` の書き込みに一時の record を渡すとコンパイラが panic する](M21-extern-view-temporary-record-panic.md) | P1 | S | – | todo |
@@ -469,7 +469,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 13. 追加（2026-11-02） | F# の Anonymous Type-tagged Unions（FS-1092）に相当する匿名共用体 `(A \| B)` を入れる | A24 → A25・A26。詳細は [追加チケット（2026-11-02。匿名共用体）](#追加チケット2026-11-02匿名共用体) |
 | 14. 追加（2026-11-24） | 案 C（ハイブリッド）で NumPy 互換の数値計算基盤と最小の汎用言語拡張 2 点（借用演算子・汎用 `Index`）およびゼロコピー並列チャンクを整備する | ① NC01・NC02・NC03・NC04・NC15 → ② NC05・NC06 → NC07 → ③ NC08 → NC09・NC10 → ④ NC11・NC12（W13 後）・NC13・NC14。詳細は [追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) |
 | 15. 追加（2026-11-25） | 自然な添字・範囲・演算子（D-66）: `Index` の借用の不具合を直し、窓を返す添字に `ref` を必須にし、edition 2028 で範囲の構文を一本化して、多次元の角括弧・演算子の拡張インスタンス・複合代入を入れる。委任による決定で、添字の評価順（A38）・フィールドの排他借用（A39）・参照の被演算子（A40）・`Complex` とスカラーの演算子（NC21）・std の複製の除去（PM10）を足した | ① A37 → A38 → NC16（NC03・NC04 を含む最初のリリースの前）、NC17 Phase 1 → ② NC17 Phase 2 → NC18、NC06 →（A40）→ NC19 → NC21、NC20 Phase 1（独立）・A39 → ③ NC20 Phase 2・3 → NC17 Phase 3。PM10（_perfs）は独立。詳細は [追加チケット（2026-11-25。自然な添字・範囲・演算子）](#追加チケット2026-11-25自然な添字範囲演算子) |
-| 16. 追加（2026-11-26） | Tsuzuri だけで macOS のデスクトップアプリを書く（D-67。分岐はどれも未承認）: 調査で見つけた 2 つの不具合と文書の誤りを直し、Objective-C の型付きの連携、メインスレッド、framework のリンク、最低 OS 版、`.app`・署名・公証を足す | ① M21・M22・M08（承認不要）→ ② M20 Phase 1・M17・M06 Phase 1・M09 Phase 1（分岐 1 に依らない）、M17 → M15 → M16、M19 → ③ 分岐 1 の後に M01 → M02 → M03、M04・M05・M10・M23 → ④ M07 → M13・M14、M11・M12。M18 は分岐 3 の承認まで着手しない。詳細は [追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）](#追加チケット2026-11-26tsuzuri-だけで-macos-のデスクトップアプリを書く) |
+| 16. 追加（2026-11-26） | Tsuzuri だけで macOS のデスクトップアプリを書く（D-67。分岐は 2026-11-26 にすべて推奨の案で承認）: 調査で見つけた 2 つの不具合と文書の誤りを直し、Objective-C の型付きの連携、メインスレッド、framework のリンク、最低 OS 版、`.app`・署名・公証を足す | ① M21・M22・M08（承認不要）→ ② M20 Phase 1・M17・M06 Phase 1・M09 Phase 1（分岐 1 に依らない）、M17 → M15 → M16、M19 → ③ 分岐 1 の後に M01 → M02 → M03、M04・M05・M10・M23 → ④ M07 → M13・M14、M11・M12。M18 は分岐 3 で方針を改めないと決めたので着手しない（blocked）。詳細は [追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）](#追加チケット2026-11-26tsuzuri-だけで-macos-のデスクトップアプリを書く) |
 
 ## 依存関係図
 
@@ -1245,21 +1245,21 @@ graph LR
 ## 追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）
 
 利用者の依頼「_features にあるチケットをすべて実装できたと仮定した場合、その状況で Tsuzuri を使った macOS のデスクトップ アプリ開発はできるか検討し、その結果を報告して」に対して、arm64 の Mac で調査と実測を行った（HEAD `804b7970`）。結論は「条件付きでできる」だった。今でも C を書かずに AppKit のアプリが動くが、ABI の知識に頼る回避策の積み重ねであり、Objective-C の連携・バンドル・署名・公証・Intel Mac を扱うチケットは 1 件もなかった。続く依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から、M01〜M22 を起票した。M01〜M05・M07〜M19 は報告の「どのチケットにもない壁」に、M06・M20 は報告の「使った回避策」（`dlsym` で引いたデータシンボル、`u8"...\0"` の C 文字列、`-framework` の代わりの `.tbd`）を要らなくするものに、M21・M22 は「調査中に見つけたコンパイラの不具合」に当たる。起票の後の網羅性の検査で、壁 1 のうち物体の出力引数（`NSError **`）と弱い参照に行き先がないと分かり、M23 を足した。
-共通の決定と、確かめた事実は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) にある。起票の依頼は分岐の承認を含まないので、D-67 は提案（未承認）である。チケットは推奨案を前提に書き、承認を待つ点を各チケットの「承認」の行に書いた。再現の結果と行番号は各チケットの「現状」にある。
+共通の決定と、確かめた事実は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) にある。D-67 の 7 つの分岐は、2026-11-26 に利用者がすべて推奨の案で承認した（「「決めていただきたいこと（D-67。どれも未承認）」については推奨の通りで進めてください。」）。各チケットの D-53・D-55 の登録と、分岐ではない「要承認」の決定は、各チケットの「承認」の行のとおり、まだ決まっていない。再現の結果と行番号は各チケットの「現状」にある。
 
-### 利用者が決める分岐（D-67。未承認）
+### 利用者が決めた点（D-67。2026-11-26）
 
-| 分岐 | 問い | 推奨 | 関係するチケット |
+| 分岐 | 問い | 決定（すべて推奨の案） | 関係するチケット |
 | --- | --- | --- | --- |
 | 1. 言語の範囲 | Objective-C を、型付きの `extern` の宣言として言語に入れるか | X′: `extern class`・`extern category`・`extern protocol`・`extern class export`、組み込みのモジュール `ObjC` の型・Block・例外の境界を足す。生ポインター型と `unsafe` は入れない。ほかに Y′（ObjC は言語に入れない）と Z′（`objc_msgSend` 系に限って W14 の同一形の規則を外す属性だけ）がある | M01〜M05・M07・M10・M13・M14・M23、M12 の Phase 2（layer の受け方） |
 | 2. M05 と D-10 | ObjC の例外を、`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで値に変えることを、D-10 の狭い解釈として認めるか | 認める（巻き戻すのはホストのフレームだけ） | M05 |
-| 3. Intel Mac | d719cf68 の「5 つのプラットフォーム」の方針を改め、Intel Mac と Universal 2 に広げるか | 改めない（M18 は承認まで着手しない） | M18 |
+| 3. Intel Mac | d719cf68 の「5 つのプラットフォーム」の方針を改め、Intel Mac と Universal 2 に広げるか | 改めない（M18 は blocked） | M18 |
 | 4. 構造体の値渡し | NSRect・NSPoint・NSSize・NSRange の値渡しのために、W36 を Phase 2（AAPCS64）まで実装することを求めるか | (a) 求める。(b) は M02 が HFA だけを先に扱う案。(a) では W36 の停止条件 S1 の選択も要る（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷したので、値渡しに変えると既存のプログラムの C の ABI が変わる。A は互換を破る変更として承認し `docs/stability.md` に記録する、B は値渡しに別の綴りを使う） | M02・M03 の Phase 2、W36 |
 | 5. 公式パッケージ | `apple`・OS サービス・TLS と HTTP を、std の外の公式パッケージ（git）にするか | する（W27 の配布の決定と共有） | M07・M13・M14 |
 | 6. 既定の最低 OS 版 | 既定の native ビルドの最低 OS 版を、ビルド機の版のままにするか、名前付きの target と同じ 12.0 に固定するか | 12.0 に固定 | M17 |
 | 7. os_log | 標準エラーが閉じているか `/dev/null` のとき、macOS に限ってトラップとランタイムの報告を `os_log` へ送るか | 送る | M19 |
 
-承認の要らない M08・M21・M22 は、すぐに進めてよい。分岐が決まったら、D-67 の「状態」と「利用者が決めた点」を書き換え、選ばれなかった案でだけ要るチケットを、上の「M.」の表とチケットの「状態」で `closed` にする。
+分岐 4 の (a) では、W36 の停止条件 S1 の選択（A・B）に推奨がなく、まだ決まっていない。W36 の着手の前に要る（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷した（`src/` に `c_layout_by_value_pending` が無い）ので、S1 は W36 の Phase 1 にも当たる）。選ばれなかった案でだけ要るチケットは M18 だけで、状態を `blocked` にした（`scripts/repo-kb` が読む状態は `todo`・`doing`・`done`・`blocked`）。承認の要らない M08・M21・M22 は、すぐに進めてよい。
 
 ### 共通の綴り（macOS。起票時に決めた契約）
 
@@ -1291,7 +1291,7 @@ D-67 の「共通の綴りと規則」とチケットの「共通の綴り」は
 | 署名と公証（M16） | `[macos] sign_identity`・`entitlements`・`hardened_runtime`・`timestamp`、`tsuzuri notarize Name.app --keychain-profile <名前>`、`TSUZURI_CODESIGN`・`TSUZURI_NOTARYTOOL` | 秘密は manifest に置かず、keychain の profile の名前だけを持つ。`hardened_runtime`・`timestamp` は明示したときだけ有効（既定は false。`tsuzuri notarize` が送信の前に署名を検査する）。`codesign` で内側（`Frameworks`）から署名し、公証は `notarytool submit --wait` と `stapler staple`。生成コードへの `ssp` は測定の後に要承認 |
 | Swift のバインディング（M11） | `--emit bindings-swift` | `--emit header` の C ヘッダーを包む `.swift` を出す。`Maybe` は NS02 の後に Optional、`--trap-mode return` の `tsuzuri_try_<name>` は `throws`、string は UTF-16 |
 | Apple SDK からの生成（M07） | `tsuzuri bindgen --objc --framework AppKit --api api.txt -o Apple/` | `clang -x objective-c -Xclang -ast-dump=json` を読む。availability は `clang -extract-api` の symbol graph から読む。ObjCInterface は `extern class`、Category は `extern category`、Protocol は `extern protocol`（M03 があり、D14 で `@optional` を決められるとき）。クラスの単位の `NS_SWIFT_UI_ACTOR` は `main`（M09 の Phase 2 がなければ `local`）、`NS_SWIFT_SENDABLE` は `sync`、nullability は `Maybe`、`NS_RETURNS_RETAINED` は属性、instancetype は `Self`、クラス・C の関数・データシンボルの availability が `--min-version` より新しければ `@weak`（M17 がなければ注記の行）、Block は `ObjC.Block`、`NSString * const` は `view def`、`const char *` の引数は M06 の Phase 2 があれば `ref ZUtf8String`（なければ `// skipped`）。可変長は `W2002` で飛ばす |
-| Intel Mac と Universal 2（M18） | `--target x86_64-apple-darwin`、Universal 2 は `--target universal2-apple-darwin`（D3）、`TSUZURI_LIPO` | 分岐 3 の承認まで着手しない。x86_64 の macOS では BOOL が `signed char`（`i8 signext`。`__OBJC_BOOL_IS_BOOL`=0）で、メモリーで返す構造体には `objc_msgSend_stret`・`objc_msgSendSuper2_stret` を使う。SysV の分類は W36 の Phase 2 |
+| Intel Mac と Universal 2（M18） | `--target x86_64-apple-darwin`、Universal 2 は `--target universal2-apple-darwin`（D3）、`TSUZURI_LIPO` | 分岐 3 で方針を改めないと決めたので着手しない（blocked）。x86_64 の macOS では BOOL が `signed char`（`i8 signext`。`__OBJC_BOOL_IS_BOOL`=0）で、メモリーで返す構造体には `objc_msgSend_stret`・`objc_msgSendSuper2_stret` を使う。SysV の分類は W36 の Phase 2 |
 | os_log への報告（M19） | 新しい綴りはない | macOS で fd 2 が閉じているか `/dev/null` のときだけ、トラップ・デッドロック・スタックのあふれ・ランタイムの報告を `os_log` へ送る（`%{public}.*s`、subsystem 案 `dev.tsuzuri.runtime`）。端末・パイプ・ファイルへの出力は 1 byte も変えない。対象は Apple の実行ファイル（`build --emit exe`・`run`）だけで、変わる IR は `@tz.trap.write`（`--trap-info` のトラップと、W12 の `main` の後の呼び出しの報告）を持つものだけ。object・共有ライブラリ・テストのランナー・Linux・WASM は変えない |
 | 物体の出力引数（M23） | `extern def`・メンバーの引数 `ref mut Maybe<C>`（`NSError **` など） | pass-by-writeback（clang の ARC の `__autoreleasing` と同じ）: 今の値を retain せずに一時の領域へ写し、戻った後に `objc_storeStrong` で場所へ書き戻す。`ref mut C`（`Maybe` でない物体）は `E1008` `objc_inout_object`。Swift の `throws` のような `Result` への自動の写像は足さない（D5）。M07 は `__autoreleasing` の `NSError **` だけを写す |
 | 弱い参照（M23 の Phase 2） | `ObjC.Weak<C>`、`ObjC.weak :: ref C -> ObjC.Weak<C>`、`ObjC.load_weak :: ref ObjC.Weak<C> -> Maybe<C>`、`ObjC.copy_weak :: ref ObjC.Weak<C> -> ObjC.Weak<C>` | 弱い参照の場所は、値が所有するヒープの箱（8 バイト）に置く。`objc_initWeak`・`objc_loadWeakRetained`・`objc_copyWeak`・`objc_destroyWeak` を使い、箱は動かないので `objc_moveWeak` は要らない。スレッドの性質は `C` に従う。表現は M04 の D10 と同じ仕組み（先に入ったほうが作る）。M17 の `@weak`（弱い import）とは別のもの |
@@ -1318,7 +1318,7 @@ D-67 の「共通の綴りと規則」とチケットの「共通の綴り」は
 | 機能 | M15 | `.app` バンドルの生成（`--emit app`）と `[macos]` の manifest（Info.plist・アイコン・資源・同梱）、`.dSYM`、`Env.executable_path` |
 | 機能 | M16 | Developer ID 署名・hardened runtime・公証（`tsuzuri notarize`）と、生成コードの硬化の記録（W30 の macOS 版） |
 | 機能 | M17 | 最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）。今の既定の native ビルドの最低 OS 版はビルド機の版（実測で 27.2）になる |
-| 機能 | M18 | Intel Mac（`x86_64-apple-darwin`）と Universal 2。d719cf68 の「5 つのプラットフォーム」の方針の改訂が要り、承認まで着手しない |
+| 機能 | M18 | Intel Mac（`x86_64-apple-darwin`）と Universal 2。d719cf68 の「5 つのプラットフォーム」の方針の改訂が要る。D-67 の分岐 3 で方針を改めないと決めたので、着手しない（blocked） |
 | 機能 | M20 | macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）。今は SDK の `.tbd` を `--link` に渡す回避策（文書にない使い方で、Apple の ld だけが読める）しかない。NC12 の `-framework Accelerate` の前提もこれで満たす |
 | 機能 | M23 | Objective-C の物体の出力引数（`NSError **` を `ref mut Maybe<C>` で受ける）と弱い参照（`ObjC.Weak<C>`）。今は `ref mut i64` で受けて retain を手で書くしかなく、retain せずにプールの後で読むと解放後の使用になる（exit 139）。W13 の `ref mut` で `objc_initWeak` を呼ぶと、libobjc に登録される場所が copy-in/copy-out の一時の領域になり、後の読み出しで libobjc が落ちる（exit 139） |
 | 改善 | M10 | tzroutine と `main` の autorelease pool（`ObjC.with_autorelease_pool`）。今はプールのない tzroutine で autorelease した物体が漏れる（200 万個で maxrss が 5.6 MiB から 51.8 MiB。Foundation をリンクした `-O3`） |
@@ -1327,9 +1327,9 @@ D-67 の「共通の綴りと規則」とチケットの「共通の綴り」は
 ### 進め方
 
 - **最初に（承認なしで始められる）**: M21・M22（修正。どちらも P1・S で互いに独立）と M08（文書と `E1013` の文の修正。W28 と同じ段落を触るので、後に入るほうが文を合わせる）。M22 は、属性を足す M01・M17・M20 の Phase 2・W16・W17 より先にマージする（後になった場合は、M22 が先読みの一覧に足された分を消す）。
-- **D-67 の承認を待つ**: 分岐 1〜7 と D-53・D-55 の登録は、各チケットの「承認」の行のとおり。承認が記録されるまで、該当する Phase に着手しない（GUIDE §0 の 1）。
+- **承認**: D-67 の分岐 1〜7 は承認済み（2026-11-26）。D-53・D-55 の登録と、分岐ではない「要承認」の決定は、各チケットの「承認」の行のとおりまだ決まっていない。承認が記録されるまで、該当する Phase に着手しない（GUIDE §0 の 1）。
 - **分岐 1 に依らない土台（分岐 1 の承認は要らない。要る承認は各チケットの「承認」の行）**: M20 の Phase 1（framework のリンク入力。Phase 2 の `@link(framework = ...)` は人間が求め、W17 が done のとき）、M17（最低 OS 版と `@weak`。既定の版は分岐 6）、M06 の Phase 1（データシンボル。Phase 2 の `ZUtf8String` は人間が求めたとき）、M09 の Phase 1（`MainThread.post`。M08 の後が望ましい）。この 4 つに強い依存はなく、ObjC の型と並行して進められる（M17 の `@weak` のデータシンボルとクラスの段は、M06・M01 と後に入るほうが足す）。
-- **配布**: M17 → M15 → M16 の順（`[macos]` の節は先に入ったほうが作る）。M15 はリンク行に rpath を足さないので、`embed` した dylib を rpath で読ませる E2E の段だけを M20 の後に足す。M19 は独立（分岐 7）。M18 は分岐 3 の承認まで着手しない。
+- **配布**: M17 → M15 → M16 の順（`[macos]` の節は先に入ったほうが作る）。M15 はリンク行に rpath を足さないので、`embed` した dylib を rpath で読ませる E2E の段だけを M20 の後に足す。M19 は独立（分岐 7 は承認済み）。M18 は分岐 3 で方針を改めないと決めたので着手しない（blocked）。
 - **ObjC の型付きの連携（分岐 1 の X′ の後）**: M01 → M02 → M03 の順。M04 は M01 の後（M02・M03 があれば使う）。M05 は M02 の後（分岐 2 の承認も要る）。M10 は M01 の後で、M02 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。M23 の Phase 1（物体の出力引数）は M02 の後、Phase 2（弱い参照）は M01 の後で、Block の表現（M04 の D10）と同じ仕組みを使う（先に入ったほうが作る）。M07 は M23 があれば `NSError **` を写す。
 - **構造体の受け渡し**: 分岐 4 の承認の後に、W36 の Phase 1 → W36 の Phase 2 → M02 の Phase 2 → M03 の Phase 2 の順。分岐 4 の (b) を選んだ場合は、M02 の Phase 2 が HFA だけを先に扱う。
 - **メインスレッド**: M09 の Phase 2（`main` の型と効果 `main_thread`）は、D-53 の改訂と D-55 の `main` の承認（M09 の D11・D12）の後で、`extern class main` の段は M01 の後。Phase 3（別のスレッドから引ける預け先。M09 の D16）は M14 の着手より前に決める。

@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（SwiftUI など Swift 専用の API には届かない）」に当たる。Swift の ABI を直接呼ぶことは D-67 の「改めないもの」なので、Swift だけの API へはホストの構成（Swift のアプリが Tsuzuri のライブラリを呼ぶ）で届く。このチケットは、その構成のバインディングの生成を足す。HEAD `804b7970` で確認） |
-| 承認 | 要承認: D-55（`--emit bindings-swift`）。決定事項 D1 が要承認、D2〜D9 は既定案。D-67 の分岐 1 のどの案（X′・Y′・Z′）でも実装するチケットである（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)） |
+| 承認 | 要承認: D-55（`--emit bindings-swift`）。決定事項 D1 が要承認、D2〜D9 は既定案。D-67 の分岐 1 のどの案（X′・Y′・Z′）でも実装するチケットである（分岐 1 は X′ で承認済み（2026-11-26）。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)） |
 | 改善する劣位 | Rust（UniFFI・swift-bridge）比: Rust のライブラリは Swift の包みを生成できる。Tsuzuri は C#・Python・C++ の包みを生成する（E13 の Phase 2）が、Swift の包みはない。Swift のホストは C ヘッダーを読み、UTF-16 の配列への複写、所有の結果の `tsuzuri_free`、`--trap-mode return` の状態の検査を手で書く |
 | 手本にする既存実装 | `src/bindings_native.rs` の `cpp`・`cpp_export`（C ヘッダーの上の包み、`tsuzuri_try_<name>` と例外、所有の結果の解放）、`Shape`・`Scalar`・`shape`・`identifier`・`trap_kinds`・`signature_text`、`csharp` のクラス名の作り方（PascalCase）、`python`（所有の結果を複製してすぐ解放する形）。検査は `tests/bindings.rs` の `native_bindings_are_deterministic_and_follow_the_c_abi`（行の照合）と `tests/host_bindings.mjs`（ツールがなければ飛ばす E2E）。[E13](_completed/E13-host-bindings.md) の Phase 2 |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/profile.rs`, `src/bindings.rs`, `src/bindings_native.rs`, `src/bindings_swift.rs`（新規）, `tests/bindings.rs`, `tests/bindings.mjs`, `tests/host_bindings.mjs`, `tests/host_bindings_test.swift`（新規）, `docs/language.md`, `docs/architecture.md`, `README.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/compiler/usage.md` |
@@ -41,7 +41,7 @@ Swift だけの API（SwiftUI、Swift の concurrency を前提にしたフレ�
 
 この構成は今でも動く（「現状」）。ただし、Swift の側の糊を手で書く必要がある。string は UTF-16 の配列に写して渡し、所有の結果は `tsuzuri_free` で解放し、`bool` は `int32_t` から戻し、`--trap-mode return` の状態を検査する。C#・Python・C++ には、同じ表から作る型付きの包みがある（E13 の Phase 2）。Swift にだけない。
 
-このチケットは、C++ の包みと同じ形で Swift の包みを生成する。C ヘッダーはそのまま使い、Swift の側には呼び出しの変換だけを置く。Swift のホストの構成（D-67 の分岐 1 の Y′ では主な構成）を、ほかのホスト言語と同じ手間にする。
+このチケットは、C++ の包みと同じ形で Swift の包みを生成する。C ヘッダーはそのまま使い、Swift の側には呼び出しの変換だけを置く。Swift のホストの構成を、ほかのホスト言語と同じ手間にする（D-67 の分岐 1 で Y′ が選ばれていれば主な構成になったが、分岐 1 は X′ に決まった（2026-11-26））。
 
 ## 着手条件と停止条件
 
@@ -358,7 +358,7 @@ nonisolated public enum Quote {
 
 - `Emit::BindingsSwift` と `crate::bindings::swift`。
 - NS02 がこのチケットより後に出荷されるときは、NS02 の PR が Swift の写し（仕様 3 の Optional）を足す。NS02 の仕様 2 の表に Swift の列を足し、`swift_export` の `match` に 2 つの形を足す。
-- D-67 の分岐 1 の Y′（ObjC を言語に入れない）では、AppKit・SwiftUI を Swift のホストに置き、Tsuzuri をこの包みで呼ぶ構成が主になる。
+- D-67 の分岐 1 は X′ に決まった（2026-11-26）ので、AppKit は Tsuzuri から M01・M02 の宣言で呼べる。この包みは、Swift だけの API（SwiftUI など）を Swift のホストに置き、Tsuzuri を呼ぶ構成で使う。選ばれなかった Y′（ObjC を言語に入れない）なら、AppKit も Swift のホストに置き、この包みで呼ぶ構成が主になるはずだった。
 
 ## 実装手順
 

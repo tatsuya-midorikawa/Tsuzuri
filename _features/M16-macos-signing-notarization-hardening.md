@@ -317,7 +317,7 @@ tsuzuri notarize Name.app --keychain-profile <名前>
 
 ## 他チケットへ提供するインターフェース
 
-- `SignPlan` の 4 つの欄と `codesign_args`。[M18](M18-intel-mac-and-universal2.md) の Universal 2 の bundle も同じ段で署名する。
+- `SignPlan` の 4 つの欄と `codesign_args`。[M18](M18-intel-mac-and-universal2.md) の Universal 2 の bundle も同じ段で署名する（M18 は D-67 の分岐 3 で blocked。方針を改める決定があったときの話である）。
 - `platforms.md` の「macOS の実行ファイルのセキュリティ機能」の表。[M12](M12-gpu-presentation-to-window.md) が、bundle の中の GPU ランタイムを同じ Team ID で署名する手順の根拠に使う（再現 3 の GPU の行）。
 - `native-interop.md` の「hardened runtime のホストに dylib を入れる」の段。`--emit shared` を Xcode のアプリに埋め込む利用者が読む。
 

@@ -1,15 +1,15 @@
-# M05: Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 との関係は要承認）
+# M05: Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 の狭い解釈。D-67 の分岐 2 で承認）
 
 | 項目 | 内容 |
 | --- | --- |
 | ID | M05 |
-| 優先度 | P2（正しく書いた AppKit の呼び出しで NSException はふつう起きない。例外を投げうる呼び出しは ObjC のシムの `@try` でも包める。D-67 の分岐 2 の承認も要る） |
+| 優先度 | P2（正しく書いた AppKit の呼び出しで NSException はふつう起きない。例外を投げうる呼び出しは ObjC のシムの `@try` でも包める。D-67 の分岐 2 は承認済み（2026-11-26）） |
 | 規模 | M（結果の位置の検査、`invoke` と landingpad の生成、`ObjC.Exception` と 2 つの関数、ブロッキングの包みの対応、macOS の E2E、文書） |
 | 依存 | [M02](M02-objc-typed-message-send.md) |
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1 の @try と配布の注意（NSException が Tsuzuri のフレームを越えると abort。exit 134）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 2（D-10 の狭い解釈。README の「採用しない改善」の「例外と巻き戻し」の行への注記）と分岐 1（X′）。D-55（`ObjC.Exception`・`ObjC.exception_name`・`ObjC.exception_reason`））。決定事項の D1・D9 が要承認、ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 2（D-10 の狭い解釈。README の「採用しない改善」の「例外と巻き戻し」の行への注記。決定事項 D1）と分岐 1（X′）は承認済み（2026-11-26）。要承認（D-55（`ObjC.Exception`・`ObjC.exception_name`・`ObjC.exception_reason`））。決定事項の D9 が要承認、ほかは既定案 |
 | 改善する劣位 | Objective-C・Objective-C++（`@try`／`@catch`）比: AppKit・Foundation のメソッドが投げる NSException（`NSRangeException`・`NSInvalidArgumentException` など）を Tsuzuri の中で値として受けられない。Tsuzuri のフレームを越えると、外側にホストの `@catch` があってもプロセスが終わる（exit 134）。今の回避策は、`@try` を持つ ObjC のシムを C のツールチェーンで作って包むことだけである（Swift も NSException を受けられずシムに頼るが、Tsuzuri は D-67 で AppKit を直接呼ぶので影響が大きい） |
 | 手本にする既存実装 | D-34 の `try ... with`（同じ関数本体の中で受け、関数の境界を越えない。型検査 `src/exceptions.rs`、生成 `src/llvm_exception.rs` の `try_expression`）。W07 の `traps::with_unwind_tables`（`src/llvm_traps.rs:443-447`。関数の属性を IR の行に足す所）。`src/llvm_imports.rs` の `FunctionEmitter::host_call`（引数の下げ方と呼び出しの後の後始末）。`src/llvm.rs` の `with_blocking_externs`（TZ08 の包み）。clang 21 の `@try`／`@catch (id e)` の参照の IR（「現状」） |
 | 主な影響ファイル | `src/check.rs`, `src/abi.rs`, `src/llvm_imports.rs`, `src/llvm_objc.rs`（M01・M02 が作る ObjC の生成）, `src/llvm.rs`, `src/llvm_preempt.rs`, `src/llvm_traps.rs`, `src/effects.rs`, `src/pure_rules.rs`, `src/kg/effects.rs`, `src/pinned_rules.rs`, `src/capabilities.rs`, `src/diagnostic_kinds.rs`, `tests/objc_exceptions.rs`（新規）, `tests/objc_exceptions.mjs`（新規）, `tests/fast_backend.rs`, `tests/objc_exceptions_host.m`（新規）, `tests/fixtures/objc_exceptions/Main.tz`（新規）, `_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/exception-handling/exception-handling.md`, `_tsuzuri/language-reference/exception-handling/try-with-finally.md`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, `_features/GUIDE.md` |
@@ -44,14 +44,14 @@ AppKit と Foundation は、プログラムの誤り（範囲外の添字、知�
 
 D-67 の分岐 1（X′）で AppKit を Tsuzuri から直接呼ぶと、例外を投げうる呼び出しの数が増える。投げうると分かっている呼び出し（`-[NSArray objectAtIndex:]`、`-[NSDictionary setObject:forKey:]` に外から来た値を渡す呼び出し、`-[NSFileHandle readDataOfLength:]` など）を、シムなしに値で扱える必要がある。
 
-このチケットは、利用者が `Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで例外を受ける。D-34 の `try ... with` と同じく「同じ関数の中で受ける」形で、Tsuzuri のフレームは巻き戻さない。これを D-10「例外・巻き戻しは導入しない」の狭い解釈として記録するので、D-67 の分岐 2 の承認が要る（決定事項 D1）。
+このチケットは、利用者が `Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで例外を受ける。D-34 の `try ... with` と同じく「同じ関数の中で受ける」形で、Tsuzuri のフレームは巻き戻さない。これを D-10「例外・巻き戻しは導入しない」の狭い解釈として記録する。この解釈は D-67 の分岐 2 で承認された（2026-11-26。決定事項 D1）。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
 - [M02](M02-objc-typed-message-send.md) の Phase 1 が done（メンバーの型付きの送信、selref、`declare` を 1 つにする規則、送信のブロッキングの包み）。M02 は [M01](M01-objc-class-types.md)（`ObjC.Object`・所有・`abi_apple_only`）を前提にする。確認: `grep -nE "^\| M0[12] " _features/README.md`。
-- [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 2 の承認が記録されている。決定事項 D1・D9 が承認されている。**承認が記録されるまで、該当する Phase に着手しない**（このチケットは Phase に分けないので、全体に着手しない）。 分岐 2 が認められなければ、このチケットは閉じる（D1 の退けた案 (a)）。
+- [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 2 は承認済み（2026-11-26。分岐 2 は決定事項 D1）。決定事項 D9 が承認されている。**承認が記録されるまで、該当する Phase に着手しない**（このチケットは Phase に分けないので、全体に着手しない）。分岐 2 を認めずにこのチケットを閉じる案（D1 の退けた案 (a)）は選ばれなかった。
 - 「現状」の再現を着手時の HEAD で実行し、食い違えばこのチケットを直してから始める。
 - ベースライン: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm`（native、`--target aarch64-apple-darwin`、`--target wasm32`）、`--emit header`、`check --json` を `target/scratch/m05/base/` に保存する（受け入れ条件の比較に使う）。M01・M02 の fixture（ObjC を使うが境界を使わない）も含める。
 
@@ -425,7 +425,7 @@ tz.objc.join.<n>:
 - Tsuzuri のフレームの巻き戻し（D-10）と、関数の境界を越えて例外を運ぶこと。
 - C++ の例外の捕捉（今のとおり terminate）。`@finally`。
 - コールバック・IMP（M03）・Block（M04）の中から例外を投げ返すこと、`ObjC.throw` に当たる操作。
-- Windows の SEH と Linux の巻き戻し、Intel Mac（M18 が x86_64 の macOS を扱うなら、同じ形を足すかはそこで決める）。
+- Windows の SEH と Linux の巻き戻し、Intel Mac（D-67 の分岐 3 は方針を改めないと決め、M18 は着手しない（2026-11-26）。後で M18 が x86_64 の macOS を扱うなら、同じ形を足すかはそこで決める）。
 - `ObjC.Exception` の `userInfo`・`callStackSymbols` の取り出し（要るなら M02 のメンバーとして NSException を宣言して送る）。
 - 例外を投げうるメンバーの一覧の作成（M07 の設定）。
 - `--backend fast` の `invoke`・landingpad の対応。
@@ -434,7 +434,7 @@ tz.objc.join.<n>:
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 例外を受けるのは、利用者が `Result<_, ObjC.Exception>` と書いた呼び出しの地点だけ。巻き戻すのは投げたホストのフレームから境界の関数までだけで、Tsuzuri のフレームは巻き戻さない。ほかの経路は今のまま abort する。これを D-10 の狭い解釈として docs/language.md と README の「採用しない改善」の行に記録する | D-34 の `@checked` と同じ「同じ関数の中で受ける」形で、`Drop` を飛ばす経路を作らない。境界は宣言の型に現れ、監査で見える。退けた案: (a) M05 を閉じ、投げうる呼び出しを ObjC のシムに置く（分岐 2 を認めない場合。C のツールチェーンが要る）。(b) すべての呼び出しで受けてトラップにする（すべての関数に表が要り IR が変わる。S1・S2）。(c) `try ... with` を ObjC の例外に広げる（どの呼び出しが投げうるかが宣言に現れない） | 要承認（D-67 の分岐 2。承認前は着手しない） |
+| D1 | 例外を受けるのは、利用者が `Result<_, ObjC.Exception>` と書いた呼び出しの地点だけ。巻き戻すのは投げたホストのフレームから境界の関数までだけで、Tsuzuri のフレームは巻き戻さない。ほかの経路は今のまま abort する。これを D-10 の狭い解釈として docs/language.md と README の「採用しない改善」の行に記録する | D-34 の `@checked` と同じ「同じ関数の中で受ける」形で、`Drop` を飛ばす経路を作らない。境界は宣言の型に現れ、監査で見える。退けた案: (a) M05 を閉じ、投げうる呼び出しを ObjC のシムに置く（分岐 2 を認めない場合の案で、選ばれなかった。C のツールチェーンが要る）。(b) すべての呼び出しで受けてトラップにする（すべての関数に表が要り IR が変わる。S1・S2）。(c) `try ... with` を ObjC の例外に広げる（どの呼び出しが投げうるかが宣言に現れない） | 承認済み（2026-11-26。D-67 の分岐 2） |
 | D2 | 受けるのは ObjC の物体の例外だけ（`catch ptr @OBJC_EHTYPE_id`）。C++ の例外は探索の段で terminate する | `@catch (id e)` と同じ範囲で、C++ の例外の物体は Tsuzuri の値で表せない。退けた案: `catch ptr null`（ホストのフレームを巻き戻してデストラクターを走らせてから terminate することになり、今の振る舞いを変える） | 既定案（実装者はこの案に従う） |
 | D3 | `ObjC.Exception` は所有の型で drop で release。`name`・`reason` は取り出すときに内部の送信で写す。NSException でなければ name は空、reason は `-description`（応えなければ空）。判定は `objc_lookUpClass` と `objc_opt_isKindOfClass`、文字列は `-length` と `-getCharacters:range:` | 受けるときの費用を retain だけにし、物体を `ObjC.upcast` で使えるように残す。CoreFoundation の静的なリンクを要しない。退けた案: `-UTF8String`（寿命がプールに結び付き、プールのない tzroutine で漏れる）、受けた時点で文字列に写す（毎回確保し、物体を失う） | 既定案（実装者はこの案に従う） |
 | D4 | `ObjC.Exception` は M01 の `sync` | 投げた後の物体は読むだけで、retain と release は atomic。退けた案: M01 の既定の `local`（`Result<_, ObjC.Exception>` を渡す関数がすべて `pinned` になり、tzroutine で値を返せない） | 既定案（実装者はこの案に従う） |

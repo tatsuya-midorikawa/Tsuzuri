@@ -9,7 +9,7 @@
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md)。今は `NSError **` を取るメンバーを `W2002` で省いている） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1「Objective-C との型付きの連携がない」のうち ARC の一部（物体の出力引数 `NSError **` と弱い参照 `__weak`）。M01 の対象外に理由なしで置かれ、M07 は `NSError **` を取るメンバーを `W2002` で省くので、行き先のチケットがなかった。起票の後の網羅性の検査で見つけた」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）。D-55（Phase 1 の出力引数の型の位置の受理と `E1008` の kind `objc_inout_object`（D4・D7）、Phase 2 の `ObjC.Weak` と、その作成・読み出し・複写の関数の名前 `ObjC.weak`・`ObjC.load_weak`・`ObjC.copy_weak`）。決定事項のうち、出力引数の型の綴り（D1）・所有の規則（D2）・弱い参照の表現（D8）と名前（D9）は要承認。ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）は承認済み（2026-11-26）。要承認: D-55（Phase 1 の出力引数の型の位置の受理と `E1008` の kind `objc_inout_object`（D4・D7）、Phase 2 の `ObjC.Weak` と、その作成・読み出し・複写の関数の名前 `ObjC.weak`・`ObjC.load_weak`・`ObjC.copy_weak`）。決定事項のうち、出力引数の型の綴り（D1）・所有の規則（D2）・弱い参照の表現（D8）と名前（D9）は要承認。ほかは既定案 |
 | 改善する劣位 | Objective-C（clang の ARC）・Swift 比: `NSError **` の API を型付きで呼べず、`ref mut i64` と手で書く retain に頼る（忘れると解放後の使用。「現状」3）。`__weak` に当たるものがなく、W13 の `ref mut` で `objc_initWeak` を呼ぶと libobjc が誤用を報告して落ちる（「現状」5） |
 | 手本にする既存実装 | `src/llvm_imports.rs` の `host_call` の `CopyOut`（87-99 行）と `finish_copy_outs`（380-413 行。W13）、`src/abi.rs` の `extern_parameter`（601 行）・`has_invalid_extern_maybe`（625 行）、`src/llvm_abi.rs` の `nullable_to_c`（1032 行）。箱は `src/llvm_anchor.rs:61` の `@tz.alloc`、不透明な std の record は `std/Anchor.tz:3` と [M04](M04-objc-blocks.md) の D10。出力引数の前例は [W25](W25-extern-interface-com.md) の仕様 4。独立した参照は clang の `-fobjc-arc -S -emit-llvm`（GUIDE-LITE §2 規則 10） |
 | 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm_imports.rs`, `src/llvm_objc.rs`（M01 が作る）, `src/llvm.rs`, `src/polymorph.rs`, `src/effects.rs`, `src/pure_rules.rs`, `src/kg/effects.rs`, `src/capabilities.rs`, `src/pinned_rules.rs`, `src/diagnostic_kinds.rs`, `src/explain/codes/E1008.md`, `tests/objc_out_params.rs`（新規）, `tests/objc_out_params.mjs`（新規）, `tests/objc_out_params_host.m`（新規）, `tests/fixtures/objc_out_params/Main.tz`（新規）, Phase 2 の `tests/objc_weak.rs`・`tests/objc_weak.mjs`・`tests/objc_weak_host.m`・`tests/fixtures/objc_weak/Main.tz`（新規）, `.github/workflows/targets.yml`, `docs/language.md`, `docs/architecture.md`, `_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md`, `_features/README.md` |
@@ -84,8 +84,8 @@ def main :: unit -> i32 = \() ->
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない（`grep -n '利用者が決めた点' _features/GUIDE.md`）。
-- Phase 1: D-67 の分岐 1 が X′、D1・D2 の承認、D-55 の登録。[M01](M01-objc-class-types.md) と [M02](M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
-- Phase 2: D-67 の分岐 1 が X′、D8・D9 の承認と D-55 の登録、M01 が done。Phase 1 が done でなくてもよい。
+- Phase 1: D1・D2 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み、2026-11-26）。[M01](M01-objc-class-types.md) と [M02](M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
+- Phase 2: D8・D9 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み）、M01 が done。Phase 1 が done でなくてもよい。
 - 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
 - 環境: arm64 の macOS と Apple clang と SDK。Rust のテストはどのホストでも走る。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）・`--emit header`・`check --json` を `target/scratch/m23/base/` に保存する。`node scripts/repo-kb.mjs brief M23`。
@@ -302,8 +302,8 @@ define internal zeroext i1 @out_call(ptr %fn, ptr %place) noinline {
 
 | Phase | 内容 | 規模 | 前提 |
 | --- | --- | --- | --- |
-| 1 | 引数の `ref mut Maybe<C>`、pass-by-writeback、`ref mut C` の拒否、診断・監査・文書、M07 への写像の情報 | M | M01・M02、X′、D1・D2 |
-| 2 | `ObjC.Weak<C>` と 3 つの関数、箱の確保と解放、スレッドの性質、診断・文書 | M | M01、X′、D8・D9 |
+| 1 | 引数の `ref mut Maybe<C>`、pass-by-writeback、`ref mut C` の拒否、診断・監査・文書、M07 への写像の情報 | M | M01・M02、X′（承認済み）、D1・D2 |
+| 2 | `ObjC.Weak<C>` と 3 つの関数、箱の確保と解放、スレッドの性質、診断・文書 | M | M01、X′（承認済み）、D8・D9 |
 
 ### Phase 1: 物体の出力引数
 

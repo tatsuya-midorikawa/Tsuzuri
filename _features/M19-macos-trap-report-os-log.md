@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 4（Finder から起動すると stderr は /dev/null で、トラップ・デッドロック・スタックのあふれの理由が消える。W04・W32 は POSIX の代替の送り先を退けている）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）と subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。承認が記録されるまで、このチケットに着手しない。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
+| 承認 | D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）は承認済み（2026-11-26）。要承認: subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。D2 の承認が記録されるまで、このチケットに着手しない。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
 | 改善する劣位 | Objective-C・Swift（`NSLog`・`os_log` の文は、Finder から起動しても unified logging に残り、Console.app と `log show` で読める）比と、Windows の Tsuzuri（[W04](_completed/W04-windows-trap-report-lost.md) が標準エラーに書けない報告を `OutputDebugStringW` へ送る）比: Finder・Dock・`open` から起動した Tsuzuri のアプリでは、標準エラーが `/dev/null` で、トラップ・デッドロック・スタックのあふれの理由の文が消える。クラッシュレポートには `EXC_BREAKPOINT`（SIGTRAP）しか残らない |
 | 手本にする既存実装 | [W04](_completed/W04-windows-trap-report-lost.md)（`src/llvm_traps.rs` の `TRAP_WRITE_WINDOWS`、`src/llvm.rs` の `windows_abi` の置き換えと宣言の重複の防止、`src/runtime/tzroutine-windows.h` の `tzr_report`）、`src/driver.rs` の `stack_runtime`・`backtrace_runtime`（実行ファイルにだけ C のランタイムを足す。`backtrace_runtime` は IR の宣言を見る）と `compile_runtime_object`（ランタイムの object のキャッシュ）、`src/runtime/stack.c` の `tsuzuri_stack_scheduler_thread`（`hidden` の内部の `tsuzuri_` symbol）、`tests/stack_overflow.mjs`（実行ファイルを作って標準エラーを調べる E2E） |
 | 主な影響ファイル | `src/runtime/oslog-darwin.c`（新規）、`src/runtime/tzroutine.c`、`src/runtime/stack.c`、`src/runtime/cpu.c`、`src/llvm_traps.rs`、`src/llvm.rs`、`src/driver.rs`、`scripts/toolchain/runtime.mjs`、`tests/macos_report.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/debugging.md`、`_tsuzuri/language-reference/compiler/native-interop.md` |
@@ -41,7 +41,7 @@ macOS の標準の記録先は unified logging（`os_log`）である。Objectiv
 
 ### 着手条件
 
-- D-67 の分岐 7（D1）と subsystem の名前（D2）の承認が [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている。承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
+- D-67 の分岐 7（D1）は承認済みで、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている（2026-11-26）。subsystem の名前（D2）の承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
 - `node scripts/repo-kb.mjs brief M19`。P2 のチケットなので、着手前にその時点のコードと台帳に対してレビューを行い、指摘を反映してから実装する（GUIDE §0 の 2）。
 - 「現状」の再現を HEAD で繰り返し、同じ結果になることを確かめる。行番号は `grep -n` で取り直す。
 - macOS（arm64）の開発機で、`/usr/bin/log show` が sudo なしで自分のプロセスの記録を読める（起票時の機械では読めた）。
@@ -251,7 +251,7 @@ void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
 
 - **IR に直接 `os_log_create` と `_os_log_impl` を書く**（C の object を足さない）: object・ランタイムなしのプログラムにも効くが、clang が持つ引数の符号化（12 バイトの buffer、descriptor 34）と `__oslogstring` の section を、Tsuzuri のコンパイラが写して持つことになる。判定にも `fstat`（IR では `\01_fstat`）と `struct stat` の配置か、可変長の `fcntl(F_GETPATH)` が要る。C の object を足せない事情が出たとき（S3）の代案として残す。
 - **`syslog(3)` へ送る**: IR から呼べる普通の関数だが、subsystem と category を持たず、`log show` で Tsuzuri の報告だけを引けない。W04・W32 が退けた POSIX の送り先と同じものになる。伏せ方も確かめていない。
-- **いつも記録にも送る**（標準エラーに書けるときも）: 端末から動かしたときにも記録が増え、報告が二重になる。D-67 の分岐 7 の範囲を超える。
+- **いつも記録にも送る**（標準エラーに書けるときも）: 端末から動かしたときにも記録が増え、報告が二重になる。D-67 の分岐 7 で承認した範囲（閉じているか `/dev/null` のときだけ）を超える。
 - **標準エラーへの書き込みが失敗したら（`EPIPE` など）記録へ送る**: 範囲は「閉じているか `/dev/null`」と決めた（D1）。パイプの相手が先に終わった場合は今の経路のまま。
 - **環境変数で切り替える**: 自動の判定で足りる。名前の登録（D-55）も要らない。
 - **クラッシュレポートに文を書き込む**（`__crash_info` の注釈）: 非公開の API に頼る。
@@ -363,7 +363,7 @@ void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | macOS に限り、fd 2 が閉じている（`EBADF`）か `/dev/null` のときだけ、報告を `os_log` へ送る。端末・パイプ・ファイルへの出力は 1 byte も変えない。退けた案: 送らない（今の W04・W32 の判断のまま、GUI のアプリの報告が消え続ける）と、「設計」の採らない案（いつも送る、`syslog`、書き込みの失敗で送る） | 誰も読めない状態だけを選ぶので、今読める報告を変えない。unified logging は macOS の標準の記録先で、権限も設定も要らない（W04 の D1 が `OutputDebugStringW` を選んだ理由と同じ）。W32 が POSIX の送り先を退けた理由「設定と権限が要り、報告の契約にも当たらない」（W32:207）と「POSIX には標準の経路が無い」（W32:342）は、macOS の unified logging には当たらない。文も終わり方も変えないので、報告の契約にも触れない | 要承認（D-67 の分岐 7。承認前はこのチケットに着手しない） |
+| D1 | macOS に限り、fd 2 が閉じている（`EBADF`）か `/dev/null` のときだけ、報告を `os_log` へ送る。端末・パイプ・ファイルへの出力は 1 byte も変えない。退けた案: 送らない（今の W04・W32 の判断のまま、GUI のアプリの報告が消え続ける）と、「設計」の採らない案（いつも送る、`syslog`、書き込みの失敗で送る） | 誰も読めない状態だけを選ぶので、今読める報告を変えない。unified logging は macOS の標準の記録先で、権限も設定も要らない（W04 の D1 が `OutputDebugStringW` を選んだ理由と同じ）。W32 が POSIX の送り先を退けた理由「設定と権限が要り、報告の契約にも当たらない」（W32:207）と「POSIX には標準の経路が無い」（W32:342）は、macOS の unified logging には当たらない。文も終わり方も変えないので、報告の契約にも触れない | 承認済み（2026-11-26。D-67 の分岐 7） |
 | D2 | subsystem は `dev.tsuzuri.runtime`、category は `trap`（生成コードの報告とスタックのあふれ）と `runtime`（tzroutine と CPU のランタイム）。退けた案: `OS_LOG_DEFAULT`（subsystem がなく Tsuzuri の報告だけを引けない）、プログラムごとの subsystem（bundle の識別子を知る手段が要る） | 利用者が `log show --predicate` と Console.app で引く名前で、文書に書く。逆 DNS の形（`os_log_create` の説明）。D-55 の登録の外の文字列だが、変えると利用者の引き方が壊れる。逆 DNS の元のドメイン（`tsuzuri.dev`）の持ち主は起票時に確かめていないので、承認の判断に含める | 要承認（承認前はこのチケットに着手しない。名前が変わったら仕様・テスト・文書を直す） |
 | D3 | 判定と送信はランタイムの C の新しいファイル `src/runtime/oslog-darwin.c` に置き、生成した `@tz.trap.write` はそれを呼ぶ。ほかのランタイムの C を連結しないプログラムにも、この小さな object を足す。退けた案: IR に `_os_log_impl` を直接書く（「設計」の採らない案。S3 のときの代案） | `os_log` はマクロで、引数の符号化を clang に任せられる。IR とランタイムの C が 1 つの実装を共有する。連結は stack.c・backtrace.c と同じ「IR が名前を持つ実行ファイルにだけ足す」形 | 既定案（実装者はこの案に従う） |
 | D4 | 判定は最初の報告のときに 1 回だけ行い、結果を覚える。constructor は足さない | 報告のない実行の費用を 0 にする。`dup2` で fd 2 を付け替えるプログラムにも、最初の報告の時点の状態で答える | 既定案（実装者はこの案に従う） |

@@ -5,18 +5,18 @@
 | ID | M12 |
 | 優先度 | P3（GPU の計算を使う `.app` と、GPU でウィンドウに描くアプリだけが要る。今の回避策は、Phase 1 が環境変数 `TSUZURI_VULKAN_LIBRARY`・`TSUZURI_WEBGPU_LIBRARY`、Phase 2 が C・ObjC・Swift のシムである） |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](M01-objc-class-types.md)), ([M02](M02-objc-typed-message-send.md)), ([M15](M15-macos-app-bundle.md))（M15 は同梱の手順の文書だけ） |
+| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](M01-objc-class-types.md)), ([M02](M02-objc-typed-message-send.md)), ([M15](M15-macos-app-bundle.md))（M01 は Phase 2 の前提。M15 は同梱の手順の文書だけ） |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（Gpu は計算専用で、ウィンドウへの表示がない。GPU のランタイムが Homebrew の絶対パスを dlopen するので、.app に同梱した形にならない）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: Phase 1 の D1（macOS の既定の探索の順に、実行ファイルから求めた `../Frameworks` を足す。macOS で Gpu を使うプログラムのランタイムの object が変わるので、D-67 の「1 byte も変えない」の例外としても諮る。「変えてはいけない意味」）。Phase 2 の API の名前（D-55。D6）と、NC13 の D2（Metal）との関係（D7）。D2〜D5・D8〜D10 は既定案。Phase 1 は D-67 の分岐 1 に依らない。Phase 2 の layer の受け方は分岐 1 に従う（D6）（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)） |
+| 承認 | 要承認: Phase 1 の D1（macOS の既定の探索の順に、実行ファイルから求めた `../Frameworks` を足す。macOS で Gpu を使うプログラムのランタイムの object が変わるので、D-67 の「1 byte も変えない」の例外としても諮る。「変えてはいけない意味」）。Phase 2 の API の名前（D-55。D6）と、NC13 の D2（Metal）との関係（D7）。D2〜D5・D8〜D10 は既定案。Phase 1 は D-67 の分岐 1 に依らない。Phase 2 の layer の受け方は分岐 1 に従う。分岐 1 は X′ で承認済み（2026-11-26）なので、D6 の (a)（`ref ObjC.Object`）にする（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)） |
 | 改善する劣位 | Rust（wgpu と winit の surface、アプリに同梱した MoltenVK）・Swift（MetalKit の `MTKView`）・C++（SDL・GLFW の Metal の layer）比: Tsuzuri の `Gpu` は計算だけで、結果をウィンドウに出す経路がない。`.app` に同梱した GPU のランタイムも探さないので、Homebrew のない Mac に配った `.app` では `Gpu.request` が `Unavailable` になる |
 | 手本にする既存実装 | `src/runtime/gpu-vulkan.c` の `tz_vk_find_library`・`tz_vk_open_default`・`TZ_VK_DEFAULT_LIBRARIES_LIST`（プラットフォームの既定の一覧）・`TZ_VK_LIBRARY_DEFAULTS`（テストが候補を差し替える口）、`src/runtime/gpu.c` の `tz_wgpu_load`・`tz_gpu_open_default`・`TZ_GPU_WGPU_DEFAULTS`（テストの口）、`gpu.c:61-65` の `TSUZURI_BLOCKING_HOOKS_DEFINED`（同じ翻訳単位に入るランタイムの部品のうち、先に来たほうが定義する形）、`src/runtime/backtrace.c` の `<mach-o/dyld.h>`（ランタイムが dyld の API を使う前例）、`tests/gpu_vulkan.mjs` の「loader: the search skips a library that is no Vulkan loader and finds the next candidate」と `tests/gpu_runtime.mjs` の作業ディレクトリの検査（印のファイルで読み込みを見る形）。Phase 2 は `src/llvm_gpu.rs` の `runtime_source`（IR のマーカーでランタイムの C を選ぶ形）と、[NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) の Phase の書き方 |
 | 主な影響ファイル | Phase 1: `src/runtime/gpu-vulkan.c`, `src/runtime/gpu.c`, `tests/gpu_vulkan.mjs`, `tests/gpu_runtime.mjs`, `tests/gpu_vulkan_language.mjs`, `docs/architecture.md`, `docs/language.md`, `_tsuzuri/language-reference/built-in-types-and-modules/gpu.md`。Phase 2: `std/Gpu.tz`, `src/llvm_gpu.rs`, `src/check.rs`, `src/capabilities.rs`, `src/driver.rs`, `tests/std_argument_order.rs`, `tests/gpu_present.mjs`（新規）, `tests/gpu_present_host.m`（新規） |
 
 ## 実装者向け早見
 
-- **人間が求めない限り Phase 1 だけを実装する。** Phase 2 は、人間が求め、D6・D7 の承認が記録され、NC13 の D2 が決まってから着手する。
+- **人間が求めない限り Phase 1 だけを実装する。** Phase 2 は、人間が求め、D6・D7 の承認が記録され、NC13 の D2 が決まり、M01 が done になってから着手する。
 - 範囲（Phase 1）: macOS の GPU のランタイムの既定の探索に、`.app` の中の `Contents/Frameworks` を足す。実行ファイルの実のパス（`_NSGetExecutablePath` と `realpath`）が `<名前>.app/Contents/MacOS/<ファイル>` のときだけ、`Contents/Frameworks/libvulkan.1.dylib`・`libMoltenVK.dylib`（Vulkan）と `libwgpu_native.dylib`（WebGPU）の絶対パスを、Homebrew の絶対パスより先に試す。環境変数の上書きは今のまま最優先。Linux と Windows は変えない。
 - 範囲（Phase 2、要承認）: `Gpu.Buffer<i32u>`（1 画素 1 要素の BGRA8）を、CAMetalLayer の drawable に写して提示する API（案 `Gpu.Surface`・`Gpu.surface`・`Gpu.resize`・`Gpu.present`）。Vulkan は `VK_EXT_metal_surface` とスワップチェーン、WebGPU は Metal の layer の surface と `wgpuSurfaceConfigure`。使えなければ `Result.Error Gpu.Unavailable` で、暗黙の代替をしない。
 - 最初に読む: ① 「現状」の再現 ② `src/runtime/gpu-vulkan.c:913-978` ③ `src/runtime/gpu.c:106-160`・`646-680` ④ `tests/gpu_vulkan.mjs:333-360`・`tests/gpu_runtime.mjs:420-450`。
@@ -37,9 +37,9 @@ Phase 2 は、Gpu で計算した画素をウィンドウに出す最小の経�
 ### 着手条件
 
 - `node scripts/repo-kb.mjs brief M12` を読む。
-- **人間が求めない限り Phase 1 だけを実装する。** 承認が記録されるまで、該当する Phase に着手しない。Phase 1 は D1 の承認が要る。Phase 2 は、人間が求めたこと、D6・D7 の承認、D-55 の登録（`Gpu.Surface`・`Gpu.surface`・`Gpu.resize`・`Gpu.present`）、NC13 の D2 の決定が要る。
+- **人間が求めない限り Phase 1 だけを実装する。** 承認が記録されるまで、該当する Phase に着手しない。Phase 1 は D1 の承認が要る。Phase 2 は、人間が求めたこと、D6・D7 の承認、D-55 の登録（`Gpu.Surface`・`Gpu.surface`・`Gpu.resize`・`Gpu.present`）、NC13 の D2 の決定、M01 が done であること（D6 の (a)）が要る。
 - P3 のチケットなので、着手前にその時点のコードと台帳でこのチケットをレビューし、指摘を反映してから実装する（GUIDE §0 の 2）。
-- Phase 2 の layer の受け方（D6）は、M01 が done なら (a)、D-67 の分岐 1 が Y′ か M01 が todo なら (b) にする。どちらになるかを着手時に README の状態で確かめる。
+- Phase 2 の layer の受け方（D6）は (a)（`ref ObjC.Object`）にする。D-67 の分岐 1 は X′ で承認済み（2026-11-26）なので、Y′ のときの案だった (b)（組み込みの `Gpu.MetalLayer`）は採らない。M01 が todo のうちは Phase 2 に着手しない（README の状態で確かめる）。
 - macOS の arm64 の実機と、Homebrew の `molten-vk`・`vulkan-loader`・`wgpu-native` があること（実デバイスの検査に使う。なければその検査を飛ばす）。起票時は MoltenVK 1.4.2、vulkan-loader 1.4.363、wgpu-native 29.0.1.1（版 0 を返すビルド）だった。
 - 「現状」の再現を着手時の `main` で実行し直す。食い違えば、このチケットを直してから始める。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` のうち Gpu を使うものの `--emit llvm`（native、`aarch64-apple-darwin`、`x86_64-unknown-linux-gnu`）を `target/scratch/m12/base/` に保存する。Linux の機械では、同じ fixture の `--emit object`（`-O0`・`-O3`）も保存する（Linux の object を変えないことの基準）。
@@ -148,7 +148,7 @@ Homebrew のライブラリ（`codesign -dv` で `Signature=adhoc`、`TeamIdenti
 - `vkGetInstanceProcAddr` を持たないライブラリを読み飛ばすこと。版 0 の wgpu-native を、環境変数で名指ししたときだけ受け入れること。
 - Linux・Windows の探索、Gpu を使わないプログラムの IR と object、Gpu を使うプログラムの IR と Linux・Windows の object。
 - 失敗した明示的な要求を CPU に切り替えないこと（Phase 2 の提示も同じ）。
-- 例外（Phase 1）: macOS で Gpu に到達するプログラムのランタイムの object は変わる（`gpu-vulkan.c`・`gpu.c` の Apple の節に足す探索のコード）。利用者が新しい機能を書かなくても起きる変化なので、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「新しい機能を使わないプログラムの IR・object・header・診断・既定の `.wasm` は 1 byte も変えない」の例外にあたる。D-67 の例外の一覧（分岐 6、M19、綴りを並べる誤りの文）にはまだないので、D1 の承認のときにこの例外も諮る。到達したときだけの define（M15 の D13 の形）にはできない。`.app` に入れるかどうかはコンパイルの後に決まるからである（「現状」の再現 1 は `--emit exe` の実行ファイルを手で bundle に写した）。`--emit app` のときだけ define を付けると、M15 の D5（中の実行ファイルは `--emit exe` と同じキャッシュの項目とバイト列）が崩れ、手で組んだ bundle では探さない。IR と、bundle の外で動かしたときの挙動は変えない。
+- 例外（Phase 1）: macOS で Gpu に到達するプログラムのランタイムの object は変わる（`gpu-vulkan.c`・`gpu.c` の Apple の節に足す探索のコード）。利用者が新しい機能を書かなくても起きる変化なので、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「新しい機能を使わないプログラムの IR・object・header・診断・既定の `.wasm` は 1 byte も変えない」の例外にあたる。D-67 の例外の一覧には ③ として挙げてあるが、例外として認めるかは D1 の承認のときに諮る（同じ一覧の ① 分岐 6 と ② M19（分岐 7）の例外は、2026-11-26 に分岐とともに承認された。③ はまだ承認されていない）。到達したときだけの define（M15 の D13 の形）にはできない。`.app` に入れるかどうかはコンパイルの後に決まるからである（「現状」の再現 1 は `--emit exe` の実行ファイルを手で bundle に写した）。`--emit app` のときだけ define を付けると、M15 の D5（中の実行ファイルは `--emit exe` と同じキャッシュの項目とバイト列）が崩れ、手で組んだ bundle では探さない。IR と、bundle の外で動かしたときの挙動は変えない。
 
 ## 仕様
 
@@ -157,7 +157,7 @@ Homebrew のライブラリ（`codesign -dv` で `Signature=adhoc`、`TeamIdenti
 | Phase | 内容 | 着手の条件 |
 | --- | --- | --- |
 | Phase 1 | macOS の既定の探索に `.app` の `Contents/Frameworks` を足す。文書に同梱の手順を書く | D1 の承認 |
-| Phase 2 | CAMetalLayer への提示（`Gpu.Surface` など） | 人間が求めること、D6・D7 の承認、D-55 の登録、NC13 の D2 の決定 |
+| Phase 2 | CAMetalLayer への提示（`Gpu.Surface` など） | 人間が求めること、D6・D7 の承認、D-55 の登録、NC13 の D2 の決定、M01 が done |
 
 ### Phase 1: `.app` の中の探索
 
@@ -183,12 +183,12 @@ def resize :: own i64 -> own i64 -> ref mut Surface -> Result<unit, Error>
 def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
 ```
 
-- `Gpu.surface device width height layer`: `device` が `Vulkan` か `WebGpu` のデバイスで、`layer` が CAMetalLayer なら、幅 `width`・高さ `height` 画素の surface を作る。`CpuReference`・`Auto` のデバイスは `Result.Error Unavailable`（D8）。`layer` が CAMetalLayer でなければトラップする（`objc_opt_isKindOfClass` で確かめる。契約違反で、`Gpu.Error` に場合を足さない）。`width`・`height` が 1 未満ならトラップ、デバイスか surface の上限を超えれば `Result.Error Unavailable`。ランタイムは surface が生きている間 layer の参照を 1 つ持つ。M01 は基底の型への暗黙の変換をしないので、(a) では利用者が `ObjC.upcast (ref layer)` で `ref ObjC.Object` にして渡す（COMMON の M01 の綴り）。(b) では 4 つ目の引数が `Gpu.MetalLayer` になる（D6）。
+- `Gpu.surface device width height layer`: `device` が `Vulkan` か `WebGpu` のデバイスで、`layer` が CAMetalLayer なら、幅 `width`・高さ `height` 画素の surface を作る。`CpuReference`・`Auto` のデバイスは `Result.Error Unavailable`（D8）。`layer` が CAMetalLayer でなければトラップする（`objc_opt_isKindOfClass` で確かめる。契約違反で、`Gpu.Error` に場合を足さない）。`width`・`height` が 1 未満ならトラップ、デバイスか surface の上限を超えれば `Result.Error Unavailable`。ランタイムは surface が生きている間 layer の参照を 1 つ持つ。M01 は基底の型への暗黙の変換をしないので、利用者が `ObjC.upcast (ref layer)` で `ref ObjC.Object` にして渡す（COMMON の M01 の綴り）。4 つ目の引数を `Gpu.MetalLayer` にする (b) は、D-67 の分岐 1 で Y′ が選ばれたときの案で、X′ に決まったので採らない（D6）。
 - `Gpu.resize width height surface`: スワップチェーン（WebGPU は surface の構成）を作り直す。ウィンドウの大きさが変わったときに呼ぶ。
 - `Gpu.present pixels surface`: `pixels` の要素は 1 画素で、値は `0xAARRGGBB`（little endian のメモリの並びは B・G・R・A。`BGRA8Unorm`）。並びは左上から行ごと。要素の数が `width * height` でなければトラップ。drawable を 1 つ得て画素を写し、提示する。提示の方式は FIFO で、drawable が空くまで（最大でおよそ 1 フレーム）待つ。surface が今は提示できないとき（古くなった、失われた、時間切れ）は `Result.Error Unavailable` で、プログラムは `Gpu.resize` してからやり直す。デバイスを失ったときは、今のランタイムの実行時のエラーと同じく理由を出してトラップする。
 - **色**: 両方のバックエンドで `BGRA8Unorm` と sRGB の非線形の色空間で提示し、値を変換しない（ガンマの変換をしない）。
 - **意味の一致**: Vulkan と WebGPU で、画素の形式・向き・失敗の扱いを同じにする（S6）。
-- **target**: wasm32・wasm64 の build で `Gpu.surface`・`Gpu.resize`・`Gpu.present` に到達したら `E2000`。Apple でない native の target では `E2002`（`platform_unsupported_api`）。`check` は受理する。(b) の `Gpu.MetalLayer` を `extern` の結果に書くのは新しい ABI の形なので、D-67 の共通の綴りに従い、wasm では `E1008` `abi_native_only`、Apple でない native では `E1008` `abi_apple_only`（kind 案。最初に出荷したチケットが登録する）を build のときに出す。
+- **target**: wasm32・wasm64 の build で `Gpu.surface`・`Gpu.resize`・`Gpu.present` に到達したら `E2000`。Apple でない native の target では `E2002`（`platform_unsupported_api`）。`check` は受理する。(b) を採らないので、`Gpu.MetalLayer` を `extern` の結果に書く形と、その `E1008`（wasm は `abi_native_only`、Apple でない native は `abi_apple_only`）は足さない。
 - **権限**: 3 つとも権限 `gpu`（`src/capabilities.rs` の `explicit` に足す）。
 - **スレッド**: `Surface` は所有の値で、tzroutine へ移せる（Send）。共有はできない。提示はランタイムの実行のロックで 1 回ずつ順に動く。layer を作ってビューに付けるのは利用者の AppKit のコードで、メインスレッドで行う（M09）。
 
@@ -215,7 +215,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
 
 - Phase 1: なし。
 - Phase 2:
-  - [M01](M01-objc-class-types.md): `ObjC.Object`（`ref ObjC.Object` の引数）と `objc_opt_isKindOfClass` の下げ方（D6 の (a)）。M01 がなければ D6 の (b)。
+  - [M01](M01-objc-class-types.md): `ObjC.Object`（`ref ObjC.Object` の引数）と `objc_opt_isKindOfClass` の下げ方（D6 の (a)）。D-67 の分岐 1 が X′ に決まったので D6 の (b) は採らず、M01 が done になってから Phase 2 に着手する。
   - [M02](M02-objc-typed-message-send.md): 利用者が CAMetalLayer を作り（`CAMetalLayer.layer ()`）、ビューの `setLayer:`・`setWantsLayer:` を呼ぶ型付きの送信。M02 がなければ、利用者は今の `objc_msgSend` の手書きの宣言で layer を作る。
   - [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) の D2: Metal のバックエンドの判断（D7）。
 - 文書: [M15](M15-macos-app-bundle.md) の `[macos] embed`（`Contents/Frameworks` に写すファイル）と、[M16](M16-macos-signing-notarization-hardening.md) の Developer ID 署名。出荷されていなければ、手で bundle を作る手順と `codesign` の手順を書く。
@@ -294,7 +294,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
   - ウィンドウに入れない CAMetalLayer の派生クラス（`nextDrawable` を数え、最後の drawable を保持する）を作り、ランタイムの `tsuzuri_gpu_surface_create`・`present` を 3 回呼ぶ。両方のバックエンドで、3 回とも状態 0、`nextDrawable` が 3 回以上。
   - Vulkan では drawable のテクスチャーを読み戻し（`TRANSFER_DST` の構成で `framebufferOnly` は NO になるはず。着手時に確かめる）、4×2 の画素が `0xAARRGGBB` の並びと向きのとおりか比べる。WebGPU で読み戻せないときは、数だけを確かめ、その理由を記録する（S5 に当たるかを判断する）。
   - 失敗の経路: `CpuReference` のデバイスで `Unavailable`、CAMetalLayer でない物体でトラップ、要素の数の違いでトラップ、大きさ 0 でトラップ。`resize` の後の提示が成功する。
-- 言語の E2E（M01・M02 が done のとき）: Tsuzuri のプログラムが CAMetalLayer を作って `Gpu.surface`・`Gpu.present` を呼ぶ。wasm32 の build は `E2000`、`--target x86_64-unknown-linux-gnu` の build は `E2002`。surface を使わない Gpu のプログラムの IR は基準と一致する。
+- 言語の E2E（M02 が done のとき。M01 は Phase 2 の前提なので done である）: Tsuzuri のプログラムが CAMetalLayer を作って `Gpu.surface`・`Gpu.present` を呼ぶ。wasm32 の build は `E2000`、`--target x86_64-unknown-linux-gnu` の build は `E2002`。surface を使わない Gpu のプログラムの IR は基準と一致する。
 
 ## ドキュメント
 
@@ -302,7 +302,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
   - `_tsuzuri/language-reference/built-in-types-and-modules/gpu.md` の「native: wgpu-native を実行時に読み込む」（133 行。探索の段落は 142 行）と「native: Vulkan のローダーを実行時に読み込む」（258 行。探索の段落は 267 行）: 環境変数の次に `.app` の `Contents/Frameworks` を探すこと、その条件（実行ファイルが `Contents/MacOS` にあるとき）、名前と順序。
   - 同じページに節「`.app` に同梱する」: `libMoltenVK.dylib` だけを同梱するのを勧める理由（単独で動き、ICD の manifest が要らない）、ローダーを同梱するなら manifest が要ること（起票時に動かしていないと書く）、Homebrew の wgpu-native は版 0 なので公式のリリース（版 29）を同梱すること、hardened runtime では同じ Team ID で署名すること（ad-hoc では Team ID の違いで拒まれる）、`TSUZURI_GPU_DEBUG` で拒まれた理由が出ること。M15・M16 が出荷されていれば `[macos] embed` と署名の手順へのリンク、されていなければ手で bundle を作る手順。
   - `docs/language.md:3335`・`3352`、`docs/architecture.md:477`（WebGPU の読み込み）・`478`（その検証）・`484`（Vulkan の探索）・`485`（その検証）。
-- Phase 2: gpu.md に節「ウィンドウに表示する（macOS）」（API、画素の形式と向き、FIFO の待ち、`Unavailable` の扱い、費用、まだないもの）。「まだないもの」の表を直す。`docs/language.md` の Gpu の節。M01・M02 が出荷されていれば、AppKit のビューに layer を付ける例。
+- Phase 2: gpu.md に節「ウィンドウに表示する（macOS）」（API、画素の形式と向き、FIFO の待ち、`Unavailable` の扱い、費用、まだないもの）。「まだないもの」の表を直す。`docs/language.md` の Gpu の節。M02 が出荷されていれば、AppKit のビューに layer を付ける例（M01 は Phase 2 の前提）。
 - 変えたページに `node scripts/check-docs.mjs` を通す（GPU の実行が要る例は `run=` を付けない）。
 
 ## 受け入れ条件
@@ -343,7 +343,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
 | D3 | bundle の候補は、実行ファイルの実のパスが `<…>.app/Contents/MacOS/<ファイル>` のときだけ試す | 任意の場所の実行ファイルの `../Frameworks`（`/usr/local/bin` の実行ファイルなら `/usr/local/Frameworks`）は、アプリの作者が管理する場所とは限らない。bundle の形に限れば、候補は署名の対象の中にある | 既定案（実装者はこの案に従う） |
 | D4 | bundle から読んだ wgpu-native が版 0 を返せば、既定の候補と同じく受け入れない | 版の検査は ABI の食い違いを防ぐ。版 0 のビルド（Homebrew のもの）は、ランタイムが ABI を確かめられないものそのもので、同梱しても事情は変わらない。公式のリリースは版 29 を返す。利用者が保証するなら環境変数で名指しできる（今のまま） | 既定案（実装者はこの案に従う） |
 | D5 | `TSUZURI_GPU_DEBUG` のとき、ファイルがあるのに読めない bundle の候補について `dlerror()` の文を 1 行出す | hardened runtime と ad-hoc 署名の組み合わせでは、Team ID の違いで拒まれるのに、今の報告は「見つからない」だけになる（再現 3）。ファイルのない候補まで出すと、Homebrew の候補の今の出力と合わず、行が増える | 既定案（実装者はこの案に従う） |
-| D6 | Phase 2 の API は `Gpu.Surface`・`Gpu.surface :: ref Device -> own i64 -> own i64 -> <layer> -> Result<Surface, Error>`・`Gpu.resize :: own i64 -> own i64 -> ref mut Surface -> Result<unit, Error>`・`Gpu.present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>`（D-55 の登録）。D-59 に従い、書き込む対象の surface を最後に置く（`Gpu` の `MODULES` の行を `subject(&["Buffer", "Surface"])` にする）。layer は (a) M01 が出荷されていれば `ref ObjC.Object` で受け、実行時に CAMetalLayer かを確かめる。(b) M01 がない（D-67 の分岐 1 が Y′ を含む）なら、組み込みの不透明な Copy の型 `Gpu.MetalLayer` を足し、利用者の `@trusted extern` がそれを返す形にする | 安全でない部分は、利用者の `@trusted` の宣言（D-63・D-67 の信頼の置き場）に残す。契約の案の「利用者の `extern type copy` で受ける」形は、そのままでは書けない。利用者が宣言した `extern type copy` は利用者のモジュールの型で、std の `Gpu.surface` の型に名前を書けないからである。std の側に `extern type` を置く形も採らない。std は今 `extern` を 1 つも宣言しておらず（`grep -l '^extern' std/*.tz` は 0 件）、その前例をこのチケットで作らない。そこで (b) は組み込みの型として足す。採らない案: (c) layer のアドレスを `i64` で受ける（std の関数が任意のアドレスを ObjC の物体として扱い、`@trusted` と `ffi` の監査の外で未定義の動作を起こせる）。`Gpu.Error` に場合を足す案は採らない（利用者の網羅した `match` を壊す） | 要承認（承認前は Phase 2 に着手しない） |
+| D6 | Phase 2 の API は `Gpu.Surface`・`Gpu.surface :: ref Device -> own i64 -> own i64 -> ref ObjC.Object -> Result<Surface, Error>`・`Gpu.resize :: own i64 -> own i64 -> ref mut Surface -> Result<unit, Error>`・`Gpu.present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>`（D-55 の登録）。D-59 に従い、書き込む対象の surface を最後に置く（`Gpu` の `MODULES` の行を `subject(&["Buffer", "Surface"])` にする）。layer は (a) M01 の `ref ObjC.Object` で受け、実行時に CAMetalLayer かを確かめる。D-67 の分岐 1 は X′ で承認済み（2026-11-26）なので、M01 のないときの (b)（組み込みの不透明な Copy の型 `Gpu.MetalLayer` を足し、利用者の `@trusted extern` がそれを返す形。分岐 1 が Y′ を含むときの案）は採らない。Phase 2 は M01 が done になってから着手する | 安全でない部分は、利用者の `@trusted` の宣言（D-63・D-67 の信頼の置き場）に残す。契約の案の「利用者の `extern type copy` で受ける」形は、そのままでは書けない。利用者が宣言した `extern type copy` は利用者のモジュールの型で、std の `Gpu.surface` の型に名前を書けないからである。std の側に `extern type` を置く形も採らない。std は今 `extern` を 1 つも宣言しておらず（`grep -l '^extern' std/*.tz` は 0 件）、その前例をこのチケットで作らない。そこで (b) は組み込みの型として足す案だった（分岐 1 が X′ に決まったので採らない）。採らない案: (c) layer のアドレスを `i64` で受ける（std の関数が任意のアドレスを ObjC の物体として扱い、`@trusted` と `ffi` の監査の外で未定義の動作を起こせる）。`Gpu.Error` に場合を足す案は採らない（利用者の網羅した `match` を壊す） | 要承認（D-55 の登録。分岐 1 は承認済み（2026-11-26）で、layer は (a) に決まった。承認前は Phase 2 に着手しない） |
 | D7 | Phase 2 は Vulkan（MoltenVK）と WebGPU（wgpu-native）だけで提示し、Metal を直接使わない。Phase 2 は NC13 の D2 が決まってから着手する。NC13 が Metal のバックエンドを採れば、同じ API の Metal の実装は NC13 の側で足し、Phase 2 はその計画に合わせて見直す | Metal への経路を 2 つ（M12 と NC13）作らない。MoltenVK と wgpu-native は内部で Metal を使うので、macOS の表示はこの 2 つで足りる。Metal の計算が `objc_msgSend` で動くことは、NC13 の判断の材料として渡す | 要承認（承認前は Phase 2 に着手しない） |
 | D8 | Phase 2 は暗黙の代替をしない。`CpuReference`・`Auto` のデバイスと、提示できない surface（古い、失われた、時間切れ）は `Result.Error Unavailable`。デバイスの喪失は今の実行時のエラーと同じくトラップ。wasm は `E2000`、Apple でない native は `E2002`（`platform_unsupported_api`） | gpu.md の「明示的な GPU 要求を暗黙に CPU 実行へ切り替えない」と同じ。`Auto` は呼び出しごとに場所を選ぶ仕組みで、提示の先の surface は 1 つのデバイスに結び付くので、`Auto` では作れない。target の誤りは、ほかの OS 専用の API（M09 の組み込みのモジュール `MainThread`）と同じ分類 | 既定案（実装者はこの案に従う） |
 | D9 | 画素は `i32u` 1 つで 1 画素の `0xAARRGGBB`（`BGRA8Unorm`、左上から行ごと）。両方のバックエンドで `BGRA8Unorm` と sRGB の非線形の色空間で、値を変換せずに提示する。Vulkan はスワップチェーンの画像へ `vkCmdCopyBufferToImage` で写し、WebGPU は中間のテクスチャーからランタイムの中の固定の描画のパスで写す | MoltenVK の surface の最初の形式は `B8G8R8A8_UNORM` で `TRANSFER_DST` を許し、wgpu-native の surface は `BGRA8Unorm` を持つが `CopyDst` を持たない（「現状」）。どちらも並べ替えなしに同じ byte の並びを使える。描画のパスは利用者に見せないので、S4 には当たらない | 既定案（実装者はこの案に従う） |

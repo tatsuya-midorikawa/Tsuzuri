@@ -295,7 +295,7 @@ $ otool -l hello12 | grep -A4 LC_BUILD_VERSION | grep minos        # --target aa
     minos 12.0
 ```
 
-既定の版は [M17](M17-macos-min-version-and-weak-import.md) の分岐 6 が決める。
+既定の版は、D-67 の分岐 6 で 12.0 に固定すると決めた（2026-11-26）。実装は [M17](M17-macos-min-version-and-weak-import.md) の D1 で、M17 が入るまではビルド機の版のままである。
 
 ## 変えてはいけない意味
 
@@ -643,7 +643,7 @@ def main :: unit -> i32 = \() ->
 - App Sandbox と Mac App Store の提出。
 - `.png` から `.icns` への変換（`iconutil` には `.iconset` の形が要る。D11）。
 - NIB・storyboard・asset catalog（`.xcassets`）のコンパイル。
-- Universal 2 と Intel Mac（[M18](M18-intel-mac-and-universal2.md)）。
+- Universal 2 と Intel Mac（[M18](M18-intel-mac-and-universal2.md)。D-67 の分岐 3 で方針を改めないと決めたので、M18 は blocked）。
 - rpath と `-sectcreate __TEXT __info_plist` のリンクの引数（M20。D12）。
 - `tsuzuri new` のアプリのひな型。
 - `--emit shared` の dylib を `.framework` にすること。

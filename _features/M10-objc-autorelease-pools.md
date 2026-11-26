@@ -9,7 +9,7 @@
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 4（プールのない tzroutine で Foundation を使うと永久に漏れる。200 万個で maxrss が 5.6 から 51.8 MiB。Foundation をリンクした -O3）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）。D-55（`ObjC.with_autorelease_pool`）。Phase 2（ランタイムが自動でプールを回す）は別に承認する）。決定事項の D3・D4 が要承認、ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）は承認済み（2026-11-26）。要承認（D-55（`ObjC.with_autorelease_pool`）。Phase 2（ランタイムが自動でプールを回す）は別に承認する）。決定事項の D3・D4 が要承認、ほかは既定案 |
 | 改善する劣位 | Objective-C（`@autoreleasepool { }`）・Swift（`autoreleasepool { }`）比: tzroutine の中で Foundation の便利なコンストラクタや +0 の結果を受けると、プールのない OS スレッドで autorelease された物体が永久に漏れる（200 万個で maxrss が 5.6 MiB から 51.8 MiB）。プールを置く言語の手段がなく、SDK のヘッダーに宣言のない `objc_autoreleasePoolPush`・`Pop` を `extern` で宣言し、`Routine.with_locked_thread` の中で対にする手書きの回避策しかない。固定を忘れると、待った後に別のスレッドで pop して abort する |
 | 手本にする既存実装 | `Routine.with_locked_thread` の下げ方（`src/llvm.rs:7371-7393` の `routine_builtin`、`tsuzuri_tz_lock_thread`・`unlock`）と効果の辺の除外（`src/effects.rs` の `pinning_argument_mask`、`src/pinned_rules.rs:33-35` の `Position::Pinning`。D-53）。生成した `@main` の `TZROUTINE_SCOPE_ENTER`・`LEAVE` を足す所（`src/llvm.rs:9994-10006`・`10017-10018`）。ランタイムの機能のマクロ（`src/driver.rs:4915-4923` の `-DTZ_TRAP_BOUNDARY`・`-DTZ_STACK_GUARD`・`-DTZ_ASYNC_PREEMPT`） |
 | 主な影響ファイル | `src/check.rs`, `src/llvm.rs`, `src/llvm_objc.rs`（M01 が作る ObjC の生成）, `src/effects.rs`, `src/pure_rules.rs`, `src/kg/effects.rs`, `src/pinned_rules.rs`, `src/capabilities.rs`, `src/driver.rs`（Phase 2）, `src/runtime/tzroutine.c`（Phase 2）, `tests/objc_pools.rs`（新規）, `tests/objc_pools.mjs`（新規）, `tests/fixtures/objc_pools/Main.tz`（新規）, `_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）, `_tsuzuri/language-reference/built-in-types-and-modules/routine.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `docs/language.md`, `docs/architecture.md` |
@@ -54,7 +54,7 @@ M01 の `extern def` と M02 の型付きの送信は、+0 の物体の結果を
 
 ### 着手条件
 
-- **人間が求めない限り Phase 1 だけを実装する。** **承認が記録されるまで、該当する Phase に着手しない。** Phase 1 は D-67 の分岐 1（X′）と決定事項 D4（D-55 の登録）、Phase 2 は加えて D3 の承認が要る。
+- **人間が求めない限り Phase 1 だけを実装する。** **承認が記録されるまで、該当する Phase に着手しない。** D-67 の分岐 1（X′）は承認済み（2026-11-26）。Phase 1 は決定事項 D4（D-55 の登録）、Phase 2 は加えて D3 の承認が要る。
 - [M01](M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、ObjC を使うプログラムの判定、`-lobjc`、`abi_apple_only`）。[M02](M02-objc-typed-message-send.md) は弱い依存で、Phase 1 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。Phase 2 は M02 の Phase 1 が done であること（安全の根拠が M02 の直後の retain だから）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - 「現状」の再現を着手時の HEAD で実行し、食い違えばこのチケットを直してから始める。
 - ベースライン: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm`（native、`--target aarch64-apple-darwin`、`--target wasm32`）、`--emit header`、`check --json`、`--emit exe` の `@main`（Rust のテストで `llvm::emit(&module, Entry::Console)`）を `target/scratch/m10/base/` に保存する。M01 の fixture（ObjC を使う）も含める。
@@ -222,7 +222,7 @@ Foundation をリンクして `OBJC_DEBUG_MISSING_POOLS=YES` で動かすと、`
 
 | Phase | 内容 | 前提 |
 | --- | --- | --- |
-| 1 | `ObjC.with_autorelease_pool`、ObjC を使うプログラムの `@main` のプール、漏れの回帰テスト、文書の規律 | M01、D-67 の分岐 1、D4 |
+| 1 | `ObjC.with_autorelease_pool`、ObjC を使うプログラムの `@main` のプール、漏れの回帰テスト、文書の規律 | M01、D-67 の分岐 1（承認済み）、D4 |
 | 2 | ObjC を使うプログラムで、ランタイムが tzroutine の実行の区間ごとにプールを push・pop する | M02 の Phase 1、D3 |
 
 ### 1. `ObjC.with_autorelease_pool`（Phase 1）
