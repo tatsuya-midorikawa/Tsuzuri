@@ -404,9 +404,10 @@ def main :: unit -> i32 = \() -> 0i32
         String::from_utf8_lossy(&build.stderr)
     );
 
-    let clang_check = Command::new("clang").arg("--version").output();
+    let clang = std::env::var_os("TSUZURI_CLANG").unwrap_or_else(|| "clang".into());
+    let clang_check = Command::new(&clang).arg("--version").output();
     if clang_check.is_ok_and(|o| o.status.success()) {
-        let opt = Command::new("clang")
+        let opt = Command::new(&clang)
             .args([
                 "-x",
                 "ir",
