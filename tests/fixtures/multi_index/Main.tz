@@ -149,6 +149,11 @@ fn trap_matrix_add_axis =
     let m = mat3x4()
     fold_mv (ref m[Slice.Sel.AddAxis, ..])
 
+export def trap_matrix_duplicate_rest :: i64
+fn trap_matrix_duplicate_rest =
+    let m = mat3x4()
+    fold_mv (ref m[Slice.rest(), Slice.rest()])
+
 export def trap_phase2_back_oob :: i64 -> i64 = \k ->
     let t = grid3x4()
     t[^k, 0]

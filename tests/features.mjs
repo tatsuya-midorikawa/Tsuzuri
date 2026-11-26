@@ -3155,6 +3155,7 @@ const suites = {
       ["trap_tensor_wrong_elem_rank_3", [0n]],
       ["trap_matrix_neg_step", [-1n]],
       ["trap_matrix_add_axis", []],
+      ["trap_matrix_duplicate_rest", []],
       ["trap_phase2_back_oob", [3n]],
     ],
     trapKind: "assertion failed",
