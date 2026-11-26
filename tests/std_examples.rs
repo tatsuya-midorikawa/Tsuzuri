@@ -44,6 +44,7 @@ const FLOORS: &[(&str, usize)] = &[
     // E17 merged `write_line` and its alias `writeln` into `writeln`: 14 public functions became 13.
     ("IO", 13),
     ("Json", 28),
+    ("Linalg", 44),
     ("List", 126),
     ("Map", 16),
     ("Math", 1),

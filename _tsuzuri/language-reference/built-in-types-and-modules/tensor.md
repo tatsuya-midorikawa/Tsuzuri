@@ -486,7 +486,7 @@ $"{Tensor.to_array (Tensor.unique (ref rv))} {Tensor.median (ref qv)} {Tensor.to
 
 ## できないこと
 
-- 線形代数・`einsum`・FFT の演算は `Tensor` 本体には含まれません。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
+- 線形代数・`einsum` は [`Linalg`](./linalg.md) モジュールで提供され、FFT は `Tensor` 本体には含まれません。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。
 

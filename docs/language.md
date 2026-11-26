@@ -3538,6 +3538,14 @@ API は `of_matrix`・`of_array`・`strided`・`rows`・`cols`・`offset`・`row
 また、単一軸・複数軸・`keepdims`・`ddof` 付きの縮約と `NaN` 無視版（`sum*`・`sum_kahan*`・`prod*`・`mean*`・`average*`・`var*`・`std*`・`min*`・`max*`・`argmin*`・`argmax*`・`ptp*`・`all*`・`any*`・`count_nonzero*`・`nan*`）、累積・有限差分・数値微分・台形積分・1D 畳み込み／相互相関・線形補間（`cumsum*`・`cumprod*`・`nancumsum`・`nancumprod`・`diff*`・`ediff1d`・`gradient*`・`trapezoid*`・`convolve`・`correlate`・`interp*`）、分位点・ヒストグラム・共分散・相関（`median*`・`quantile*`・`percentile*`・`nanmedian*`・`nanquantile*`・`nanpercentile*`・`histogram*`・`bincount*`・`digitize`・`cov*`・`corrcoef*`）、および `NaN` を末尾とする安定ソート・期待 $O(n)$ introselect・二分探索・1D 集合演算（`sort*`・`argsort*`・`lexsort`・`partition`・`argpartition`・`searchsorted`・`unique*`・`isin`・`intersect1d`・`union1d`・`setdiff1d`・`setxor1d`）を提供します。
 窓の並列・SIMD・GPU のカーネルは提供しません。
 
+### Linalg
+
+`Linalg` は `Tensor` と `Complex` の上に構築された線形代数・テンソル縮約の opt-in 標準モジュール（予約モジュール `Linalg`）です。外部 C ライブラリや BLAS/LAPACK に依存せず、ネイティブと WebAssembly の全ターゲットで決定論的に動作します。行列積演算子 `@` は導入しません。
+数学的・形状的な失敗はトラップではなく `Result<_, Linalg.Error>`（`ShapeMismatch`・`NotSquare`・`SingularMatrix`・`NotPositiveDefinite`・`DidNotConverge`・`InvalidEinsum`・`InvalidRank`）で返します。
+Phase 1 としてバッチ行列積 `matmul`（C 連続 `A` とバッチ共通 `B` の 2D 行結合高速経路つき）・`matmul_into`・`matmul_complex`、`dot`、`vdot`・`vdot_complex`、`inner`、`outer`・`outer_complex`、`kron`、`cross`、`diagonal_view`・`diagonal`・`trace`、`tensordot`・`tensordot_complex`、および明示／暗黙／`...`／最適 2 項縮約木 `einsum_path` 対応の `einsum`・`einsum_complex` を提供します。
+Phase 2 として `Elementary<'a>`（`f32` / `f64`、先頭バッチ軸対応）上の部分ピボット `lu`、正定値下三角 `cholesky`、Householder `qr`（`Reduced` / `Complete`）、`solve`（1D 単一右辺・2D+ 複数右辺）、再利用求解 `solve_triangular`・`lu_solve`・`cholesky_solve`、SVD ベースのランク落ち対応最小二乗 `lstsq`、`inv`、`det`、`slogdet`、`matrix_power`、`norm`・`vector_norm`・`matrix_norm`・`cond` を提供します。
+Phase 3 として確定反復上限付きの片側 Hestenes-Jacobi `svd`・`svdvals`、`pinv`、`matrix_rank`、実対称・複素エルミート固有値分解 `eigh`・`eigvalsh`・`eigh_complex`・`eigvalsh_complex`（固有値昇順）、および実一般非対称固有値分解 `eig`・`eigvals`（上 Hessenberg 化＋Francis ダブルシフト実 Schur 分解、`Tensor<Complex<'a>>` 返却）を提供します。
+
 ### HashMap / HashSet
 
 `HashMap<'key, 'value>` および `HashSet<'key>` は、`Map` や `Set` と同様に常に非 Copy 型として扱われる、所有権付きのハッシュテーブルコンテナです。キー型には `Hash` および `Eq` 型クラスの実装が要求されますが（`deriving (Eq, Hash)` による自動導出が利用可能）、`Ord` 型クラスの実装は不要です。

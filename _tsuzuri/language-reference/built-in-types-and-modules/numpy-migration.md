@@ -63,9 +63,27 @@ $"{Tensor.to_array row_means} {Tensor.to_array (Tensor.to_tensor (ref first_sort
 | `np.partition` / `np.argpartition` / `np.searchsorted` | `Tensor.partition kth axis v` / `Tensor.argpartition kth axis v` / `Tensor.searchsorted side sorted values` |
 | `np.unique` / `np.isin` / `np.intersect1d` / `np.union1d` / `np.setdiff1d` / `np.setxor1d` | `Tensor.unique v`・`unique_full v` / `Tensor.isin test_set elems` / `Tensor.intersect1d a b` / `Tensor.union1d a b` / `Tensor.setdiff1d a b` / `Tensor.setxor1d a b` |
 
+## 線形代数 (`numpy.linalg` / `einsum`) の対応
+
+行列積演算子 `@` は存在しないため、[`Linalg`](./linalg.md) モジュールを使用します。数学的失敗（特異行列・非正定値・未収束）は例外ではなく `Result<_, Linalg.Error>` で返ります。
+
+| NumPy (`np` / `np.linalg`) | Tsuzuri (`Linalg`) |
+| --- | --- |
+| `a @ b` / `np.matmul(a, b, out=dst)` | `Linalg.matmul va vb` / `Linalg.matmul_into va vb (ref mut dst)` / `Linalg.matmul_complex va vb` |
+| `np.dot` / `np.vdot` / `np.inner` / `np.outer` / `np.kron` / `np.cross` | `Linalg.dot` / `Linalg.vdot`・`vdot_complex` / `Linalg.inner` / `Linalg.outer`・`outer_complex` / `Linalg.kron` / `Linalg.cross axis va vb` |
+| `np.diagonal(a, offset, ax1, ax2)` / `np.trace` | `Linalg.diagonal_view offset ax1 ax2 v`・`Linalg.diagonal` / `Linalg.trace offset ax1 ax2 v` |
+| `np.tensordot(a, b, axes)` / `np.einsum(subscripts, *ops)` | `Linalg.tensordot (ax_a, ax_b) va vb` / `Linalg.einsum spec [v1, v2, ...]`・`Linalg.einsum_path` |
+| `scipy.linalg.lu` / `np.linalg.cholesky` / `np.linalg.qr` | `Linalg.lu v` / `Linalg.cholesky v` / `Linalg.qr mode v` |
+| `np.linalg.solve(a, b)` / `np.linalg.lstsq(a, b)` | `Linalg.solve va vb`（`lu_solve`・`cholesky_solve`・`solve_triangular` も提供） / `Linalg.lstsq va vb` |
+| `np.linalg.inv` / `np.linalg.det` / `np.linalg.slogdet` / `np.linalg.matrix_power(a, n)` | `Linalg.inv v` / `Linalg.det v` / `Linalg.slogdet v` / `Linalg.matrix_power n v` |
+| `np.linalg.norm` / `np.linalg.vector_norm` / `np.linalg.matrix_norm` / `np.linalg.cond` | `Linalg.norm v` / `Linalg.vector_norm ord axis keepdims v` / `Linalg.matrix_norm ord v` / `Linalg.cond ord v` |
+| `np.linalg.svd` / `np.linalg.svdvals` / `np.linalg.pinv` / `np.linalg.matrix_rank` | `Linalg.svd opts v` / `Linalg.svdvals v` / `Linalg.pinv rcond v` / `Linalg.matrix_rank tol v` |
+| `np.linalg.eigh` / `np.linalg.eigvalsh` / `np.linalg.eig` / `np.linalg.eigvals` | `Linalg.eigh v`・`eigvalsh v`・`eigh_complex v`・`eigvalsh_complex v` / `Linalg.eig v`・`eigvals v` |
+
 ## 関連項目
 
 - [Tensor](./tensor.md) — N 次元テンソル・窓・ブロードキャスト・統計・ソート API
+- [Linalg](./linalg.md) — バッチ行列積・`einsum`・行列分解・連立方程式求解・固有値分解 API
 - [Slice](./slice.md) — スライス記述子
 - [引数の順序](./argument-order.md) — パイプライン向けの引数配置規則
 - [言語リファレンスの目次](../index.md)

@@ -1,0 +1,3351 @@
+/// Errors returned by linear algebra and tensor contraction routines (`NC08`).
+union Error =
+    | ShapeMismatch of ([i64] * [i64])
+    | NotSquare of [i64]
+    | SingularMatrix
+    | NotPositiveDefinite
+    | DidNotConverge
+    | InvalidEinsum of string
+    | InvalidRank of i64
+    deriving (Eq)
+
+instance Display<Error> {
+    fn display err =
+        match err with
+        | Error.ShapeMismatch (left, right) -> $"shape mismatch: {left} vs {right}"
+        | Error.NotSquare shape -> $"matrix is not square: {shape}"
+        | Error.SingularMatrix -> "singular matrix"
+        | Error.NotPositiveDefinite -> "matrix is not symmetric positive definite"
+        | Error.DidNotConverge -> "iterative decomposition did not converge"
+        | Error.InvalidEinsum msg -> $"invalid einsum specification: {msg}"
+        | Error.InvalidRank rank -> $"invalid tensor rank: {rank}"
+}
+
+/// Output mode for Householder QR decomposition (`NC08`).
+union QrMode =
+    | Reduced
+    | Complete
+    deriving (Eq)
+
+/// Triangular structure selector for `solve_triangular` (`NC08`).
+union Triangle =
+    | Lower
+    | Upper
+    deriving (Eq)
+
+/// Vector norm selector for `vector_norm` (`NC08`).
+union VectorNorm =
+    | L1
+    | L2
+    | Inf
+    | NegInf
+    | P of f64
+    deriving (Eq)
+
+/// Matrix norm selector for `matrix_norm` and `cond` (`NC08`):
+/// `Frobenius` (`||A||_F`), `One` (max column sum `||A||_1`), `Infinity` (max row sum `||A||_inf`),
+/// `Nuclear` (sum of singular values `||A||_*`), or `Spectral` (largest singular value `||A||_2`).
+union MatrixNorm =
+    | Frobenius
+    | One
+    | Infinity
+    | Nuclear
+    | Spectral
+    deriving (Eq)
+
+/// Least-squares solution bundle returned by `lstsq` (`NC08`).
+record LstsqResult<'a> {
+    solution: Tensor<'a>,
+    residuals: Tensor<'a>,
+    rank: Tensor<i64>,
+    singular_values: Tensor<'a>
+}
+
+/// Options for Singular Value Decomposition (`NC08`).
+record SvdOptions { full_matrices: bool } deriving (Eq)
+
+// ============================================================================
+// Internal shape, stride & epsilon helpers
+// ============================================================================
+
+private def prod_shape :: ref [i64] -> i64
+fn prod_shape shape =
+    let mut p = 1
+    for d in shape do p = p * d
+    p
+
+private def row_major_strides :: ref [i64] -> [i64]
+fn row_major_strides shape =
+    let r = shape.length
+    new [i64](r, \ax ->
+        let mut s = 1
+        for k in (ax + 1) ..< r do s = s * shape[k]
+        s)
+
+private def normalize_axis_checked :: own i64 -> own i64 -> Maybe<i64>
+fn normalize_axis_checked axis rank =
+    let norm = if axis < 0 then rank + axis else axis
+    if norm >= 0 && norm < rank then Maybe.Some norm else Maybe.None
+
+private def machine_eps :: Elementary<'a> => unit -> 'a
+fn machine_eps _unit =
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let mut eps = one
+    while one + eps / two > one do
+        eps = eps / two
+    eps
+
+// ============================================================================
+// Phase 1 — Tensor contractions: matmul, dot, vdot, inner, outer, kron, cross,
+//           diagonal, trace, tensordot & einsum
+// ============================================================================
+
+// Deterministic i-k-j 2-D matrix product on strided 2-D views (`[m, k] x [k, n] -> [m * n]`),
+// preserving ascending k = 0 ..< K evaluation order with separate mul and add rounding.
+private def gemm_2d_raw :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> own ('a -> 'a -> 'a) -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> ['a]
+fn gemm_2d_raw zero_val add_fn mul_fn a_view b_view =
+    let a_sh = Tensor.shape a_view
+    let b_sh = Tensor.shape b_view
+    let m = a_sh[0]
+    let k_len = a_sh[1]
+    let n = b_sh[1]
+    if m == 0 || n == 0 then []
+    elif k_len == 0 then new ['a](m * n, \_ -> zero_val)
+    else
+        let mut out = new ['a](m * n, \_ -> zero_val)
+        let a_data = Tensor.data a_view
+        let b_data = Tensor.data b_view
+        let a_off = Tensor.offset a_view
+        let b_off = Tensor.offset b_view
+        let a_st = Tensor.strides a_view
+        let b_st = Tensor.strides b_view
+        let a_rs = a_st[0]
+        let a_cs = a_st[1]
+        let b_rs = b_st[0]
+        let b_cs = b_st[1]
+        for i in 0i64 ..< m do
+            let row_out = i * n
+            let row_a = a_off + i * a_rs
+            for k in 0i64 ..< k_len do
+                let aik = a_data[row_a + k * a_cs]
+                let row_b = b_off + k * b_rs
+                for j in 0i64 ..< n do
+                    let cur = out[row_out + j]
+                    let prod = mul_fn aik b_data[row_b + j * b_cs]
+                    Array.write (row_out + j) (add_fn cur prod) (ref mut out)
+        out
+
+private def broadcast_batch_strides :: ref [i64] -> ref [i64] -> ref [i64] -> [i64]
+fn broadcast_batch_strides orig_batch orig_strides target_batch =
+    let orig_r = orig_batch.length
+    let tgt_r = target_batch.length
+    let pad = tgt_r - orig_r
+    new [i64](tgt_r, \d ->
+        if d < pad then 0
+        else
+            let od = d - pad
+            if orig_batch[od] == target_batch[d] then orig_strides[od] else 0)
+
+private def rec matmul_generic :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> own ('a -> 'a -> 'a) -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn rec matmul_generic zero_val add_fn mul_fn left right =
+    let l_sh = Tensor.shape left
+    let r_sh = Tensor.shape right
+    let lr = l_sh.length
+    let rr = r_sh.length
+    if lr == 0 || rr == 0 then Result.Error (Error.InvalidRank 0)
+    elif lr == 1 && rr == 1 then
+        let k = l_sh[0]
+        if k != r_sh[0] then Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+        else
+            let l_data = Tensor.data left
+            let r_data = Tensor.data right
+            let l_off = Tensor.offset left
+            let r_off = Tensor.offset right
+            let l_st = (Tensor.strides left)[0]
+            let r_st = (Tensor.strides right)[0]
+            let mut acc = zero_val
+            for i in 0i64 ..< k do
+                acc = add_fn acc (mul_fn l_data[l_off + i * l_st] r_data[r_off + i * r_st])
+            Result.Ok (Tensor.of_array [] [acc])
+    elif lr == 1 then
+        let k = l_sh[0]
+        let l2 = Tensor.strided (Tensor.offset left) [1, k] [0, (Tensor.strides left)[0]] (Tensor.data left)
+        match matmul_generic zero_val add_fn mul_fn (ref l2) right with
+        | Result.Error e -> Result.Error e
+        | Result.Ok prod_t ->
+            let pv = Tensor.view (ref prod_t)
+            let p_sh = Tensor.shape (ref pv)
+            let pr = p_sh.length
+            let out_sh = new [i64](pr - 1, \d -> if d < pr - 2 then p_sh[d] else p_sh[d + 1])
+            Result.Ok (Tensor.reshape out_sh prod_t)
+    elif rr == 1 then
+        let k = r_sh[0]
+        let r2 = Tensor.strided (Tensor.offset right) [k, 1] [(Tensor.strides right)[0], 0] (Tensor.data right)
+        match matmul_generic zero_val add_fn mul_fn left (ref r2) with
+        | Result.Error e -> Result.Error e
+        | Result.Ok prod_t ->
+            let pv = Tensor.view (ref prod_t)
+            let p_sh = Tensor.shape (ref pv)
+            let pr = p_sh.length
+            let out_sh = new [i64](pr - 1, \d -> p_sh[d])
+            Result.Ok (Tensor.reshape out_sh prod_t)
+    else
+        let m = l_sh[lr - 2]
+        let k1 = l_sh[lr - 1]
+        let k2 = r_sh[rr - 2]
+        let n = r_sh[rr - 1]
+        if k1 != k2 then Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+        else
+            let l_batch = Array.sub 0 (lr - 2) l_sh
+            let r_batch = Array.sub 0 (rr - 2) r_sh
+            match Tensor.broadcast_shape (ref l_batch) (ref r_batch) with
+            | Result.Error _ -> Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+            | Result.Ok bcast_batch ->
+                let br = bcast_batch.length
+                let out_shape = new [i64](br + 2, \d ->
+                    if d < br then bcast_batch[d]
+                    elif d == br then m
+                    else n)
+                let batch_count = prod_shape (ref bcast_batch)
+                let total_out = batch_count * m * n
+                if total_out == 0 then Result.Ok (Tensor.of_array out_shape [])
+                elif k1 == 0 then Result.Ok (Tensor.of_array out_shape (new ['a](total_out, \_ -> zero_val)))
+                else
+                    let l_st = Tensor.strides left
+                    let r_st = Tensor.strides right
+                    let l_st_batch = Array.sub 0 (lr - 2) l_st
+                    let r_st_batch = Array.sub 0 (rr - 2) r_st
+                    let l_bst = broadcast_batch_strides (ref l_batch) (ref l_st_batch) (ref bcast_batch)
+                    let r_bst = broadcast_batch_strides (ref r_batch) (ref r_st_batch) (ref bcast_batch)
+                    let mut b_shared = true
+                    for d in 0i64 ..< br do
+                        if bcast_batch[d] > 1 && r_bst[d] != 0 then b_shared = false
+                    // Shared-B row-folding fast path: contiguous A without batch broadcast + shared B across batches.
+                    if b_shared && l_batch == bcast_batch && Tensor.is_contiguous left then
+                        let folded_a = Tensor.reshape_view [batch_count * m, k1] left
+                        let b2d = Tensor.strided (Tensor.offset right) [k1, n] [r_st[rr - 2], r_st[rr - 1]] (Tensor.data right)
+                        let flat_out = gemm_2d_raw zero_val add_fn mul_fn (ref folded_a) (ref b2d)
+                        Result.Ok (Tensor.of_array out_shape flat_out)
+                    else
+                        let b_dense = row_major_strides (ref bcast_batch)
+                        let cell_len = m * n
+                        let mut out = new ['a](total_out, \_ -> zero_val)
+                        let l_data = Tensor.data left
+                        let r_data = Tensor.data right
+                        let l_base = Tensor.offset left
+                        let r_base = Tensor.offset right
+                        let l_m_st = l_st[lr - 2]
+                        let l_k_st = l_st[lr - 1]
+                        let r_k_st = r_st[rr - 2]
+                        let r_n_st = r_st[rr - 1]
+                        for b in 0i64 ..< batch_count do
+                            let mut loff = l_base
+                            let mut roff = r_base
+                            for d in 0i64 ..< br do
+                                let c = (b / b_dense[d]) % bcast_batch[d]
+                                loff = loff + c * l_bst[d]
+                                roff = roff + c * r_bst[d]
+                            let av = Tensor.strided loff [m, k1] [l_m_st, l_k_st] l_data
+                            let bv = Tensor.strided roff [k1, n] [r_k_st, r_n_st] r_data
+                            let block = gemm_2d_raw zero_val add_fn mul_fn (ref av) (ref bv)
+                            let dst_base = b * cell_len
+                            for idx in 0i64 ..< cell_len do
+                                Array.write (dst_base + idx) block[idx] (ref mut out)
+                        Result.Ok (Tensor.of_array out_shape out)
+
+/// Batched matrix / vector product (`np.matmul`): 1D×1D inner product, 2D×2D matrix product,
+/// 1D×ND / ND×1D vector-matrix product, and N-D batch-broadcast matrix product.
+///
+/// ```tsuzuri run=[19,%2022,%2043,%2050]
+/// let a = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let b = Tensor.of_array [2, 2] [5, 6, 7, 8]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.matmul (ref va) (ref vb) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def matmul :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn matmul left right = matmul_generic (0i64 as 'a) (\x y -> x + y) (\x y -> x * y) left right
+
+/// Batched matrix product written into pre-allocated writable window `out`.
+///
+/// ```tsuzuri run=[19,%2022,%2043,%2050]
+/// let a = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let b = Tensor.of_array [2, 2] [5, 6, 7, 8]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// let mut buf = [0, 0, 0, 0]
+/// let mut dst = Tensor.borrow_mut [2, 2] (ref mut buf)
+/// let _ = Linalg.matmul_into (ref va) (ref vb) (ref mut dst)
+/// let fv = Tensor.freeze (ref dst)
+/// Tensor.to_array (Tensor.to_tensor (ref fv))
+/// ```
+def matmul_into :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> ref mut Tensor.Mut<'a> -> Result<unit, Error>
+fn matmul_into left right out =
+    match matmul left right with
+    | Result.Error e -> Result.Error e
+    | Result.Ok prod_t ->
+        let pv = Tensor.view (ref prod_t)
+        let fv = Tensor.freeze (ref out)
+        let out_sh = Array.copy (Tensor.shape (ref fv))
+        if Tensor.shape (ref pv) != out_sh then
+            Result.Error (Error.ShapeMismatch (Array.copy (Tensor.shape (ref pv)), out_sh))
+        else
+            match Tensor.map_into (\x -> x) (ref pv) out with
+            | Result.Ok () -> Result.Ok ()
+            | Result.Error _ -> Result.Error (Error.ShapeMismatch (Array.copy (Tensor.shape (ref pv)), out_sh))
+
+/// Batched complex matrix / vector product (`Complex<'a>`).
+///
+/// ```tsuzuri run=-5+10i
+/// let a = Tensor.of_array [1, 1] [Complex.of 1.0 2.0]
+/// let b = Tensor.of_array [1, 1] [Complex.of 3.0 4.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.matmul_complex (ref va) (ref vb) with
+/// | Result.Ok c -> $"{(Tensor.as_array (ref c))[0]}"
+/// | Result.Error _ -> ""
+/// ```
+def matmul_complex :: (Float<'a>, Neg<'a>) => ref Tensor.View<Complex<'a>> -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn matmul_complex left right =
+    let z0: Complex<'a> = Complex.zero ()
+    matmul_generic z0 (\x y -> Complex.add (ref x) (ref y)) (\x y -> Complex.mul (ref x) (ref y)) left right
+
+/// NumPy-compatible `dot`: 0-D scalar product, 1-D inner product, 2-D matrix product,
+/// or sum-product over the last axis of `left` and second-to-last axis of `right`.
+///
+/// ```tsuzuri run=[32]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let b = Tensor.of_array [3] [4, 5, 6]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.dot (ref va) (ref vb) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def dot :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn dot left right =
+    let lr = Tensor.rank left
+    let rr = Tensor.rank right
+    if lr == 0 then
+        let s = (Tensor.data left)[Tensor.offset left]
+        Result.Ok (Tensor.scale s right)
+    elif rr == 0 then
+        let s = (Tensor.data right)[Tensor.offset right]
+        Result.Ok (Tensor.mul_scalar s left)
+    elif lr <= 2 && rr <= 2 then matmul left right
+    elif rr == 1 then tensordot ([lr - 1], [0]) left right
+    else tensordot ([lr - 1], [rr - 2]) left right
+
+/// Flattened inner product of equal-count real or integer tensors (`np.vdot`).
+///
+/// ```tsuzuri run=70
+/// let a = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let b = Tensor.of_array [2, 2] [5, 6, 7, 8]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.vdot (ref va) (ref vb) with
+/// | Result.Ok v -> v
+/// | Result.Error _ -> 0
+/// ```
+def vdot :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<'a, Error>
+fn vdot left right =
+    if Tensor.count left != Tensor.count right then
+        Result.Error (Error.ShapeMismatch (Array.copy (Tensor.shape left), Array.copy (Tensor.shape right)))
+    else
+        let lp = Tensor.to_tensor left
+        let rp = Tensor.to_tensor right
+        let la = Tensor.as_array (ref lp)
+        let ra = Tensor.as_array (ref rp)
+        let mut acc = 0i64 as 'a
+        for i in 0i64 ..< la.length do
+            acc = acc + la[i] * ra[i]
+        Result.Ok acc
+
+/// Flattened sesquilinear inner product `sum(conj(left[i]) * right[i])` for complex tensors (`np.vdot`).
+///
+/// ```tsuzuri run=11-2i
+/// let a = Tensor.of_array [1] [Complex.of 1.0 2.0]
+/// let b = Tensor.of_array [1] [Complex.of 3.0 4.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.vdot_complex (ref va) (ref vb) with
+/// | Result.Ok z -> $"{z}"
+/// | Result.Error _ -> ""
+/// ```
+def vdot_complex :: (Float<'a>, Neg<'a>) => ref Tensor.View<Complex<'a>> -> ref Tensor.View<Complex<'a>> -> Result<Complex<'a>, Error>
+fn vdot_complex left right =
+    if Tensor.count left != Tensor.count right then
+        Result.Error (Error.ShapeMismatch (Array.copy (Tensor.shape left), Array.copy (Tensor.shape right)))
+    else
+        let lp = Tensor.to_tensor left
+        let rp = Tensor.to_tensor right
+        let la = Tensor.as_array (ref lp)
+        let ra = Tensor.as_array (ref rp)
+        let mut acc: Complex<'a> = Complex.zero ()
+        for i in 0i64 ..< la.length do
+            let cj = Complex.conj (ref la[i])
+            let prod = Complex.mul (ref cj) (ref ra[i])
+            acc = Complex.add (ref acc) (ref prod)
+        Result.Ok acc
+
+/// Contracts the last axis of `left` with the last axis of `right` (`np.inner`).
+///
+/// ```tsuzuri run=[14,%2023]
+/// let a = Tensor.of_array [2, 3] [1, 2, 3, 2, 3, 5]
+/// let b = Tensor.of_array [3] [1, 2, 3]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.inner (ref va) (ref vb) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def inner :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn inner left right =
+    let lr = Tensor.rank left
+    let rr = Tensor.rank right
+    if lr == 0 || rr == 0 then dot left right
+    else tensordot ([lr - 1], [rr - 1]) left right
+
+/// Flattened 2-D outer product `[count(left), count(right)]` (`np.outer`).
+///
+/// ```tsuzuri run=[10,%2020,%2030,%2020,%2040,%2060]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [3] [10, 20, 30]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// Tensor.to_array (Linalg.outer (ref va) (ref vb))
+/// ```
+def outer :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Tensor<'a>
+fn outer left right =
+    let lp = Tensor.to_tensor left
+    let rp = Tensor.to_tensor right
+    let la = Tensor.as_array (ref lp)
+    let ra = Tensor.as_array (ref rp)
+    let m = la.length
+    let n = ra.length
+    if m == 0 || n == 0 then Tensor.of_array [m, n] []
+    else Tensor.of_array [m, n] (new ['a](m * n, \idx -> la[idx / n] * ra[idx % n]))
+
+/// Flattened 2-D outer product `left[i] * right[j]` for complex tensors (`np.outer`).
+///
+/// ```tsuzuri run=1
+/// let a = Tensor.of_array [1] [Complex.of 1.0 1.0]
+/// let b = Tensor.of_array [1] [Complex.of 1.0 (-1.0)]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// let c = Linalg.outer_complex (ref va) (ref vb)
+/// let vc = Tensor.view (ref c)
+/// Tensor.count (ref vc)
+/// ```
+def outer_complex :: (Float<'a>, Neg<'a>) => ref Tensor.View<Complex<'a>> -> ref Tensor.View<Complex<'a>> -> Tensor<Complex<'a>>
+fn outer_complex left right =
+    let lp = Tensor.to_tensor left
+    let rp = Tensor.to_tensor right
+    let la = Tensor.as_array (ref lp)
+    let ra = Tensor.as_array (ref rp)
+    let m = la.length
+    let n = ra.length
+    if m == 0 || n == 0 then Tensor.of_array [m, n] []
+    else Tensor.of_array [m, n] (new [Complex<'a>](m * n, \idx -> Complex.mul (ref la[idx / n]) (ref ra[idx % n])))
+
+/// Kronecker product of arbitrary-rank tensors `left` and `right` (`np.kron`).
+///
+/// ```tsuzuri run=[1,%200,%202,%200,%200,%201,%200,%202]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2, 2] [1, 0, 0, 1]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// Tensor.to_array (Linalg.kron (ref va) (ref vb))
+/// ```
+def kron :: Numeric<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Tensor<'a>
+fn kron left right =
+    let l_sh = Tensor.shape left
+    let r_sh = Tensor.shape right
+    let rank = if l_sh.length >= r_sh.length then l_sh.length else r_sh.length
+    if rank == 0 then
+        let lv = (Tensor.data left)[Tensor.offset left]
+        let rv = (Tensor.data right)[Tensor.offset right]
+        Tensor.of_array [] [lv * rv]
+    else
+        let pad_l = rank - l_sh.length
+        let pad_r = rank - r_sh.length
+        let ls = new [i64](rank, \d -> if d < pad_l then 1 else l_sh[d - pad_l])
+        let rs = new [i64](rank, \d -> if d < pad_r then 1 else r_sh[d - pad_r])
+        let out_sh = new [i64](rank, \d -> ls[d] * rs[d])
+        let total = prod_shape (ref out_sh)
+        if total == 0 then Tensor.of_array out_sh []
+        else
+            let lp = Tensor.to_tensor left
+            let rp = Tensor.to_tensor right
+            let la = Tensor.as_array (ref lp)
+            let ra = Tensor.as_array (ref rp)
+            let l_strides = row_major_strides (ref ls)
+            let r_strides = row_major_strides (ref rs)
+            let o_strides = row_major_strides (ref out_sh)
+            let data = new ['a](total, \idx ->
+                let mut li = 0
+                let mut ri = 0
+                for d in 0i64 ..< rank do
+                    let c = (idx / o_strides[d]) % out_sh[d]
+                    let cl = c / rs[d]
+                    let cr = c % rs[d]
+                    li = li + cl * l_strides[d]
+                    ri = ri + cr * r_strides[d]
+                la[li] * ra[ri])
+            Tensor.of_array out_sh data
+
+/// Cross product of 2-element or 3-element vectors along `axis` (`np.cross`).
+///
+/// ```tsuzuri run=[-3,%206,%20-3]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let b = Tensor.of_array [3] [4, 5, 6]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.cross 0 (ref va) (ref vb) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def cross :: Numeric<'a> => own i64 -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn cross axis left right =
+    let l_sh = Tensor.shape left
+    let r_sh = Tensor.shape right
+    if l_sh != r_sh then Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+    elif l_sh.length == 0 then Result.Error (Error.InvalidRank 0)
+    else
+        match normalize_axis_checked axis l_sh.length with
+        | Maybe.None -> Result.Error (Error.InvalidRank axis)
+        | Maybe.Some norm ->
+            let dim = l_sh[norm]
+            if dim != 2 && dim != 3 then Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+            else
+                let rank = l_sh.length
+                let perm = new [i64](rank, \i ->
+                    if i < norm then i
+                    elif i < rank - 1 then i + 1
+                    else norm)
+                let l_perm = Tensor.permute (Array.copy (ref perm)) left
+                let r_perm = Tensor.permute perm right
+                let lp = Tensor.to_tensor (ref l_perm)
+                let rp = Tensor.to_tensor (ref r_perm)
+                let la = Tensor.as_array (ref lp)
+                let ra = Tensor.as_array (ref rp)
+                let lpv = Tensor.view (ref lp)
+                let batch_sh = Array.sub 0 (rank - 1) (Tensor.shape (ref lpv))
+                let batch_n = prod_shape (ref batch_sh)
+                if dim == 2 then
+                    let out = new ['a](batch_n, \b ->
+                        let base = b * 2
+                        la[base] * ra[base + 1] - la[base + 1] * ra[base])
+                    Result.Ok (Tensor.of_array batch_sh out)
+                else
+                    let mut out = new ['a](batch_n * 3, \_ -> 0i64 as 'a)
+                    for b in 0i64 ..< batch_n do
+                        let base = b * 3
+                        let a0 = la[base]
+                        let a1 = la[base + 1]
+                        let a2 = la[base + 2]
+                        let b0 = ra[base]
+                        let b1 = ra[base + 1]
+                        let b2 = ra[base + 2]
+                        Array.write base (a1 * b2 - a2 * b1) (ref mut out)
+                        Array.write (base + 1) (a2 * b0 - a0 * b2) (ref mut out)
+                        Array.write (base + 2) (a0 * b1 - a1 * b0) (ref mut out)
+                    let tmp_sh = new [i64](rank, \i -> if i < rank - 1 then batch_sh[i] else 3)
+                    let tmp_t = Tensor.of_array tmp_sh out
+                    let inv_perm = new [i64](rank, \i ->
+                        if i < norm then i
+                        elif i == norm then rank - 1
+                        else i - 1)
+                    let tmp_v = Tensor.view (ref tmp_t)
+                    let inv_v = Tensor.permute inv_perm (ref tmp_v)
+                    Result.Ok (Tensor.to_tensor (ref inv_v))
+
+/// Zero-copy strided diagonal window across `(axis1, axis2)` at `offset`, appending the diagonal axis last (`np.diagonal`).
+///
+/// ```tsuzuri run=[1,%205,%209]
+/// let t = Tensor.of_array [3, 3] [1, 2, 3, 4, 5, 6, 7, 8, 9]
+/// let tv = Tensor.view (ref t)
+/// match Linalg.diagonal_view 0 0 1 (ref tv) with
+/// | Result.Ok dv -> Tensor.to_array (Tensor.to_tensor (ref dv))
+/// | Result.Error _ -> []
+/// ```
+def diagonal_view :: own i64 -> own i64 -> own i64 -> ref Tensor.View<'a> -> Result<Tensor.View<'a>, Error>
+fn diagonal_view offset axis1 axis2 view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        match (normalize_axis_checked axis1 rank, normalize_axis_checked axis2 rank) with
+        | (Maybe.Some a1, Maybe.Some a2) ->
+            if a1 == a2 then Result.Error (Error.InvalidRank axis2)
+            else
+                let rows = sh[a1]
+                let cols = sh[a2]
+                let r_start = if offset < 0 then -offset else 0
+                let c_start = if offset > 0 then offset else 0
+                let rem_r = if r_start < rows then rows - r_start else 0
+                let rem_c = if c_start < cols then cols - c_start else 0
+                let diag_len = if rem_r < rem_c then rem_r else rem_c
+                let st = Tensor.strides view
+                let mut rem_sh = new [i64](rank - 1, \_ -> 0)
+                let mut rem_st = new [i64](rank - 1, \_ -> 0)
+                let mut pos = 0
+                for d in 0i64 ..< rank do
+                    if d != a1 && d != a2 then
+                        Array.write pos sh[d] (ref mut rem_sh)
+                        Array.write pos st[d] (ref mut rem_st)
+                        pos = pos + 1
+                Array.write (rank - 2) diag_len (ref mut rem_sh)
+                Array.write (rank - 2) (st[a1] + st[a2]) (ref mut rem_st)
+                let new_off =
+                    if prod_shape (ref rem_sh) == 0 then 0
+                    else Tensor.offset view + r_start * st[a1] + c_start * st[a2]
+                Result.Ok (Tensor.strided new_off rem_sh rem_st (Tensor.data view))
+        | _ -> Result.Error (Error.InvalidRank rank)
+
+/// Copies the diagonal at `offset` across `(axis1, axis2)` into an owned tensor (`np.diagonal`).
+///
+/// ```tsuzuri run=[2,%206]
+/// let t = Tensor.of_array [3, 3] [1, 2, 3, 4, 5, 6, 7, 8, 9]
+/// let tv = Tensor.view (ref t)
+/// match Linalg.diagonal 1 0 1 (ref tv) with
+/// | Result.Ok d -> Tensor.to_array d
+/// | Result.Error _ -> []
+/// ```
+def diagonal :: Copy<'a> => own i64 -> own i64 -> own i64 -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn diagonal offset axis1 axis2 view =
+    match diagonal_view offset axis1 axis2 view with
+    | Result.Ok dv -> Result.Ok (Tensor.to_tensor (ref dv))
+    | Result.Error e -> Result.Error e
+
+/// Sums along diagonals at `offset` across `(axis1, axis2)` (`np.trace`; 0-D tensor for 2-D inputs).
+///
+/// ```tsuzuri run=[15]
+/// let t = Tensor.of_array [3, 3] [1, 2, 3, 4, 5, 6, 7, 8, 9]
+/// let tv = Tensor.view (ref t)
+/// match Linalg.trace 0 0 1 (ref tv) with
+/// | Result.Ok tr -> Tensor.to_array tr
+/// | Result.Error _ -> []
+/// ```
+def trace :: Numeric<'a> => own i64 -> own i64 -> own i64 -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn trace offset axis1 axis2 view =
+    match diagonal_view offset axis1 axis2 view with
+    | Result.Ok dv -> Result.Ok (Tensor.sum_axis (-1) (ref dv))
+    | Result.Error e -> Result.Error e
+
+private def normalize_contract_axes :: ref [i64] -> own i64 -> Maybe<[i64]>
+fn normalize_contract_axes raw rank =
+    let k = raw.length
+    let mut out = new [i64](k, \_ -> 0)
+    let mut ok = true
+    for i in 0i64 ..< k do
+        match normalize_axis_checked raw[i] rank with
+        | Maybe.None -> ok = false
+        | Maybe.Some ax ->
+            for j in 0i64 ..< i do
+                if out[j] == ax then ok = false
+            Array.write i ax (ref mut out)
+    if ok then Maybe.Some out else Maybe.None
+
+private def tensordot_generic :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> own ('a -> 'a -> 'a) -> own ([i64] * [i64]) -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn tensordot_generic zero_val add_fn mul_fn axes left right =
+    let (raw_a, raw_b) = axes
+    let l_sh = Tensor.shape left
+    let r_sh = Tensor.shape right
+    if raw_a.length != raw_b.length then
+        Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+    else
+        match (normalize_contract_axes (ref raw_a) l_sh.length, normalize_contract_axes (ref raw_b) r_sh.length) with
+        | (Maybe.Some ax_a, Maybe.Some ax_b) ->
+            let mut match_ext = true
+            for i in 0i64 ..< ax_a.length do
+                if l_sh[ax_a[i]] != r_sh[ax_b[i]] then match_ext = false
+            if !match_ext then
+                Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy r_sh))
+            else
+                let free_a_len = l_sh.length - ax_a.length
+                let free_b_len = r_sh.length - ax_b.length
+                let mut free_a = new [i64](free_a_len, \_ -> 0)
+                let mut pa = 0
+                for d in 0i64 ..< l_sh.length do
+                    let mut contracted = false
+                    for c in ref ax_a do
+                        if c == d then contracted = true
+                    if !contracted then
+                        Array.write pa d (ref mut free_a)
+                        pa = pa + 1
+                let mut free_b = new [i64](free_b_len, \_ -> 0)
+                let mut pb = 0
+                for d in 0i64 ..< r_sh.length do
+                    let mut contracted = false
+                    for c in ref ax_b do
+                        if c == d then contracted = true
+                    if !contracted then
+                        Array.write pb d (ref mut free_b)
+                        pb = pb + 1
+                let perm_a = Array.append (ref free_a) (ref ax_a)
+                let perm_b = Array.append (ref ax_b) (ref free_b)
+                let pa_v = Tensor.permute perm_a left
+                let pb_v = Tensor.permute perm_b right
+                let ta = Tensor.to_tensor (ref pa_v)
+                let tb = Tensor.to_tensor (ref pb_v)
+                let fa_ext = new [i64](free_a_len, \i -> l_sh[free_a[i]])
+                let k_ext = new [i64](ax_a.length, \i -> l_sh[ax_a[i]])
+                let fb_ext = new [i64](free_b_len, \i -> r_sh[free_b[i]])
+                let m = prod_shape (ref fa_ext)
+                let k_dim = prod_shape (ref k_ext)
+                let n = prod_shape (ref fb_ext)
+                let ta_2d = Tensor.reshape [m, k_dim] ta
+                let tb_2d = Tensor.reshape [k_dim, n] tb
+                let ta_2dv = Tensor.view (ref ta_2d)
+                let tb_2dv = Tensor.view (ref tb_2d)
+                let out_flat = gemm_2d_raw zero_val add_fn mul_fn (ref ta_2dv) (ref tb_2dv)
+                let out_shape = new [i64](free_a_len + free_b_len, \i ->
+                    if i < free_a_len then l_sh[free_a[i]] else r_sh[free_b[i - free_a_len]])
+                Result.Ok (Tensor.of_array out_shape out_flat)
+        | _ -> Result.Error (Error.InvalidRank (-1))
+
+/// Tensor contraction over paired axes `(axes_left, axes_right)` (`np.tensordot`).
+///
+/// ```tsuzuri run=[58,%2064,%20139,%20154]
+/// let a = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// let b = Tensor.of_array [3, 2] [7, 8, 9, 10, 11, 12]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.tensordot ([1], [0]) (ref va) (ref vb) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def tensordot :: Numeric<'a> => own ([i64] * [i64]) -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn tensordot axes left right = tensordot_generic (0i64 as 'a) (\x y -> x + y) (\x y -> x * y) axes left right
+
+/// Complex tensor contraction over paired axes `(axes_left, axes_right)` (`np.tensordot`).
+///
+/// ```tsuzuri run=-5+10i
+/// let a = Tensor.of_array [1, 1] [Complex.of 1.0 2.0]
+/// let b = Tensor.of_array [1, 1] [Complex.of 3.0 4.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.tensordot_complex ([1], [0]) (ref va) (ref vb) with
+/// | Result.Ok c -> $"{(Tensor.as_array (ref c))[0]}"
+/// | Result.Error _ -> ""
+/// ```
+def tensordot_complex :: (Float<'a>, Neg<'a>) => own ([i64] * [i64]) -> ref Tensor.View<Complex<'a>> -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn tensordot_complex axes left right =
+    let z0: Complex<'a> = Complex.zero ()
+    tensordot_generic z0 (\x y -> Complex.add (ref x) (ref y)) (\x y -> Complex.mul (ref x) (ref y)) axes left right
+
+// ---- Einsum parser, path planner & evaluator ----
+
+private record ParsedSubscript {
+    inputs: [[i64]],
+    output: [i64],
+    dim_labels: [i64],
+    dim_sizes: [i64]
+}
+
+// Parses one term such as `bhqd` or `...ij`, returning `-1` at the position of `...` (at most once).
+private def parse_einsum_term :: ref string -> Maybe<[i64]>
+fn parse_einsum_term term =
+    let cs = String.chars term
+    let n = cs.length
+    let mut labels = Vec.with_capacity n
+    let mut i = 0
+    let mut has_ell = false
+    let mut ok = true
+    while i < n && ok do
+        let c = cs[i]
+        if c == ' ' || c == '\t' then
+            i = i + 1
+        elif c == '.' then
+            if !has_ell && i + 2 < n && cs[i + 1] == '.' && cs[i + 2] == '.' then
+                has_ell = true
+                labels = Vec.push_owned (-1) labels
+                i = i + 3
+            else
+                ok = false
+        elif Char.is_ascii_alphabetic c then
+            labels = Vec.push_owned (Char.to_u16 c as i64) labels
+            i = i + 1
+        else
+            ok = false
+    if ok then Maybe.Some (Vec.to_array labels) else Maybe.None
+
+private def expand_ellipsis :: ref [i64] -> own i64 -> [i64]
+fn expand_ellipsis raw ell_rank =
+    let mut has_ell = false
+    for x in raw do
+        if x == (-1) then has_ell = true
+    if !has_ell then Array.copy raw
+    else
+        let out_len = raw.length - 1 + ell_rank
+        let mut out = new [i64](out_len, \_ -> 0)
+        let mut pos = 0
+        for x in raw do
+            if x == (-1) then
+                for b in 0i64 ..< ell_rank do
+                    Array.write pos ((-1000) + b) (ref mut out)
+                    pos = pos + 1
+            else
+                Array.write pos x (ref mut out)
+                pos = pos + 1
+        out
+
+private def lookup_label_size :: ref [i64] -> ref [i64] -> own i64 -> i64
+fn lookup_label_size labels sizes lbl =
+    let mut res = -1
+    for i in 0i64 ..< labels.length do
+        if labels[i] == lbl then res = sizes[i]
+    res
+
+private def parse_einsum :: ref string -> ref [[i64]] -> Result<ParsedSubscript, Error>
+fn parse_einsum spec shapes =
+    let arrow_parts = String.split "->" spec
+    if arrow_parts.length > 2 then Result.Error (Error.InvalidEinsum (String.trim spec))
+    else
+        let explicit = arrow_parts.length == 2
+        let lhs_terms = String.split "," (ref arrow_parts[0])
+        if lhs_terms.length != shapes.length || shapes.length == 0 then
+            Result.Error (Error.InvalidEinsum (String.trim spec))
+        else
+            let n_ops = shapes.length
+            let mut raw_inputs = Vec.with_capacity n_ops
+            let mut ok = true
+            for i in 0i64 ..< n_ops do
+                match parse_einsum_term (ref lhs_terms[i]) with
+                | Maybe.Some t -> raw_inputs = Vec.push_owned t raw_inputs
+                | Maybe.None -> ok = false
+            let raw_in_arr = Vec.to_array raw_inputs
+            if !ok then Result.Error (Error.InvalidEinsum (String.trim spec))
+            else
+                let mut ell_shapes = Vec.with_capacity n_ops
+                for i in 0i64 ..< n_ops do
+                    let rt = ref raw_in_arr[i]
+                    let sh = ref shapes[i]
+                    let mut has_ell = false
+                    for x in rt do
+                        if x == (-1) then has_ell = true
+                    if has_ell then
+                        let named = rt.length - 1
+                        if sh.length < named then ok = false
+                        else
+                            let mut ell_pos = 0
+                            for k in 0i64 ..< rt.length do
+                                if rt[k] == (-1) then ell_pos = k
+                            let ell_len = sh.length - named
+                            ell_shapes = Vec.push_owned (Array.sub ell_pos ell_len sh) ell_shapes
+                    else
+                        if sh.length != rt.length then ok = false
+                if !ok then Result.Error (Error.InvalidEinsum (String.trim spec))
+                else
+                    let ell_arr = Vec.to_array ell_shapes
+                    let mut bcast_ell: [i64] = []
+                    for i in 0i64 ..< ell_arr.length do
+                        if ok then
+                            match Tensor.broadcast_shape (ref bcast_ell) (ref ell_arr[i]) with
+                            | Result.Ok b -> bcast_ell = b
+                            | Result.Error _ -> ok = false
+                    if !ok then Result.Error (Error.InvalidEinsum (String.trim spec))
+                    else
+                        let ell_rank = bcast_ell.length
+                        let inputs = new [[i64]](n_ops, \i -> expand_ellipsis (ref raw_in_arr[i]) ell_rank)
+                        let mut dim_labels = Vec.with_capacity 16
+                        let mut dim_sizes = Vec.with_capacity 16
+                        for b in 0i64 ..< ell_rank do
+                            dim_labels = Vec.push_owned ((-1000) + b) dim_labels
+                            dim_sizes = Vec.push_owned bcast_ell[b] dim_sizes
+                        for op in 0i64 ..< n_ops do
+                            let term = ref inputs[op]
+                            let sh = ref shapes[op]
+                            for ax in 0i64 ..< term.length do
+                                let lbl = term[ax]
+                                if lbl >= 0 then
+                                    let pos_idx = Vec.index_of lbl (ref dim_labels)
+                                    if pos_idx < 0 then
+                                        dim_labels = Vec.push_owned lbl dim_labels
+                                        dim_sizes = Vec.push_owned sh[ax] dim_sizes
+                                    else
+                                        match Vec.get pos_idx (ref dim_sizes) with
+                                        | Maybe.Some prev ->
+                                            if prev != sh[ax] then ok = false
+                                        | Maybe.None -> ok = false
+                        let dl_arr = Vec.to_array dim_labels
+                        let ds_arr = Vec.to_array dim_sizes
+                        if !ok then Result.Error (Error.InvalidEinsum (String.trim spec))
+                        elif explicit then
+                            match parse_einsum_term (ref arrow_parts[1]) with
+                            | Maybe.None -> Result.Error (Error.InvalidEinsum (String.trim spec))
+                            | Maybe.Some raw_out ->
+                                let mut raw_has_ell = false
+                                for x in ref raw_out do
+                                    if x == (-1) then raw_has_ell = true
+                                if ell_arr.length > 0 && !raw_has_ell && ell_rank > 0 then
+                                    // Explicit output without `...` sums over ellipsis batch axes (`...ij->ij`).
+                                    ()
+                                let out_exp = expand_ellipsis (ref raw_out) ell_rank
+                                // Output labels must be unique and appear in inputs.
+                                for i in 0i64 ..< out_exp.length do
+                                    let lbl = out_exp[i]
+                                    if lookup_label_size (ref dl_arr) (ref ds_arr) lbl < 0 then ok = false
+                                    for j in 0i64 ..< i do
+                                        if out_exp[j] == lbl then ok = false
+                                if !ok then Result.Error (Error.InvalidEinsum (String.trim spec))
+                                else Result.Ok (ParsedSubscript { inputs: inputs, output: out_exp, dim_labels: dl_arr, dim_sizes: ds_arr })
+                        else
+                            // Implicit output: `...` axes first (if any operand used `...`), followed by ASCII labels appearing once.
+                            let mut counts = new [i64](dl_arr.length, \_ -> 0)
+                            for op in 0i64 ..< n_ops do
+                                for lbl in ref inputs[op] do
+                                    for idx in 0i64 ..< dl_arr.length do
+                                        if dl_arr[idx] == lbl then
+                                            Array.write idx (counts[idx] + 1) (ref mut counts)
+                            let mut named_unique = Vec.with_capacity dl_arr.length
+                            for idx in 0i64 ..< dl_arr.length do
+                                if dl_arr[idx] >= 0 && counts[idx] == 1 then
+                                    named_unique = Vec.push_owned dl_arr[idx] named_unique
+                            let named_arr = Vec.to_array named_unique
+                            let sorted_named = Array.sort (ref named_arr)
+                            let ell_out: [i64] = if ell_arr.length > 0 then new [i64](ell_rank, \b -> (-1000) + b) else []
+                            let out_labels = Array.append (ref ell_out) (ref sorted_named)
+                            Result.Ok (ParsedSubscript { inputs: inputs, output: out_labels, dim_labels: dl_arr, dim_sizes: ds_arr })
+
+private def label_present_in :: own i64 -> ref [i64] -> bool
+fn label_present_in lbl arr =
+    let mut found = false
+    for x in arr do
+        if x == lbl then found = true
+    found
+
+private def label_needed_outside_pair :: own i64 -> own i64 -> own i64 -> ref [[i64]] -> ref [i64] -> bool
+fn label_needed_outside_pair lbl i_op j_op terms final_out =
+    if label_present_in lbl final_out then true
+    else
+        let mut needed = false
+        for k in 0i64 ..< terms.length do
+            if k != i_op && k != j_op && label_present_in lbl (ref terms[k]) then
+                needed = true
+        needed
+
+private def pair_result_labels :: own i64 -> own i64 -> ref [[i64]] -> ref [i64] -> [i64]
+fn pair_result_labels i_op j_op terms final_out =
+    let mut res = Vec.with_capacity (terms[i_op].length + terms[j_op].length)
+    for lbl in ref terms[i_op] do
+        if !(Vec.contains lbl (ref res)) && label_needed_outside_pair lbl i_op j_op terms final_out then
+            res = Vec.push_owned lbl res
+    for lbl in ref terms[j_op] do
+        if !(Vec.contains lbl (ref res)) && label_needed_outside_pair lbl i_op j_op terms final_out then
+            res = Vec.push_owned lbl res
+    Vec.to_array res
+
+/// Computes a greedy minimum-intermediate pairwise contraction schedule `[(i, j), ...]` for `einsum` (`NC08`).
+/// At each step, the pair `(i, j)` (`0 <= i < j < remaining`) is removed and its contracted result is appended.
+///
+/// ```tsuzuri run=[(0,%201),%20(0,%201)]
+/// match Linalg.einsum_path "ij,jk,kl->il" [[2, 4], [4, 3], [3, 2]] with
+/// | Result.Ok path -> path
+/// | Result.Error _ -> []
+/// ```
+def einsum_path :: ref string -> ref [[i64]] -> Result<[(i64 * i64)], Error>
+fn einsum_path spec shapes =
+    match parse_einsum spec shapes with
+    | Result.Error e -> Result.Error e
+    | Result.Ok parsed ->
+        let mut terms = new [[i64]](parsed.inputs.length, \op ->
+            // Deduplicate within each operand before pairwise scheduling.
+            let mut u = Vec.with_capacity parsed.inputs[op].length
+            for lbl in ref parsed.inputs[op] do
+                if !(Vec.contains lbl (ref u)) then u = Vec.push_owned lbl u
+            Vec.to_array u)
+        let mut steps: Vec<(i64 * i64)> = Vec.with_capacity (if terms.length > 1 then terms.length - 1 else 0)
+        while terms.length > 1 do
+            let m = terms.length
+            let mut best_i = 0
+            let mut best_j = 1
+            let mut best_cost = 9223372036854775807
+            for i in 0i64 ..< m do
+                for j in (i + 1) ..< m do
+                    let out_lbls = pair_result_labels i j (ref terms) (ref parsed.output)
+                    let mut cost = 1
+                    for lbl in ref out_lbls do
+                        let sz = lookup_label_size (ref parsed.dim_labels) (ref parsed.dim_sizes) lbl
+                        if sz > 0 && cost <= 9223372036854775807 / sz then cost = cost * sz
+                    if cost < best_cost then
+                        best_cost = cost
+                        best_i = i
+                        best_j = j
+            steps = Vec.push_owned (best_i, best_j) steps
+            let merged = pair_result_labels best_i best_j (ref terms) (ref parsed.output)
+            let mut next_terms = Vec.with_capacity (m - 1)
+            for k in 0i64 ..< m do
+                if k != best_i && k != best_j then
+                    next_terms = Vec.push_owned (Array.copy (ref terms[k])) next_terms
+            next_terms = Vec.push_owned merged next_terms
+            terms = Vec.to_array next_terms
+        Result.Ok (Vec.to_array steps)
+
+// Simplifies a single operand `(tensor, labels)` to target `keep_labels` (extracting repeated-label diagonals,
+// summing unkept axes, broadcasting extent-1 ellipsis axes if needed, and permuting to `keep_labels`).
+private def simplify_single_operand :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> ref [i64] -> ref [i64] -> own Tensor<'a> -> ref [i64] -> ref [i64] -> (Tensor<'a> * [i64])
+fn simplify_single_operand zero_val add_fn dim_labels dim_sizes tensor cur_labels target_keep =
+    // Broadcast any extent-1 ellipsis axis to its global extent first.
+    let tv0 = Tensor.view (ref tensor)
+    let sh0 = Tensor.shape (ref tv0)
+    let want_sh0 = new [i64](cur_labels.length, \ax ->
+        let lbl = cur_labels[ax]
+        let gsz = lookup_label_size dim_labels dim_sizes lbl
+        if sh0[ax] == 1 && gsz > 1 then gsz else sh0[ax])
+    let bcast_t =
+        if want_sh0 == sh0 then Tensor.clone (ref tensor)
+        else
+            match Tensor.broadcast_to want_sh0 (ref tv0) with
+            | Result.Ok bv -> Tensor.to_tensor (ref bv)
+            | Result.Error _ -> Tensor.clone (ref tensor)
+    // Build unique labels present in `cur_labels`.
+    let mut uniq = Vec.with_capacity cur_labels.length
+    for lbl in cur_labels do
+        if !(Vec.contains lbl (ref uniq)) then
+            uniq = Vec.push_owned lbl uniq
+    let uniq_arr = Vec.to_array uniq
+    // Keep only labels present in `target_keep` in `target_keep` order.
+    let mut kept = Vec.with_capacity target_keep.length
+    for lbl in target_keep do
+        if label_present_in lbl (ref uniq_arr) then
+            kept = Vec.push_owned lbl kept
+    let kept_arr = Vec.to_array kept
+    let out_shape = new [i64](kept_arr.length, \i -> lookup_label_size dim_labels dim_sizes kept_arr[i])
+    let out_total = prod_shape (ref out_shape)
+    if out_total == 0 then (Tensor.of_array out_shape [], kept_arr)
+    else
+        // If no duplicate labels AND no summed labels, simple `permute`!
+        if uniq_arr.length == cur_labels.length && kept_arr.length == cur_labels.length then
+            let perm = new [i64](kept_arr.length, \i ->
+                let mut found = 0
+                for j in 0i64 ..< cur_labels.length do
+                    if cur_labels[j] == kept_arr[i] then found = j
+                found)
+            let bv = Tensor.view (ref bcast_t)
+            let pv = Tensor.permute perm (ref bv)
+            (Tensor.to_tensor (ref pv), kept_arr)
+        else
+            // General single-operand diagonal + sum reduction over unique coordinate space `uniq_arr`.
+            let u_sizes = new [i64](uniq_arr.length, \i -> lookup_label_size dim_labels dim_sizes uniq_arr[i])
+            let u_total = prod_shape (ref u_sizes)
+            if u_total == 0 then
+                (Tensor.of_array out_shape (new ['a](out_total, \_ -> zero_val)), kept_arr)
+            else
+                let mut out_data = new ['a](out_total, \_ -> zero_val)
+                let src_arr = Tensor.as_array (ref bcast_t)
+                let src_strides = row_major_strides (ref want_sh0)
+                let u_strides = row_major_strides (ref u_sizes)
+                let out_strides = row_major_strides (ref out_shape)
+                let cur_to_u = new [i64](cur_labels.length, \ax ->
+                    let mut idx = 0
+                    for u in 0i64 ..< uniq_arr.length do
+                        if uniq_arr[u] == cur_labels[ax] then idx = u
+                    idx)
+                let kept_to_u = new [i64](kept_arr.length, \k ->
+                    let mut idx = 0
+                    for u in 0i64 ..< uniq_arr.length do
+                        if uniq_arr[u] == kept_arr[k] then idx = u
+                    idx)
+                for u_idx in 0i64 ..< u_total do
+                    let u_coords = new [i64](uniq_arr.length, \u -> (u_idx / u_strides[u]) % u_sizes[u])
+                    let mut src_off = 0
+                    for ax in 0i64 ..< cur_labels.length do
+                        src_off = src_off + u_coords[cur_to_u[ax]] * src_strides[ax]
+                    let mut dst_off = 0
+                    for k in 0i64 ..< kept_arr.length do
+                        dst_off = dst_off + u_coords[kept_to_u[k]] * out_strides[k]
+                    Array.write dst_off (add_fn out_data[dst_off] src_arr[src_off]) (ref mut out_data)
+                (Tensor.of_array out_shape out_data, kept_arr)
+
+// Contracts two already-deduplicated operands `(ta, la)` and `(tb, lb)` into `out_labels` via batched/2-D `matmul`!
+private def contract_einsum_pair :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> own ('a -> 'a -> 'a) -> ref [i64] -> ref [i64] -> own Tensor<'a> -> ref [i64] -> own Tensor<'a> -> ref [i64] -> ref [i64] -> Tensor<'a>
+fn contract_einsum_pair zero_val add_fn mul_fn dim_labels dim_sizes ta la tb lb out_labels =
+    // Partition labels of `la` and `lb` into:
+    // - `batch`: in `la` AND `lb` AND `out_labels`
+    // - `contract`: in `la` AND `lb` AND NOT in `out_labels`
+    // - `free_a`: in `la` AND NOT in `lb` (and in `out_labels`)
+    // - `free_b`: in `lb` AND NOT in `la` (and in `out_labels`)
+    let mut batch_v = Vec.with_capacity la.length
+    let mut contract_v = Vec.with_capacity la.length
+    let mut free_a_v = Vec.with_capacity la.length
+    let mut free_b_v = Vec.with_capacity lb.length
+    for lbl in la do
+        if label_present_in lbl lb then
+            if label_present_in lbl out_labels then batch_v = Vec.push_owned lbl batch_v
+            else contract_v = Vec.push_owned lbl contract_v
+        elif label_present_in lbl out_labels then
+            free_a_v = Vec.push_owned lbl free_a_v
+    for lbl in lb do
+        if !(label_present_in lbl la) && label_present_in lbl out_labels then
+            free_b_v = Vec.push_owned lbl free_b_v
+    let batch = Vec.to_array batch_v
+    let contract = Vec.to_array contract_v
+    let free_a = Vec.to_array free_a_v
+    let free_b = Vec.to_array free_b_v
+    let tail_a = Array.append (ref free_a) (ref contract)
+    let tail_b = Array.append (ref contract) (ref free_b)
+    let want_a = Array.append (ref batch) (ref tail_a)
+    let want_b = Array.append (ref batch) (ref tail_b)
+    let (sa, _) = simplify_single_operand zero_val add_fn dim_labels dim_sizes ta la (ref want_a)
+    let (sb, _) = simplify_single_operand zero_val add_fn dim_labels dim_sizes tb lb (ref want_b)
+    let b_ext = new [i64](batch.length, \i -> lookup_label_size dim_labels dim_sizes batch[i])
+    let fa_ext = new [i64](free_a.length, \i -> lookup_label_size dim_labels dim_sizes free_a[i])
+    let k_ext = new [i64](contract.length, \i -> lookup_label_size dim_labels dim_sizes contract[i])
+    let fb_ext = new [i64](free_b.length, \i -> lookup_label_size dim_labels dim_sizes free_b[i])
+    let b_dim = prod_shape (ref b_ext)
+    let m_dim = prod_shape (ref fa_ext)
+    let k_dim = prod_shape (ref k_ext)
+    let n_dim = prod_shape (ref fb_ext)
+    let sa_3d = Tensor.reshape [b_dim, m_dim, k_dim] sa
+    let sb_3d = Tensor.reshape [b_dim, k_dim, n_dim] sb
+    let sa_3dv = Tensor.view (ref sa_3d)
+    let sb_3dv = Tensor.view (ref sb_3d)
+    let prod_3d =
+        match matmul_generic zero_val add_fn mul_fn (ref sa_3dv) (ref sb_3dv) with
+        | Result.Ok p -> p
+        | Result.Error _ -> Tensor.of_array [b_dim, m_dim, n_dim] []
+    let tail_free = Array.append (ref free_a) (ref free_b)
+    let merged_labels = Array.append (ref batch) (ref tail_free)
+    let merged_shape = new [i64](merged_labels.length, \i -> lookup_label_size dim_labels dim_sizes merged_labels[i])
+    let merged_t = Tensor.reshape merged_shape prod_3d
+    let (ordered, _) = simplify_single_operand zero_val add_fn dim_labels dim_sizes merged_t (ref merged_labels) out_labels
+    ordered
+
+private def einsum_generic :: Copy<'a> => own 'a -> own ('a -> 'a -> 'a) -> own ('a -> 'a -> 'a) -> ref string -> ref [Tensor.View<'a>] -> Result<Tensor<'a>, Error>
+fn einsum_generic zero_val add_fn mul_fn spec operands =
+    let shapes = new [[i64]](operands.length, \i -> Array.copy (Tensor.shape (ref operands[i])))
+    match parse_einsum spec (ref shapes) with
+    | Result.Error e -> Result.Error e
+    | Result.Ok parsed ->
+        let n_ops = operands.length
+        if n_ops == 1 then
+            let t0 = Tensor.to_tensor (ref operands[0])
+            let (res, _) = simplify_single_operand zero_val add_fn (ref parsed.dim_labels) (ref parsed.dim_sizes) t0 (ref parsed.inputs[0]) (ref parsed.output)
+            Result.Ok res
+        else
+            match einsum_path spec (ref shapes) with
+            | Result.Error e -> Result.Error e
+            | Result.Ok schedule ->
+                let mut cur_tensors: Vec<Tensor<'a>> = Vec.with_capacity n_ops
+                let mut cur_terms: Vec<[i64]> = Vec.with_capacity n_ops
+                for op in 0i64 ..< n_ops do
+                    let mut u = Vec.with_capacity parsed.inputs[op].length
+                    for lbl in ref parsed.inputs[op] do
+                        if !(Vec.contains lbl (ref u)) then u = Vec.push_owned lbl u
+                    let u_arr = Vec.to_array u
+                    let t_in = Tensor.to_tensor (ref operands[op])
+                    let (simp_t, simp_lbls) = simplify_single_operand zero_val add_fn (ref parsed.dim_labels) (ref parsed.dim_sizes) t_in (ref parsed.inputs[op]) (ref u_arr)
+                    cur_tensors = Vec.push_owned simp_t cur_tensors
+                    cur_terms = Vec.push_owned simp_lbls cur_terms
+                for step_idx in 0i64 ..< schedule.length do
+                    let (i_op, j_op) = schedule[step_idx]
+                    let terms_arr = Vec.to_array cur_terms
+                    let tensors_arr = Vec.to_array cur_tensors
+                    let out_lbls =
+                        if step_idx == schedule.length - 1 then Array.copy (ref parsed.output)
+                        else pair_result_labels i_op j_op (ref terms_arr) (ref parsed.output)
+                    let lhs_t = Tensor.clone (ref tensors_arr[i_op])
+                    let rhs_t = Tensor.clone (ref tensors_arr[j_op])
+                    let contracted = contract_einsum_pair zero_val add_fn mul_fn (ref parsed.dim_labels) (ref parsed.dim_sizes) lhs_t (ref terms_arr[i_op]) rhs_t (ref terms_arr[j_op]) (ref out_lbls)
+                    let m = terms_arr.length
+                    let mut next_tensors = Vec.with_capacity (m - 1)
+                    let mut next_terms = Vec.with_capacity (m - 1)
+                    for k in 0i64 ..< m do
+                        if k != i_op && k != j_op then
+                            next_tensors = Vec.push_owned (Tensor.clone (ref tensors_arr[k])) next_tensors
+                            next_terms = Vec.push_owned (Array.copy (ref terms_arr[k])) next_terms
+                    next_tensors = Vec.push_owned contracted next_tensors
+                    next_terms = Vec.push_owned out_lbls next_terms
+                    cur_tensors = next_tensors
+                    cur_terms = next_terms
+                let final_arr = Vec.to_array cur_tensors
+                Result.Ok (Tensor.clone (ref final_arr[0]))
+
+/// Evaluates an Einstein summation convention string over `operands` (`np.einsum`), supporting explicit `->`,
+/// implicit output, `...` batch broadcasting, traces/diagonals, and optimal multi-operand contraction trees.
+///
+/// ```tsuzuri run=[19,%2022,%2043,%2050]
+/// let a = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let b = Tensor.of_array [2, 2] [5, 6, 7, 8]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.einsum "ij,jk->ik" [va, vb] with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def einsum :: Numeric<'a> => ref string -> ref [Tensor.View<'a>] -> Result<Tensor<'a>, Error>
+fn einsum spec operands = einsum_generic (0i64 as 'a) (\x y -> x + y) (\x y -> x * y) spec operands
+
+/// Evaluates an Einstein summation convention string over complex `operands` (`np.einsum`).
+///
+/// ```tsuzuri run=-5+10i
+/// let a = Tensor.of_array [1, 1] [Complex.of 1.0 2.0]
+/// let b = Tensor.of_array [1, 1] [Complex.of 3.0 4.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.einsum_complex "ij,jk->ik" [va, vb] with
+/// | Result.Ok c -> $"{(Tensor.as_array (ref c))[0]}"
+/// | Result.Error _ -> ""
+/// ```
+def einsum_complex :: (Float<'a>, Neg<'a>) => ref string -> ref [Tensor.View<Complex<'a>>] -> Result<Tensor<Complex<'a>>, Error>
+fn einsum_complex spec operands =
+    let z0: Complex<'a> = Complex.zero ()
+    einsum_generic z0 (\x y -> Complex.add (ref x) (ref y)) (\x y -> Complex.mul (ref x) (ref y)) spec operands
+
+// ============================================================================
+// Phase 2 — Decompositions (LU, Cholesky, QR), Solvers, Inverse, Determinant,
+//           Matrix Power, Norms, Condition Number & Least Squares
+// ============================================================================
+
+private def max_abs_slice :: Elementary<'a> => ref ['a] -> 'a
+fn max_abs_slice a =
+    let mut mx = 0i64 as 'a
+    for x in a do
+        let ax = Math.abs x
+        if Math.is_nan ax then mx = ax
+        elif !(Math.is_nan mx) && ax > mx then mx = ax
+    mx
+
+private def append_dims :: ref [i64] -> ref [i64] -> [i64]
+fn append_dims prefix suffix = Array.append prefix suffix
+
+// 2-D partial-pivoting LU factorization `A = P * L * U` on flat `[m * n]` slice,
+// returning `(P [m*m], L [m*k], U [k*n], perm [m], swap_parity)`.
+private def lu_2d_core :: Elementary<'a> => own i64 -> own i64 -> ref ['a] -> (['a] * ['a] * ['a] * [i64] * i64)
+fn lu_2d_core m n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let k_min = if m <= n then m else n
+    let mut work = Array.copy src
+    let mut perm = new [i64](m, \i -> i)
+    let mut swaps = 0
+    for k in 0i64 ..< k_min do
+        let mut piv_row = k
+        let mut best = Math.abs work[k * n + k]
+        for r in (k + 1) ..< m do
+            let v = Math.abs work[r * n + k]
+            if v > best then
+                best = v
+                piv_row = r
+        if piv_row != k then
+            swaps = swaps + 1
+            let p_tmp = perm[k]
+            Array.write k perm[piv_row] (ref mut perm)
+            Array.write piv_row p_tmp (ref mut perm)
+            for c in 0i64 ..< n do
+                let tmp = work[k * n + c]
+                Array.write (k * n + c) work[piv_row * n + c] (ref mut work)
+                Array.write (piv_row * n + c) tmp (ref mut work)
+        let piv = work[k * n + k]
+        if piv != zero then
+            for i in (k + 1) ..< m do
+                let factor = work[i * n + k] / piv
+                Array.write (i * n + k) factor (ref mut work)
+                for j in (k + 1) ..< n do
+                    let updated = work[i * n + j] - factor * work[k * n + j]
+                    Array.write (i * n + j) updated (ref mut work)
+    // Build P (`P[perm[i], i] = 1` so `P * L * U == A`), L (`[m, k_min]`), U (`[k_min, n]`).
+    let mut p_mat = new ['a](m * m, \_ -> zero)
+    for i in 0i64 ..< m do
+        Array.write (perm[i] * m + i) one (ref mut p_mat)
+    let l_mat = new ['a](m * k_min, \idx ->
+        let r = idx / k_min
+        let c = idx % k_min
+        if r == c then one
+        elif r > c then work[r * n + c]
+        else zero)
+    let u_mat = new ['a](k_min * n, \idx ->
+        let r = idx / n
+        let c = idx % n
+        if r <= c then work[r * n + c] else zero)
+    (p_mat, l_mat, u_mat, perm, swaps)
+
+/// Partial-pivoting LU decomposition `A = P * L * U` for 2-D or batched `[..., m, n]` tensors,
+/// returning `(P, L, U, pivots)` where `pivots` holds the row permutation (`P * L * U == A`).
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 4.0, 3.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.lu (ref va) with
+/// | Result.Ok (p, l, u, _) ->
+///     let vp = Tensor.view (ref p)
+///     let vl = Tensor.view (ref l)
+///     let vu = Tensor.view (ref u)
+///     match Linalg.matmul (ref vl) (ref vu) with
+///     | Result.Ok lu_prod ->
+///         let vlu = Tensor.view (ref lu_prod)
+///         match Linalg.matmul (ref vp) (ref vlu) with
+///         | Result.Ok rec_a ->
+///             let vra = Tensor.view (ref rec_a)
+///             Tensor.allclose 1e-12 1e-12 false (ref vra) (ref va)
+///         | Result.Error _ -> false
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def lu :: Elementary<'a> => ref Tensor.View<'a> -> Result<(Tensor<'a> * Tensor<'a> * Tensor<'a> * Tensor<i64>), Error>
+fn lu view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        let m = sh[rank - 2]
+        let n = sh[rank - 1]
+        let k_min = if m <= n then m else n
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let p_sh = append_dims (ref batch_sh) [m, m]
+        let l_sh = append_dims (ref batch_sh) [m, k_min]
+        let u_sh = append_dims (ref batch_sh) [k_min, n]
+        let piv_sh = append_dims (ref batch_sh) [m]
+        if batch_n == 0 then
+            Result.Ok (Tensor.of_array p_sh [], Tensor.of_array l_sh [], Tensor.of_array u_sh [], Tensor.of_array piv_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut p_out = new ['a](batch_n * m * m, \_ -> zero)
+            let mut l_out = new ['a](batch_n * m * k_min, \_ -> zero)
+            let mut u_out = new ['a](batch_n * k_min * n, \_ -> zero)
+            let mut piv_out = new [i64](batch_n * m, \_ -> 0)
+            let stride_in = m * n
+            for b in 0i64 ..< batch_n do
+                let sub = Array.sub (b * stride_in) stride_in pd
+                let (pm, lm, um, prm, _) = lu_2d_core m n (ref sub)
+                for i in 0i64 ..< (m * m) do Array.write (b * m * m + i) pm[i] (ref mut p_out)
+                for i in 0i64 ..< (m * k_min) do Array.write (b * m * k_min + i) lm[i] (ref mut l_out)
+                for i in 0i64 ..< (k_min * n) do Array.write (b * k_min * n + i) um[i] (ref mut u_out)
+                for i in 0i64 ..< m do Array.write (b * m + i) prm[i] (ref mut piv_out)
+            Result.Ok (Tensor.of_array p_sh p_out, Tensor.of_array l_sh l_out, Tensor.of_array u_sh u_out, Tensor.of_array piv_sh piv_out)
+
+private def cholesky_2d_core :: Elementary<'a> => own i64 -> ref ['a] -> Result<['a], Error>
+fn cholesky_2d_core n src =
+    let zero: 'a = 0i64 as 'a
+    if n == 0 then Result.Ok []
+    else
+        let eps = machine_eps ()
+        let scale = max_abs_slice src
+        let sym_tol = eps * ((if n > 4 then n else 4) as 'a) * scale
+        let mut ok_sym = !(Math.is_nan scale)
+        for i in 0i64 ..< n do
+            for j in (i + 1) ..< n do
+                if Math.abs (src[i * n + j] - src[j * n + i]) > sym_tol then ok_sym = false
+        if !ok_sym then Result.Error Error.NotPositiveDefinite
+        else
+            let mut l = new ['a](n * n, \_ -> zero)
+            let mut ok_pd = true
+            for i in 0i64 ..< n do
+                if ok_pd then
+                    for j in 0i64 ..= i do
+                        if ok_pd then
+                            let mut s = src[i * n + j]
+                            for k in 0i64 ..< j do
+                                s = s - l[i * n + k] * l[j * n + k]
+                            if i == j then
+                                if !(s > zero) || Math.is_nan s then ok_pd = false
+                                else Array.write (i * n + i) (Math.sqrt s) (ref mut l)
+                            else
+                                Array.write (i * n + j) (s / l[j * n + j]) (ref mut l)
+            if ok_pd then Result.Ok l else Result.Error Error.NotPositiveDefinite
+
+/// Lower-triangular Cholesky decomposition `A = L * L^T` for symmetric positive-definite `[..., n, n]` matrices.
+///
+/// ```tsuzuri run=[2,%200,%201,%203]
+/// let a = Tensor.of_array [2, 2] [4.0, 2.0, 2.0, 10.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.cholesky (ref va) with
+/// | Result.Ok l -> Tensor.to_array l
+/// | Result.Error _ -> []
+/// ```
+def cholesky :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn cholesky view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let out_sh = Array.copy sh
+        if batch_n == 0 || n == 0 then Result.Ok (Tensor.of_array out_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut out = new ['a](batch_n * n * n, \_ -> zero)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    match cholesky_2d_core n (ref sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok lb ->
+                        for i in 0i64 ..< (n * n) do
+                            Array.write (b * n * n + i) lb[i] (ref mut out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array out_sh out)
+
+private def qr_2d_core :: Elementary<'a> => own QrMode -> own i64 -> own i64 -> ref ['a] -> (['a] * ['a])
+fn qr_2d_core mode m n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let k_min = if m <= n then m else n
+    let mut r_full = Array.copy src
+    let mut q_full = new ['a](m * m, \idx -> if idx / m == idx % m then one else zero)
+    for k in 0i64 ..< k_min do
+        let mut norm_x = zero
+        for i in k ..< m do
+            norm_x = Math.hypot norm_x r_full[i * n + k]
+        if norm_x > zero then
+            let x0 = r_full[k * n + k]
+            let alpha = if x0 >= zero then zero - norm_x else norm_x
+            let v_len = m - k
+            let mut v = new ['a](v_len, \idx ->
+                if idx == 0 then x0 - alpha else r_full[(k + idx) * n + k])
+            let mut norm_v = zero
+            for x in ref v do norm_v = Math.hypot norm_v x
+            if norm_v > zero then
+                for idx in 0i64 ..< v_len do
+                    Array.write idx (v[idx] / norm_v) (ref mut v)
+                // R <- (I - 2 v v^T) R on rows k..m, cols k..n
+                for col in k ..< n do
+                    let mut dot_vr = zero
+                    for idx in 0i64 ..< v_len do
+                        dot_vr = dot_vr + v[idx] * r_full[(k + idx) * n + col]
+                    let scale = two * dot_vr
+                    for idx in 0i64 ..< v_len do
+                        let row = k + idx
+                        Array.write (row * n + col) (r_full[row * n + col] - scale * v[idx]) (ref mut r_full)
+                // Q <- Q (I - 2 v v^T) on rows 0..m, cols k..m
+                for row in 0i64 ..< m do
+                    let mut dot_qv = zero
+                    for idx in 0i64 ..< v_len do
+                        dot_qv = dot_qv + q_full[row * m + (k + idx)] * v[idx]
+                    let scale = two * dot_qv
+                    for idx in 0i64 ..< v_len do
+                        let col = k + idx
+                        Array.write (row * m + col) (q_full[row * m + col] - scale * v[idx]) (ref mut q_full)
+    // Zero strict lower triangle of R cleanly.
+    for r in 0i64 ..< m do
+        for c in 0i64 ..< (if r < n then r else n) do
+            Array.write (r * n + c) zero (ref mut r_full)
+    match mode with
+    | QrMode.Complete -> (q_full, r_full)
+    | QrMode.Reduced ->
+        let q_red = new ['a](m * k_min, \idx ->
+            let r = idx / k_min
+            let c = idx % k_min
+            q_full[r * m + c])
+        let r_red = new ['a](k_min * n, \idx ->
+            let r = idx / n
+            let c = idx % n
+            r_full[r * n + c])
+        (q_red, r_red)
+
+/// Householder QR decomposition `A = Q * R` (`QrMode.Reduced` or `QrMode.Complete`) for `[..., m, n]` tensors.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [3, 2] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.qr Linalg.QrMode.Reduced (ref va) with
+/// | Result.Ok (q, r) ->
+///     let vq = Tensor.view (ref q)
+///     let vr = Tensor.view (ref r)
+///     match Linalg.matmul (ref vq) (ref vr) with
+///     | Result.Ok qr_prod ->
+///         let vqr = Tensor.view (ref qr_prod)
+///         Tensor.allclose 1e-12 1e-12 false (ref vqr) (ref va)
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def qr :: Elementary<'a> => own QrMode -> ref Tensor.View<'a> -> Result<(Tensor<'a> * Tensor<'a>), Error>
+fn qr mode view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        let m = sh[rank - 2]
+        let n = sh[rank - 1]
+        let k_min = if m <= n then m else n
+        let q_cols = match mode with | QrMode.Reduced -> k_min | QrMode.Complete -> m
+        let r_rows = q_cols
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let q_sh = append_dims (ref batch_sh) [m, q_cols]
+        let r_sh = append_dims (ref batch_sh) [r_rows, n]
+        if batch_n == 0 then Result.Ok (Tensor.of_array q_sh [], Tensor.of_array r_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut q_out = new ['a](batch_n * m * q_cols, \_ -> zero)
+            let mut r_out = new ['a](batch_n * r_rows * n, \_ -> zero)
+            for b in 0i64 ..< batch_n do
+                let sub = Array.sub (b * m * n) (m * n) pd
+                let (qb, rb) = qr_2d_core mode m n (ref sub)
+                for i in 0i64 ..< (m * q_cols) do Array.write (b * m * q_cols + i) qb[i] (ref mut q_out)
+                for i in 0i64 ..< (r_rows * n) do Array.write (b * r_rows * n + i) rb[i] (ref mut r_out)
+            Result.Ok (Tensor.of_array q_sh q_out, Tensor.of_array r_sh r_out)
+
+private def solve_tri_2d_core :: Elementary<'a> => own Triangle -> own bool -> own i64 -> own i64 -> ref ['a] -> ref ['a] -> Result<['a], Error>
+fn solve_tri_2d_core tri unit_diag n nrhs t_mat rhs =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    if n == 0 || nrhs == 0 then Result.Ok []
+    else
+        let eps = machine_eps ()
+        let scale = max_abs_slice t_mat
+        let tol = eps * ((if n > 1 then n else 1) as 'a) * scale
+        let mut x = Array.copy rhs
+        let mut ok = !(Math.is_nan scale)
+        match tri with
+        | Triangle.Lower ->
+            for i in 0i64 ..< n do
+                if ok then
+                    let diag = if unit_diag then one else t_mat[i * n + i]
+                    if !unit_diag && (Math.abs diag <= tol || diag == zero || Math.is_nan diag) then
+                        ok = false
+                    else
+                        for col in 0i64 ..< nrhs do
+                            let mut s = x[i * nrhs + col]
+                            for k in 0i64 ..< i do
+                                s = s - t_mat[i * n + k] * x[k * nrhs + col]
+                            let val = if unit_diag then s else s / diag
+                            Array.write (i * nrhs + col) val (ref mut x)
+        | Triangle.Upper ->
+            let mut step = n
+            while step > 0 && ok do
+                step = step - 1
+                let i = step
+                let diag = if unit_diag then one else t_mat[i * n + i]
+                if !unit_diag && (Math.abs diag <= tol || diag == zero || Math.is_nan diag) then
+                    ok = false
+                else
+                    for col in 0i64 ..< nrhs do
+                        let mut s = x[i * nrhs + col]
+                        for k in (i + 1) ..< n do
+                            s = s - t_mat[i * n + k] * x[k * nrhs + col]
+                        let val = if unit_diag then s else s / diag
+                        Array.write (i * nrhs + col) val (ref mut x)
+        if ok then Result.Ok x else Result.Error Error.SingularMatrix
+
+// Normalizes RHS `b` against square `[batch_a..., n, n]` into `(bcast_batch, nrhs, is_vec_1d, a_bcast_data, b_bcast_data)`.
+private def prepare_batched_rhs :: Copy<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<([i64] * i64 * i64 * bool * ['a] * ['a]), Error>
+fn prepare_batched_rhs a_view b_view =
+    let a_sh = Tensor.shape a_view
+    let b_sh = Tensor.shape b_view
+    let ar = a_sh.length
+    let br = b_sh.length
+    if ar < 2 then Result.Error (Error.InvalidRank ar)
+    elif br == 0 then Result.Error (Error.InvalidRank 0)
+    elif a_sh[ar - 2] != a_sh[ar - 1] then Result.Error (Error.NotSquare (Array.copy a_sh))
+    else
+        let n = a_sh[ar - 1]
+        let is_vec = br == 1
+        let b_rows = if is_vec then b_sh[0] else b_sh[br - 2]
+        let nrhs = if is_vec then 1 else b_sh[br - 1]
+        if b_rows != n then Result.Error (Error.ShapeMismatch (Array.copy a_sh, Array.copy b_sh))
+        else
+            let a_batch = Array.sub 0 (ar - 2) a_sh
+            let b_batch: [i64] = if is_vec then [] else Array.sub 0 (br - 2) b_sh
+            match Tensor.broadcast_shape (ref a_batch) (ref b_batch) with
+            | Result.Error _ -> Result.Error (Error.ShapeMismatch (Array.copy a_sh, Array.copy b_sh))
+            | Result.Ok batch ->
+                let full_a_sh = append_dims (ref batch) [n, n]
+                let full_b_sh = append_dims (ref batch) [n, nrhs]
+                let b_2d_view =
+                    if is_vec then
+                        Tensor.strided (Tensor.offset b_view) [n, 1] [(Tensor.strides b_view)[0], 0] (Tensor.data b_view)
+                    else
+                        Tensor.strided (Tensor.offset b_view) (Array.copy b_sh) (Array.copy (Tensor.strides b_view)) (Tensor.data b_view)
+                match (Tensor.broadcast_to full_a_sh a_view, Tensor.broadcast_to full_b_sh (ref b_2d_view)) with
+                | (Result.Ok av_b, Result.Ok bv_b) ->
+                    let at = Tensor.to_tensor (ref av_b)
+                    let bt = Tensor.to_tensor (ref bv_b)
+                    Result.Ok (batch, n, nrhs, is_vec, Tensor.to_array at, Tensor.to_array bt)
+                | _ -> Result.Error (Error.ShapeMismatch (Array.copy a_sh, Array.copy b_sh))
+
+/// Solves a triangular linear system `T * X = B` (`Lower` or `Upper`, optional `unit_diagonal`),
+/// supporting 1-D vector `rhs` (`[..., n]`) and 2-D/batched multi-RHS `rhs` (`[..., n, nrhs]`).
+///
+/// ```tsuzuri run=[2,%203]
+/// let l = Tensor.of_array [2, 2] [2.0, 0.0, 1.0, 3.0]
+/// let b = Tensor.of_array [2] [4.0, 11.0]
+/// let vl = Tensor.view (ref l)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.solve_triangular Linalg.Triangle.Lower false (ref vl) (ref vb) with
+/// | Result.Ok x -> Tensor.to_array x
+/// | Result.Error _ -> []
+/// ```
+def solve_triangular :: Elementary<'a> => own Triangle -> own bool -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn solve_triangular tri unit_diagonal tri_mat rhs =
+    match prepare_batched_rhs tri_mat rhs with
+    | Result.Error e -> Result.Error e
+    | Result.Ok (batch, n, nrhs, is_vec, a_data, b_data) ->
+        let batch_n = prod_shape (ref batch)
+        let out_sh = if is_vec then append_dims (ref batch) [n] else append_dims (ref batch) [n, nrhs]
+        if batch_n == 0 || n == 0 || nrhs == 0 then Result.Ok (Tensor.of_array out_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let mut out = new ['a](batch_n * n * nrhs, \_ -> zero)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let t_sub = Array.sub (b * n * n) (n * n) (ref a_data)
+                    let r_sub = Array.sub (b * n * nrhs) (n * nrhs) (ref b_data)
+                    match solve_tri_2d_core tri unit_diagonal n nrhs (ref t_sub) (ref r_sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok xb ->
+                        for i in 0i64 ..< (n * nrhs) do
+                            Array.write (b * n * nrhs + i) xb[i] (ref mut out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array out_sh out)
+
+/// Reuses pre-factored `(L, U, pivots)` from `Linalg.lu` to solve `A * X = B` without refactoring `A`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let a = Tensor.of_array [2, 2] [3.0, 1.0, 1.0, 2.0]
+/// let b = Tensor.of_array [2] [5.0, 5.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.lu (ref va) with
+/// | Result.Ok (_, l, u, piv) ->
+///     let vl = Tensor.view (ref l)
+///     let vu = Tensor.view (ref u)
+///     let vpiv = Tensor.view (ref piv)
+///     match Linalg.lu_solve (ref vl) (ref vu) (ref vpiv) (ref vb) with
+///     | Result.Ok x -> Tensor.to_array x
+///     | Result.Error _ -> []
+/// | Result.Error _ -> []
+/// ```
+def lu_solve :: Elementary<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> ref Tensor.View<i64> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn lu_solve l_view u_view pivots_view rhs =
+    let l_sh = Tensor.shape l_view
+    let u_sh = Tensor.shape u_view
+    let p_sh = Tensor.shape pivots_view
+    let lr = l_sh.length
+    if lr < 2 || u_sh.length != lr || p_sh.length != lr - 1 then
+        Result.Error (Error.InvalidRank lr)
+    elif l_sh != u_sh then
+        Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy u_sh))
+    elif l_sh[lr - 2] != l_sh[lr - 1] then
+        Result.Error (Error.NotSquare (Array.copy l_sh))
+    else
+        let n = l_sh[lr - 1]
+        let l_batch = Array.sub 0 (lr - 2) l_sh
+        let exp_p_sh = append_dims (ref l_batch) [n]
+        if p_sh != exp_p_sh then Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy p_sh))
+        else
+            match prepare_batched_rhs u_view rhs with
+            | Result.Error e -> Result.Error e
+            | Result.Ok (batch, _, nrhs, is_vec, u_data, b_data) ->
+                let full_l_sh = append_dims (ref batch) [n, n]
+                let full_p_sh = append_dims (ref batch) [n]
+                match (Tensor.broadcast_to full_l_sh l_view, Tensor.broadcast_to full_p_sh pivots_view) with
+                | (Result.Ok lv_b, Result.Ok pv_b) ->
+                    let lt = Tensor.to_tensor (ref lv_b)
+                    let pt = Tensor.to_tensor (ref pv_b)
+                    let l_data = Tensor.as_array (ref lt)
+                    let p_data = Tensor.as_array (ref pt)
+                    let batch_n = prod_shape (ref batch)
+                    let out_sh = if is_vec then append_dims (ref batch) [n] else append_dims (ref batch) [n, nrhs]
+                    if batch_n == 0 || n == 0 || nrhs == 0 then Result.Ok (Tensor.of_array out_sh [])
+                    else
+                        let zero: 'a = 0i64 as 'a
+                        let mut out = new ['a](batch_n * n * nrhs, \_ -> zero)
+                        let mut err: Maybe<Error> = Maybe.None
+                        for b in 0i64 ..< batch_n do
+                            match err with
+                            | Maybe.Some _ -> ()
+                            | Maybe.None ->
+                                let l_sub = Array.sub (b * n * n) (n * n) l_data
+                                let u_sub = Array.sub (b * n * n) (n * n) (ref u_data)
+                                let p_sub = Array.sub (b * n) n p_data
+                                let pb = new ['a](n * nrhs, \idx ->
+                                    let row = idx / nrhs
+                                    let col = idx % nrhs
+                                    b_data[b * n * nrhs + p_sub[row] * nrhs + col])
+                                match solve_tri_2d_core Triangle.Lower true n nrhs (ref l_sub) (ref pb) with
+                                | Result.Error e -> err = Maybe.Some e
+                                | Result.Ok y ->
+                                    match solve_tri_2d_core Triangle.Upper false n nrhs (ref u_sub) (ref y) with
+                                    | Result.Error e -> err = Maybe.Some e
+                                    | Result.Ok xb ->
+                                        for i in 0i64 ..< (n * nrhs) do
+                                            Array.write (b * n * nrhs + i) xb[i] (ref mut out)
+                        match err with
+                        | Maybe.Some e -> Result.Error e
+                        | Maybe.None -> Result.Ok (Tensor.of_array out_sh out)
+                | _ -> Result.Error (Error.ShapeMismatch (Array.copy l_sh, Array.copy (Tensor.shape rhs)))
+
+/// Reuses a lower-triangular Cholesky factor `L` from `Linalg.cholesky` to solve `(L * L^T) * X = B`.
+///
+/// ```tsuzuri run=[1,%201]
+/// let a = Tensor.of_array [2, 2] [4.0, 2.0, 2.0, 10.0]
+/// let b = Tensor.of_array [2] [6.0, 12.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.cholesky (ref va) with
+/// | Result.Ok l ->
+///     let vl = Tensor.view (ref l)
+///     match Linalg.cholesky_solve (ref vl) (ref vb) with
+///     | Result.Ok x -> Tensor.to_array x
+///     | Result.Error _ -> []
+/// | Result.Error _ -> []
+/// ```
+def cholesky_solve :: Elementary<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn cholesky_solve chol_l rhs =
+    match solve_triangular Triangle.Lower false chol_l rhs with
+    | Result.Error e -> Result.Error e
+    | Result.Ok y ->
+        let rank_l = Tensor.rank chol_l
+        let perm = new [i64](rank_l, \d ->
+            if d == rank_l - 2 then rank_l - 1
+            elif d == rank_l - 1 then rank_l - 2
+            else d)
+        let lt_view = Tensor.permute perm chol_l
+        let yv = Tensor.view (ref y)
+        solve_triangular Triangle.Upper false (ref lt_view) (ref yv)
+
+/// Solves a square linear system `A * X = B` (`np.linalg.solve`), returning `SingularMatrix` when `A` is singular.
+/// A 1-D `rhs` `[n]` yields `[..., n]`; a 2-D+ `rhs` `[..., n, nrhs]` yields `[..., n, nrhs]`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let a = Tensor.of_array [2, 2] [3.0, 1.0, 1.0, 2.0]
+/// let b = Tensor.of_array [2] [5.0, 5.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.solve (ref va) (ref vb) with
+/// | Result.Ok x -> Tensor.to_array x
+/// | Result.Error _ -> []
+/// ```
+def solve :: Elementary<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn solve coeff rhs =
+    let sh = Tensor.shape coeff
+    if sh.length < 2 then Result.Error (Error.InvalidRank sh.length)
+    elif sh[sh.length - 2] != sh[sh.length - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        match lu coeff with
+        | Result.Error e -> Result.Error e
+        | Result.Ok (_, l, u, piv) ->
+            let vl = Tensor.view (ref l)
+            let vu = Tensor.view (ref u)
+            let vpiv = Tensor.view (ref piv)
+            lu_solve (ref vl) (ref vu) (ref vpiv) rhs
+
+/// Matrix inverse `A^{-1}` for square `[..., n, n]` matrices (`SingularMatrix` when singular).
+///
+/// ```tsuzuri run=[1,%20-1,%20-1,%202]
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 1.0, 1.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.inv (ref va) with
+/// | Result.Ok inv_a -> Tensor.to_array inv_a
+/// | Result.Error _ -> []
+/// ```
+def inv :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn inv view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let id = Tensor.identity n
+        let id_v = Tensor.view (ref id)
+        solve view (ref id_v)
+
+/// Signed log-determinant `(sign, logabsdet)` of square `[..., n, n]` matrices (`np.linalg.slogdet`).
+///
+/// ```tsuzuri run=1%20true
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 1.0, 3.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.slogdet (ref va) with
+/// | Result.Ok (sgn, logd) ->
+///     let s = (Tensor.as_array (ref sgn))[0]
+///     let ld = (Tensor.as_array (ref logd))[0]
+///     $"{s} {Math.abs (Math.exp ld - 5.0) < 1e-12}"
+/// | Result.Error _ -> ""
+/// ```
+def slogdet :: Elementary<'a> => ref Tensor.View<'a> -> Result<(Tensor<'a> * Tensor<'a>), Error>
+fn slogdet view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        if batch_n == 0 then
+            Result.Ok (Tensor.of_array (Array.copy (ref batch_sh)) [], Tensor.of_array batch_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let one: 'a = 1i64 as 'a
+            let neg_inf: 'a = (zero - one) / zero
+            let eps = machine_eps ()
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut signs = new ['a](batch_n, \_ -> one)
+            let mut logs = new ['a](batch_n, \_ -> zero)
+            for b in 0i64 ..< batch_n do
+                if n > 0 then
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    let scale = max_abs_slice (ref sub)
+                    let tol = eps * (n as 'a) * scale
+                    let (_, _, u_mat, _, swaps) = lu_2d_core n n (ref sub)
+                    let mut sgn: 'a = if swaps % 2 == 0 then one else zero - one
+                    let mut log_acc = zero
+                    for i in 0i64 ..< n do
+                        let d = u_mat[i * n + i]
+                        if Math.is_nan d then
+                            sgn = zero / zero
+                            log_acc = zero / zero
+                        elif Math.abs d <= tol || d == zero then
+                            sgn = zero
+                            log_acc = neg_inf
+                        else
+                            if d < zero then sgn = zero - sgn
+                            if sgn != zero then log_acc = log_acc + Math.log (Math.abs d)
+                    Array.write b sgn (ref mut signs)
+                    Array.write b log_acc (ref mut logs)
+            Result.Ok (Tensor.of_array (Array.copy (ref batch_sh)) signs, Tensor.of_array batch_sh logs)
+
+/// Determinant of square `[..., n, n]` matrices (`np.linalg.det`; 0-D tensor for 2-D inputs).
+///
+/// ```tsuzuri run=[5]
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 1.0, 3.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.det (ref va) with
+/// | Result.Ok d -> Tensor.to_array d
+/// | Result.Error _ -> []
+/// ```
+def det :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn det view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        if batch_n == 0 then Result.Ok (Tensor.of_array batch_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let one: 'a = 1i64 as 'a
+            let eps = machine_eps ()
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let out = new ['a](batch_n, \b ->
+                if n == 0 then one
+                else
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    let scale = max_abs_slice (ref sub)
+                    let tol = eps * (n as 'a) * scale
+                    let (_, _, u_mat, _, swaps) = lu_2d_core n n (ref sub)
+                    let mut prod = if swaps % 2 == 0 then one else zero - one
+                    for i in 0i64 ..< n do
+                        let d = u_mat[i * n + i]
+                        if !(Math.is_nan d) && Math.abs d <= tol then prod = zero
+                        else prod = prod * d
+                    prod)
+            Result.Ok (Tensor.of_array batch_sh out)
+
+private def mul_owned_tensors :: Numeric<'a> => ref Tensor<'a> -> ref Tensor<'a> -> Result<Tensor<'a>, Error>
+fn mul_owned_tensors left right =
+    let lv = Tensor.view left
+    let rv = Tensor.view right
+    matmul (ref lv) (ref rv)
+
+/// Integer matrix power `A^power` (positive, zero, or negative) via binary exponentiation.
+///
+/// ```tsuzuri run=[7,%2010,%2015,%2022]
+/// let a = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.matrix_power 2 (ref va) with
+/// | Result.Ok p -> Tensor.to_array p
+/// | Result.Error _ -> []
+/// ```
+def matrix_power :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn matrix_power power view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let full_sh = Array.copy sh
+        let id2 = Tensor.identity n
+        let id2_v = Tensor.view (ref id2)
+        let id_bcast =
+            match Tensor.broadcast_to full_sh (ref id2_v) with
+            | Result.Ok bv -> Tensor.to_tensor (ref bv)
+            | Result.Error _ -> Tensor.identity n
+        if power == 0 then Result.Ok id_bcast
+        else
+            let base_res =
+                if power > 0 then Result.Ok (Tensor.to_tensor view)
+                else inv view
+            match base_res with
+            | Result.Error e -> Result.Error e
+            | Result.Ok base_init ->
+                let mut exp_left = if power > 0 then power else 0 - power
+                let mut acc = id_bcast
+                let mut base = base_init
+                while exp_left > 0 do
+                    if exp_left % 2 == 1 then
+                        match mul_owned_tensors (ref acc) (ref base) with
+                        | Result.Ok nxt -> acc = nxt
+                        | Result.Error _ -> ()
+                    exp_left = exp_left / 2
+                    if exp_left > 0 then
+                        match mul_owned_tensors (ref base) (ref base) with
+                        | Result.Ok sq -> base = sq
+                        | Result.Error _ -> ()
+                Result.Ok acc
+
+private def slice_vec_norm :: Elementary<'a> => own VectorNorm -> ref ['a] -> 'a
+fn slice_vec_norm ord values =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    if values.length == 0 then zero
+    else
+        match ord with
+        | VectorNorm.L1 ->
+            let mut s = zero
+            for x in values do s = s + Math.abs x
+            s
+        | VectorNorm.L2 ->
+            let scale = max_abs_slice values
+            if Math.is_nan scale || Math.is_infinite scale || scale == zero then scale
+            else
+                let mut sum_sq = zero
+                for x in values do
+                    let u = x / scale
+                    sum_sq = sum_sq + u * u
+                scale * Math.sqrt sum_sq
+        | VectorNorm.Inf ->
+            let mut mx = Math.abs values[0]
+            for i in 1i64 ..< values.length do
+                let a = Math.abs values[i]
+                if Math.is_nan a then mx = a
+                elif !(Math.is_nan mx) && a > mx then mx = a
+            mx
+        | VectorNorm.NegInf ->
+            let mut mn = Math.abs values[0]
+            for i in 1i64 ..< values.length do
+                let a = Math.abs values[i]
+                if Math.is_nan a then mn = a
+                elif !(Math.is_nan mn) && a < mn then mn = a
+            mn
+        | VectorNorm.P p_f64 ->
+            let p: 'a = p_f64 as 'a
+            let scale = max_abs_slice values
+            if scale == zero || Math.is_nan scale then scale
+            else
+                let mut s = zero
+                for x in values do
+                    s = s + Math.pow (Math.abs x / scale) p
+                scale * Math.pow s (one / p)
+
+/// Euclidean (`L2` / Frobenius) norm of all elements of `view` with overflow-safe scaling.
+///
+/// ```tsuzuri run=5
+/// let t = Tensor.of_array [2] [3.0, 4.0]
+/// let tv = Tensor.view (ref t)
+/// Linalg.norm (ref tv)
+/// ```
+def norm :: Elementary<'a> => ref Tensor.View<'a> -> 'a
+fn norm view =
+    let packed = Tensor.to_tensor view
+    slice_vec_norm VectorNorm.L2 (Tensor.as_array (ref packed))
+
+/// Vector norm (`L1`, `L2`, `Inf`, `NegInf`, `P p`) over all elements (`axis = None`) or along `Some ax`.
+///
+/// ```tsuzuri run=[5]
+/// let t = Tensor.of_array [1, 2] [3.0, 4.0]
+/// let tv = Tensor.view (ref t)
+/// match Linalg.vector_norm Linalg.VectorNorm.L2 (Maybe.Some 1) false (ref tv) with
+/// | Result.Ok nrm -> Tensor.to_array nrm
+/// | Result.Error _ -> []
+/// ```
+def vector_norm :: Elementary<'a> => own VectorNorm -> own Maybe<i64> -> own bool -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn vector_norm ord axis keepdims view =
+    let valid_p =
+        match ord with
+        | VectorNorm.P p -> !(Math.is_nan p) && p > 0.0
+        | _ -> true
+    if !valid_p then Result.Error (Error.InvalidRank (-1))
+    else
+        let sh = Tensor.shape view
+        match axis with
+        | Maybe.None ->
+            let packed = Tensor.to_tensor view
+            let v = slice_vec_norm ord (Tensor.as_array (ref packed))
+            let out_sh: [i64] = if keepdims then new [i64](sh.length, \_ -> 1) else []
+            Result.Ok (Tensor.of_array out_sh [v])
+        | Maybe.Some raw_ax ->
+            match normalize_axis_checked raw_ax sh.length with
+            | Maybe.None -> Result.Error (Error.InvalidRank raw_ax)
+            | Maybe.Some ax ->
+                let dim = sh[ax]
+                let rem_rank = sh.length - 1
+                let rem_axes = new [i64](rem_rank, \i -> if i < ax then i else i + 1)
+                let rem_sh = new [i64](rem_rank, \i -> sh[rem_axes[i]])
+                let out_sh =
+                    if keepdims then new [i64](sh.length, \d -> if d == ax then 1 else sh[d])
+                    else Array.copy (ref rem_sh)
+                let out_len = prod_shape (ref out_sh)
+                if out_len == 0 then Result.Ok (Tensor.of_array out_sh [])
+                else
+                    let rem_strides = row_major_strides (ref rem_sh)
+                    let v_st = Tensor.strides view
+                    let v_data = Tensor.data view
+                    let v_off = Tensor.offset view
+                    let ax_st = v_st[ax]
+                    let out_data = new ['a](out_len, \idx ->
+                        let mut base = v_off
+                        for r in 0i64 ..< rem_rank do
+                            let c = (idx / rem_strides[r]) % rem_sh[r]
+                            base = base + c * v_st[rem_axes[r]]
+                        let line: ['a] =
+                            if dim == 0 then []
+                            else new ['a](dim, \k -> v_data[base + k * ax_st])
+                        slice_vec_norm ord (ref line))
+                    Result.Ok (Tensor.of_array out_sh out_data)
+
+// ============================================================================
+// Phase 3 — SVD, Pseudoinverse, Matrix Rank, Matrix Norm / Cond / Lstsq,
+//           Symmetric/Hermitian (`eigh`) & General Nonsymmetric (`eig`)
+// ============================================================================
+
+// Tall (`m >= n`) one-sided Hestenes-Jacobi SVD returning `(U [m * u_cols], S [n], Vt [n * n])`.
+private def svd_tall_2d_core :: Elementary<'a> => own bool -> own i64 -> own i64 -> ref ['a] -> Result<(['a] * ['a] * ['a]), Error>
+fn svd_tall_2d_core full_matrices m n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let u_cols = if full_matrices then m else n
+    if n == 0 then
+        let u_id = new ['a](m * u_cols, \idx -> if idx / u_cols == idx % u_cols then one else zero)
+        Result.Ok (u_id, [], [])
+    else
+        let eps = machine_eps ()
+        let scale = max_abs_slice src
+        if Math.is_nan scale || Math.is_infinite scale then
+            Result.Error Error.DidNotConverge
+        else
+            let mut w =
+                if scale == zero then new ['a](m * n, \_ -> zero)
+                else new ['a](m * n, \i -> src[i] / scale)
+            let mut v_mat = new ['a](n * n, \idx -> if idx / n == idx % n then one else zero)
+            let max_sweeps = 64
+            let mut sweep = 0
+            let mut converged = scale == zero || n <= 1
+            while sweep < max_sweeps && !converged do
+                sweep = sweep + 1
+                let mut rotated = false
+                for p in 0i64 ..< (n - 1) do
+                    for q in (p + 1) ..< n do
+                        let mut alpha = zero
+                        let mut beta = zero
+                        let mut gamma = zero
+                        for i in 0i64 ..< m do
+                            let wp = w[i * n + p]
+                            let wq = w[i * n + q]
+                            alpha = alpha + wp * wp
+                            beta = beta + wq * wq
+                            gamma = gamma + wp * wq
+                        if alpha > zero && beta > zero && Math.abs gamma > eps * Math.sqrt alpha * Math.sqrt beta then
+                            rotated = true
+                            let zeta = (beta - alpha) / (two * gamma)
+                            let sgn_z = if zeta >= zero then one else zero - one
+                            let t = sgn_z / (Math.abs zeta + Math.hypot one zeta)
+                            let c = one / Math.hypot one t
+                            let s = c * t
+                            for i in 0i64 ..< m do
+                                let wp = w[i * n + p]
+                                let wq = w[i * n + q]
+                                Array.write (i * n + p) (c * wp - s * wq) (ref mut w)
+                                Array.write (i * n + q) (s * wp + c * wq) (ref mut w)
+                            for i in 0i64 ..< n do
+                                let vp = v_mat[i * n + p]
+                                let vq = v_mat[i * n + q]
+                                Array.write (i * n + p) (c * vp - s * vq) (ref mut v_mat)
+                                Array.write (i * n + q) (s * vp + c * vq) (ref mut v_mat)
+                if !rotated then converged = true
+            if !converged then Result.Error Error.DidNotConverge
+            else
+                let raw_s = new ['a](n, \j ->
+                    let mut col_nrm = zero
+                    for i in 0i64 ..< m do
+                        col_nrm = Math.hypot col_nrm w[i * n + j]
+                    col_nrm)
+                let idx_init = new [i64](n, \j -> j)
+                let order = Array.sort_with (\a b ->
+                    if raw_s[a] > raw_s[b] then -1
+                    elif raw_s[a] < raw_s[b] then 1
+                    elif a < b then -1
+                    else 0) (ref idx_init)
+                let s_sorted = new ['a](n, \j -> raw_s[order[j]] * scale)
+                let s0 = if n > 0 then raw_s[order[0]] else zero
+                let rank_tol = eps * (m as 'a) * s0
+                // Build orthonormal U columns (`m x u_cols`) with two-pass Gram-Schmidt completion for nullspace.
+                let mut u_mat = new ['a](m * u_cols, \_ -> zero)
+                let mut filled = 0
+                for j in 0i64 ..< n do
+                    let orig = order[j]
+                    let sj = raw_s[orig]
+                    if sj > rank_tol && sj > zero then
+                        let mut col_vec = new ['a](m, \i -> w[i * n + orig] / sj)
+                        // Re-orthogonalize against previous columns for tight orthogonality.
+                        for prev in 0i64 ..< filled do
+                            let mut proj = zero
+                            for i in 0i64 ..< m do proj = proj + u_mat[i * u_cols + prev] * col_vec[i]
+                            for i in 0i64 ..< m do Array.write i (col_vec[i] - proj * u_mat[i * u_cols + prev]) (ref mut col_vec)
+                        let mut nrm = zero
+                        for x in ref col_vec do nrm = Math.hypot nrm x
+                        if nrm > zero then
+                            for i in 0i64 ..< m do
+                                Array.write (i * u_cols + filled) (col_vec[i] / nrm) (ref mut u_mat)
+                            filled = filled + 1
+                // Complete remaining `filled ..< u_cols` orthonormal columns from standard basis `e_0 .. e_{m-1}`.
+                let mut basis_try = 0
+                while filled < u_cols && basis_try < m do
+                    let mut cand = new ['a](m, \i -> if i == basis_try then one else zero)
+                    basis_try = basis_try + 1
+                    for _ in 0i64 ..< 2 do
+                        for prev in 0i64 ..< filled do
+                            let mut proj = zero
+                            for i in 0i64 ..< m do proj = proj + u_mat[i * u_cols + prev] * cand[i]
+                            for i in 0i64 ..< m do Array.write i (cand[i] - proj * u_mat[i * u_cols + prev]) (ref mut cand)
+                    let mut nrm = zero
+                    for x in ref cand do nrm = Math.hypot nrm x
+                    if nrm > eps * ((if m > 1 then m else 1) as 'a) then
+                        for i in 0i64 ..< m do
+                            Array.write (i * u_cols + filled) (cand[i] / nrm) (ref mut u_mat)
+                        filled = filled + 1
+                // If rank deficiency skipped columns inside `0 ..< n`, realign active singular vectors with their indices:
+                // wait — above `filled` advances in lockstep when all `sj > rank_tol`, while if an earlier `sj <= rank_tol`
+                // occurred all subsequent `sj` are ALSO `<= rank_tol` because `raw_s[order[j]]` is sorted descending!
+                let vt_mat = new ['a](n * n, \idx ->
+                    let r = idx / n
+                    let c = idx % n
+                    v_mat[c * n + order[r]])
+                Result.Ok (u_mat, s_sorted, vt_mat)
+
+private def svd_2d_core :: Elementary<'a> => own bool -> own i64 -> own i64 -> ref ['a] -> Result<(['a] * ['a] * ['a]), Error>
+fn svd_2d_core full_matrices m n src =
+    if m >= n then svd_tall_2d_core full_matrices m n src
+    else
+        // Transpose `A` (`m x n`) -> `A^T` (`n x m`, tall): `A^T = U_t * S * Vt_t` => `A = (Vt_t)^T * S * (U_t)^T`.
+        let at = new ['a](n * m, \idx ->
+            let r = idx / m
+            let c = idx % m
+            src[c * n + r])
+        match svd_tall_2d_core full_matrices n m (ref at) with
+        | Result.Error e -> Result.Error e
+        | Result.Ok (ut, s, vtt) ->
+            let u_cols_ut = if full_matrices then n else m
+            // `U` has shape `[m, m]` (both reduced and full when `m < n`!).
+            let u_out = new ['a](m * m, \idx ->
+                let r = idx / m
+                let c = idx % m
+                vtt[c * m + r])
+            // `Vt` has shape `[u_cols_ut, n]`: `Vt[r, c] = ut[c, r]`.
+            let vt_out = new ['a](u_cols_ut * n, \idx ->
+                let r = idx / n
+                let c = idx % n
+                ut[c * u_cols_ut + r])
+            Result.Ok (u_out, s, vt_out)
+
+/// Singular Value Decomposition `A = U * diag(S) * Vt` (`S` sorted non-increasing) for `[..., m, n]` tensors.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [3, 2] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.svd (Linalg.SvdOptions { full_matrices: false }) (ref va) with
+/// | Result.Ok (u, s, vt) ->
+///     let vs = Tensor.view (ref s)
+///     let sd = Tensor.diag 0 (ref vs)
+///     let vu = Tensor.view (ref u)
+///     let vsd = Tensor.view (ref sd)
+///     let vvt = Tensor.view (ref vt)
+///     match Linalg.matmul (ref vu) (ref vsd) with
+///     | Result.Ok us ->
+///         let vus = Tensor.view (ref us)
+///         match Linalg.matmul (ref vus) (ref vvt) with
+///         | Result.Ok rec_a ->
+///             let vra = Tensor.view (ref rec_a)
+///             Tensor.allclose 1e-11 1e-11 false (ref vra) (ref va)
+///         | Result.Error _ -> false
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def svd :: Elementary<'a> => own SvdOptions -> ref Tensor.View<'a> -> Result<(Tensor<'a> * Tensor<'a> * Tensor<'a>), Error>
+fn svd opts view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        let m = sh[rank - 2]
+        let n = sh[rank - 1]
+        let k_min = if m <= n then m else n
+        let u_cols = if opts.full_matrices then m else k_min
+        let vt_rows = if opts.full_matrices then n else k_min
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let u_sh = append_dims (ref batch_sh) [m, u_cols]
+        let s_sh = append_dims (ref batch_sh) [k_min]
+        let vt_sh = append_dims (ref batch_sh) [vt_rows, n]
+        if batch_n == 0 then
+            Result.Ok (Tensor.of_array u_sh [], Tensor.of_array s_sh [], Tensor.of_array vt_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut u_out = new ['a](batch_n * m * u_cols, \_ -> zero)
+            let mut s_out = new ['a](batch_n * k_min, \_ -> zero)
+            let mut vt_out = new ['a](batch_n * vt_rows * n, \_ -> zero)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let sub = Array.sub (b * m * n) (m * n) pd
+                    match svd_2d_core opts.full_matrices m n (ref sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok (ub, sb, vtb) ->
+                        for i in 0i64 ..< (m * u_cols) do Array.write (b * m * u_cols + i) ub[i] (ref mut u_out)
+                        for i in 0i64 ..< k_min do Array.write (b * k_min + i) sb[i] (ref mut s_out)
+                        for i in 0i64 ..< (vt_rows * n) do Array.write (b * vt_rows * n + i) vtb[i] (ref mut vt_out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array u_sh u_out, Tensor.of_array s_sh s_out, Tensor.of_array vt_sh vt_out)
+
+/// Singular values `S` sorted non-increasing (`[..., min(m, n)]`).
+///
+/// ```tsuzuri run=[5,%203]
+/// let a = Tensor.of_array [2, 2] [3.0, 0.0, 0.0, 5.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.svdvals (ref va) with
+/// | Result.Ok s -> Tensor.to_array s
+/// | Result.Error _ -> []
+/// ```
+def svdvals :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn svdvals view =
+    match svd (SvdOptions { full_matrices: false }) view with
+    | Result.Ok (_, s, _) -> Result.Ok s
+    | Result.Error e -> Result.Error e
+
+/// Moore-Penrose pseudoinverse `A^+` cutting off singular values `<= rcond * max(S)` (`np.linalg.pinv`).
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [3, 2] [1.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.pinv 1e-12 (ref va) with
+/// | Result.Ok pa ->
+///     let vpa = Tensor.view (ref pa)
+///     match Linalg.matmul (ref vpa) (ref va) with
+///     | Result.Ok prod ->
+///         let id2 = Tensor.identity 2
+///         let vprod = Tensor.view (ref prod)
+///         let vid2 = Tensor.view (ref id2)
+///         Tensor.allclose 1e-12 1e-12 false (ref vprod) (ref vid2)
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def pinv :: Elementary<'a> => own 'a -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn pinv rcond view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        match svd (SvdOptions { full_matrices: false }) view with
+        | Result.Error e -> Result.Error e
+        | Result.Ok (u, s, vt) ->
+            let m = sh[rank - 2]
+            let n = sh[rank - 1]
+            let k = if m <= n then m else n
+            let batch_sh = Array.sub 0 (rank - 2) sh
+            let batch_n = prod_shape (ref batch_sh)
+            let out_sh = append_dims (ref batch_sh) [n, m]
+            if batch_n == 0 || m == 0 || n == 0 then Result.Ok (Tensor.of_array out_sh [])
+            else
+                let zero: 'a = 0i64 as 'a
+                let one: 'a = 1i64 as 'a
+                let ud = Tensor.as_array (ref u)
+                let sd = Tensor.as_array (ref s)
+                let vtd = Tensor.as_array (ref vt)
+                let mut out = new ['a](batch_n * n * m, \_ -> zero)
+                for b in 0i64 ..< batch_n do
+                    let s_max = sd[b * k]
+                    let cutoff = rcond * s_max
+                    for i in 0i64 ..< n do
+                        for j in 0i64 ..< m do
+                            let mut acc = zero
+                            for r in 0i64 ..< k do
+                                let sv = sd[b * k + r]
+                                if sv > cutoff && sv > zero then
+                                    // V[i, r] = Vt[r, i], U^T[r, j] = U[j, r]
+                                    acc = acc + vtd[b * k * n + r * n + i] * (one / sv) * ud[b * m * k + j * k + r]
+                            Array.write (b * n * m + i * m + j) acc (ref mut out)
+                Result.Ok (Tensor.of_array out_sh out)
+
+/// Numerical matrix rank counting singular values strictly exceeding `tol` (when `tol <= 0`, uses `max(m, n) * eps * s_max`).
+///
+/// ```tsuzuri run=[1]
+/// let a = Tensor.of_array [2, 2] [1.0, 2.0, 2.0, 4.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.matrix_rank 0.0 (ref va) with
+/// | Result.Ok r -> Tensor.to_array r
+/// | Result.Error _ -> []
+/// ```
+def matrix_rank :: Elementary<'a> => own 'a -> ref Tensor.View<'a> -> Result<Tensor<i64>, Error>
+fn matrix_rank tol view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        match svdvals view with
+        | Result.Error e -> Result.Error e
+        | Result.Ok s ->
+            let m = sh[rank - 2]
+            let n = sh[rank - 1]
+            let k = if m <= n then m else n
+            let max_mn = if m >= n then m else n
+            let batch_sh = Array.sub 0 (rank - 2) sh
+            let batch_n = prod_shape (ref batch_sh)
+            let zero: 'a = 0i64 as 'a
+            let eps = machine_eps ()
+            let sd = Tensor.as_array (ref s)
+            let counts = new [i64](batch_n, \b ->
+                if k == 0 then 0
+                else
+                    let s0 = sd[b * k]
+                    let thresh = if tol > zero then tol else (max_mn as 'a) * eps * s0
+                    let mut cnt = 0
+                    for r in 0i64 ..< k do
+                        if sd[b * k + r] > thresh then cnt = cnt + 1
+                    cnt)
+            Result.Ok (Tensor.of_array batch_sh counts)
+
+/// Matrix norm (`Frobenius`, `L1`, `Inf`, `Nuclear`, `Spectral`) over the trailing 2 axes `[..., m, n]`.
+///
+/// ```tsuzuri run=[5]
+/// let a = Tensor.of_array [2, 2] [3.0, 0.0, 0.0, 4.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.matrix_norm Linalg.MatrixNorm.Frobenius (ref va) with
+/// | Result.Ok nrm -> Tensor.to_array nrm
+/// | Result.Error _ -> []
+/// ```
+def matrix_norm :: Elementary<'a> => own MatrixNorm -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn matrix_norm ord view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        let m = sh[rank - 2]
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        if batch_n == 0 then Result.Ok (Tensor.of_array batch_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            match ord with
+            | MatrixNorm.Frobenius ->
+                let packed = Tensor.to_tensor view
+                let pd = Tensor.as_array (ref packed)
+                let out = new ['a](batch_n, \b ->
+                    let sub = Array.sub (b * m * n) (m * n) pd
+                    slice_vec_norm VectorNorm.L2 (ref sub))
+                Result.Ok (Tensor.of_array batch_sh out)
+            | MatrixNorm.One ->
+                let packed = Tensor.to_tensor view
+                let pd = Tensor.as_array (ref packed)
+                let out = new ['a](batch_n, \b ->
+                    let mut best = zero
+                    for col in 0i64 ..< n do
+                        let mut col_sum = zero
+                        for row in 0i64 ..< m do
+                            col_sum = col_sum + Math.abs pd[b * m * n + row * n + col]
+                        if col == 0 || col_sum > best || Math.is_nan col_sum then best = col_sum
+                    best)
+                Result.Ok (Tensor.of_array batch_sh out)
+            | MatrixNorm.Infinity ->
+                let packed = Tensor.to_tensor view
+                let pd = Tensor.as_array (ref packed)
+                let out = new ['a](batch_n, \b ->
+                    let mut best = zero
+                    for row in 0i64 ..< m do
+                        let mut row_sum = zero
+                        for col in 0i64 ..< n do
+                            row_sum = row_sum + Math.abs pd[b * m * n + row * n + col]
+                        if row == 0 || row_sum > best || Math.is_nan row_sum then best = row_sum
+                    best)
+                Result.Ok (Tensor.of_array batch_sh out)
+            | MatrixNorm.Nuclear ->
+                match svdvals view with
+                | Result.Error e -> Result.Error e
+                | Result.Ok s ->
+                    let sv = Tensor.view (ref s)
+                    Result.Ok (Tensor.sum_axis (-1) (ref sv))
+            | MatrixNorm.Spectral ->
+                match svdvals view with
+                | Result.Error e -> Result.Error e
+                | Result.Ok s ->
+                    let k = if m <= n then m else n
+                    let sd = Tensor.as_array (ref s)
+                    let out = new ['a](batch_n, \b -> if k == 0 then zero else sd[b * k])
+                    Result.Ok (Tensor.of_array batch_sh out)
+
+/// Matrix condition number `||A|| * ||A^{-1}||` (or `s_max / s_min` for `Spectral`).
+///
+/// ```tsuzuri run=[2]
+/// let a = Tensor.of_array [2, 2] [2.0, 0.0, 0.0, 1.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.cond Linalg.MatrixNorm.Spectral (ref va) with
+/// | Result.Ok c -> Tensor.to_array c
+/// | Result.Error _ -> []
+/// ```
+def cond :: Elementary<'a> => own MatrixNorm -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn cond ord view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    else
+        match ord with
+        | MatrixNorm.Spectral ->
+            let m = sh[rank - 2]
+            let n = sh[rank - 1]
+            let k = if m <= n then m else n
+            if k == 0 then Result.Error Error.SingularMatrix
+            else
+                match svdvals view with
+                | Result.Error e -> Result.Error e
+                | Result.Ok s ->
+                    let batch_sh = Array.sub 0 (rank - 2) sh
+                    let batch_n = prod_shape (ref batch_sh)
+                    let zero: 'a = 0i64 as 'a
+                    let one: 'a = 1i64 as 'a
+                    let pos_inf: 'a = one / zero
+                    let sd = Tensor.as_array (ref s)
+                    let out = new ['a](batch_n, \b ->
+                        let smax = sd[b * k]
+                        let smin = sd[b * k + k - 1]
+                        if smin == zero then pos_inf else smax / smin)
+                    Result.Ok (Tensor.of_array batch_sh out)
+        | _ ->
+            if sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+            else
+                match (matrix_norm ord view, inv view) with
+                | (Result.Ok na, Result.Ok inv_a) ->
+                    let inv_v = Tensor.view (ref inv_a)
+                    match matrix_norm ord (ref inv_v) with
+                    | Result.Error e -> Result.Error e
+                    | Result.Ok ninv ->
+                        let nav = Tensor.view (ref na)
+                        let ninvv = Tensor.view (ref ninv)
+                        match Tensor.mul (ref nav) (ref ninvv) with
+                        | Result.Ok c -> Result.Ok c
+                        | Result.Error _ -> Result.Error Error.SingularMatrix
+                | (Result.Error e, _) -> Result.Error e
+                | (_, Result.Error e) -> Result.Error e
+
+/// Minimum-norm linear least-squares solver `min_X ||A * X - B||_2` via SVD (`np.linalg.lstsq`),
+/// handling overdetermined, square, underdetermined, and rank-deficient matrices.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [3, 2] [1.0, 1.0, 1.0, 2.0, 1.0, 3.0]
+/// let b = Tensor.of_array [3] [2.0, 3.0, 4.0]
+/// let va = Tensor.view (ref a)
+/// let vb = Tensor.view (ref b)
+/// match Linalg.lstsq (ref va) (ref vb) with
+/// | Result.Ok res ->
+///     let expected = Tensor.of_array [2] [1.0, 1.0]
+///     let vsol = Tensor.view (ref res.solution)
+///     let vexp = Tensor.view (ref expected)
+///     Tensor.allclose 1e-11 1e-11 false (ref vsol) (ref vexp)
+/// | Result.Error _ -> false
+/// ```
+def lstsq :: Elementary<'a> => ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<LstsqResult<'a>, Error>
+fn lstsq coeff rhs =
+    let a_sh = Tensor.shape coeff
+    let b_sh = Tensor.shape rhs
+    let ar = a_sh.length
+    let br = b_sh.length
+    if ar != 2 || (br != 1 && br != 2) then
+        Result.Error (Error.InvalidRank ar)
+    else
+        let m = a_sh[0]
+        let n = a_sh[1]
+        let is_vec = br == 1
+        let b_rows = b_sh[0]
+        let nrhs = if is_vec then 1 else b_sh[1]
+        if b_rows != m then Result.Error (Error.ShapeMismatch (Array.copy a_sh, Array.copy b_sh))
+        else
+            match svd (SvdOptions { full_matrices: false }) coeff with
+            | Result.Error e -> Result.Error e
+            | Result.Ok (u, s, vt) ->
+                let zero: 'a = 0i64 as 'a
+                let one: 'a = 1i64 as 'a
+                let eps = machine_eps ()
+                let k = if m <= n then m else n
+                let max_mn = if m >= n then m else n
+                let ud = Tensor.as_array (ref u)
+                let sd = Tensor.as_array (ref s)
+                let vtd = Tensor.as_array (ref vt)
+                let bp = Tensor.to_tensor rhs
+                let bd = Tensor.as_array (ref bp)
+                let s0 = if k > 0 then sd[0] else zero
+                let thresh = (max_mn as 'a) * eps * s0
+                let mut rnk = 0
+                for r in 0i64 ..< k do
+                    if sd[r] > thresh then rnk = rnk + 1
+                // `X = V * diag(1/s_r) * U^T * B` (`[n, nrhs]`)
+                let mut x_data = new ['a](n * nrhs, \_ -> zero)
+                for col in 0i64 ..< nrhs do
+                    for r in 0i64 ..< k do
+                        if sd[r] > thresh && sd[r] > zero then
+                            let mut ut_b = zero
+                            for i in 0i64 ..< m do
+                                ut_b = ut_b + ud[i * k + r] * bd[i * nrhs + col]
+                            let coeff_r = ut_b / sd[r]
+                            for j in 0i64 ..< n do
+                                let cur = x_data[j * nrhs + col]
+                                Array.write (j * nrhs + col) (cur + vtd[r * n + j] * coeff_r) (ref mut x_data)
+                let sol_sh = if is_vec then [n] else [n, nrhs]
+                let sol_t = Tensor.of_array sol_sh (Array.copy (ref x_data))
+                // Residuals: `||A X - B||_2^2` per column when `m > n` and `rnk == n`, else empty `[0]` (`np.linalg.lstsq`).
+                let res_t =
+                    if m > n && rnk == n then
+                        let ap = Tensor.to_tensor coeff
+                        let ad = Tensor.as_array (ref ap)
+                        let res_vals = new ['a](nrhs, \col ->
+                            let mut rss = zero
+                            for i in 0i64 ..< m do
+                                let mut ax = zero
+                                for j in 0i64 ..< n do
+                                    ax = ax + ad[i * n + j] * x_data[j * nrhs + col]
+                                let diff = ax - bd[i * nrhs + col]
+                                rss = rss + diff * diff
+                            rss)
+                        Tensor.of_array [nrhs] res_vals
+                    else
+                        Tensor.of_array [0] []
+                Result.Ok (LstsqResult {
+                    solution: sol_t,
+                    residuals: res_t,
+                    rank: Tensor.of_array [] [rnk],
+                    singular_values: s
+                })
+
+// ---- Symmetric & Hermitian Eigenvalue Decomposition (`tred2` + `tql2`) ----
+
+// Implicit QL with Wilkinson shift on real symmetric tridiagonal `(d [n], e [n])` (`e[n-1] = 0`),
+// accumulating orthogonal Givens rotations into `z [n * n]` and sorting eigenvalues ascending.
+private def tql2_tridiag :: Elementary<'a> => own i64 -> ref ['a] -> ref ['a] -> ref ['a] -> Result<(['a] * ['a]), Error>
+fn tql2_tridiag n d_in e_in z_in =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    if n == 0 then Result.Ok ([], [])
+    elif n == 1 then Result.Ok (Array.copy d_in, Array.copy z_in)
+    else
+        let eps = machine_eps ()
+        let mut d = Array.copy d_in
+        let mut e = Array.copy e_in
+        Array.write (n - 1) zero (ref mut e)
+        let mut z = Array.copy z_in
+        let max_iter = 40 * n
+        let mut ok = true
+        for l in 0i64 ..< n do
+            if ok then
+                let mut iter = 0
+                let mut done_l = false
+                while !done_l && ok do
+                    let mut m = l
+                    let mut found_m = false
+                    while m < n - 1 && !found_m do
+                        let dd = Math.abs d[m] + Math.abs d[m + 1]
+                        if Math.abs e[m] <= eps * dd || e[m] == zero then found_m = true
+                        else m = m + 1
+                    if m == l then
+                        done_l = true
+                    elif iter >= max_iter then
+                        ok = false
+                    else
+                        iter = iter + 1
+                        let g0 = (d[l + 1] - d[l]) / (two * e[l])
+                        let r0 = Math.hypot g0 one
+                        let signed_r0 = if g0 >= zero then r0 else zero - r0
+                        let mut g = d[m] - d[l] + e[l] / (g0 + signed_r0)
+                        let mut s = one
+                        let mut c = one
+                        let mut p = zero
+                        let mut underflow = false
+                        let mut step = m
+                        while step > l && !underflow do
+                            step = step - 1
+                            let i = step
+                            let f = s * e[i]
+                            let b = c * e[i]
+                            let r = Math.hypot f g
+                            Array.write (i + 1) r (ref mut e)
+                            if r == zero then
+                                Array.write (i + 1) (d[i + 1] - p) (ref mut d)
+                                Array.write m zero (ref mut e)
+                                underflow = true
+                            else
+                                s = f / r
+                                c = g / r
+                                g = d[i + 1] - p
+                                let r2 = (d[i] - g) * s + two * c * b
+                                p = s * r2
+                                Array.write (i + 1) (g + p) (ref mut d)
+                                g = c * r2 - b
+                                for k in 0i64 ..< n do
+                                    let fz = z[k * n + i + 1]
+                                    let zi = z[k * n + i]
+                                    Array.write (k * n + i + 1) (s * zi + c * fz) (ref mut z)
+                                    Array.write (k * n + i) (c * zi - s * fz) (ref mut z)
+                        if !underflow then
+                            Array.write l (d[l] - p) (ref mut d)
+                            Array.write l g (ref mut e)
+                            Array.write m zero (ref mut e)
+        if !ok then Result.Error Error.DidNotConverge
+        else
+            let idx_init = new [i64](n, \i -> i)
+            let order = Array.sort_with (\a b ->
+                if d[a] < d[b] then -1
+                elif d[a] > d[b] then 1
+                elif a < b then -1
+                else 0) (ref idx_init)
+            let d_sorted = new ['a](n, \i -> d[order[i]])
+            let z_sorted = new ['a](n * n, \idx ->
+                let r = idx / n
+                let c = idx % n
+                z[r * n + order[c]])
+            Result.Ok (d_sorted, z_sorted)
+
+// Householder reduction of real symmetric `A` (symmetrizing `(A + A^T)/2`) to tridiagonal `Q^T A Q = T`.
+private def eigh_2d_core :: Elementary<'a> => own i64 -> ref ['a] -> Result<(['a] * ['a]), Error>
+fn eigh_2d_core n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let half: 'a = one / two
+    if n == 0 then Result.Ok ([], [])
+    elif n == 1 then Result.Ok ([src[0]], [one])
+    else
+        let mut a = new ['a](n * n, \idx ->
+            let r = idx / n
+            let c = idx % n
+            half * (src[r * n + c] + src[c * n + r]))
+        let mut q = new ['a](n * n, \idx -> if idx / n == idx % n then one else zero)
+        for k in 0i64 ..< (n - 2) do
+            let v_len = n - (k + 1)
+            let mut sigma = zero
+            for i in 0i64 ..< v_len do
+                sigma = Math.hypot sigma a[(k + 1 + i) * n + k]
+            if sigma > zero then
+                let x0 = a[(k + 1) * n + k]
+                let alpha = if x0 >= zero then zero - sigma else sigma
+                let mut v = new ['a](v_len, \i ->
+                    if i == 0 then x0 - alpha else a[(k + 1 + i) * n + k])
+                let mut norm_v = zero
+                for x in ref v do norm_v = Math.hypot norm_v x
+                if norm_v > zero then
+                    for i in 0i64 ..< v_len do Array.write i (v[i] / norm_v) (ref mut v)
+                    // Symmetrized similarity update: `p = 2 * A_sub * v`, `K = v^T p`, `q_vec = p - K v`,
+                    // `A_sub <- A_sub - v q_vec^T - q_vec v^T`, plus column/row `k` update!
+                    let p_vec = new ['a](v_len, \i ->
+                        let mut acc = zero
+                        for j in 0i64 ..< v_len do
+                            acc = acc + a[(k + 1 + i) * n + (k + 1 + j)] * v[j]
+                        two * acc)
+                    let mut vtp = zero
+                    for i in 0i64 ..< v_len do vtp = vtp + v[i] * p_vec[i]
+                    let q_vec = new ['a](v_len, \i -> p_vec[i] - vtp * v[i])
+                    for i in 0i64 ..< v_len do
+                        for j in 0i64 ..< v_len do
+                            let r = k + 1 + i
+                            let c = k + 1 + j
+                            Array.write (r * n + c) (a[r * n + c] - v[i] * q_vec[j] - q_vec[i] * v[j]) (ref mut a)
+                    Array.write ((k + 1) * n + k) alpha (ref mut a)
+                    Array.write (k * n + (k + 1)) alpha (ref mut a)
+                    for i in 1i64 ..< v_len do
+                        Array.write ((k + 1 + i) * n + k) zero (ref mut a)
+                        Array.write (k * n + (k + 1 + i)) zero (ref mut a)
+                    // Accumulate `Q <- Q * (I - 2 v v^T)` on cols `k+1 ..< n`
+                    for row in 0i64 ..< n do
+                        let mut dot_qv = zero
+                        for i in 0i64 ..< v_len do
+                            dot_qv = dot_qv + q[row * n + (k + 1 + i)] * v[i]
+                        let sc = two * dot_qv
+                        for i in 0i64 ..< v_len do
+                            let col = k + 1 + i
+                            Array.write (row * n + col) (q[row * n + col] - sc * v[i]) (ref mut q)
+        let d = new ['a](n, \i -> a[i * n + i])
+        let e = new ['a](n, \i -> if i < n - 1 then a[(i + 1) * n + i] else zero)
+        tql2_tridiag n (ref d) (ref e) (ref q)
+
+/// Real symmetric eigenvalue decomposition `A = V * diag(w) * V^T` (`w` sorted ascending, columns of `V` orthonormal).
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 1.0, 2.0]
+/// let exp = Tensor.of_array [2] [1.0, 3.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.eigh (ref va) with
+/// | Result.Ok (w, _) ->
+///     let vw = Tensor.view (ref w)
+///     let vexp = Tensor.view (ref exp)
+///     Tensor.allclose 1e-12 1e-12 false (ref vw) (ref vexp)
+/// | Result.Error _ -> false
+/// ```
+def eigh :: Elementary<'a> => ref Tensor.View<'a> -> Result<(Tensor<'a> * Tensor<'a>), Error>
+fn eigh view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let w_sh = append_dims (ref batch_sh) [n]
+        let v_sh = Array.copy sh
+        if batch_n == 0 || n == 0 then Result.Ok (Tensor.of_array w_sh [], Tensor.of_array v_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut w_out = new ['a](batch_n * n, \_ -> zero)
+            let mut v_out = new ['a](batch_n * n * n, \_ -> zero)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    match eigh_2d_core n (ref sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok (wb, vb) ->
+                        for i in 0i64 ..< n do Array.write (b * n + i) wb[i] (ref mut w_out)
+                        for i in 0i64 ..< (n * n) do Array.write (b * n * n + i) vb[i] (ref mut v_out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array w_sh w_out, Tensor.of_array v_sh v_out)
+
+/// Real symmetric eigenvalues sorted ascending (`np.linalg.eigvalsh`).
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2, 2] [2.0, 1.0, 1.0, 2.0]
+/// let exp = Tensor.of_array [2] [1.0, 3.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.eigvalsh (ref va) with
+/// | Result.Ok w ->
+///     let vw = Tensor.view (ref w)
+///     let vexp = Tensor.view (ref exp)
+///     Tensor.allclose 1e-12 1e-12 false (ref vw) (ref vexp)
+/// | Result.Error _ -> false
+/// ```
+def eigvalsh :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn eigvalsh view =
+    match eigh view with
+    | Result.Ok (w, _) -> Result.Ok w
+    | Result.Error e -> Result.Error e
+
+// Complex Hermitian tridiagonalization + diagonal unitary phase normalization + real `tql2` (`LAPACK ZHEEV` strategy).
+private def eigh_complex_2d_core :: (Elementary<'a>, Neg<'a>) => own i64 -> ref [Complex<'a>] -> Result<(['a] * [Complex<'a>]), Error>
+fn eigh_complex_2d_core n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let half: 'a = one / two
+    let z0: Complex<'a> = Complex.zero ()
+    let z1: Complex<'a> = Complex.one ()
+    if n == 0 then Result.Ok ([], [])
+    elif n == 1 then Result.Ok ([src[0].re], [z1])
+    else
+        // Hermitianize `H <- 0.5 * (H + H^*)` (`np.linalg.eigh` convention).
+        let mut h = new [Complex<'a>](n * n, \idx ->
+            let r = idx / n
+            let c = idx % n
+            if r == c then Complex.of src[idx].re zero
+            else
+                let a = src[r * n + c]
+                let b = src[c * n + r]
+                Complex.of (half * (a.re + b.re)) (half * (a.im - b.im)))
+        let mut q = new [Complex<'a>](n * n, \idx -> if idx / n == idx % n then z1 else z0)
+        for k in 0i64 ..< (n - 2) do
+            let v_len = n - (k + 1)
+            let mut sigma = zero
+            for i in 0i64 ..< v_len do
+                sigma = Math.hypot sigma (Complex.abs (ref h[(k + 1 + i) * n + k]))
+            if sigma > zero then
+                let x0 = h[(k + 1) * n + k]
+                let abs_x0 = Complex.abs (ref x0)
+                // Choose `alpha = -exp(i * arg(x0)) * sigma` so `||x0 - alpha||` avoids cancellation.
+                let alpha =
+                    if abs_x0 == zero then Complex.of (zero - sigma) zero
+                    else Complex.of (zero - sigma * (x0.re / abs_x0)) (zero - sigma * (x0.im / abs_x0))
+                let mut v = new [Complex<'a>](v_len, \i ->
+                    if i == 0 then Complex.sub (ref x0) (ref alpha) else h[(k + 1 + i) * n + k])
+                let mut norm_v = zero
+                for vi in ref v do norm_v = Math.hypot norm_v (Complex.abs (ref vi))
+                if norm_v > zero then
+                    for i in 0i64 ..< v_len do
+                        Array.write i (Complex.of (v[i].re / norm_v) (v[i].im / norm_v)) (ref mut v)
+                    // `P = I - 2 v v^*`: `p = 2 H_sub v`, `v^* p` (real for Hermitian `H_sub`!), `w_vec = p - (v^* p) v`,
+                    // `H_sub <- H_sub - v w_vec^* - w_vec v^*`!
+                    let p_vec = new [Complex<'a>](v_len, \i ->
+                        let mut acc = z0
+                        for j in 0i64 ..< v_len do
+                            let prod = Complex.mul (ref h[(k + 1 + i) * n + (k + 1 + j)]) (ref v[j])
+                            acc = Complex.add (ref acc) (ref prod)
+                        Complex.of (two * acc.re) (two * acc.im))
+                    let mut vhp_re = zero
+                    for i in 0i64 ..< v_len do
+                        let vc = Complex.conj (ref v[i])
+                        let prod = Complex.mul (ref vc) (ref p_vec[i])
+                        vhp_re = vhp_re + prod.re
+                    let w_vec = new [Complex<'a>](v_len, \i ->
+                        Complex.of (p_vec[i].re - vhp_re * v[i].re) (p_vec[i].im - vhp_re * v[i].im))
+                    for i in 0i64 ..< v_len do
+                        for j in 0i64 ..< v_len do
+                            let r = k + 1 + i
+                            let c = k + 1 + j
+                            let wj_c = Complex.conj (ref w_vec[j])
+                            let vj_c = Complex.conj (ref v[j])
+                            let t1 = Complex.mul (ref v[i]) (ref wj_c)
+                            let t2 = Complex.mul (ref w_vec[i]) (ref vj_c)
+                            let sum12 = Complex.add (ref t1) (ref t2)
+                            let updated = Complex.sub (ref h[r * n + c]) (ref sum12)
+                            Array.write (r * n + c) (if r == c then Complex.of updated.re zero else updated) (ref mut h)
+                    let alpha_c = Complex.conj (ref alpha)
+                    Array.write ((k + 1) * n + k) alpha (ref mut h)
+                    Array.write (k * n + (k + 1)) alpha_c (ref mut h)
+                    for i in 1i64 ..< v_len do
+                        Array.write ((k + 1 + i) * n + k) z0 (ref mut h)
+                        Array.write (k * n + (k + 1 + i)) z0 (ref mut h)
+                    // `Q <- Q * (I - 2 v v^*)` on cols `k+1 ..< n`
+                    for row in 0i64 ..< n do
+                        let mut dot_qv = z0
+                        for i in 0i64 ..< v_len do
+                            let prod = Complex.mul (ref q[row * n + (k + 1 + i)]) (ref v[i])
+                            dot_qv = Complex.add (ref dot_qv) (ref prod)
+                        let sc = Complex.of (two * dot_qv.re) (two * dot_qv.im)
+                        for i in 0i64 ..< v_len do
+                            let col = k + 1 + i
+                            let vi_c = Complex.conj (ref v[i])
+                            let delta = Complex.mul (ref sc) (ref vi_c)
+                            Array.write (row * n + col) (Complex.sub (ref q[row * n + col]) (ref delta)) (ref mut q)
+        // Diagonal unitary phase `D`: `D[0] = 1`, `D[i+1] = D[i] * conj(sub[i]) / |sub[i]|` so `(D^* H D)_{i+1, i} = |sub[i]|`!
+        // Check: `(D^* H D)_{i+1, i} = conj(D[i+1]) * H[i+1, i] * D[i] = (conj(D[i]) * sub[i] / |sub[i]|)^* ...`
+        // Wait: `conj(D[i+1]) * sub[i] * D[i] = |sub[i]|` <=> `D[i+1] = D[i] * sub[i] / |sub[i]|`!
+        // Verify: `conj(D[i] * sub[i] / |sub[i]|) * sub[i] * D[i] = |D[i]|^2 * |sub[i]|^2 / |sub[i]| = |sub[i]|`! YES!
+        let mut phases = new [Complex<'a>](n, \_ -> z1)
+        let mut e_real = new ['a](n, \_ -> zero)
+        for i in 0i64 ..< (n - 1) do
+            let sub = h[(i + 1) * n + i]
+            let mag = Complex.abs (ref sub)
+            Array.write i mag (ref mut e_real)
+            if mag > zero then
+                let unit_step = Complex.of (sub.re / mag) (sub.im / mag)
+                Array.write (i + 1) (Complex.mul (ref phases[i]) (ref unit_step)) (ref mut phases)
+            else
+                Array.write (i + 1) phases[i] (ref mut phases)
+        // Multiply `Q <- Q * D`
+        for col in 0i64 ..< n do
+            let ph = phases[col]
+            for row in 0i64 ..< n do
+                Array.write (row * n + col) (Complex.mul (ref q[row * n + col]) (ref ph)) (ref mut q)
+        let d_real = new ['a](n, \i -> h[i * n + i].re)
+        let id_real = new ['a](n * n, \idx -> if idx / n == idx % n then one else zero)
+        match tql2_tridiag n (ref d_real) (ref e_real) (ref id_real) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok (evals, z_real) ->
+            // `U = (Q * D) * Z_real`
+            let u_out = new [Complex<'a>](n * n, \idx ->
+                let r = idx / n
+                let c = idx % n
+                let mut acc = z0
+                for k in 0i64 ..< n do
+                    let qrk = q[r * n + k]
+                    let zr = z_real[k * n + c]
+                    acc = Complex.of (acc.re + qrk.re * zr) (acc.im + qrk.im * zr)
+                acc)
+            Result.Ok (evals, u_out)
+
+/// Complex Hermitian eigenvalue decomposition `H = U * diag(w) * U^*` (`w` real ascending, `U` unitary).
+///
+/// ```tsuzuri run=true
+/// let h = Tensor.of_array [2, 2] [Complex.of 2.0 0.0, Complex.of 0.0 (-1.0), Complex.of 0.0 1.0, Complex.of 2.0 0.0]
+/// let exp = Tensor.of_array [2] [1.0, 3.0]
+/// let vh = Tensor.view (ref h)
+/// match Linalg.eigh_complex (ref vh) with
+/// | Result.Ok (w, _) ->
+///     let vw = Tensor.view (ref w)
+///     let vexp = Tensor.view (ref exp)
+///     Tensor.allclose 1e-12 1e-12 false (ref vw) (ref vexp)
+/// | Result.Error _ -> false
+/// ```
+def eigh_complex :: (Elementary<'a>, Neg<'a>) => ref Tensor.View<Complex<'a>> -> Result<(Tensor<'a> * Tensor<Complex<'a>>), Error>
+fn eigh_complex view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let w_sh = append_dims (ref batch_sh) [n]
+        let u_sh = Array.copy sh
+        if batch_n == 0 || n == 0 then Result.Ok (Tensor.of_array w_sh [], Tensor.of_array u_sh [])
+        else
+            let zero: 'a = 0i64 as 'a
+            let z0: Complex<'a> = Complex.zero ()
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut w_out = new ['a](batch_n * n, \_ -> zero)
+            let mut u_out = new [Complex<'a>](batch_n * n * n, \_ -> z0)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    match eigh_complex_2d_core n (ref sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok (wb, ub) ->
+                        for i in 0i64 ..< n do Array.write (b * n + i) wb[i] (ref mut w_out)
+                        for i in 0i64 ..< (n * n) do Array.write (b * n * n + i) ub[i] (ref mut u_out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array w_sh w_out, Tensor.of_array u_sh u_out)
+
+/// Real eigenvalues of a complex Hermitian matrix sorted ascending (`np.linalg.eigvalsh`).
+///
+/// ```tsuzuri run=true
+/// let h = Tensor.of_array [2, 2] [Complex.of 2.0 0.0, Complex.of 0.0 (-1.0), Complex.of 0.0 1.0, Complex.of 2.0 0.0]
+/// let exp = Tensor.of_array [2] [1.0, 3.0]
+/// let vh = Tensor.view (ref h)
+/// match Linalg.eigvalsh_complex (ref vh) with
+/// | Result.Ok w ->
+///     let vw = Tensor.view (ref w)
+///     let vexp = Tensor.view (ref exp)
+///     Tensor.allclose 1e-12 1e-12 false (ref vw) (ref vexp)
+/// | Result.Error _ -> false
+/// ```
+def eigvalsh_complex :: (Elementary<'a>, Neg<'a>) => ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn eigvalsh_complex view =
+    match eigh_complex view with
+    | Result.Ok (w, _) -> Result.Ok w
+    | Result.Error e -> Result.Error e
+
+// ---- General Real Nonsymmetric Eigenvalue Decomposition (Hessenberg + Francis Double-Shift Real Schur) ----
+
+private def hessenberg_2d_core :: Elementary<'a> => own i64 -> ref ['a] -> (['a] * ['a])
+fn hessenberg_2d_core n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let mut h = Array.copy src
+    let mut q = new ['a](n * n, \idx -> if idx / n == idx % n then one else zero)
+    for k in 0i64 ..< (n - 2) do
+        let v_len = n - (k + 1)
+        let mut sigma = zero
+        for i in 0i64 ..< v_len do
+            sigma = Math.hypot sigma h[(k + 1 + i) * n + k]
+        if sigma > zero then
+            let x0 = h[(k + 1) * n + k]
+            let alpha = if x0 >= zero then zero - sigma else sigma
+            let mut v = new ['a](v_len, \i ->
+                if i == 0 then x0 - alpha else h[(k + 1 + i) * n + k])
+            let mut norm_v = zero
+            for x in ref v do norm_v = Math.hypot norm_v x
+            if norm_v > zero then
+                for i in 0i64 ..< v_len do Array.write i (v[i] / norm_v) (ref mut v)
+                // Left multiply `H[k+1..n, k..n] <- (I - 2 v v^T) H[k+1..n, k..n]`
+                for col in k ..< n do
+                    let mut dot_vh = zero
+                    for i in 0i64 ..< v_len do
+                        dot_vh = dot_vh + v[i] * h[(k + 1 + i) * n + col]
+                    let sc = two * dot_vh
+                    for i in 0i64 ..< v_len do
+                        let row = k + 1 + i
+                        Array.write (row * n + col) (h[row * n + col] - sc * v[i]) (ref mut h)
+                // Right multiply `H[0..n, k+1..n] <- H[0..n, k+1..n] (I - 2 v v^T)`
+                for row in 0i64 ..< n do
+                    let mut dot_hv = zero
+                    for i in 0i64 ..< v_len do
+                        dot_hv = dot_hv + h[row * n + (k + 1 + i)] * v[i]
+                    let sc = two * dot_hv
+                    for i in 0i64 ..< v_len do
+                        let col = k + 1 + i
+                        Array.write (row * n + col) (h[row * n + col] - sc * v[i]) (ref mut h)
+                // Accumulate `Q <- Q (I - 2 v v^T)`
+                for row in 0i64 ..< n do
+                    let mut dot_qv = zero
+                    for i in 0i64 ..< v_len do
+                        dot_qv = dot_qv + q[row * n + (k + 1 + i)] * v[i]
+                    let sc = two * dot_qv
+                    for i in 0i64 ..< v_len do
+                        let col = k + 1 + i
+                        Array.write (row * n + col) (q[row * n + col] - sc * v[i]) (ref mut q)
+                for i in 1i64 ..< v_len do
+                    Array.write ((k + 1 + i) * n + k) zero (ref mut h)
+    (h, q)
+
+// Francis implicit double-shift QR iteration reducing upper Hessenberg `H` to real Schur form `A = Q * T * Q^T`.
+private def real_schur_2d_core :: Elementary<'a> => own i64 -> ref ['a] -> Result<(['a] * ['a]), Error>
+fn real_schur_2d_core n src =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let half: 'a = one / two
+    if n == 0 then Result.Ok ([], [])
+    elif n == 1 then Result.Ok ([src[0]], [one])
+    else
+        let scale = max_abs_slice src
+        if Math.is_nan scale || Math.is_infinite scale then Result.Error Error.DidNotConverge
+        elif scale == zero then
+            let z_mat = new ['a](n * n, \_ -> zero)
+            let id_mat = new ['a](n * n, \idx -> if idx / n == idx % n then one else zero)
+            Result.Ok (z_mat, id_mat)
+        else
+            let eps = machine_eps ()
+            let scaled_src = new ['a](n * n, \i -> src[i] / scale)
+            let (h_init, q_init) = hessenberg_2d_core n (ref scaled_src)
+            let mut t = h_init
+            let mut q = q_init
+            let mut hi = n - 1
+            let mut total_iter = 0
+            let max_iter = 50 * n
+            let mut local_iter = 0
+            let mut ok = true
+            while hi > 0 && ok do
+                // Zero tiny subdiagonals across `1 ..= hi`.
+                for i in 1i64 ..= hi do
+                    let ref_mag = Math.abs t[(i - 1) * n + (i - 1)] + Math.abs t[i * n + i]
+                    let thresh = if ref_mag > zero then eps * ref_mag else eps
+                    if Math.abs t[i * n + (i - 1)] <= thresh then
+                        Array.write (i * n + (i - 1)) zero (ref mut t)
+                // Find active unreduced block `[lo ..= hi]`.
+                let mut lo = hi
+                while lo > 0 && t[lo * n + (lo - 1)] != zero do
+                    lo = lo - 1
+                if lo == hi then
+                    hi = hi - 1
+                    local_iter = 0
+                elif lo == hi - 1 then
+                    // 2x2 trailing block: check discriminant `(a - d)^2 / 4 + b * c`.
+                    let a11 = t[lo * n + lo]
+                    let a12 = t[lo * n + hi]
+                    let a21 = t[hi * n + lo]
+                    let a22 = t[hi * n + hi]
+                    let p_half = half * (a11 - a22)
+                    let disc = p_half * p_half + a12 * a21
+                    if disc >= zero then
+                        // Real eigenvalues: triangularize 2x2 block with real Givens rotation!
+                        let z_rt = if p_half >= zero then p_half + Math.sqrt disc else p_half - Math.sqrt disc
+                        let r_giv = Math.hypot z_rt a21
+                        if r_giv > zero then
+                            let cs = z_rt / r_giv
+                            let sn = a21 / r_giv
+                            for col in lo ..< n do
+                                let r1 = t[lo * n + col]
+                                let r2 = t[hi * n + col]
+                                Array.write (lo * n + col) (cs * r1 + sn * r2) (ref mut t)
+                                Array.write (hi * n + col) (cs * r2 - sn * r1) (ref mut t)
+                                // Wait: Givens `G = [[cs, sn], [-sn, cs]]` -> `G * T` has row2 `-sn * r1 + cs * r2`!
+                                Array.write (hi * n + col) (cs * r2 - sn * r1) (ref mut t)
+                            for row in 0i64 ..= hi do
+                                let c1 = t[row * n + lo]
+                                let c2 = t[row * n + hi]
+                                Array.write (row * n + lo) (cs * c1 + sn * c2) (ref mut t)
+                                Array.write (row * n + hi) (cs * c2 - sn * c1) (ref mut t)
+                            for row in 0i64 ..< n do
+                                let q1 = q[row * n + lo]
+                                let q2 = q[row * n + hi]
+                                Array.write (row * n + lo) (cs * q1 + sn * q2) (ref mut q)
+                                Array.write (row * n + hi) (cs * q2 - sn * q1) (ref mut q)
+                        Array.write (hi * n + lo) zero (ref mut t)
+                    hi = lo - 1
+                    local_iter = 0
+                elif total_iter >= max_iter then
+                    ok = false
+                else
+                    total_iter = total_iter + 1
+                    local_iter = local_iter + 1
+                    // Francis double shift from trailing 2x2 (or LAPACK exceptional shift every 10 local steps).
+                    let mut tr_s = t[(hi - 1) * n + (hi - 1)] + t[hi * n + hi]
+                    let mut det_s = t[(hi - 1) * n + (hi - 1)] * t[hi * n + hi] - t[(hi - 1) * n + hi] * t[hi * n + (hi - 1)]
+                    if local_iter % 10 == 0 then
+                        let w_ex = Math.abs t[hi * n + (hi - 1)] + Math.abs t[(hi - 1) * n + (hi - 2)]
+                        tr_s = ((3i64 as 'a) / two) * w_ex
+                        det_s = w_ex * w_ex
+                    let h00 = t[lo * n + lo]
+                    let h01 = t[lo * n + (lo + 1)]
+                    let h10 = t[(lo + 1) * n + lo]
+                    let h11 = t[(lo + 1) * n + (lo + 1)]
+                    let h21 = t[(lo + 2) * n + (lo + 1)]
+                    let mut x = h00 * h00 + h01 * h10 - tr_s * h00 + det_s
+                    let mut y = h10 * (h00 + h11 - tr_s)
+                    let mut z_b = h10 * h21
+                    for k in lo ..= (hi - 1) do
+                        let nr = if k < hi - 1 then 3 else 2
+                        let mut sigma = Math.hypot x y
+                        if nr == 3 then sigma = Math.hypot sigma z_b
+                        if sigma > zero then
+                            let alpha = if x >= zero then zero - sigma else sigma
+                            let mut v0 = x - alpha
+                            let mut v1 = y
+                            let mut v2 = if nr == 3 then z_b else zero
+                            let mut nv = Math.hypot v0 v1
+                            if nr == 3 then nv = Math.hypot nv v2
+                            if nv > zero then
+                                v0 = v0 / nv
+                                v1 = v1 / nv
+                                v2 = v2 / nv
+                                let col_start = if k > lo then k - 1 else lo
+                                for col in col_start ..< n do
+                                    let mut d_vh = v0 * t[k * n + col] + v1 * t[(k + 1) * n + col]
+                                    if nr == 3 then d_vh = d_vh + v2 * t[(k + 2) * n + col]
+                                    let sc = two * d_vh
+                                    Array.write (k * n + col) (t[k * n + col] - sc * v0) (ref mut t)
+                                    Array.write ((k + 1) * n + col) (t[(k + 1) * n + col] - sc * v1) (ref mut t)
+                                    if nr == 3 then
+                                        Array.write ((k + 2) * n + col) (t[(k + 2) * n + col] - sc * v2) (ref mut t)
+                                let row_end = if k + 3 <= hi then k + 3 else hi
+                                for row in 0i64 ..= row_end do
+                                    let mut d_tv = t[row * n + k] * v0 + t[row * n + (k + 1)] * v1
+                                    if nr == 3 then d_tv = d_tv + t[row * n + (k + 2)] * v2
+                                    let sc = two * d_tv
+                                    Array.write (row * n + k) (t[row * n + k] - sc * v0) (ref mut t)
+                                    Array.write (row * n + (k + 1)) (t[row * n + (k + 1)] - sc * v1) (ref mut t)
+                                    if nr == 3 then
+                                        Array.write (row * n + (k + 2)) (t[row * n + (k + 2)] - sc * v2) (ref mut t)
+                                for row in 0i64 ..< n do
+                                    let mut d_qv = q[row * n + k] * v0 + q[row * n + (k + 1)] * v1
+                                    if nr == 3 then d_qv = d_qv + q[row * n + (k + 2)] * v2
+                                    let sc = two * d_qv
+                                    Array.write (row * n + k) (q[row * n + k] - sc * v0) (ref mut q)
+                                    Array.write (row * n + (k + 1)) (q[row * n + (k + 1)] - sc * v1) (ref mut q)
+                                    if nr == 3 then
+                                        Array.write (row * n + (k + 2)) (q[row * n + (k + 2)] - sc * v2) (ref mut q)
+                                if k > lo then
+                                    Array.write ((k + 1) * n + (k - 1)) zero (ref mut t)
+                                    if nr == 3 then
+                                        Array.write ((k + 2) * n + (k - 1)) zero (ref mut t)
+                        if k + 1 <= hi - 1 then
+                            x = t[(k + 1) * n + k]
+                            y = t[(k + 2) * n + k]
+                            z_b = if k + 3 <= hi then t[(k + 3) * n + k] else zero
+            if !ok then Result.Error Error.DidNotConverge
+            else
+                let t_unscaled = new ['a](n * n, \i -> t[i] * scale)
+                Result.Ok (t_unscaled, q)
+
+// Extracts complex eigenvalues and unit-norm right eigenvectors `V` (`A * V = V * diag(w)`) from real Schur `(T, Q)`.
+private def schur_to_eigen :: (Elementary<'a>, Neg<'a>) => own i64 -> ref ['a] -> ref ['a] -> ([Complex<'a>] * [Complex<'a>])
+fn schur_to_eigen n t q =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    let half: 'a = one / two
+    let z0: Complex<'a> = Complex.zero ()
+    let z1: Complex<'a> = Complex.one ()
+    if n == 0 then ([], [])
+    else
+        let eps = machine_eps ()
+        let t_scale = max_abs_slice t
+        let smin = eps * (if t_scale > one then t_scale else one)
+        let mut evals = new [Complex<'a>](n, \_ -> z0)
+        let mut idx = 0
+        while idx < n do
+            if idx + 1 < n && t[(idx + 1) * n + idx] != zero then
+                let a11 = t[idx * n + idx]
+                let a12 = t[idx * n + (idx + 1)]
+                let a21 = t[(idx + 1) * n + idx]
+                let a22 = t[(idx + 1) * n + (idx + 1)]
+                let mu = half * (a11 + a22)
+                let p_half = half * (a11 - a22)
+                let disc = p_half * p_half + a12 * a21
+                if disc >= zero then
+                    let rt = Math.sqrt disc
+                    Array.write idx (Complex.of (mu + rt) zero) (ref mut evals)
+                    Array.write (idx + 1) (Complex.of (mu - rt) zero) (ref mut evals)
+                else
+                    let im = Math.sqrt (zero - disc)
+                    Array.write idx (Complex.of mu im) (ref mut evals)
+                    Array.write (idx + 1) (Complex.of mu (zero - im)) (ref mut evals)
+                idx = idx + 2
+            else
+                Array.write idx (Complex.of t[idx * n + idx] zero) (ref mut evals)
+                idx = idx + 1
+        // Back-substitution in `Complex<'a>` on `(T - lambda * I) * w = 0` for each eigenvalue `k`, then `v = Q * w`.
+        let mut evecs = new [Complex<'a>](n * n, \_ -> z0)
+        for k in 0i64 ..< n do
+            let lam = evals[k]
+            // Determine block end `k_top` (`k` or `k+1` if `k` is top of a 2x2 block).
+            let k_top = if k + 1 < n && t[(k + 1) * n + k] != zero then k + 1 else k
+            let mut w = new [Complex<'a>](n, \_ -> z0)
+            if k_top == k && !(k > 0 && t[k * n + (k - 1)] != zero) then
+                Array.write k z1 (ref mut w)
+            else
+                // `k` belongs to 2x2 block `[b0, b1]`
+                let b0 = if k_top > k then k else k - 1
+                let b1 = b0 + 1
+                let a11_l = Complex.of (t[b0 * n + b0] - lam.re) (zero - lam.im)
+                let a12_c = Complex.of t[b0 * n + b1] zero
+                let a21_c = Complex.of t[b1 * n + b0] zero
+                let a22_l = Complex.of (t[b1 * n + b1] - lam.re) (zero - lam.im)
+                // Pick the larger-norm row of the 2x2 shifted block to form a non-zero null vector `(w[b0], w[b1])`.
+                let r1_nrm = Math.hypot (Complex.abs (ref a11_l)) (Complex.abs (ref a12_c))
+                let r2_nrm = Math.hypot (Complex.abs (ref a21_c)) (Complex.abs (ref a22_l))
+                if r1_nrm >= r2_nrm then
+                    if r1_nrm == zero then Array.write b0 z1 (ref mut w)
+                    else
+                        Array.write b0 (Complex.neg (ref a12_c)) (ref mut w)
+                        Array.write b1 a11_l (ref mut w)
+                else
+                    Array.write b0 (Complex.neg (ref a22_l)) (ref mut w)
+                    Array.write b1 a21_c (ref mut w)
+            // Back-solve blocks strictly above the eigenvalue's block (`i_hi` stepping down by 1 or 2).
+            let start_above = if k > 0 && t[k * n + (k - 1)] != zero then k - 2 else k - 1
+            let mut cur = start_above
+            while cur >= 0 do
+                if cur > 0 && t[cur * n + (cur - 1)] != zero then
+                    // 2x2 diagonal block `[cur - 1, cur]`
+                    let r0 = cur - 1
+                    let r1 = cur
+                    let mut rhs0 = z0
+                    let mut rhs1 = z0
+                    for j in (r1 + 1) ..< n do
+                        let tr0 = Complex.of t[r0 * n + j] zero
+                        let tr1 = Complex.of t[r1 * n + j] zero
+                        let p0 = Complex.mul (ref tr0) (ref w[j])
+                        let p1 = Complex.mul (ref tr1) (ref w[j])
+                        rhs0 = Complex.sub (ref rhs0) (ref p0)
+                        rhs1 = Complex.sub (ref rhs1) (ref p1)
+                    let m00 = Complex.of (t[r0 * n + r0] - lam.re) (zero - lam.im)
+                    let m01 = Complex.of t[r0 * n + r1] zero
+                    let m10 = Complex.of t[r1 * n + r0] zero
+                    let m11 = Complex.of (t[r1 * n + r1] - lam.re) (zero - lam.im)
+                    let p_ad = Complex.mul (ref m00) (ref m11)
+                    let p_bc = Complex.mul (ref m01) (ref m10)
+                    let mut det2 = Complex.sub (ref p_ad) (ref p_bc)
+                    if Complex.abs (ref det2) < smin then det2 = Complex.of smin zero
+                    let n0a = Complex.mul (ref m11) (ref rhs0)
+                    let n0b = Complex.mul (ref m01) (ref rhs1)
+                    let num0 = Complex.sub (ref n0a) (ref n0b)
+                    let n1a = Complex.mul (ref m00) (ref rhs1)
+                    let n1b = Complex.mul (ref m10) (ref rhs0)
+                    let num1 = Complex.sub (ref n1a) (ref n1b)
+                    Array.write r0 (Complex.div (ref num0) (ref det2)) (ref mut w)
+                    Array.write r1 (Complex.div (ref num1) (ref det2)) (ref mut w)
+                    cur = cur - 2
+                else
+                    let mut rhs = z0
+                    for j in (cur + 1) ..< n do
+                        let tc = Complex.of t[cur * n + j] zero
+                        let pr = Complex.mul (ref tc) (ref w[j])
+                        rhs = Complex.sub (ref rhs) (ref pr)
+                    let mut denom = Complex.of (t[cur * n + cur] - lam.re) (zero - lam.im)
+                    if Complex.abs (ref denom) < smin then denom = Complex.of smin zero
+                    Array.write cur (Complex.div (ref rhs) (ref denom)) (ref mut w)
+                    cur = cur - 1
+            // Transform `v = Q * w` and normalize to unit Euclidean norm.
+            let mut v_col = new [Complex<'a>](n, \row ->
+                let mut acc = z0
+                for j in 0i64 ..< n do
+                    let q_rj = q[row * n + j]
+                    let wj = w[j]
+                    acc = Complex.of (acc.re + q_rj * wj.re) (acc.im + q_rj * wj.im)
+                acc)
+            let mut nrm = zero
+            for vc in ref v_col do nrm = Math.hypot nrm (Complex.abs (ref vc))
+            if nrm > zero then
+                for row in 0i64 ..< n do
+                    Array.write (row * n + k) (Complex.of (v_col[row].re / nrm) (v_col[row].im / nrm)) (ref mut evecs)
+            else
+                Array.write (k * n + k) z1 (ref mut evecs)
+        (evals, evecs)
+
+/// General real nonsymmetric eigenvalue decomposition `A * V = V * diag(w)` returning complex `(w, V)`.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2, 2] [0.0, -1.0, 1.0, 0.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.eig (ref va) with
+/// | Result.Ok (w, _) ->
+///     let ws = Tensor.as_array (ref w)
+///     Math.abs ws[0].re < 1e-12 && Math.abs (Math.abs ws[0].im - 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+def eig :: (Elementary<'a>, Neg<'a>) => ref Tensor.View<'a> -> Result<(Tensor<Complex<'a>> * Tensor<Complex<'a>>), Error>
+fn eig view =
+    let sh = Tensor.shape view
+    let rank = sh.length
+    if rank < 2 then Result.Error (Error.InvalidRank rank)
+    elif sh[rank - 2] != sh[rank - 1] then Result.Error (Error.NotSquare (Array.copy sh))
+    else
+        let n = sh[rank - 1]
+        let batch_sh = Array.sub 0 (rank - 2) sh
+        let batch_n = prod_shape (ref batch_sh)
+        let w_sh = append_dims (ref batch_sh) [n]
+        let v_sh = Array.copy sh
+        if batch_n == 0 || n == 0 then Result.Ok (Tensor.of_array w_sh [], Tensor.of_array v_sh [])
+        else
+            let z0: Complex<'a> = Complex.zero ()
+            let packed = Tensor.to_tensor view
+            let pd = Tensor.as_array (ref packed)
+            let mut w_out = new [Complex<'a>](batch_n * n, \_ -> z0)
+            let mut v_out = new [Complex<'a>](batch_n * n * n, \_ -> z0)
+            let mut err: Maybe<Error> = Maybe.None
+            for b in 0i64 ..< batch_n do
+                match err with
+                | Maybe.Some _ -> ()
+                | Maybe.None ->
+                    let sub = Array.sub (b * n * n) (n * n) pd
+                    match real_schur_2d_core n (ref sub) with
+                    | Result.Error e -> err = Maybe.Some e
+                    | Result.Ok (tb, qb) ->
+                        let (wb, vb) = schur_to_eigen n (ref tb) (ref qb)
+                        for i in 0i64 ..< n do Array.write (b * n + i) wb[i] (ref mut w_out)
+                        for i in 0i64 ..< (n * n) do Array.write (b * n * n + i) vb[i] (ref mut v_out)
+            match err with
+            | Maybe.Some e -> Result.Error e
+            | Maybe.None -> Result.Ok (Tensor.of_array w_sh w_out, Tensor.of_array v_sh v_out)
+
+/// Complex eigenvalues of a general real square matrix (`np.linalg.eigvals`).
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2, 2] [0.0, -1.0, 1.0, 0.0]
+/// let va = Tensor.view (ref a)
+/// match Linalg.eigvals (ref va) with
+/// | Result.Ok w ->
+///     let ws = Tensor.as_array (ref w)
+///     Math.abs ws[0].re < 1e-12 && Math.abs (Math.abs ws[0].im - 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+def eigvals :: (Elementary<'a>, Neg<'a>) => ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn eigvals view =
+    match eig view with
+    | Result.Ok (w, _) -> Result.Ok w
+    | Result.Error e -> Result.Error e

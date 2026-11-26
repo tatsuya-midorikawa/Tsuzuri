@@ -109,6 +109,7 @@ const MODULES: &[(&str, Kind)] = &[
             except: &[("decode_field", DERIVED), ("case_index", DERIVED)],
         },
     ),
+    ("Linalg", subject(&["Tensor.View", "Tensor.Mut", "Tensor"])),
     ("List", subject(&["[|"])),
     ("Map", subject(&["Map"])),
     ("Math", SingleArgument),

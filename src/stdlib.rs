@@ -76,6 +76,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
     ("std/ZUtf8String.tz", include_str!("../std/ZUtf8String.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
+    ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -168,6 +169,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     // M06: NUL-terminated UTF-8 strings for C / POSIX / Objective-C APIs.
     "ZUtf8String",
     "Complex",
+    // NC08: portable linear algebra and tensor contractions.
+    "Linalg",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -491,6 +494,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Complex"],
         aliases: &[],
         uses: &[],
+    },
+    OptIn {
+        module: "Linalg",
+        names: &["Linalg"],
+        aliases: &[],
+        uses: &["Complex", "Tensor"],
     },
 ];
 
@@ -990,7 +999,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 79);
+        assert_eq!(RESERVED_MODULES.len(), 80);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
