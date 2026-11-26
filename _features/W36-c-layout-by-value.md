@@ -11,12 +11,12 @@
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E05 と W21 の値渡しの除外の改訂）。D1・D2 が要承認、ほかは既定案。Phase 2（System V x86-64 と AAPCS64）は、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 4 で人間が求めた（2026-11-26）。停止条件 S1 の選択（A・B）は未決で、Phase 1 の着手の前に要る（W21 が `ref` の無い record をポインターで渡して出荷したので、S1 は Phase 1 にも当たる） |
 | 改善する劣位 | C/C++・Rust（`#[repr(C)]`）・C#（P/Invoke）比: C の関数が構造体を値で取る・返す API（Win32 の `WindowFromPoint`・`PtInRect` の `POINT`、Direct2D の `D2D1_POINT_2F`、raylib の `Vector2`）を宣言できない。今の書き方（`ref` のない record）は診断なしにポインターを渡す |
-| 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`・`host_result_slot`・`read_host_result`（record の一時領域）、[W21](W21-c-layout-records.md) の `llvm_abi::record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`@c_layout` の配置を 1 か所で求める）、`src/target.rs` の `current_platform`（IR の生成中の target）、`clang -S -emit-llvm`（独立した参照。GUIDE-LITE §2 規則 10） |
+| 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`・`host_result_slot`・`read_host_result`（record の一時領域）、[W21](_completed/W21-c-layout-records.md) の `llvm_abi::record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`@c_layout` の配置を 1 か所で求める）、`src/target.rs` の `current_platform`（IR の生成中の target）、`clang -S -emit-llvm`（独立した参照。GUIDE-LITE §2 規則 10） |
 | 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm_imports.rs`, `src/llvm_byvalue.rs`（新規）, `src/llvm_abi.rs`, `src/llvm.rs`, `src/diagnostic_kinds.rs`, `src/explain/codes/E1008.md`, `tests/c_layout_by_value.rs`（新規）, `tests/c_layout_by_value.mjs`（新規）, `tests/c_layout_by_value_host.c`（新規）, `tests/fixtures/c_layout_by_value/Main.tz`（新規）, `tests/windows.mjs`, `.github/workflows/windows.yml`, `docs/language.md`, `docs/architecture.md`, 言語リファレンスの 4 ページ |
 
 ## 実装者向け早見
 
-- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。D-67 の分岐 3 で方針を改めないと決めたので、入れない（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
+- 範囲: [W21](_completed/W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。D-67 の分岐 3 で方針を改めないと決めたので、入れない（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
 - 最初に読む: 「現状」の再現（`PtInRect`）→ 仕様 2 の分類 → 「現状」の参照表 → W21 の仕様 3・4 と D4・D8。
 - 最初に書くテスト: `tests/c_layout_by_value.rs` の `windows_x64_passes_by_size` と `windows_arm64_passes_hfa_in_float_registers`（`build --emit llvm --target <triple>` の `declare` の行を、参照表から手で書いた期待と比べる）→ `tests/c_layout_by_value.mjs` の C のホスト。
 - 触ってはいけない: `@c_layout` の無い record の ABI（[E05](_completed/E05-host-abi-buffers.md)）、`ref R`（`const T *`）と `ref mut R`（`T *`）、`export def` の IR とヘッダー、WASM の出力、値渡しを使わないプログラムの IR・ヘッダー・診断（1 byte も変えない）。
@@ -38,7 +38,7 @@ def main :: unit -> i32 = \() ->
 
 ## 目的
 
-C の関数は構造体を値で取り、値で返せる。Win32 にも `WindowFromPoint(POINT)`・`MonitorFromPoint(POINT, DWORD)`・`PtInRect(const RECT *, POINT)` があり、Direct2D の `ID2D1RenderTarget::DrawLine` は `D2D1_POINT_2F` を値で取る。どのチケットもこれを担当していない: [E05](_completed/E05-host-abi-buffers.md) は「C の by-value struct ABI classification に依存しない」と決めて record をポインターでだけ渡し、[W21](W21-c-layout-records.md) D4 もそれを保ち、値渡しを対象外にして「`i64` に詰める」回避策を挙げた。その回避策は Windows Arm64 と System V で浮動小数点の構造体を誤る（`D2D1_POINT_2F` は Arm64 では浮動小数点レジスター 2 つ）。しかも今の書き方は、`ref` を付けない record を診断なしにポインターで渡し、C の側は黙って誤った値を読む。
+C の関数は構造体を値で取り、値で返せる。Win32 にも `WindowFromPoint(POINT)`・`MonitorFromPoint(POINT, DWORD)`・`PtInRect(const RECT *, POINT)` があり、Direct2D の `ID2D1RenderTarget::DrawLine` は `D2D1_POINT_2F` を値で取る。どのチケットもこれを担当していない: [E05](_completed/E05-host-abi-buffers.md) は「C の by-value struct ABI classification に依存しない」と決めて record をポインターでだけ渡し、[W21](_completed/W21-c-layout-records.md) D4 もそれを保ち、値渡しを対象外にして「`i64` に詰める」回避策を挙げた。その回避策は Windows Arm64 と System V で浮動小数点の構造体を誤る（`D2D1_POINT_2F` は Arm64 では浮動小数点レジスター 2 つ）。しかも今の書き方は、`ref` を付けない record を診断なしにポインターで渡し、C の側は黙って誤った値を読む。
 
 LLVM IR は構造体の値渡しを C の ABI に下げない。Clang はフロントエンドで target ごとに構造体を整数・浮動小数点の値やポインターに変えてから IR を出す（参照表）。このチケットは、C の配置が明示された `@c_layout` record（W21）に限って、同じ分類をコンパイラが target ごとに行う。[W25](W25-extern-interface-com.md) の D10 が Phase 3 で引き受けていた値渡しの引数はこのチケットに移る（[GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)）。
 
@@ -228,7 +228,7 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
 
 ## 前提とする他チケットのインターフェース
 
-- [W21](W21-c-layout-records.md): `CheckedRecord.c_layout`、`abi::c_layout_record`・`abi::host_record`、`llvm_abi::record_layout`・`c_layout_fields`、`@c_layout` の `read_host_record`・`write_host_record`（packed struct の境界の型、葉の整列）、Phase 2 の field の位置の規則と kind、`abi_native_only` の共有の口。D2 の予約（`c_layout_by_value_pending`。W21 の改訂の提案）。
+- [W21](_completed/W21-c-layout-records.md): `CheckedRecord.c_layout`、`abi::c_layout_record`・`abi::host_record`、`llvm_abi::record_layout`・`c_layout_fields`、`@c_layout` の `read_host_record`・`write_host_record`（packed struct の境界の型、葉の整列）、Phase 2 の field の位置の規則と kind、`abi_native_only` の共有の口。D2 の予約（`c_layout_by_value_pending`。W21 の改訂の提案）。
 - [W14](_completed/W14-extern-multiple-declarations.md)（done なら）: `abi::CType`・`AbiClass`・`c_signature`。
 
 ## 他チケットへ提供するインターフェース

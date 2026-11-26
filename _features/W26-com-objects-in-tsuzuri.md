@@ -68,7 +68,7 @@ def main :: unit -> i32 = \() ->
 ### 着手条件
 
 - [W22](_completed/W22-fnptr-values.md)・[W23](_completed/W23-anchor-state.md) が done、[W25](W25-extern-interface-com.md) の Phase 1 が done。確認: `grep -nE "^\| W(22\|23\|25) " _features/README.md`。
-- Phase 2: [W21](W21-c-layout-records.md) の Phase 1 が done（`@c_layout` と `read_host_record`・`write_host_record`）。Phase 3: W25 の Phase 3、[W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡しの分類と、呼ばれる側の下げ方）と [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T]`・`@count`）が done。どれも依存の欄（README の表）に無い Phase ごとの前提。
+- Phase 2: [W21](_completed/W21-c-layout-records.md) の Phase 1 が done（`@c_layout` と `read_host_record`・`write_host_record`）。Phase 3: W25 の Phase 3、[W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡しの分類と、呼ばれる側の下げ方）と [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T]`・`@count`）が done。どれも依存の欄（README の表）に無い Phase ごとの前提。
 - 決定事項の D1・D6 が承認済み（Phase 3 は D10 と W25 の D10 も）。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target wasm32`）と `check --json`、コールバックを使う fixture（`tests/fixtures/ffi_extensions`）の IR を `target/scratch/w26/before/` に保存する。
 
@@ -223,7 +223,7 @@ OS がスロット `s` を呼ぶと、コンパイラが生成した thunk が�
 - [W23](_completed/W23-anchor-state.md): `Anchor.create`・`Anchor.token`・`Anchor.read`・`Anchor.update` と `Anchor.Error`（`Stale`・`WrongType`・`WrongThread`・`Busy`）。所有者のスレッドの検査と、`read`・`update` の最中の再入の `Busy`。W23 のランタイム（`tsuzuri_tz_anchor_*`）を持つので、Windows の `--emit object` は W23 と同じく既存の `E2002`。W23 の D8（`Anchor<T>` は Send でも Sync でもなく、`T` に Send を求めないので、W19 の `local` のハンドルを持てる）により、Phase 2 の例は提供者の interface の値を `Anchor<T>` の `T` に入れる。
 - [W12](_completed/W12-static-callback-lifetime.md): 仕様 1・2 の契約（`main` の後はトラップ）と「包みは 1 種類」。
 - [W19](_completed/W19-thread-bound-handles.md): `pinned_rules::builtin_position`、固定された文脈（コールバックと `FnPtr.of` の本体を含む。W19 の D5）。
-- [W21](W21-c-layout-records.md): `@c_layout`、`read_host_record`・`write_host_record`（Phase 2）。[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `ref mut [T]` と `@count`（Phase 3）。
+- [W21](_completed/W21-c-layout-records.md): `@c_layout`、`read_host_record`・`write_host_record`（Phase 2）。[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `ref mut [T]` と `@count`（Phase 3）。
 - [W06](_completed/W06-windows-gui-test-harness.md): `tests/windows_gui_shim.c`（`tz_gui_send`・`tz_gui_post` など）と `buildGui`（仕様 4。Phase 2 の Windows の段）。W06 の窓は `HWND_MESSAGE` だけ（W06 の D3）なので、`WM_GETOBJECT` を受けるメッセージ専用でない隠れた窓を作る関数（案 `tz_gui_hidden_window(proc)`）は W26 が W06 の仕様 4 の形で shim に足す。
 - kind `abi_native_only`（W13 などと共有）。
 

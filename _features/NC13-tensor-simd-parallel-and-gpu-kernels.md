@@ -5,7 +5,7 @@
 | ID | NC13 |
 | 優先度 | P2（外部 BLAS なし環境や WASM・GPU で実用的な数値計算性能を達成する） |
 | 規模 | XL（4 Phase に分割: Phase 1 x86-64 FMA & `f16` SIMD、Phase 2 テンソル SIMD & 軸並列カーネル、Phase 3 キャッシュタイリング GEMM、Phase 4 GPU 2D/リダクション/複数バッファ/行列積） |
-| 依存 | [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md), [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
+| 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md), [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
 | 後続 | –（弱い後続: [M12](M12-gpu-presentation-to-window.md)。M12 の Phase 2（CAMetalLayer への提示）は、このチケットの D2（Metal）が決まってから着手する） |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -18,7 +18,7 @@
 - 範囲: 数値の意味（丸め・NaN・符号付きゼロ・決定性）を壊さずに、Tsuzuri 自身のコード生成と標準ライブラリで実践的な性能を引き上げる 4 Phase の最適化:
   - **Phase 1（CPU 命令・`f16` SIMD 基盤）**:
     - x86-64 で FMA3 が有効なターゲット（`--cpu native` や `@cpu ["avx2"]`・`+fma` 機能付き）の `Math.fma` を `tz_soft_fma` ではなくハードウェア命令 `llvm.fma` へ下げる（現行は AArch64 のみで x86-64 が約 1 万倍遅い問題の解消）。
-    - `f16` の `Simd`（`f16x8`, `f16x16`）対応を段階的に拡充（`f16` の `Elementary` 超越関数は [NC01](NC01-complex-and-extended-math.md) の対象外のまま据え置く）。
+    - `f16` の `Simd`（`f16x8`, `f16x16`）対応を段階的に拡充（`f16` の `Elementary` 超越関数は [NC01](_completed/NC01-complex-and-extended-math.md) の対象外のまま据え置く）。
   - **Phase 2（テンソル SIMD & `Parallel` 軸並列）**:
     - 連続およびブロードキャスト `Tensor` ufunc（`add`/`sub`/`mul`/`div`/`fma` 等）の SIMD 化・`@cpu` 多版化と、大規模テンソル向けの明示的並列 API（`Tensor.map_parallel`, `Tensor.add_parallel`, `Tensor.sum_axis_parallel` 等。チャンク境界は形状のみで決めてビット一致を維持）。
   - **Phase 3（キャッシュタイリング GEMM）**:
@@ -32,13 +32,13 @@
 
 ## 目的
 
-案 C の純 Tsuzuri 基盤（[NC02](NC02-tensor-core-views-and-broadcasting.md)〜[NC08](NC08-linalg-core-and-einsum.md)）が機能面で揃った後、外部 BLAS に頼れない環境（単一バイナリ配布・WASM・GPU）でも実用に耐える計算速度を、Tsuzuri の安全・決定論ポリシーを一切妥協せずに達成する。
+案 C の純 Tsuzuri 基盤（[NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)〜[NC08](NC08-linalg-core-and-einsum.md)）が機能面で揃った後、外部 BLAS に頼れない環境（単一バイナリ配布・WASM・GPU）でも実用に耐える計算速度を、Tsuzuri の安全・決定論ポリシーを一切妥協せずに達成する。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- Phase 1 は独立着手可能。Phase 2〜4 は [NC02](NC02-tensor-core-views-and-broadcasting.md)・[NC06](NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md) が done。
+- Phase 1 は独立着手可能。Phase 2〜4 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md) が done。
 - Phase 4 は決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -100,7 +100,7 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC02](NC02-tensor-core-views-and-broadcasting.md)・[NC06](NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md): 最適化対象の `Tensor`/`Linalg` API と決定論基準実装。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md): 最適化対象の `Tensor`/`Linalg` API と決定論基準実装。
 - 弱い依存 [NC15](NC15-parallel-borrowed-chunk-input.md): `Parallel.for_each_chunk_with`（Phase 2 の 2 入力/`_into`/軸並列と Phase 3 のゼロコピー並列 GEMM 用）。
 
 ## 他チケットへ提供するインターフェース

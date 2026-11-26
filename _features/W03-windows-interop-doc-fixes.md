@@ -109,7 +109,7 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 
 - `undefined_symbols`: W17（`@link`）がシステムライブラリを足し忘れたときの案内、W27（生成した `win32` パッケージ）の利用者の案内がこの hint を使う。
 - io.md の「標準ハンドルのないプロセス」の段落: W08 が意味を決めたら置き換える。
-- platforms.md の R2 の文（ランタイム入りの Windows の COFF object の汎用の `E2002`）: [W11](W11-windows-os-api.md) が `os_apis` を Windows で真にすると、同じ文に OS のランタイムが加わる。W03 と W11 のうち後に入るほうが、文書の列挙と `src/driver.rs` の文を合わせる。
+- platforms.md の R2 の文（ランタイム入りの Windows の COFF object の汎用の `E2002`）: [W11](_completed/W11-windows-os-api.md) が `os_apis` を Windows で真にすると、同じ文に OS のランタイムが加わる。W03 と W11 のうち後に入るほうが、文書の列挙と `src/driver.rs` の文を合わせる。
 
 ## 実装手順
 

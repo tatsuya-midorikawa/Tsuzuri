@@ -150,7 +150,7 @@ static void tzr_sysmon_wait(tzr_cond *c, tzr_mutex *m, int64_t ns) {
 - `benchmarks/sysmon/handoff.c`: `tests/tzroutine_runtime.c` と同じく `tzroutine.c` を include する（include のディレクトリをランナーが選ぶ）。P 1 で、呼び出しの長さ 1・2・5・10・20 ms（`tzr_nanotime` を見て回る。OS のタイマーに頼らない）のそれぞれで、(a) ほかの G が進んだ呼び出しの数、(b) 引き継ぎの遅延（呼び出しの開始から、ほかの G が最初に走るまで）の 50・99 パーセンタイルと最大、(c) 呼び出しの間にほかの G が進んだ数、を出す。`tzr_sysmon_hires` も出す。
 - `benchmarks/run-sysmon.mjs`: `--runtime <dir>`（既定 `src/runtime`）と `--baseline-runtime <dir>`（`target/perf/W34/runtime-before`）で 2 つを同じ clang でビルドし、順序を交互に入れ替えて 9 回以上ずつ走らせ、PX01 の JSON Lines（suite `sysmon`、workload は構成、variant は `before`・`after`）を `--metrics <dir>` に書く。`--quick` は (a) の数え上げと `tzr_sysmon_hires` を出すだけ（合否はない）。
 - sysmon の CPU 時間: 計算だけをする G が 1 つ（P 1、2 秒）の workload と、OS で待つ呼び出しだけを繰り返す workload で、プロセスの CPU 時間（`GetProcessTimes`）を before と after で比べる（sysmon のほかの仕事は前後で同じ）。すべての P が空けば sysmon は眠るので、何もしないプログラムの費用は変わらない（同じ方法で確かめる）。
-- Tsuzuri の版（任意）: [W11](W11-windows-os-api.md) の Phase 1 の後なら、`benchmarks/run-tzroutine.mjs` を Windows でも before と after で走らせ、計算の核が遅くならないことを見る。今の Windows では `Time.monotonic_ns` が `E2002` なので走らない。
+- Tsuzuri の版（任意）: [W11](_completed/W11-windows-os-api.md) の Phase 1 の後なら、`benchmarks/run-tzroutine.mjs` を Windows でも before と after で走らせ、計算の核が遅くならないことを見る。今の Windows では `Time.monotonic_ns` が `E2002` なので走らない。
 
 ## 前提とする他チケットのインターフェース
 
