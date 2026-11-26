@@ -5,7 +5,7 @@ AI の作業コスト（入力量と往復数。速度ではない）は [ai-cos
 **C/C++ と同等以上の実行性能を達成することは Tsuzuri の重要な開発目標ですが、初版においてあらゆるケースでの性能優位を一般的に保証するものではありません。**
 LLVM バックエンドを採用していること自体が直ちに C を上回る性能を意味するわけではなく、生成されるコードの形状、値の不要なコピーの有無、最適化パスの適合度、WebAssembly 実行エンジンの特性、ならびにホスト境界呼び出しの粒度に強く依存します。
 
-現在の対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです（[対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md)）。以下の過去の測定・検証記録には、現在は対象外の Intel Mac や旧 target の結果も含まれます。それらは現在の対応や性能の保証ではありません。
+現在の対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです（[対応プラットフォーム](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/platforms.md)）。以下の過去の測定・検証記録には、現在は対象外の Intel Mac や旧 target の結果も含まれます。それらは現在の対応や性能の保証ではありません。
 
 整数ミキサーなどの演算処理における性能上の基盤は、ヒープ動的確保／GC／参照カウントの完全な排除、自己末尾再帰の確実なループ化、型付き LLVM 値の直接利用、デフォルトの `-O3` 最適化、および WebAssembly における不要コードの削除です。
 安全性検査を無効化したり、IEEE 754 の厳密な浮動小数点意味論を犠牲にしたりして、見かけ上の速度を稼ぐような不健全な最適化は行いません。
@@ -86,7 +86,7 @@ GPU 常駐バッファがない（呼び出しごとの転送）ことが、小�
 
 ### Vulkan と Gpu.Auto（F09 Phase 3）
 
-`node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri [--runs 3] [--json]` は、`Gpu.Auto` の規則（`src/runtime/gpu-vulkan.c` の `TZ_VK_AUTO_*`、[`Gpu.Auto`](../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ)）の定数を、同じ Tsuzuri のカーネルを CPU 参照と Vulkan で動かして測ります。
+`node benchmarks/run-gpu-vulkan.mjs target/release/tsuzuri [--runs 3] [--json]` は、`Gpu.Auto` の規則（`src/runtime/gpu-vulkan.c` の `TZ_VK_AUTO_*`、[`Gpu.Auto`](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/gpu.md)）の定数を、同じ Tsuzuri のカーネルを CPU 参照と Vulkan で動かして測ります。
 
 **方法。** カーネルは、厳密な `i32 -> i32` に、乗算・加算・シフト・XOR の 1 ステップを `rounds` 回（1、4、16、64、256）つないだもので、`Gpu.Auto` が使う重み（1 lane の命令数）は 5、20、80、320、1,280 です。lane 数は 1,000 から 4,000,000 までの 5 通りです。1 回の呼び出しは `Gpu.map device kernel (Gpu.from_array device values)` で、`values` は `Bench.with_input` が用意したホスト配列、結果は捨てます。入力の複製、アップロード、実行、完了待ち、読み戻し、出力の確保と解放が、全部時間に入ります。呼び出しの間にデバイスに残るものはありません。`tsuzuri bench` が、ベンチごとに別のプロセスで、ウォームアップのあとに動かして中央値を出します。1 つの cell で 5 つのベンチを動かします。
 
@@ -3540,7 +3540,7 @@ Clang に渡す IR は変わらず、`tool.*` の最小は 644 → 637 ms で、
 `examples/hello -O0` を同じキャッシュで繰り返すと、`cache` 段は before が 39.6〜51.0 s（whole-build cache が当たるビルドでも。load average 約 160）、
 プロセスの CPU 時間は約 8 s（user 5.0 + sys 2.9）でした。after は、署名が変わらない 2 回目以降が `cache` 段 85〜170 ms、プロセスの CPU 時間 0.12 s です。
 最初の 1 回は全ファイルを並列にハッシュして `<cache>/bundle/` に控えます。署名の変わり方、信頼の範囲、`bundle/` を消す条件は
-[ランタイム object](../_tsuzuri/language-reference/compiler/usage.md#ランタイム-object) にあります。runtime のキー（2 件）は旧コンパイラが作る値と同じで、
+[ランタイム object](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) にあります。runtime のキー（2 件）は旧コンパイラが作る値と同じで、
 配布物の `share/runtime/manifest.json` の fingerprint は Node の `scripts/toolchain/runtime.mjs` の値と一致します（同梱 object を消費して runtime cache が空）。
 配布物の `lib/` に 1 ファイルを足すと memo が外れ、全体を検証し直して同梱 object を拒否しました。Homebrew の `wasm-ld`（`lld` への symlink）では、
 従来は wasm のビルドごとに `build cache disabled: tool version query failed` を出して whole-build cache を使いませんでしたが、after は使います。
@@ -4001,7 +4001,7 @@ matrix スイートで見つけた退行と修正: 作り直した最初のヒ�
 
 #### native の `--allocator small`（Phase 2）
 
-`--allocator small` は、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保を C ライブラリの `malloc` に任せる native 専用の allocator です（設計は [architecture.md](architecture.md)、使い方は [スタックとヒープ](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator)）。`benchmarks/run-small.mjs` は、同じコンパイラで `benchmarks/apps` を `--allocator system` と `small` の object にし、同じ host（`benchmarks/apps/host.c`）で、ラウンドごとに順序を入れ替えて走らせます。時間は calibrated repeats の CPU 時間、ピーク RSS は workload ごとに別のプロセスで `/usr/bin/time` から読みます。両方のチェックサムは一致します。この節の数値は release コンパイラ（コミット `b8aed3c0`）で取り、生データは `target/perf/PM05-after/run-small-macos.json`（コミットしません）です。
+`--allocator small` は、512 バイト以下を 16 バイト刻みの 32 区分から返し、それより大きい確保を C ライブラリの `malloc` に任せる native 専用の allocator です（設計は [architecture.md](architecture.md)、使い方は [スタックとヒープ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/ownership/memory-layout.md)）。`benchmarks/run-small.mjs` は、同じコンパイラで `benchmarks/apps` を `--allocator system` と `small` の object にし、同じ host（`benchmarks/apps/host.c`）で、ラウンドごとに順序を入れ替えて走らせます。時間は calibrated repeats の CPU 時間、ピーク RSS は workload ごとに別のプロセスで `/usr/bin/time` から読みます。両方のチェックサムは一致します。この節の数値は release コンパイラ（コミット `b8aed3c0`）で取り、生データは `target/perf/PM05-after/run-small-macos.json`（コミットしません）です。
 
 条件の限界: Apple M1 Max、macOS 27.0.1、Homebrew LLVM 21（clang 21）。計測中のホストの load average は 20〜40 で、専用機でも、`with-lock.sh measure` の下でもありません（ほかの作業が全 slot を占有していて取れませんでした）。5 ラウンド（各 15 samples）、RSS は 9 回の中央値です。**この表は目安**で、正式な値は静かなマシンで取り直します。Linux は、同じ M1 Max の上の Docker の仮想マシン（linuxkit 6.6.12、arm64）で、Ubuntu 24.04、clang 20.1.2、glibc 2.39 を使いました。IR は macOS のコンパイラが `--target aarch64-unknown-linux-gnu` で出し、コンテナの中で `clang-20 -O3` でコンパイルして同じ host（`-O3`）とリンクしました（手順は `benchmarks/run-small.mjs` と同じ。スクリプトはリポジトリに入れていません）。仮想マシンの中の load average は 2 でも、ホストが忙しいので、揺れが大きい値です。
 
@@ -4066,7 +4066,7 @@ native の既定を `small` にするかは、次の条件を**すべて**確か
 | (b) 専用機で 2 つ以上の OS ファミリーの計測。PX01 の「improved」が代表 6 workload のうち 3 つ以上で、control・computations・cpp・apps・tasks に「adverse」がない | 未達 | macOS の apps は improved 4 つ・adverse 0 だが、専用機ではない。Linux（glibc）の record_sort は 1.75〜2.27 倍遅い（上の、glibc が大きなブロックのメモリを得て返す方法の差）。control・computations・cpp・tasks（`task_parallel`）は未計測（`run-control.mjs --allocator small` は用意した） |
 | (c) ピーク RSS が、どの app でも悪化しない | 一部だけ | macOS は同じ（小さな app で +0.1〜0.15 MiB の固定費）、Linux は最大 28% 小さい。固定費があるので「悪化なし」とは言えない |
 | (d) 実行ファイルの増加が約 4 KiB 以下で、コンパイル時間が変わらない | 一部だけ | 実行ファイルは +2.3〜3.1 KiB（仮想の `__bss` が +130 KiB）で達成。コンパイル時間は、`--emit object -O3 --no-cache` の 7 回の最小値で hello が 703 → 731 ms、apps が 838 → 875 ms、control が 142 → 161 ms（load 約 34）と、20〜36 ms 増える（`heap-small.ll` は 860 行で、LLVM がそれも最適化するため） |
-| (e) 範囲は native の実行ファイルだけで、`--allocator system` で戻せ、サニタイザーと leak 検査の注意を書く | 該当なし | 既定にしていないので、変えていない。注意は LR の [ネイティブのサイズ区分 allocator](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#ネイティブのサイズ区分-allocator) に書いた |
+| (e) 範囲は native の実行ファイルだけで、`--allocator system` で戻せ、サニタイザーと leak 検査の注意を書く | 該当なし | 既定にしていないので、変えていない。注意は LR の [ネイティブのサイズ区分 allocator](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/ownership/memory-layout.md) に書いた |
 
 再検討の条件: 専用機で macOS と Linux の apps・control・tasks を測り、Linux の record_sort のような退行（ほかの確保を済ませたプロセスで、大きなブロックの確保と解放を繰り返すと、glibc が毎回ヒープの末尾を返して取り直す）を直すか、起きないことを示すこと。直し方の候補は、解放した大きなブロックを `small` が少しの間手元に残す（glibc の末尾を空けない）か、512 バイトを超える区分を持つ（ヘッダーなしの slab は別チケット PM05b）ことですが、どちらも試していません。glibc 固有の `mallopt` で返却のしきい値を変える案は、C ライブラリを問わない（musl・Windows）設計に反するので採りません。
 
@@ -4316,7 +4316,7 @@ after は実時間で 1/72、CPU 時間で 1/58 です（範囲は重なりま�
 - **PM08 の節の値と食い違うもの（PM05 の WASM ヒープを取り込んだ後の値）**: hello の wasm32 module は `-O3` が 6,833 bytes（PM08 の節は 6,357。code 6,591、data 13）、`-Os` が 4,493（同 2,995）、`-Oz` が 3,905（同 2,587）です。
   PM08 の節は PM05 の WASM ヒープを取り込む前の値で、ヒープの関数が各 module に入るぶん、確保の少ない hello・`currying` は約 470〜1,500 bytes 大きくなります（`currying` 6,326 → 6,802）。確保の多い `functional`・`io`・`parse` は新しいヒープでコードが小さくなり、module が縮みます（`functional` 12,086 → 10,251、`io` 15,593 → 12,956、`parse` 18,199 → 16,766 bytes）。
   `tasks` の native `__text` は 3,496 → 3,876 bytes（PR06 の新しい task pool の分と、上の `digits` の 120 bytes）です。PM08 の節は「`io` と `point` は変わりません」と書いていましたが、`io` は上のとおり変わります（native `__text` −64、wasm32 −2,637 bytes。`point` は native も wasm32 も変わりません）。
-  PM08 の節の表と、[WebAssembly への出力](../_tsuzuri/language-reference/compiler/webassembly.md) などの数値は、この run の値に置き換えました。
+  PM08 の節の表と、[WebAssembly への出力](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/webassembly.md) などの数値は、この run の値に置き換えました。
 - wasm-opt（Binaryen 132）の値は、この機械に Binaryen が無いので再測定していません。PM08 の節の wasm-opt の割合（−11.5〜−21.9%）は、PM05 のヒープを取り込む前の module に対する値です。
 
 #### Task pool のスケジューラ（PR06）
@@ -4712,7 +4712,7 @@ E1010 の見積もり（`check.rs`）と `stack_size` は関数値を 32 bytes �
 | fixtures の computations | 188,864 → 175,412 → 179,320（−5.1%） | 45,028 → 45,996 → 46,528（+3.3%） | 43,336 → 44,164 → 44,444（+2.6%） |
 | fixtures の control | 156,216 → 153,932 → 154,464（−1.1%） | 47,972 → 48,964 → 48,680（+1.5%） | 43,792 → 44,148 → 44,280（+1.1%） |
 
-属性を外すと、小さなプログラムの増えは縮みます（hello の `-Oz` は +25.2% → +21.0%、`-Os` は +24.1% → +15.3%）。一方、大きなプログラムは少し増えます（tasks の fixture の `-Oz` は +2.2% → +3.8%）。残る増えは、記述子が adapter を参照し続けて、`-Os`・`-Oz` の inline が既知の呼び出しを adapter ごと畳まないためです。hello の `-Oz` では、adapter・worker・環境の clone と drop が別の関数として残り、記述子が `__const` に残ります（`_tsuzuri_main` が環境を確保し、`@tz.apply.*` を呼んで解放する形）。実行ファイル全体では、`-Oz` の hello が 34,008 → 34,376（+1.1%）、`-Os` が 33,896 → 34,232（+1.0%）、functional の `-Oz` が 35,208 → 35,672（+1.3%）、io の `-Oz` が 52,360 → 52,776（+0.8%）です。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は、基準とバイト一致です。ユーザー向けの説明は [`option.md`](../_tsuzuri/language-reference/compiler/option.md#最適化と-cpu) にあります。
+属性を外すと、小さなプログラムの増えは縮みます（hello の `-Oz` は +25.2% → +21.0%、`-Os` は +24.1% → +15.3%）。一方、大きなプログラムは少し増えます（tasks の fixture の `-Oz` は +2.2% → +3.8%）。残る増えは、記述子が adapter を参照し続けて、`-Os`・`-Oz` の inline が既知の呼び出しを adapter ごと畳まないためです。hello の `-Oz` では、adapter・worker・環境の clone と drop が別の関数として残り、記述子が `__const` に残ります（`_tsuzuri_main` が環境を確保し、`@tz.apply.*` を呼んで解放する形）。実行ファイル全体では、`-Oz` の hello が 34,008 → 34,376（+1.1%）、`-Os` が 33,896 → 34,232（+1.0%）、functional の `-Oz` が 35,208 → 35,672（+1.3%）、io の `-Oz` が 52,360 → 52,776（+0.8%）です。関数値を作らない小さな library の `-O3`・`-Os`・`-Oz` の object は、基準とバイト一致です。ユーザー向けの説明は [`option.md`](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md) にあります。
 
 #### 生成物の大きさ（バイト。基準 → after）
 
@@ -5147,7 +5147,7 @@ Task.run computation
 
 - 更新が失われるのは、Task が同じカウンターを同時に増やすときです。ループのカウンターは、ループの前にレジスタへ読み、後ろで書き戻されます（計装した実行ファイルの逆アセンブルで確認）。4 つのスレッドが 0 から数えて書き戻すので、最後に書いた 1 つの 1 億だけが残ります。関数に入る回数は更新が短い間隔の 1 回で、この例では正確でした。
 - 結果（1199999994）と、プロファイルの形（hash）には影響しません。どちらのプロファイルも、通常の Clang の `--profile-use` が `W2001` なしで受け取り、使った成果物の実行時間は計装しない場合と同じでした（0.09〜0.11 秒）。この例では、更新の方法による差は測れませんでした。
-- 原子的な更新は、ループのカウンターを 4 つのスレッドが同じキャッシュ行へ書き続ける形になり、計装したプログラムは約 60 倍遅くなります。回数を正確にする利益が測れないので、Tsuzuri は原子的な更新を付けません。正確な回数が要る利用者は、`TSUZURI_CLANG` に `-fprofile-update=atomic` を足す wrapper を指定します（[option.md](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。
+- 原子的な更新は、ループのカウンターを 4 つのスレッドが同じキャッシュ行へ書き続ける形になり、計装したプログラムは約 60 倍遅くなります。回数を正確にする利益が測れないので、Tsuzuri は原子的な更新を付けません。正確な回数が要る利用者は、`TSUZURI_CLANG` に `-fprofile-update=atomic` を足す wrapper を指定します（[option.md](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
 
 ### WebAssembly（wasm32）
 
@@ -5173,7 +5173,7 @@ Node 24 の apps は 4 種目が 5〜14% 速く、`binary_trees`・`closure_pipe
 
 ### 測っていないもの
 
-- 速度は、Linux・x86-64・Windows で測っていません。Windows は拒否します。CI の `tests/pgo.mjs`（動作だけを確かめ、速度は測りません）は、macOS の arm64 と Linux の x86_64・arm64 で通りました（Linux の ELF が `--gc-sections` でプロファイルの section を残すことを含みます）。macOS の x86_64 では、Apple 以外の Clang が計装のリンクに足す `-sectalign … 0x4000` に Apple の `ld` が警告を 3 行出し、「run builds with the profile options」の節が失敗していました。Tsuzuri がその 3 行だけを表示しないことで直しました（[option.md](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。
+- 速度は、Linux・x86-64・Windows で測っていません。Windows は拒否します。CI の `tests/pgo.mjs`（動作だけを確かめ、速度は測りません）は、macOS の arm64 と Linux の x86_64・arm64 で通りました（Linux の ELF が `--gc-sections` でプロファイルの section を残すことを含みます）。macOS の x86_64 では、Apple 以外の Clang が計装のリンクに足す `-sectalign … 0x4000` に Apple の `ld` が警告を 3 行出し、「run builds with the profile options」の節が失敗していました。Tsuzuri がその 3 行だけを表示しないことで直しました（[option.md](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
 - `--emit bitcode`（PR08 の ThinLTO）との併用は確かめていません。許可リスト（native は `exe`・`object`、wasm32 は `wasm`）に入れていないので `E2000` です（`src/main.rs` の拒否の表と `tests/pgo.mjs` がこの拒否を確かめます）。許すには、`Profile::validate` に `Emit::Bitcode` を足し、計装と使用が bitcode の compile に届くことと、`llvm-link` で併合した C ランタイムを含む module の profile が合うことを、host を含めて確かめる必要があります。
 - 速度の閾値は共有 CI に置きません。`node tests/pgo.mjs` は動作だけを確かめ、時間は測りません。
 
@@ -5188,7 +5188,7 @@ node tests/pgo.mjs target/release/tsuzuri
 
 ### PR08 言語間 LTO と bitcode 出力
 
-`--emit bitcode`（PR08）は、プログラムと、それが使う C ランタイムを 1 つの ThinLTO の bitcode にします。C・C++ のホストが `-flto=thin` でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--emit object` のリンクでは、その呼び出しは呼び出しのまま残ります。使い方は [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) にあります。この節は、その効果を測った記録です。速さは、同じ Clang でビルドとリンクをした構成だけで述べます。
+`--emit bitcode`（PR08）は、プログラムと、それが使う C ランタイムを 1 つの ThinLTO の bitcode にします。C・C++ のホストが `-flto=thin` でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--emit object` のリンクでは、その呼び出しは呼び出しのまま残ります。使い方は [ネイティブ連携](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/native-interop.md) にあります。この節は、その効果を測った記録です。速さは、同じ Clang でビルドとリンクをした構成だけで述べます。
 
 #### 種目 `lto/small_call`
 

@@ -22,7 +22,7 @@
 6. 新しい解析には資源上限と `E1017` を設ける（構文・式の深さ 128、特殊化 65,536 など。解析が最適化にすぎない場合は、上限超過で結果を捨てて保守的な経路へ戻してよい）。
 7. 型付き IR の不変条件は型検査で保証する。コード生成時のキャストや `unreachable!()` で辻褄を合わせない。
 8. `unsafe` は禁止（`Cargo.toml` の lint）。新しい crate を足さない（使えるのは `serde_json` と標準ライブラリだけ）。
-9. 同じ PR で `_tsuzuri/language-reference/` の関連ページと `docs/language.md` を（動作が固まったところで一度）最新にし、`node scripts/check-docs.mjs <変更したページ>` を通す。README と `docs/architecture.md` は、書いてあることが変更で誤りになるときだけ直す。
+9. 同じ PR で `docs/language.md` を（動作が固まったところで一度）最新にし、別リポジトリ Tsuzuri-Reference の言語リファレンスも同期する。README と `docs/architecture.md` は、書いてあることが変更で誤りになるときだけ直す。
 10. テストの期待値は、独立した参照（JavaScript の BigInt・Python・C・手で書いた値）から作る。**コンパイラの現在の出力を期待値に写さない。** 通らないテストを、期待値の書き換えで通さない。
 11. コミットは自分のブランチに段ごとに作ってよい（1 チケット 1 ブランチ・1 PR）。`main` にはコミットも push もしない（`AGENTS.md`）。
 
@@ -39,7 +39,7 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo nextest run --locked                                                # 全 Rust テスト（T1）。無ければ cargo test --locked
 cargo build && node tests/features.mjs target/debug/tsuzuri <suite 名>    # E2E は直前にそのバイナリをビルドする。dev（opt-level 1）で足りる。release は性能や大きさを見る検査だけ
-node scripts/check-docs.mjs _tsuzuri/language-reference/<変更したページ>.md
+node scripts/gen-docs.mjs --check && node scripts/check-cli-docs.mjs      # 生成ブロックと CLI・コード・版の整合確認
 sh scripts/check-runtime-includes.sh                                      # src/runtime/ のファイルを足したとき
 ```
 
@@ -82,14 +82,14 @@ fn rejects(source: &str, code: &str) {
 - 診断 v2 の追加キー（`kind`・`related`・`help`・`fixes`・`expected`／`found`・`candidates`・`scope`）は D-51 の形に従う。値のない診断の JSON は 1 byte も変えない。
 - **診断を作る API は、実装する時点の HEAD で決まる。** `grep -n "pub fn of" src/diagnostic.rs` が 1 件なら G23 は済んでいて、`Diagnostic::new`・`warning` はもうない: 新しい診断は `Diagnostic::of(DiagnosticKind::…, …)` で作り、kind を先に G23 の登録簿（`diagnostic_kinds` モジュール）へ足す
   （手順は [G23](_completed/G23-diagnostic-kinds-explain-hints.md) の仕様 S1「新しい kind を足す手順」。**kind は診断を足すチケット自身が足す**）。0 件で `grep -n "pub fn with_kind" src/diagnostic.rs` が 1 件（G22 だけ）なら、チケットのとおり `Diagnostic::new(…).with_kind("…")` と書く（G23 があとで登録簿へ移す）。どちらもなければ kind を付けない（コード・位置・メッセージは同じ。D-51）。kind の文字列はどの場合も同じ。チケットが `with_kind` の形で書いていても、G23 のあとなら `of` の形に読み替える。
-- `_tsuzuri/language-reference/compiler/diagnostics.md` と `docs/language.md` の「診断」の表を更新する。
+- `docs/language.md`（および別リポジトリ Tsuzuri-Reference の診断ページ）の「診断」の表を更新し、`node scripts/gen-docs.mjs` を実行する。
 
 ## 7. 新しい構文・型・組み込み関数を足すとき
 
 - 新しい予約語は足さない（文脈キーワードか属性にする）。字句・構文の変更は `Edition`（D-45・D-54）を引数に取る入口を通す。`src/syntax_codec.rs` の符号化と `FRONTEND_FORMAT`（AST の符号化を変えるたびに 1 上げる）を忘れない。
 - 新しい組み込み関数は `Builtin::ALL`・`name`・`signature`・生成（`emit_builtin`）・効果の分類（A19・A20 の表）を全部更新する。
 - std や組み込みに関数・モジュールを足すときは、操作する値（対象）を最後の引数にする（D-59）。新しい `std/` のファイルは `tests/std_argument_order.rs` の `MODULES` に分類する（足さないと赤になる）。資源のハンドルを先に取る例外は、理由を同じ表に書く。
-- 新しい CLI オプションは `src/main.rs` の引数解析と、`rejects_ambiguous_or_unused_arguments` のテスト、`driver.rs` の `BuildOptions::validate`（使えない組み合わせは黙って無視せず `E2000`）、README の CLI 表と `_tsuzuri/language-reference/compiler/option.md` を更新する（G35 の `check-cli-docs` が `--help` の旗を両方に求める）。
+- 新しい CLI オプションは `src/main.rs` の引数解析と、`rejects_ambiguous_or_unused_arguments` のテスト、`driver.rs` の `BuildOptions::validate`（使えない組み合わせは黙って無視せず `E2000`）、README の CLI 表（および別リポジトリ Tsuzuri-Reference のオプションページ）を更新する（G35 の `check-cli-docs` が `--help` の旗を検査する）。
 - std に公開関数・モジュールを足すときは、G34 の Phase 3 が済んでいる木（`ls tests/std_examples.rs`）なら、足した公開関数の `///` に G34 の形式の例を付け、新しいモジュールをそのファイルの床の表（FLOORS）に足す。G35 の Phase 2 が済んでいる木（`ls tests/std_tags.rs`）で、完全にタグ付けしたモジュールの一覧（TAGGED）にあるモジュール（`Array`・`Vec`・`Map`・`Set`・`HashMap`・`HashSet`・`List`・`String`）へ公開関数を足すときは、`@complexity` も付ける（新しい関数には `@since` も）。足さないと、それぞれのテストが赤になる。
 - 新しい `.ll` を足したら `.gitignore` の `!src/runtime/<name>.ll` と `scripts/check-runtime-includes.sh`。`numeric.ll`・`math.ll` は生成物で手で直さない。
 
@@ -97,7 +97,7 @@ fn rejects(source: &str, code: &str) {
 
 - 文書は日本語（です・ます）、コード識別子と診断メッセージは英語。AI 向け成果物（`guide/`・`AGENTS.md` のひな形・`llms.txt`・brief カード）は英語（D-56）。
 - 利用者向けの仕様は `docs/language.md`、内部の不変条件は `docs/architecture.md`、概要と実行例は `README.md`、性能は `docs/benchmarks.md`。食い違いを残さない。
-- 機能の名前・キーワード・診断コード・CLI オプションで `_tsuzuri/language-reference` 全体を `grep` し、いちばん目立つページだけで終わらせない。計画中の注記・既知の不具合の警告・チケットへのリンクは、実際の振る舞いの説明に置き換える。
+- 機能の名前・キーワード・診断コード・CLI オプションで `docs/language.md` と別リポジトリ Tsuzuri-Reference 全体を検索し、いちばん目立つ箇所だけで終わらせない。計画中の注記・既知の不具合の警告・チケットへのリンクは、実際の振る舞いの説明に置き換える。
 - 実装していない最適化や将来計画を、実装済みのように書かない。
 
 ## 9. 止めて報告する条件（GUIDE §13.1）と完了報告

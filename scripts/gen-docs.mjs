@@ -127,24 +127,16 @@ export function complexityTable(module, entries) {
 
 // ---- placements, plan, check, write ---------------------------------------------
 export const PLACEMENTS = [
-    { name: 'diagnostic-kinds', file: '_tsuzuri/language-reference/compiler/diagnostics.md', requires: 'explain' },
+    { name: 'diagnostic-kinds', file: 'docs/language.md', requires: 'explain' },
     { name: 'benchmark-summary', file: 'docs/benchmarks.md' },
     { name: 'perf-metrics', file: 'docs/benchmarks.md' },
-    { name: 'complexity:Array', file: '_tsuzuri/language-reference/built-in-types-and-modules/array.md' },
     { name: 'complexity:Array', file: 'docs/language.md' },
-    { name: 'complexity:Vec', file: '_tsuzuri/language-reference/built-in-types-and-modules/vec.md' },
     { name: 'complexity:Vec', file: 'docs/language.md' },
-    { name: 'complexity:Map', file: '_tsuzuri/language-reference/built-in-types-and-modules/map.md' },
     { name: 'complexity:Map', file: 'docs/language.md' },
-    { name: 'complexity:Set', file: '_tsuzuri/language-reference/built-in-types-and-modules/set.md' },
     { name: 'complexity:Set', file: 'docs/language.md' },
-    { name: 'complexity:HashMap', file: '_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md' },
     { name: 'complexity:HashMap', file: 'docs/language.md' },
-    { name: 'complexity:HashSet', file: '_tsuzuri/language-reference/built-in-types-and-modules/hashset.md' },
     { name: 'complexity:HashSet', file: 'docs/language.md' },
-    { name: 'complexity:List', file: '_tsuzuri/language-reference/built-in-types-and-modules/list.md' },
     { name: 'complexity:List', file: 'docs/language.md' },
-    { name: 'complexity:String', file: '_tsuzuri/language-reference/built-in-types-and-modules/string.md' },
     { name: 'complexity:String', file: 'docs/language.md' },
 ];
 
