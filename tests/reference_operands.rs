@@ -843,14 +843,17 @@ fn editions_2026_and_2027_support_reference_operands() {
     )
     .unwrap();
 
-    // NC19 + A40: `ref v - ref w` and edition 2028 borrowed parameters `a - b` / `-a` / `2.0 * a`
-    // strip one reference layer and dispatch to OEI without moving or copying inputs.
+    // NC19 + A40: `ref v - ref w`, explicit `ref Tensor.View`, and edition 2027/2028 default-borrowed
+    // `Tensor<f64>` parameters strip one reference layer and dispatch to OEI without moving inputs.
     let oei_ref = "\
-def view_diff { r1, r2 } :: Tensor.View<f64> { r1 } -> Tensor.View<f64> { r2 } -> Tensor<f64>
+def view_diff { r1, r2 } :: ref (Tensor.View<f64> { r1 }) -> ref (Tensor.View<f64> { r2 }) -> Tensor<f64>
 fn view_diff a b = a - b
 
-def neg_view { r } :: Tensor.View<f64> { r } -> Tensor<f64>
+def neg_view { r } :: ref (Tensor.View<f64> { r }) -> Tensor<f64>
 fn neg_view a = -a
+
+def scale_tensor :: f64 -> Tensor<f64> -> Tensor<f64>
+fn scale_tensor k t = k * t
 
 def main :: unit -> i32 = \\() ->
     let x = Tensor.of_array [3] [10.0, 20.0, 30.0]
@@ -858,11 +861,13 @@ def main :: unit -> i32 = \\() ->
     let vx = Tensor.view (ref x)
     let vy = Tensor.view (ref y)
     let d1 = (ref vx) - (ref vy)
-    let d2 = view_diff vx vy
-    let n1 = neg_view vy
-    if d1 == d2 && d1[2] == 27.0 && n1[1] == -2.0 then 0i32 else 1i32
+    let d2 = view_diff (ref vx) (ref vy)
+    let n1 = neg_view (ref vy)
+    let sx = scale_tensor 2.0 x
+    if d1 == d2 && d1[2] == 27.0 && n1[1] == -2.0 && sx[0] == 20.0 && x[0] == 10.0 then 0i32 else 1i32
 ";
-    emits(oei_ref);
+    check("2027", oei_ref).unwrap();
+    check("2028", oei_ref).unwrap();
     assert_eq!(run_exit_code(oei_ref, false), 0);
 
     let errs = check_all(

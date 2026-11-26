@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | [A37](A37-index-base-place-borrow.md)（生成関数の印と、土台を借りる `Index` の下げ方を使う） |
 | 後続 | [NC16](NC16-index-ref-and-zero-alloc-element-reads.md), [NC18](NC18-multi-axis-bracket-indexing.md), [NC20](NC20-compound-assignment-and-mutable-index-views.md)（Phase 3） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の未決の問い (1) を、委任による決定で新しいチケットにした。HEAD `858a949c` で確認） |
 | 承認 | 決定（D-66 の委任で決定、2026-11-25）: 評価順の規則（D1）、キーを評価する間の土台の共有の守り（D2）、`=` と複合代入の順（D3）、edition を使わないこと（D4）、リリースの条件と代わりの道（D5）、仕様の規則 2 つ（D7）。D6・D8・D9 は既定案 |
 | 改善する劣位 | 一貫性: 組み込みの添字は土台をキーより先に評価し、`Index` の添字はキーを土台より先に評価する。`IndexMut` の `t[k] = v` はキーを右辺より先に評価し、組み込みの `xs[i] = v`（EVL-012。右辺が先）と違う。配列の `xs[i]` とテンソルの `t[[i]]` で副作用の順が変わり、利用者も AI も順を予測できない（GUIDE D-66「1 つの記号は 1 つの意味」）。不具合（借用）: 組み込みの添字ではキーが土台を書き換えると `E1014` だが、`Index`・`IndexMut` では通る（現状の表） |

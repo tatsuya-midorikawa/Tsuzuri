@@ -275,7 +275,7 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 | 複素数・特殊値 | `real`, `imag`, `conj`, `angle`, `is_nan`, `is_infinite`, `is_finite`, `signbit`, `nan_to_num` | `Complex<'a>` ビューの実部/虚部/共役/偏角と、`NaN`/`±Inf`/符号ビット判定・置換 |
 | 比較・近傍一致・外積 | `elem_eq`, `elem_ne`, `elem_lt`, `elem_le`, `elem_gt`, `elem_ge`, `eq_scalar`, `ne_scalar`, `lt_scalar`, `le_scalar`, `gt_scalar`, `ge_scalar`, `isclose`, `allclose`, `array_equal`, `array_equiv`, `outer_with`, `accumulate` | 要素ごと比較マスク・許容誤差比較・外積表・軸に沿った累積適用 |
 
-同じ型どうしの所有 `Tensor<'a>` には `Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg` の借用算術インスタンスが定義されており、`a + b`・`(x - mean) / std`・`-a` を被演算子を消費せずにそのまま書けます（形状非互換時はトラップします）。`View` どうし・`Tensor` と `View`・スカラーとの直接演算子は [NC19](../../../_features/NC19-operator-extension-instances.md)、複合代入 `+=` 等は [NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md) で追加予定です。
+同じ型どうしの所有 `Tensor<'a>` には `Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg` の借用算術インスタンスが、さらに `View` どうし・`Tensor` と `View`・スカラーとの間には [43 個の演算子の拡張インスタンス](#算術演算子)が定義されており、`a + b`・`ref a[1..] - ref a[..^1]`・`2.0 * x + 1.0`・`-v` を被演算子を消費せずにそのまま書けます（形状非互換時はトラップします）。複合代入 `+=` 等は [NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md) で追加予定です。
 
 ```tsuzuri run=true
 let x = Tensor.of_array [2, 3] [2.0, 4.0, 6.0, 10.0, 20.0, 30.0]

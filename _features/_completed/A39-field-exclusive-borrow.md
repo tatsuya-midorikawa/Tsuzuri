@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | –（[A13](_completed/A13-exclusive-borrow-fields.md)・[A17](_completed/A17-last-use-move.md)・[A18](_completed/A18-parameter-conventions.md)・[A31](_completed/A31-in-place-writes-keep-stored-borrows.md)・[C08](_completed/C08-mutable-slices.md) は完了済み） |
 | 後続 | [NC20](NC20-compound-assignment-and-mutable-index-views.md)（Phase 2・3）。[PM10](../_perfs/PM10-std-consume-copies.md) は A39 が作る借用の根を Phase 2 で扱う（A39 は PM10 の前提ではない） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の委任による NC20 の D2 の決定。HEAD `858a949c` で確認） |
 | 承認 | 承認済み（D-66 の委任で決定、2026-11-25）: std だけの特権を作らず一般の規則にすること（D1。NC20 の D2）、edition 2027 以降に限ること（D2）、対象の場所と可変性の判定（D3）、拒否のまま残す形（D4）、健全さを示せない構成の縮め方（D5）。仕様の規則 1 つ（D8）は決定（D-66 の委任で決定、2026-11-25）。D6・D7 は既定案 |
 | 改善する劣位 | 表現力と性能: edition 2027 では `b.n = 5` と `b.xs[0] = 9` が書けるのに、同じ場所を `ref mut b.n` で関数へ渡すこと、`ref mut b.xs[0..]` で排他スライスにすること、`Array.write 0 9 b.xs` と書くこと、`h.g[1] = 42`（`IndexMut` の対象がフィールド）は `E1014` になる。案内（「let mut へ移して戻す」）は、Copy の配列のフィールドでは中身を複製し、`Tensor` のような Copy でないフィールドでは、すべてのフィールドを並べて持ち主を作り直す書き方になる（`{ b with f = x }` は部分 move の `E1012`）。std も、所有する `Tensor` の `data` を排他借用する本体を書けない |

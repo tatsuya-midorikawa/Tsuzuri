@@ -7,7 +7,7 @@
 | 規模 | L（3 引数・2 引数のインスタンスのヘッダ、1 つの演算子表と OEI の振り分けの位置、`binary_expression`・`binary_type` の解決の順序と柔らかいヒント、呼び出しへの脱糖、std の 43 インスタンスの生成） |
 | 依存 | [A37](A37-index-base-place-borrow.md)（手順 5: 算術クラスの orphan 規則と `dispatch_positions`。着手条件）, [NC06](NC06-tensor-ufuncs-and-elementwise.md), ([NC16](NC16-index-ref-and-zero-alloc-element-reads.md)), ([NC18](NC18-multi-axis-bracket-indexing.md)), ([A40](A40-reference-operands.md))（順序の推奨だけ。A40 を先に入れるのを推奨する。NC19 は A40 に依存しない） |
 | 後続 | [NC20](NC20-compound-assignment-and-mutable-index-views.md), [NC21](NC21-complex-real-scalar-operators.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認）。同日、D-66 の委任による決定を反映（差分は末尾の「改訂」） |
 | 承認 | D1 は承認済み（D-66 の委任で決定、2026-11-25。完了済みの [NC03](_completed/NC03-borrowed-arithmetic-operators.md) の D2 の改訂。被覆の規則、総称関数の型変数、リテラルの型、互換性、`extern type` の 5 点を足した）。D2 は承認済み（D-66 の委任で決定、2026-11-25。1 つの演算子表。orphan 規則は [A37](A37-index-base-place-borrow.md) の D4 と同じ 1 つの規則）。D9 は (i) 却下、(ii) [A40](A40-reference-operands.md) に分けて承認、(iii) `Complex` は [NC21](NC21-complex-real-scalar-operators.md) に分けて承認・`BigInt` は却下（どれも D-66 の委任で決定、2026-11-25）。D10 は承認済み（D-66 の委任で決定、2026-11-25）。ほかは既定案 |
 | 手本にする既存実装 | [NC04](_completed/NC04-generic-index-class-and-slice.md) の組み込み限定の 3 引数ヘッダ（`src/parser.rs` 914〜933 行付近、`src/polymorph.rs` の `register_index_instance` 2495〜2685 行付近と `resolve_index` 2758 行付近）、`Index` の呼び出しへの脱糖（`src/check.rs` 14748〜14833 行付近）、同じ型どうしの演算子の下げ方 `operator_call`（`src/polymorph.rs` 6678〜6741 行付近）。orphan 規則は A37 の手順 5 が作る `validate_orphan_instance`・`dispatch_positions` に OEI の位置を足すだけ（A37 の手本は `validate_drop_instance`、`src/polymorph.rs` 3913 行） |

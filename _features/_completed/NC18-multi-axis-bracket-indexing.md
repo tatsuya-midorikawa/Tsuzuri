@@ -7,7 +7,7 @@
 | 規模 | L（構文の新しい節点 `MultiIndex`、型で決める脱糖、std の厳格なキー型と窓のインスタンス。Phase 2 は `^k` の要素の読み出し） |
 | 依存 | [A37](A37-index-base-place-borrow.md), [A38](A38-index-evaluation-order.md), [NC16](NC16-index-ref-and-zero-alloc-element-reads.md), [NC17](NC17-edition-2028-inclusive-range-family.md) |
 | 後続 | [NC20](NC20-compound-assignment-and-mutable-index-views.md), ([NC19](NC19-operator-extension-instances.md)) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認） |
 | 承認 | 方向は承認済み（D-66a 範囲の意味、D-66d `ref` 必須。添字の角括弧の中のカンマは D-65「パーサーの文法を増やさない」の改訂として D-66 に記録）。評価順（D7）は決定（D-66 の委任で決定、2026-11-25）で、規則は A38。2028 の受理（D1・D8）を 2028 を含むリリースの後に入れてよいことと、窓の整数の成分への `W1014`（D15）も決定（同。NC17 の Q2・Q1）。ほかの決定事項は既定案。std に足す名前（`Slice.Sel`・`Slice.Pos`・`Slice.Bound`・`Slice.rest`・`Slice.resolve_sel`）と新しい診断の kind は GUIDE D-55 に登録済み（2026-11-25 の統合） |
 | 手本にする既存実装 | `src/parser.rs` の `index_or_slice`（4511 行付近）、`src/check.rs` の `ExprKind::Index`（14748 行付近）と `slice`（16028 行付近）、`std/Tensor.tz` の `slice_raw`（1588 行付近）、`std/MatrixView.tz` の `slice`（428 行付近）、`std/Slice.tz` の `resolve` |

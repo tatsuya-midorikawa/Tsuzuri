@@ -5,7 +5,7 @@
 | ID | NC08 |
 | 優先度 | P1（科学技術計算・機械学習・最適化の中核） |
 | 規模 | XL（3 Phase に分割: Phase 1 テンソル積・`einsum`、Phase 2 LU/Cholesky/QR/求解/逆行列/行列式/ノルム、Phase 3 SVD・固有値分解 `eigh`/`eig`） |
-| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC05](NC05-tensor-shape-indexing-and-masking.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md) |
+| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC05](NC05-tensor-shape-indexing-and-masking.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) |
 | 後続 | [NC09](NC09-fft-and-polynomial.md), ([NC10](NC10-random-distributions-and-generators.md)), [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md), [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -32,7 +32,7 @@
 
 ### 着手条件
 
-- [NC01](NC01-complex-and-extended-math.md)・[NC02](NC02-tensor-core-views-and-broadcasting.md)・[NC05](NC05-tensor-shape-indexing-and-masking.md)・[NC06](NC06-tensor-ufuncs-and-elementwise.md) が done。
+- [NC01](NC01-complex-and-extended-math.md)・[NC02](NC02-tensor-core-views-and-broadcasting.md)・[NC05](NC05-tensor-shape-indexing-and-masking.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) が done。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -104,7 +104,7 @@
 - [NC01](NC01-complex-and-extended-math.md): `Complex<'a>`, `Math.hypot`/`Math.copysign`/`Math.sign`。
 - [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor.View`, `Tensor.Mut`, `broadcast_shape`。
 - [NC05](NC05-tensor-shape-indexing-and-masking.md): `permute`, `swapaxes`, `reshape`。
-- [NC06](NC06-tensor-ufuncs-and-elementwise.md): `allclose`, 要素ごと演算。
+- [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md): `allclose`, 要素ごと演算。
 
 ## 他チケットへ提供するインターフェース
 

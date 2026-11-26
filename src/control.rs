@@ -250,6 +250,8 @@ impl Checker<'_> {
                         self.expression(step, Some(&ty))?
                     } else {
                         // `downto` steps down by `1` (`descending`), so its step fits an unsigned type.
+                        self.require("Integer", ty.clone(), source.span)?;
+                        self.integer_literals.push(source.span);
                         let (kind, ty) = self.integer(1, None, Some(&ty), false, source.span)?;
                         value(kind, ty, source.span)
                     };

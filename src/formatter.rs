@@ -1152,7 +1152,7 @@ impl Canonical {
                                 self.expression(bound);
                             }
                         }
-                        IndexComponent::Whole(_) => {}
+                        IndexComponent::Whole(span) => *span = Span::default(),
                     }
                 }
             }

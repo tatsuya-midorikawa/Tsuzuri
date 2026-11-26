@@ -14567,6 +14567,38 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn check_oei_literal(&mut self, expr: &Expr, hint: &Type) -> Result<TypedExpr, Diagnostic> {
+        let resolved_hint = self.inference.resolve(hint);
+        let (is_flt, int_info, _) = Self::untyped_number_info(expr);
+        if !is_flt
+            && let Some((val, neg)) = int_info
+            && matches!(resolved_hint, Type::Infer(_))
+            && let Some(float_class) = self.classes.class_id("Float")
+            && self
+                .constraints
+                .iter()
+                .any(|c| c.class == float_class && self.inference.resolve(&c.ty) == resolved_hint)
+        {
+            let float = TypedExpr {
+                kind: TypedExprKind::GenericFloat(val.to_string()),
+                ty: resolved_hint.clone(),
+                span: expr.span,
+            };
+            let kind = if neg {
+                TypedExprKind::Unary(UnaryOp::Negate, Box::new(float))
+            } else {
+                float.kind
+            };
+            return self.finish_expression(
+                kind,
+                resolved_hint.clone(),
+                Some(&resolved_hint),
+                expr.span,
+            );
+        }
+        self.expression(expr, Some(&resolved_hint))
+    }
+
     fn build_oei_call(
         &mut self,
         resolved: polymorph::ResolvedOperator,
@@ -14727,7 +14759,7 @@ impl<'a> Checker<'a> {
                     expression.span,
                 )?;
                 let left = if let Some(lh) = lit_hint {
-                    self.expression(left, Some(&lh))?
+                    self.check_oei_literal(left, &lh)?
                 } else {
                     let fallback = self.sibling_hint(&right.ty, hint);
                     let was_rec = std::mem::replace(&mut self.recovering, false);
@@ -14767,7 +14799,7 @@ impl<'a> Checker<'a> {
                     expression.span,
                 )?;
                 let right = if let Some(rh) = lit_hint {
-                    self.expression(right, Some(&rh))?
+                    self.check_oei_literal(right, &rh)?
                 } else {
                     let fallback = self.sibling_hint(&left.ty, hint);
                     let marked = self.operand_results(right);
@@ -18902,7 +18934,7 @@ impl<'a> Checker<'a> {
                         self.names,
                         expression.span,
                     )? {
-                        let left = self.expression(left_ast, Some(&lh))?;
+                        let left = self.check_oei_literal(left_ast, &lh)?;
                         (left, false, right, r_strip)
                     } else {
                         let (left, l_strip, strip_r) =
@@ -18952,7 +18984,7 @@ impl<'a> Checker<'a> {
                     self.names,
                     expression.span,
                 )? {
-                    let right = self.expression(right_ast, Some(&rh))?;
+                    let right = self.check_oei_literal(right_ast, &rh)?;
                     (left, l_strip, right, false)
                 } else {
                     let marked = self.operand_results(right_ast);
@@ -20417,11 +20449,19 @@ impl<'a> Checker<'a> {
         if suffix.is_none()
             && let Some(ty) = expected
             && matches!(ty, Type::Infer(_))
+            && self.inference.is_numeric_literal(ty)
             && let Some(float_class) = self.classes.class_id("Float")
             && self
                 .constraints
                 .iter()
                 .any(|c| c.class == float_class && self.inference.resolve(&c.ty) == *ty)
+            && !self.constraints.iter().any(|c| {
+                self.inference.resolve(&c.ty) == *ty
+                    && matches!(
+                        self.classes.declared_name(c.class),
+                        "Integer" | "SignedInteger" | "UnsignedInteger"
+                    )
+            })
         {
             let float = TypedExpr {
                 kind: TypedExprKind::GenericFloat(value.to_string()),
