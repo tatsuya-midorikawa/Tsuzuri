@@ -3517,8 +3517,7 @@ let row = Matrix.row 1 (ref p)
 `mul_parallel`・`mul_fma_parallel` は、出力の行を `Parallel.for_each_chunk_with` で分けます。1 チャンクは約 $2^{20}$ 回の積和になる行数（`max(1, 1048576 / (inner * cols))` 行）で、境界は形だけで決まり、CPU 数・SIMD 幅・ターゲットで変わりません（D-14）。各出力要素の演算は `mul`・`mul_fma` と同じなので、結果はスレッド数によらずビットが一致します。要素型には `Send<'a>` も要ります。1 チャンクで済む積は呼び出したスレッドで直接計算し、2 チャンク以上でも `Parallel.for_each_chunk_with` で両入力の共有借用をそのまま渡すため複製しません。
 
 `at`・`row`・`as_array` の戻り値は元の行列を共有借用し、借用が生きている間の move・置換は `E1014`、`to_array` と `set` の後の使用は `E1012` です。
-計算量は、`at`・`row`・`as_array`・`rows`・`cols` が確保なしの $O(1)$、`of_array` が複製なしの $O(1)$、`map`・`transpose`・`add` が $O(\text{rows} \times \text{cols})$、積が $O(\text{rows} \times \text{inner} \times \text{cols})$ です。`mul` は再帰しません。
-`to_array`・`set` は、要素が Copy でない型なら複製なしの $O(1)$ です。要素が Copy 型なら、今のコンパイラは消費した行列からバッファのフィールドを取り出すときに移動せず、要素をすべて複製するので $O(\text{rows} \times \text{cols})$ です（`Tensor` の `of_matrix`・`to_matrix`・`to_array`・`reshape`・`reshape_infer`・`try_reshape`・`update` も同じ。既知の制限で、修正は [PM10](../_perfs/PM10-std-consume-copies.md) です）。
+計算量は、`at`・`row`・`as_array`・`rows`・`cols` が確保なしの $O(1)$、`of_array`・`to_array`・`set` が複製なしの $O(1)$、`map`・`transpose`・`add` が $O(\text{rows} \times \text{cols})$、積が $O(\text{rows} \times \text{inner} \times \text{cols})$ です。`mul` は再帰しません。`Tensor` の所有権を移す操作（`of_matrix`・`to_matrix`・`to_array`・`reshape`・`reshape_infer`・`try_reshape`・`update`）も要素型にかかわらず要素を複製せず、形の検査と窓のメタデータの $O(\text{rank})$ だけを行います（PM10）。
 速度は API の約束ではなく、[docs/benchmarks.md](benchmarks.md) の計測だけを根拠にします。ブロッキング・pairwise の積、手書きの SIMD、行列積の GPU カーネルは提供しません。GPU の CPU 参照バッファへは `Matrix.as_array` と `Matrix.of_array` で行き来できます。
 
 ### MatrixView

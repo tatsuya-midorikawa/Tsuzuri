@@ -478,3 +478,87 @@ fn borrowed_and_foreach_sources_are_never_transferred() {
         1,
     );
 }
+
+#[test]
+fn pm10_b1_b2_b3_b4_borrow_lifetimes() {
+    // B1: borrow that ends at a direct call allows a later last-use move (0 copies).
+    allocations(
+        r"def f :: [i64] -> [i64] = \xs -> { let _n = Array.length (ref xs); xs }",
+        "f",
+        0,
+    );
+    // B1 with slice write: only the initial `new` allocates (1 allocation).
+    allocations(
+        r"def f :: i64 -> [i64] = \n -> { let mut out = new [i64](n, \i -> i); Array.write 0 7 (ref mut out[0..]); out }",
+        "f",
+        1,
+    );
+    // B2: consuming read in a later argument of the SAME call copies because the earlier borrow is live at the call.
+    allocations(
+        r"def pair_sum :: ref [i64] -> [i64] -> i64 = \r ys -> r[0] + ys[0]
+def f :: [i64] -> i64 = \xs -> pair_sum (ref xs) (Array.__set 0 9 xs)",
+        "f",
+        1,
+    );
+    // B3: local window bound with `let` whose only uses are B1 calls ends before the root's final move.
+    allocations(
+        r"record View { r } { data: ref { r } [i64] }
+def make_view { r } :: ref { r } [i64] -> View { r } = \xs -> View { data: xs }
+def read_view :: ref View -> i64 = \v -> v.data[0]
+def f :: [i64] -> [i64] = \xs -> { let v = make_view (ref xs); let _x = read_view (ref v); xs }",
+        "f",
+        0,
+    );
+    // B3 negative: a window with a user Drop runs at scope exit, so the root must still copy.
+    allocations(
+        r"extern def sink :: i64 -> unit
+record Guard { r } { data: ref { r } [i64] }
+instance Drop<Guard> { fn drop g = sink g.data[0] }
+def make_guard { r } :: ref { r } [i64] -> Guard { r } = \xs -> Guard { data: xs }
+def f :: [i64] -> [i64] = \xs -> { let _g = make_guard (ref xs); Array.__set 0 9 xs }",
+        "f",
+        1,
+    );
+    // B4 negative: stashing a borrow through an owned record holding `ref mut` or through an exclusive slice keeps the copy.
+    allocations(
+        r"record View { r } { data: ref { r } [i64] }
+record Slot { q r } { dst: ref mut { q } View { r } }
+def stash { q r } :: ref { r } [i64] -> Slot { q r } -> unit = \src slot -> *slot.dst = View { data: src }
+def f :: [i64] -> i64 = \xs ->
+    let fallback = [0, 0]
+    let mut v = View { data: ref fallback }
+    let slot = Slot { dst: ref mut v }
+    stash (ref xs) slot
+    let ys = Array.__set 0 9 xs
+    v.data[0] + ys[0]",
+        "f",
+        1,
+    );
+    allocations(
+        r"record View { r } { data: ref { r } [i64] }
+def put { r } :: ref { r } [i64] -> ref mut [View { r }..] -> unit = \src views -> Array.write 0 (View { data: src }) views
+def f { r } :: [i64] -> [View { r }] -> i64 = \xs init_views ->
+    let mut views = init_views
+    put (ref xs) (ref mut views[0..])
+    let ys = Array.__set 0 9 xs
+    views[0].data[0] + ys[0]",
+        "f",
+        1,
+    );
+    // Edition 2027+ A39 field exclusive borrow followed by returning the Copy record moves `b` (0 copies).
+    let ed27 = tsuzuri::analyze_with_edition(
+        "record Boxed { xs: [i64] }\ndef f :: own Boxed -> Boxed = \\b -> { let mut m = b; Array.write 0 7 (ref mut m.xs[0..]); m }\n0",
+        tsuzuri::syntax::Edition::E2027,
+    )
+    .unwrap();
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&ed27, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            body(&ir, "f")
+                .replace("call nonnull ptr @tz.alloc", "call ptr @tz.alloc")
+                .matches("call ptr @tz.alloc")
+                .count(),
+            0
+        );
+    }
+}

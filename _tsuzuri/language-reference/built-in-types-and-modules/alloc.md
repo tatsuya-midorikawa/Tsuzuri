@@ -109,14 +109,14 @@ test "measure returns the callback result" =
 ```
 
 窓の中に `Debug.print` や文字列補間を足すと、その確保も数えます。
-同じ関数のどこかで局所配列を借用すると、[最後の使用の move](../ownership-and-memory/ownership.md) の対象外になり、
-更新ループで毎回複製することがあります。測定のために対象へ借用を足さないでください。
+同じ関数のどこかで局所配列を `let r = ref xs` のように変数へ束縛して借用すると、[最後の使用の move](../ownership-and-memory/ownership.md) の対象外になり、
+更新ループで毎回複製します（`Array.length (ref xs)` のように呼び出しで終わる借用は対象外になりません）。測定のために対象へ束縛した借用を足さないでください。
 捕捉つき閉包をライブラリ関数に渡す場合、環境の確保はポインター幅などで target に依存します。
 `Array.sort` の確保回数は契約に含めません（`Array.sort_in_place` の無確保とは区別します）。
 
 ## 標準ライブラリの確保の契約
 
-`tests/fixtures/alloc_contracts/Main.tz` の 42 テストは edition 2026・2027 それぞれで、native と wasm32 の `-O0`・`-O3` を検証します。
+`tests/fixtures/alloc_contracts/Main.tz` の 55 テストは edition 2026・2027 それぞれで、native と wasm32 の `-O0`・`-O3` を検証します。
 値の順は **allocs, reallocs, frees, bytes** です。ポインター依存の配置は出来事だけを検査します。
 UTF-16 の既定の文字列表現を対象とし、opt-in の compact 表現のバイト数を約束する表ではありません。
 期待値は規則から導き、時間や実行結果を写した値を合否に使いません。
@@ -138,7 +138,8 @@ Vec の消費する更新には、両版で同じ契約の `Vec.push_owned` を�
 | 12 | 配列の生成とスコープ終了 | 1, 0, 1, 80 |
 | 13 | 一意な配列の `Array.update_at` | 0, 0, 0, 0 |
 | 14 | 最後の使用で配列を再束縛する更新ループ | 0, 0, 0, 0 |
-| 15 | 関数内で借用する 100 要素の配列を 10 回更新 | 10, 0, 10, 8000 |
+| 15 | 関数内で変数に束縛して借用する 100 要素の配列を 10 回更新 | 10, 0, 10, 8000 |
+| 16 | 呼び出しで終わる借用（`Array.length (ref xs)`）の前の 10 回更新 | 0, 0, 0, 0 |
 | 16 | 二つの束縛を使う配列の暗黙コピー | 1, 0, 0, 80 |
 | 17 | `Array.copy` の直後の `update_at`：コピーだけ | 1, 0, 0, 80 |
 | 18 | `Array.filter`：25 要素を Vec へ集め、容量 4→8→16→32 | 1, 3, 0, 480 |
@@ -166,7 +167,16 @@ Vec の消費する更新には、両版で同じ契約の `Vec.push_owned` を�
 | 40 | measure 内の 10 要素の map | 1, 0, 0, 80 |
 | 41 | 無確保の measure | 0, 0, 0, 0 |
 | 42 | 内側と外側の窓 | 内側 1, 0, 0, 32／外側 2, 0, 0, 64 |
+| 43 | `Matrix.to_array`（1000・2000 要素）：バッファの移動 | 0, 0, 0, 0 |
+| 44 | `Matrix.set`（1000・2000 要素）：その場の更新 | 0, 0, 0, 0 |
+| 45 | `Tensor.to_array`（1000・2000 要素）：バッファの移動と形の解放 | 0, 0, 1, 0 |
+| 46 | `Tensor.of_matrix`（1000・2000 要素）：2 要素の形だけ確保 | 1, 0, 0, 16 |
+| 47 | `Tensor.to_matrix`（1000・2000 要素）：バッファの移動と形の解放 | 0, 0, 1, 0 |
+| 48 | `Tensor.reshape`（1000・2000 要素）：形とバッファの移動 | 0, 0, 1, 0 |
+| 49 | `Tensor.reshape_infer`（1000・2000 要素）：推論後の形だけ確保 | 1, 0, 2, 16 |
+| 50 | `Tensor.try_reshape`（1000・2000 要素）：推論後の形だけ確保 | 1, 0, 2, 16 |
+| 51 | `Tensor.update`（1000・2000 要素）：窓のメタデータだけ確保・解放 | 3, 0, 3, 24 |
 
-規則の出典は [配列](array.md)・[Vec](vec.md)・[文字列](string.md)・[Rc](rc.md)・
+規則の出典は [配列](array.md)・[Vec](vec.md)・[文字列](string.md)・[Rc](rc.md)・[Matrix](matrix.md)・[Tensor](tensor.md)・
 [スタックとヒープ](../ownership-and-memory/stack-and-heap.md)・[所有権](../ownership-and-memory/ownership.md) です。
 Map・Set・HashMap・tzroutine・Parallel の確保数、リーク検査、確保場所の報告はこの契約の対象外です。

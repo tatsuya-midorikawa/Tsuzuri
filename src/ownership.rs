@@ -6206,10 +6206,10 @@ fn may_reach_store_beside_code(ty: &Type, types: &crate::check::TypeContext<'_>)
     })
 }
 
-/// A31: `ty` with the target `[T..]` of each exclusive slice (C08) written as the array `[T]`:
+/// A31 / PM10: `ty` with the target `[T..]` of each exclusive slice (C08) written as the array `[T]`:
 /// the walks of `TypeContext::reaches` and `Type::carries_loans` do not look inside a view type,
 /// and what a view can hold is what its elements can.
-fn without_views(ty: &Type) -> Type {
+pub(crate) fn without_views(ty: &Type) -> Type {
     match ty {
         Type::ArrayView(element) | Type::Array(element) => {
             Type::Array(Box::new(without_views(element)))
@@ -6223,6 +6223,15 @@ fn without_views(ty: &Type) -> Type {
         Type::Tuple(elements) => Type::Tuple(elements.iter().map(without_views).collect()),
         _ => ty.clone(),
     }
+}
+
+/// A31 / PM10: whether a value of `ty` may hold a loan, hide an environment, or reach a mutable
+/// cell whose contents may hold a loan (the `holds` bit of `hidden_type`, reading only types).
+pub(crate) fn type_holds_loan(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
+    let plain = without_views(ty);
+    hides_environment(&plain, types)
+        || plain.carries_loans(types)
+        || types.reaches(&plain, |part| part.is_mutable_cell(types))
 }
 
 /// How deep the substitution of the facts of function-valued arguments goes before it treats the

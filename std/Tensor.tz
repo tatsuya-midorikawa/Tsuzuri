@@ -145,8 +145,7 @@ fn init shape initializer =
     let count = volume (ref shape)
     Tensor { shape: shape, data: new ['a](count, initializer) }
 
-/// Turns a matrix into a rank 2 tensor. The current compiler copies the elements when the element
-/// type is `Copy`.
+/// Turns a matrix into a rank 2 tensor without copying elements.
 ///
 /// ```tsuzuri run=[2,%202]%20[1,%202,%203,%204]
 /// let t = Tensor.of_matrix (Matrix.of_array 2 2 [1, 2, 3, 4])
@@ -158,8 +157,7 @@ fn of_matrix matrix =
     let shape = [Matrix.rows (ref matrix), Matrix.cols (ref matrix)]
     Tensor { shape: shape, data: Matrix.to_array matrix }
 
-/// Turns a rank 2 tensor into a matrix; traps unless the rank is 2. The current compiler copies the
-/// elements when the element type is `Copy`.
+/// Turns a rank 2 tensor into a matrix without copying elements; traps unless the rank is 2.
 ///
 /// ```tsuzuri run=2x3%203
 /// let m = Tensor.to_matrix (Tensor.init [2, 3] (\i -> i))
@@ -167,8 +165,11 @@ fn of_matrix matrix =
 /// ```
 def to_matrix :: own Tensor<'a> -> Matrix<'a>
 fn to_matrix tensor =
-    assert (tensor.shape.length == 2)
-    Matrix.of_array tensor.shape[0] tensor.shape[1] tensor.data
+    match tensor with
+    | Tensor { shape: raw_shape, data: data } ->
+        let shape = raw_shape
+        assert (shape.length == 2)
+        Matrix.of_array shape[0] shape[1] data
 
 /// Borrows all elements in row-major order.
 ///
@@ -179,17 +180,17 @@ fn to_matrix tensor =
 def as_array :: ref Tensor<'a> -> ref ['a]
 fn as_array tensor = ref tensor.data
 
-/// Consumes the tensor and returns its row-major buffer. The current compiler copies the elements
-/// when the element type is `Copy`.
+/// Consumes the tensor and returns its row-major buffer without copying elements.
 ///
 /// ```tsuzuri run=[0,%201,%204,%209]
 /// Tensor.to_array (Tensor.init [2, 2] (\i -> i * i))
 /// ```
 def to_array :: own Tensor<'a> -> ['a]
-fn to_array tensor = tensor.data
+fn to_array tensor =
+    match tensor with
+    | Tensor { shape: _, data: data } -> data
 
-/// Gives the elements a new shape; traps unless the product of the shape is unchanged. The current
-/// compiler copies the elements when the element type is `Copy`.
+/// Gives the elements a new shape without copying elements; traps unless the product of the shape is unchanged.
 ///
 /// ```tsuzuri run=[3,%202]%204
 /// let t = Tensor.reshape [3, 2] (Tensor.init [2, 3] (\i -> i))
@@ -198,8 +199,11 @@ fn to_array tensor = tensor.data
 /// ```
 def reshape :: own [i64] -> own Tensor<'a> -> Tensor<'a>
 fn reshape shape tensor =
-    assert (volume (ref shape) == tensor.data.length)
-    Tensor { shape: shape, data: tensor.data }
+    match tensor with
+    | Tensor { shape: _, data: raw_data } ->
+        let elements = raw_data
+        assert (volume (ref shape) == elements.length)
+        Tensor { shape: shape, data: elements }
 
 /// Borrows a tensor as a window.
 ///
@@ -641,8 +645,7 @@ fn borrow_mut shape data =
     Mut { data: data, offset: 0, shape: shape, strides: strides }
 
 /// Temporarily exposes an owned tensor's buffer as a writable `Mut` window, runs `writer`, and
-/// returns the updated tensor. The current compiler copies the elements twice when the element type
-/// is `Copy`; `borrow_mut` on a `let mut` array writes without copying.
+/// returns the updated tensor without copying elements.
 ///
 /// ```tsuzuri run=[0,%200,%209,%200]
 /// let t = Tensor.zeros [2, 2]
@@ -651,11 +654,13 @@ fn borrow_mut shape data =
 /// ```
 def update :: own (ref mut Mut<'a> -> unit) -> own Tensor<'a> -> Tensor<'a>
 fn update writer tensor =
-    let shape = tensor.shape
-    let mut data = tensor.data
-    let mut view = borrow_mut (Array.copy (ref shape)) (ref mut data)
-    writer (ref mut view)
-    Tensor { shape: shape, data: data }
+    match tensor with
+    | Tensor { shape: raw_shape, data: raw_data } ->
+        let shape = raw_shape
+        let mut data = raw_data
+        let mut view = borrow_mut (Array.copy (ref shape)) (ref mut data)
+        writer (ref mut view)
+        Tensor { shape: shape, data: data }
 
 /// Borrows a writable window as a read-only `View` until the next write.
 ///
@@ -2188,9 +2193,8 @@ fn resolve_infer_shape spec total =
             | Maybe.Some v -> if v == total then Maybe.Some out else Maybe.None
             | Maybe.None -> Maybe.None
 
-/// Reshapes an owned tensor, allowing at most one `-1` extent to be inferred from the element count;
-/// traps on multiple `-1`, invalid extents, or mismatched total size. The current compiler copies the
-/// elements when the element type is `Copy`.
+/// Reshapes an owned tensor without copying elements, allowing at most one `-1` extent to be
+/// inferred from the element count; traps on multiple `-1`, invalid extents, or mismatched total size.
 ///
 /// ```tsuzuri run=[3,%202]
 /// let t = Tensor.reshape_infer [-1, 2] (Tensor.init [2, 3] (\i -> i))
@@ -2199,15 +2203,18 @@ fn resolve_infer_shape spec total =
 /// ```
 def reshape_infer :: own [i64] -> own Tensor<'a> -> Tensor<'a>
 fn reshape_infer spec tensor =
-    match resolve_infer_shape (ref spec) tensor.data.length with
-    | Maybe.Some resolved -> Tensor { shape: resolved, data: tensor.data }
-    | Maybe.None ->
-        assert false
-        tensor
+    match tensor with
+    | Tensor { shape: raw_shape, data: raw_data } ->
+        let old_shape = raw_shape
+        let elements = raw_data
+        match resolve_infer_shape (ref spec) elements.length with
+        | Maybe.Some resolved -> Tensor { shape: resolved, data: elements }
+        | Maybe.None ->
+            assert false
+            Tensor { shape: old_shape, data: elements }
 
 /// Fallible version of `reshape_infer`: returns `Result.Error (Error.InvalidShape spec)` instead
-/// of trapping when `spec` is invalid or incompatible with the element count. The current compiler copies
-/// the elements when the element type is `Copy`.
+/// of trapping when `spec` is invalid or incompatible with the element count, without copying elements.
 ///
 /// ```tsuzuri run=true%20true
 /// let ok = match Tensor.try_reshape [3, -1] (Tensor.init [2, 3] (\i -> i)) with
@@ -2220,9 +2227,12 @@ fn reshape_infer spec tensor =
 /// ```
 def try_reshape :: own [i64] -> own Tensor<'a> -> Result<Tensor<'a>, Error>
 fn try_reshape spec tensor =
-    match resolve_infer_shape (ref spec) tensor.data.length with
-    | Maybe.Some resolved -> Result.Ok (Tensor { shape: resolved, data: tensor.data })
-    | Maybe.None -> Result.Error (Error.InvalidShape spec)
+    match tensor with
+    | Tensor { shape: _, data: raw_data } ->
+        let elements = raw_data
+        match resolve_infer_shape (ref spec) elements.length with
+        | Maybe.Some resolved -> Result.Ok (Tensor { shape: resolved, data: elements })
+        | Maybe.None -> Result.Error (Error.InvalidShape spec)
 
 /// Reverses all axes of a window without copying (generalized transpose).
 ///

@@ -1945,11 +1945,18 @@ const suites = {
           ["stack_scrutinee", [n], n + 4n],
           ["recursive_scrutinee", [n], 2n * n + 2n],
           ["guard_reads_subject", [n], n >= 0n ? 4n * n + 2n : 0n],
+          ["borrow_call_move", [n], 77n + (n + 1n) * 10n + 400n],
+          ["slice_write_move", [n], 55n + (n + 2n) * 10n],
+          ["borrow_then_consume", [n], n + 9n],
+          ["window_borrow_move", [n], n + 420n + (n + 3n) * 100n],
+          ["stash_owned_record", [n], n * 100n + 9n],
+          ["lend_owned_record", [n], n * 100n + 49n],
+          ["stash_slice", [n], n * 100n + 9n],
         ]),
       ];
     })(),
     inspect(ir) {
-      for (const name of ["self_update_loop", "recursive_accumulate", "branch_last_reads"]) {
+      for (const name of ["self_update_loop", "recursive_accumulate", "branch_last_reads", "borrow_call_move", "slice_write_move"]) {
         const body = ir.split("\n\n").find(block => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
         assert.ok(body, name);
         assert.equal((body.match(/call (?:nonnull )?ptr @tz\.alloc/g) ?? []).length, 1, name);

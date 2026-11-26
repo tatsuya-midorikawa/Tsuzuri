@@ -176,7 +176,7 @@ test "Array.update_at in a loop that rebinds the array: in place" =
     let last = xs[99]
     assert (last == 198)
 
-// Rule: a local borrowed anywhere in the function is excluded from last-use move
+// Rule: a local with a bound borrow (`let r = ref xs`) is excluded from last-use move
 // (ownership.md). Ten updates each copy 100 x 8 bytes and free the previous array.
 test "Array.update_at in a loop on an array that is borrowed elsewhere: one copy per update" =
     let mut xs = new [i64](100, \_i -> 0)
@@ -184,7 +184,19 @@ test "Array.update_at in a loop on an array that is borrowed elsewhere: one copy
     for i in 0i64 ..= 9i64 do
         xs = Array.update_at i 1 xs
     let used = Alloc.since start
+    let r = ref xs
     expect "Array.update_at loop with a borrow" 10 0 10 8000 used
+    assert (Array.length r == 100)
+
+// Rule: a borrow that ends at its call (`Array.length (ref xs)`) does not exclude earlier or
+// later last-use moves (ownership.md, PM10).
+test "Array.update_at in a loop followed by a call-ending borrow: in place" =
+    let mut xs = new [i64](100, \_i -> 0)
+    let start = Alloc.snapshot ()
+    for i in 0i64 ..= 9i64 do
+        xs = Array.update_at i 1 xs
+    let used = Alloc.since start
+    expect "Array.update_at loop before call-ending borrow" 0 0 0 0 used
     assert (Array.length (ref xs) == 100)
 
 // Rule: binding an array to another name while using both copies it (ownership.md).
@@ -469,6 +481,141 @@ test "an outer window contains the windows inside it" =
     expect "inner" 1 0 0 32 inner_used
     expect "outer" 2 0 0 64 outer_used
     assert (Array.length (ref a) + Array.length (ref b) == 8)
+
+// --- Matrix and Tensor consuming operations (PM10) ---
+
+// Rule: Matrix.to_array moves the backing buffer without copying elements (matrix.md).
+test "Matrix.to_array: moves buffer without copying Copy elements" =
+    let m1 = Matrix.init 500 2 (\r c -> r + c)
+    let s1 = Alloc.snapshot ()
+    let a1 = Matrix.to_array m1
+    let d1 = Alloc.since s1
+    expect "Matrix.to_array 1000" 0 0 0 0 d1
+    let m2 = Matrix.init 1000 2 (\r c -> r + c)
+    let s2 = Alloc.snapshot ()
+    let a2 = Matrix.to_array m2
+    let d2 = Alloc.since s2
+    expect "Matrix.to_array 2000" 0 0 0 0 d2
+    assert (Array.length (ref a1) == 1000 && Array.length (ref a2) == 2000)
+
+// Rule: Matrix.set updates a uniquely owned matrix in place without copying elements (matrix.md).
+test "Matrix.set: replaces element in place without copying Copy elements" =
+    let m1 = Matrix.init 500 2 (\r c -> r + c)
+    let s1 = Alloc.snapshot ()
+    let u1 = Matrix.set 0 1 9 m1
+    let d1 = Alloc.since s1
+    expect "Matrix.set 1000" 0 0 0 0 d1
+    let m2 = Matrix.init 1000 2 (\r c -> r + c)
+    let s2 = Alloc.snapshot ()
+    let u2 = Matrix.set 0 1 9 m2
+    let d2 = Alloc.since s2
+    expect "Matrix.set 2000" 0 0 0 0 d2
+    assert (Matrix.rows (ref u1) == 500 && Matrix.rows (ref u2) == 1000)
+
+// Rule: Tensor.to_array moves the backing buffer and frees only the shape array (tensor.md).
+test "Tensor.to_array: moves buffer without copying Copy elements" =
+    let t1 = Tensor.init [1000] (\i -> i)
+    let s1 = Alloc.snapshot ()
+    let a1 = Tensor.to_array t1
+    let d1 = Alloc.since s1
+    expect "Tensor.to_array 1000" 0 0 1 0 d1
+    let t2 = Tensor.init [2000] (\i -> i)
+    let s2 = Alloc.snapshot ()
+    let a2 = Tensor.to_array t2
+    let d2 = Alloc.since s2
+    expect "Tensor.to_array 2000" 0 0 1 0 d2
+    assert (Array.length (ref a1) == 1000 && Array.length (ref a2) == 2000)
+
+// Rule: Tensor.of_matrix allocates only the 2-element shape (16 bytes) and moves the buffer (tensor.md).
+test "Tensor.of_matrix: allocates shape only without copying Copy elements" =
+    let m1 = Matrix.init 500 2 (\r c -> r + c)
+    let s1 = Alloc.snapshot ()
+    let t1 = Tensor.of_matrix m1
+    let d1 = Alloc.since s1
+    expect "Tensor.of_matrix 1000" 1 0 0 16 d1
+    let m2 = Matrix.init 1000 2 (\r c -> r + c)
+    let s2 = Alloc.snapshot ()
+    let t2 = Tensor.of_matrix m2
+    let d2 = Alloc.since s2
+    expect "Tensor.of_matrix 2000" 1 0 0 16 d2
+    assert (Array.length (Tensor.as_array (ref t1)) == 1000 && Array.length (Tensor.as_array (ref t2)) == 2000)
+
+// Rule: Tensor.to_matrix moves the buffer and frees only the 2-element shape (tensor.md).
+test "Tensor.to_matrix: moves buffer without copying Copy elements" =
+    let t1 = Tensor.init [500, 2] (\i -> i)
+    let s1 = Alloc.snapshot ()
+    let m1 = Tensor.to_matrix t1
+    let d1 = Alloc.since s1
+    expect "Tensor.to_matrix 1000" 0 0 1 0 d1
+    let t2 = Tensor.init [1000, 2] (\i -> i)
+    let s2 = Alloc.snapshot ()
+    let m2 = Tensor.to_matrix t2
+    let d2 = Alloc.since s2
+    expect "Tensor.to_matrix 2000" 0 0 1 0 d2
+    assert (Matrix.rows (ref m1) == 500 && Matrix.rows (ref m2) == 1000)
+
+// Rule: Tensor.reshape moves both the new shape and the element buffer, freeing the old shape (tensor.md).
+test "Tensor.reshape: moves shape and buffer without copying Copy elements" =
+    let t1 = Tensor.init [1000] (\i -> i)
+    let sh1 = new [2i64, 500i64]
+    let s1 = Alloc.snapshot ()
+    let r1 = Tensor.reshape sh1 t1
+    let d1 = Alloc.since s1
+    expect "Tensor.reshape 1000" 0 0 1 0 d1
+    let t2 = Tensor.init [2000] (\i -> i)
+    let sh2 = new [2i64, 1000i64]
+    let s2 = Alloc.snapshot ()
+    let r2 = Tensor.reshape sh2 t2
+    let d2 = Alloc.since s2
+    expect "Tensor.reshape 2000" 0 0 1 0 d2
+    assert (Array.length (Tensor.as_array (ref r1)) == 1000 && Array.length (Tensor.as_array (ref r2)) == 2000)
+
+// Rule: Tensor.reshape_infer allocates only the resolved shape (16 bytes for rank 2), freeing spec and old shape.
+test "Tensor.reshape_infer: allocates resolved shape only without copying Copy elements" =
+    let t1 = Tensor.init [1000] (\i -> i)
+    let sp1 = new [-1i64, 2i64]
+    let s1 = Alloc.snapshot ()
+    let r1 = Tensor.reshape_infer sp1 t1
+    let d1 = Alloc.since s1
+    expect "Tensor.reshape_infer 1000" 1 0 2 16 d1
+    let t2 = Tensor.init [2000] (\i -> i)
+    let sp2 = new [-1i64, 2i64]
+    let s2 = Alloc.snapshot ()
+    let r2 = Tensor.reshape_infer sp2 t2
+    let d2 = Alloc.since s2
+    expect "Tensor.reshape_infer 2000" 1 0 2 16 d2
+    assert (Array.length (Tensor.as_array (ref r1)) == 1000 && Array.length (Tensor.as_array (ref r2)) == 2000)
+
+// Rule: Tensor.try_reshape allocates only the resolved shape (16 bytes for rank 2), freeing spec and old shape.
+test "Tensor.try_reshape: allocates resolved shape only without copying Copy elements" =
+    let t1 = Tensor.init [1000] (\i -> i)
+    let sp1 = new [-1i64, 2i64]
+    let s1 = Alloc.snapshot ()
+    let r1 = Result.get (Tensor.try_reshape sp1 t1)
+    let d1 = Alloc.since s1
+    expect "Tensor.try_reshape 1000" 1 0 2 16 d1
+    let t2 = Tensor.init [2000] (\i -> i)
+    let sp2 = new [-1i64, 2i64]
+    let s2 = Alloc.snapshot ()
+    let r2 = Result.get (Tensor.try_reshape sp2 t2)
+    let d2 = Alloc.since s2
+    expect "Tensor.try_reshape 2000" 1 0 2 16 d2
+    assert (Array.length (Tensor.as_array (ref r1)) == 1000 && Array.length (Tensor.as_array (ref r2)) == 2000)
+
+// Rule: Tensor.update allocates only the temporary Mut window metadata (shape + strides, O(rank)), never copying elements.
+test "Tensor.update: mutates in place without copying Copy elements" =
+    let t1 = Tensor.init [1000] (\i -> i)
+    let writer = \w -> Tensor.write [1i64] 9i64 w
+    let s1 = Alloc.snapshot ()
+    let u1 = Tensor.update writer t1
+    let d1 = Alloc.since s1
+    let t2 = Tensor.init [2000] (\i -> i)
+    let s2 = Alloc.snapshot ()
+    let u2 = Tensor.update writer t2
+    let d2 = Alloc.since s2
+    expect "Tensor.update 1000" 3 0 3 24 d1
+    expect "Tensor.update 2000" 3 0 3 24 d2
+    assert ((Tensor.as_array (ref u1))[1] == 9 && (Tensor.as_array (ref u2))[1] == 9)
 
 // --- Tensor indexing (NC16) ---
 

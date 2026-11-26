@@ -2,7 +2,7 @@
 
 `Tensor<'a>` は、N 次元の配列を 1 本の連続したバッファで持つ型です。形（各軸の長さ）と、行優先（C 順）に並んだ要素を持ちます。`Tensor.View<'a>` は、そのバッファや平らな配列を、軸の並べ替え・1 つの軸の固定・範囲の絞り込み・形の読み替えで見直す借用の窓です。どれも $O(1)$ で、要素を複製しません。
 
-2 次元の特別な場合が [`Matrix`](./matrix.md) と [`MatrixView`](./matrix-view.md) です。`Matrix` と `Tensor` は、`Tensor.of_matrix`・`Tensor.to_matrix` で行き来できます。要素が Copy 型のとき、今のコンパイラはこの変換で要素を複製します（[既知の制限](#所有者の操作と-matrix-との変換)）。
+2 次元の特別な場合が [`Matrix`](./matrix.md) と [`MatrixView`](./matrix-view.md) です。`Matrix` と `Tensor` は、`Tensor.of_matrix`・`Tensor.to_matrix` で要素を複製せずに行き来できます。
 
 ## この記事のポイント
 
@@ -130,10 +130,10 @@ $"{Tensor.count rows} {elem} {last}"
 | API | 説明 |
 | --- | --- |
 | `Tensor.as_array (ref t)` | 全要素を行優先の `ref ['a]` で借りる |
-| `Tensor.to_array t` | テンソルを消費して、行優先のバッファを返す。要素が Copy 型なら要素を複製する |
-| `Tensor.reshape shape t` | テンソルを消費して、形を変える。形の積が変わるとトラップ。要素が Copy 型なら要素を複製する |
-| `Tensor.of_matrix m` | 行列を消費して、2 軸のテンソルにする。要素が Copy 型なら要素を複製する |
-| `Tensor.to_matrix t` | テンソルを消費して、行列にする。軸が 2 本でないとトラップ。要素が Copy 型なら要素を複製する |
+| `Tensor.to_array t` | テンソルを消費して、行優先のバッファを複製なしに返す |
+| `Tensor.reshape shape t` | テンソルを消費して、複製なしに形を変える。形の積が変わるとトラップ |
+| `Tensor.of_matrix m` | 行列を消費して、複製なしに 2 軸のテンソルにする |
+| `Tensor.to_matrix t` | テンソルを消費して、複製なしに行列にする。軸が 2 本でないとトラップ |
 | `Tensor.as_matrix_view (ref v)` | 2 軸の窓を `MatrixView` として見る。軸が 2 本でないとトラップ |
 | `Tensor.of_matrix_view window` | `MatrixView` を 2 軸の窓として見る |
 
@@ -156,9 +156,7 @@ $"{MatrixView.rows window}x{MatrixView.cols window} {deref (MatrixView.at 2 1 wi
 3x2 5 4 8 -1
 ```
 
-`m` を `[6]` の平らなテンソルにして、`[3, 2]` の窓に読み替えました。要素が `i64` なので、`of_matrix` と `reshape` はそれぞれ要素を 1 回複製します。`window` は同じバッファを 3 行 2 列の行列として見ます。`flipped` は転置した窓で、`Tensor.map` は行優先の新しいテンソルを作ります。`grid` に範囲外の添字 `[3, 0]` を渡した `get` は `None` です。
-
-> 既知の制限: 要素が Copy 型（`i64`・`f64` など）のとき、今のコンパイラは、テンソルを消費する `Tensor.to_array`・`reshape`・`reshape_infer`・`try_reshape`・`of_matrix`・`to_matrix`・`update` で要素を複製します。費用は要素数に比例し、`update` は 2 回複製します。要素が Copy でない型（文字列など）では複製しません。要素が Copy 型の所有するテンソルを、複製せずに書き換える方法は今はありません。`let mut` の配列から `Tensor.borrow_mut` で作った書き込める窓は、複製せずに書き込みます。[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md) の後は、`ref mut t[…]` と `+=` でも書けるようになる予定です。修正は [PM10](../../../_perfs/PM10-std-consume-copies.md) です。
+`m` を `[6]` の平らなテンソルにして、`[3, 2]` の窓に読み替えました。`of_matrix` と `reshape` はどちらも要素を複製しません。`window` は同じバッファを 3 行 2 列の行列として見ます。`flipped` は転置した窓で、`Tensor.map` は行優先の新しいテンソルを作ります。`grid` に範囲外の添字 `[3, 0]` を渡した `get` は `None` です。
 
 ## 借用規則と診断
 
@@ -428,7 +426,7 @@ $"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
 | --- | --- |
 | `as_array` | $O(1)$、要素の複製なし |
 | `of_array` | $O(\text{rank})$（形の検査だけ）、要素の複製なし |
-| `to_array`・`reshape`・`reshape_infer`・`try_reshape`・`of_matrix`・`to_matrix`・`update` | 要素が Copy 型なら $O(\text{count})$（今のコンパイラは要素を複製する。`update` は 2 回）。要素が Copy でない型なら要素を複製せず、形の検査の $O(\text{rank})$ だけ。`update` は、どちらの場合もこれに `writer` の費用が加わる |
+| `to_array`・`reshape`・`reshape_infer`・`try_reshape`・`of_matrix`・`to_matrix`・`update` | 形の検査と窓のメタデータの $O(\text{rank})$ だけで、要素は複製しない（`update` はこれに `writer` の費用が加わる） |
 | `view`・`borrow`・`permute`・`index_axis`・`narrow`・`reshape_view`・`is_contiguous`・`count`・`at`・`get` | $O(\text{rank})$。窓を返す API は、形とストライドの配列を新しく確保する |
 | 添字 `t[i, j]`・`t[^0, 0]`・`t[[…]]`・`t[(i, j)]`・`m[i, j] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保 0 回 |
 | 添字 `ref t[i, a..b, ..]`・`ref t[[Slice…]]`（窓） | $O(\text{rank})$、要素はコピーせず、結果の形とストライドの 2 配列を確保 |
@@ -441,13 +439,12 @@ $"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
 
 - 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
-- 要素が Copy 型の所有するテンソルから、複製せずにバッファを取り出すことと、複製せずに書き換えることは今はできません（[所有者の操作と Matrix との変換](#所有者の操作と-matrix-との変換)の既知の制限）。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。
 
 ## まとめ
 
 - `Tensor` は形と行優先のバッファを所有し、`Tensor.View`（読み取り専用・負/0 ストライド対応）と `Tensor.Mut`（単射な書き込み専用）が同じバッファを見ます。
-- `Matrix` とは `of_matrix`・`to_matrix` で行き来できます（要素が Copy 型なら、今は要素を複製します）。`t[i, j]`・`t[^0, 0]`・`ref t[i, a..b, ..]` や [`Slice`](./slice.md)・ブールマスクを使った汎用添字が使えます。
+- `Matrix` とは `of_matrix`・`to_matrix` で要素を複製せずに行き来できます。`t[i, j]`・`t[^0, 0]`・`ref t[i, a..b, ..]` や [`Slice`](./slice.md)・ブールマスクを使った汎用添字が使えます。
 - 窓は持ち主を動かすと `E1014`、持ち主より長く使うと `E1013` です。
 
 ## 関連項目

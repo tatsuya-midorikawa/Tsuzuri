@@ -31,7 +31,7 @@ fn std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3() {
             .lines()
             .filter(|line| line.starts_with("test \""))
             .count(),
-        45
+        55
     );
     for edition in [Edition::E2026, Edition::E2027] {
         let module = tsuzuri::analyze_with_edition(CONTRACTS, edition).unwrap();
@@ -46,7 +46,7 @@ fn std_allocation_contracts_hold_on_native_and_wasm32_at_o0_and_o3() {
                     },
                 )
                 .unwrap();
-                assert_eq!(report.results.len(), 45);
+                assert_eq!(report.results.len(), 55);
                 let failures: Vec<_> = report
                     .results
                     .iter()
