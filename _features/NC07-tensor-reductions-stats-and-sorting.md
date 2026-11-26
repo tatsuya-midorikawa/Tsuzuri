@@ -5,7 +5,7 @@
 | ID | NC07 |
 | 優先度 | P1（データ分析・機械学習・科学計算の基本集計と順序操作） |
 | 規模 | L（軸指定リダクション・`nan*` 版・累積/差分/補間/畳み込み・分位点/ヒストグラム/相関・軸ソート/探索/集合演算） |
-| 依存 | [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC05](NC05-tensor-shape-indexing-and-masking.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) |
+| 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC05](_completed/NC05-tensor-shape-indexing-and-masking.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) |
 | 後続 | [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -29,7 +29,7 @@
 
 ### 着手条件
 
-- [NC02](NC02-tensor-core-views-and-broadcasting.md)・[NC05](NC05-tensor-shape-indexing-and-masking.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) が done。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC05](_completed/NC05-tensor-shape-indexing-and-masking.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) が done。
 
 ### 停止条件
 
@@ -97,8 +97,8 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor.View`, `Tensor.Mut`, `Tensor.Error`。
-- [NC05](NC05-tensor-shape-indexing-and-masking.md): `normalize_axis`, `permute`, `squeeze`, `expand_dims`。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor.View`, `Tensor.Mut`, `Tensor.Error`。
+- [NC05](_completed/NC05-tensor-shape-indexing-and-masking.md): `normalize_axis`, `permute`, `squeeze`, `expand_dims`。
 - [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md): `map2`, `is_nan`, 要素ごと演算。
 
 ## 他チケットへ提供するインターフェース

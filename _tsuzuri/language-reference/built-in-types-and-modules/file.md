@@ -251,7 +251,9 @@ record Metadata { kind: EntryKind, size: i64, modified_ns: i64 }
 
 ハンドルも `Copy` です。コピーした値は同じ開いたファイルを指します。片方を閉じると、もう片方も無効になります。
 
-既定の wasm32 では、これらの関数に到達するコードは `E2000` でビルドに失敗します。`check` は IR を出さないので、このエラーは報告しません。`--wasm-host wasi` を付けると、WASI preview1 の preopen したディレクトリを起点に解決します。Windows のネイティブビルドは、OS API に到達すると `E2002` で失敗します。これらの環境では本ページの実行例をそのまま実行することはできません。
+既定の wasm32 では、これらの関数に到達するコードは `E2000` でビルドに失敗します。`check` は IR を出さないので、このエラーは報告しません。`--wasm-host wasi` を付けると、WASI preview1 の preopen したディレクトリを起点に解決します。既定の wasm32 では、本ページの実行例をそのまま実行することはできません。
+
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、Win32 の API で動きます。パスは UTF-16 にして OS へ渡し、`/` と `\` のどちらも区切りとして OS が受け取ります。248 単位（UTF-16）以上のパスは、絶対パスにして `\\?\` を付けてから渡すので、`MAX_PATH` を超える深さでも開けます。読み取り専用のファイルへの書き込みと削除、ほかのプロセスが共有なしで開いているファイルは `PermissionDenied` です。`Os.Error.code` は Win32 のエラー番号です（[Os](./os.md#wasm-と-windows)）。
 
 純粋なパス操作は [Path](./path.md)、ディレクトリの作成と列挙は [Dir](./dir.md)、エラーの読み方は [Os](./os.md) です。
 
@@ -261,7 +263,7 @@ record Metadata { kind: EntryKind, size: i64, modified_ns: i64 }
 - テキストは UTF-8 です。BOM は残り、不正なバイト列は呼び出し全体が失敗します。
 - 上書きは原子的ではありません。ハンドルは `with_open` か `close` で閉じます。
 - 同じパスを再利用するときは `string` を複製します。ハンドルのフィールドは触れません。
-- 既定の WASM と、Windows ネイティブビルドでは、これらの API に到達できません。Windows は、`src/runtime/os.c` に Windows 向けの実装がないためです。
+- 既定の WASM では、これらの API に到達するビルドは `E2000` です。Windows ネイティブビルドでは Win32 の API で動き、`Os.Error.code` は Win32 のエラー番号です。
 
 ## 関連項目
 

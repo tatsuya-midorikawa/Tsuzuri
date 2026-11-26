@@ -5,7 +5,7 @@
 | ID | NC14 |
 | 優先度 | P3（Tsuzuri 製数値カーネルを Python / NumPy / PyTorch からコピーなしで直接呼び出す） |
 | 規模 | M（`abi.rs` へのストライドテンソル記述子＋`bindings_native.rs` の Python バインディング拡張） |
-| 依存 | [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) |
+| 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -32,7 +32,7 @@ Tsuzuri で書いた安全かつ高速な数値計算関数を、既存の Pytho
 
 ### 着手条件
 
-- [NC02](NC02-tensor-core-views-and-broadcasting.md)（負/0 ストライド対応の `Tensor.View`）と [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md)（全数値型バッファの ABI 基盤）が done。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)（負/0 ストライド対応の `Tensor.View`）と [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md)（全数値型バッファの ABI 基盤）が done。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -104,7 +104,7 @@ Tsuzuri で書いた安全かつ高速な数値計算関数を、既存の Pytho
 
 ## 前提とする他チケットのインターフェース
 
-- [NC02](NC02-tensor-core-views-and-broadcasting.md): 負/0 ストライド `Tensor.View` と境界検査関数。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): 負/0 ストライド `Tensor.View` と境界検査関数。
 - [NC12](NC12-ffi-numeric-buffers-and-blas-lapack.md): `f32`/`i32`/`Complex` 等の C ABI 型マッピング。
 
 ## 他チケットへ提供するインターフェース

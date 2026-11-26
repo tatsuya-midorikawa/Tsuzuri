@@ -109,11 +109,11 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 候補 | 理由 |
 |---|---|
 | GC・サイクルコレクター | 所有権による決定的な解放という設計目標と矛盾する。循環は C10 の Arena／Handle と Weak で扱う |
-| 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Maybe／Result で表す |
+| 例外と巻き戻し、`?` 演算子 | D-10 の方針。ホスト境界の失敗は E14 の opt-in 境界で返し、言語内の失敗は Maybe／Result で表す。2026-11-26 の [D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) で、Objective-C の例外を `Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで値に変えることを、D-10 の狭い解釈として認めた（[M05](M05-objc-exception-boundary.md)、計画中）。Tsuzuri のフレームの巻き戻しは入れない |
 | 暗黙の fast-math・再結合、GPU・SIMD での黙った精度変更 | 数値の意味を変える。緩い演算は名前で区別した別 API にする（F09、C11） |
-| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルと、2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) に基づく型付きの `extern view`（[W24](_completed/W24-extern-view.md)、完了）・`extern interface`（W25）に限って許可する。生ポインター型と `unsafe` は引き続き入れない |
+| `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルと、2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) に基づく型付きの `extern view`（[W24](_completed/W24-extern-view.md)、完了）・`extern interface`（W25）に限って許可する。2026-11-26 の [D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) で、同じ原則の下で Objective-C のための型付きの `extern class` などを足すことを決めた（M01〜M05・M10・M23、計画中）。生ポインター型と `unsafe` は引き続き入れない |
 | 利用者が境界検査を無効にするオプション・unchecked API | 安全性を下げる。検査のコストは F12 の証明と計測で減らす |
-| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う |
+| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う。[D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の `extern class`（[M01](M01-objc-class-types.md)、計画中）は、ホストの Objective-C のクラスの階層を型の検査に写すだけで、Tsuzuri の型に継承は入れない |
 | GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する |
 
 ## 一覧
@@ -152,7 +152,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A28 | [関数を含む型の呼び出し結果が `ref` 引数の借用をすべて持つとみなされる（`HashMap.remove` と、関数の `Arc` の `Arc.share` が誤って `E1013`）](_completed/A28-function-results-retain-ref-arguments.md) | P1 | M | C09, TZ02 | done（A28 の時点では、借用を持ちうる値を `Array.write`（とそれで書き込む std の関数）や `SyncMap.__replace` で格納する所がプログラムのどこにもないときだけ効いた（1 つでもあればプログラム全体で以前の規則。A31 がその格納を追跡し、この条件と、特殊化した本文での排他借用の除外を外した）。関数値など、借用を関数の環境にだけ持ちうる結果の直接の完全適用は、callee の本文が結果に入れうる引数の借用だけを持つ（特殊化ごとの最小不動点）。`Rc`/`Arc` の `share`・`downgrade`・`upgrade` は `shared` の借用ではなく中身の借用（の写し）を持つ（`shared` の値が呼び出し元の loan を持つ引数・捕捉から来たときは `shared` の借用のまま）。パイプラインで完成する呼び出しも同じ。参照を含む結果はシグネチャのまま。本体が書き込める場所（排他借用、借用を持ちうる値の `Mutex` などの共有セル、それらを引数・結果に持つ関数値）をほかのコードへ渡す関数と、借用を持ちうる値を本体の見えないコード（名前付き関数でない関数値の呼び出し、dyn のメソッド、`Owned.call`、コールバックを実行する組み込み関数、そうした呼び出しをする関数）へ渡す関数は事実も読み通しも使わず（その中で作るラムダも、そうしたラムダを作る関数も同じ）以前の規則のまま。追跡されない格納をしうる `Drop.drop` があるプログラムでは、破棄でコードを実行しうる値が持つ引数の借用を結果に残し、そうした値を破棄する本体は読み通さない（これらの局所の除外は、プログラム全体の条件に重ねて残す。`Array.write` や lock のコールバックの書き込みを追跡しない以前からの穴 A31 を広げないため）） |
 | A29 | [印を持つ dyn 型を型引数にした組み込み関数の LLVM シンボルが不正になる（`Channel<dyn (C, Send)>` がビルドできない）](_completed/A29-dyn-marker-builtin-symbols.md) | P1 | S | A14, TZ03 | done（組み込み関数の引用符なしのシンボルは dyn 型の印の `+` を `$P` と綴る。`Channel<dyn (C, Send)>`・`Vec<dyn (C, Copy)>`・`dyn C {r}` の `Vec` が native と WebAssembly でビルドできる。型の綴りは純粋な関数型を `pure.fn[…]` と綴り、`Box<i64 -> i64>` と `Box<pure (i64 -> i64)>` の型名・組み込み関数の具体化が衝突しない。引数規約だけが違う関数型は生成コード上の 1 つの型（`codegen_identity`）で、型名・具体化・vtable・helper・ユーザーの drop を共有する。型引数に印も純粋な関数型も持たないプログラムの綴りは変わらず、引数規約を持つ関数型を型引数に持つプログラムでは定義の並びが変わることがある） |
 | A30 | [借用を持つ関数値から `Owned.function` を作れてしまい、`Routine.go` などで解放後の読み出しになる](_completed/A30-owned-function-from-borrowing-value.md) | P0 | S | TZ02, TZ05, TZ06 | done（`Owned.function` は借用を持つ関数値（変数・部分適用・引数・借用を持つ関数値を捕捉したラムダ）を `E1013` で拒否する。パイプラインは同じ検査、関数値にすると `must_apply_directly`。`own Owned.Function` の引数は借用を持たず、所有のラムダや tzroutine で捕捉できる。`Owned.call` を 2 つの引数に直接適用した結果（`x \|> Owned.call (ref f)` を含む）は所有関数値を借用しない。`Owned.call` から作った関数値を通した結果は借用したまま） |
-| A31 | [`Array.write` と、それで書き込む std の関数が、書き込んだ値の借用を書き込み先の持ち主に残さない（借用元の解放後に読める）](_completed/A31-in-place-writes-keep-stored-borrows.md) | P0 | L | A13, A28 | done（`Array.write`・`SyncMap.__replace`・`Vec.push_mut` と、それで書き込む std・利用者の関数（generic な関数の具体化、`MatrixView.write` などを含む）の呼び出しは、`arr[i] = v` と同じく、書き込んだ値の借用を書き込み先の持ち主（`MatrixView.Mut` の窓なら窓が借りる配列、lock のコールバックならロック）に残す。特殊化した本文から求めた書き込みの事実（引数の値か参照先の中身が、どの引数の書き込み先へ入りうるか、関数値の引数をどう呼ぶか）を A28 の事実と合同の最小不動点で求め、直接の呼び出し・パイプライン・部分適用・コールバック・関数値の引数（edition 2027 の読み取りの仮引数も）で当てはめる。本体の見えない関数値の呼び出しは、関数値と引数の借用を引数の書き込み先のすべてへ残し、環境へ書き込む関数値を作るプログラムでは、そうした関数値でありうる型の関数値の環境の先へも、その関数値がセルを所有するプログラムでは、そうした関数値を持ちうる型かセルに届く型のすべての局所値へも残す（第 1 回〜第 9 回のレビュー対応。不変な局所値に束縛したラムダ・部分適用とその配列・レコードのリテラル、dyn のメソッド（dyn 値の場所はメソッドが書き込みうるときだけ書き込み先）、演算子の instance、`Owned.call`、`Seq.next` が実行する step 関数、破棄される一時値にも事実を当てはめ、値の破棄が実行する `drop` がセルを所有する関数値へ渡すものも残す。値の出どころからセルを所有する関数値を持ちえないと分かる値は、型が同じでも数えない（`match` のパターンで取り出した値は照合した値の出どころ、`mut` の仮引数は追えない値））。局所値の借用を `ref mut` の引数や呼び出し元のセルへ書き込むと書き込みの位置で `E1013`（`store_local_borrow_through_reference`。`Drop.drop` が書き込む値を束縛する所も）。局所の `Rc`・`Arc` の共有を呼び出し元のデータやセルを所有する関数値へ渡した後でブロックのセルへ書き込む借用もそこへ書き込んだものとし、型注釈・パターンを書いたラムダの仮引数や仮引数のフィールドの呼び出しは呼び出し元の実引数のその部分で、共有参照の先を照合したパターンの変数の借用は照合した値の借用として検査する。書き込める仮引数の先の借用を呼び出し元へ書き込んだ後の、その仮引数を通した借用した場所に届く書き込みは `E1014`（別のフィールドへの書き込みは受理）、関数値の仮引数へ渡した後に書き込むなら、受け取った値を残す関数値を渡す呼び出しが `E1013`。借用を読みうる `drop` を実行する値が同じブロックで後に宣言した変数の借用を持つと `E1013`（破棄の順序、第 6 回。一部の経路でだけムーブした値と、`break`・`continue`・例外で抜ける位置も、第 7 回。後に宣言した仮引数の借用を持つ仮引数も、第 8 回。`match` の腕のパターンの変数、後に作った一時値（か自分自身）に借用を保持させる一時値、自分の部分の借用を持つ値（`self_referential_store`）も、第 9 回）。値で受け取った仮引数の中のセルは関数が所有するものとして扱う（第 9 回）。これらの破棄の順序の検査は、どの記憶域にも 1 つの規則（借用を読みうる `drop` を実行する値は、より後に破棄される値か、読みうる部分より後に破棄される自分の部分の借用しか持てない）で判定し、呼び出し先が関数値へ渡す値は呼び出し先から見た型で数える。`ref mut` の仮引数の先の部分の借用を同じ先へ書き込む関数は、どう呼んでも（`ref mut` の変数、中継する関数、関数値の仮引数、本体の見えない関数値も）呼び出し元の値に自分の部分の借用を残す（第 9 回の後）。持ち上げたラムダの捕捉は関数値の環境のもの（`Owned.function` のラムダが捕捉したセルへの書き込みは環境に残る）、呼び出し先が借用した部分だけを呼び出し元に残し、値全体の代入は古い値の自分の部分の借用とともに古い値を解放する、ビューの先は配列の要素、`Rc`・`Arc` のブロックの中は値の部分の順序、呼び出し先がそのまま渡す引数は呼び出し元の実引数、本体の見えない関数値は `ref T`・`ref mut T` でもプログラムの関数が同じ型へする書き込みだけをする（第 10 回）。借用を読みうる `drop` を実行する値は、借用する変数が後で持つ借用（ロックのコールバックがそのセルへ書き込んだもの）も読みうるものとして数え、値全体の代入・`deref p = v`・ほかの部分が借用を持ちえないフィールドの代入は古い値の自分の部分の借用を終わらせて変数を使えるままにし、`ref mut`・`ref` の変数やパイプラインを通した呼び出しは借用した部分の共有の借用だけを残し、`Rc.share (ref rc)` を束縛した変数を通した借用は同じブロックの部分、関数値へ渡した仮引数の先の部分は部分のまま（第 11 回）。参照が複数の値のどれかを指しうる呼び出し（`target (if c then ref a else ref b)`）は値ごとに自分の部分の借用だけを残し、`ref mut` で貸した共有はブロックの持ち主でなくなり、`deref p = v` は写し・共有のブロック・`Drop.drop` の書き込みに残りうる自己の借用を終わらせず（`E1014`）、`Rc` の代入は共有を通したブロックの自己の借用も終わらせる（第 12 回、最終。残る穴と保守的な制限は [A33](A33-remaining-store-soundness-holes.md)）。ロックのコールバックが中身の借用をコールバックの外へ残すと `E1013`（`mutex_result_retains_borrow`、第 8 回）。書き込んだ借用を返す closed の関数は closed を取り消す。A28 のプログラム全体の条件・パイプラインの closed の門・排他参照の lends を外し、セルを渡す本文の読み通しの禁止、見えないコードの除外、`drops_store`、推論の段で書き込みうる本文が書き込める場所を渡すときの以前の規則は残す） |
+| A31 | [`Array.write` と、それで書き込む std の関数が、書き込んだ値の借用を書き込み先の持ち主に残さない（借用元の解放後に読める）](_completed/A31-in-place-writes-keep-stored-borrows.md) | P0 | L | A13, A28 | done（`Array.write`・`SyncMap.__replace`・`Vec.push_mut` と、それで書き込む std・利用者の関数（generic な関数の具体化、`MatrixView.write` などを含む）の呼び出しは、`arr[i] = v` と同じく、書き込んだ値の借用を書き込み先の持ち主（`MatrixView.Mut` の窓なら窓が借りる配列、lock のコールバックならロック）に残す。特殊化した本文から求めた書き込みの事実（引数の値か参照先の中身が、どの引数の書き込み先へ入りうるか、関数値の引数をどう呼ぶか）を A28 の事実と合同の最小不動点で求め、直接の呼び出し・パイプライン・部分適用・コールバック・関数値の引数（edition 2027 の読み取りの仮引数も）で当てはめる。本体の見えない関数値の呼び出しは、関数値と引数の借用を引数の書き込み先のすべてへ残し、環境へ書き込む関数値を作るプログラムでは、そうした関数値でありうる型の関数値の環境の先へも、その関数値がセルを所有するプログラムでは、そうした関数値を持ちうる型かセルに届く型のすべての局所値へも残す（第 1 回〜第 9 回のレビュー対応。不変な局所値に束縛したラムダ・部分適用とその配列・レコードのリテラル、dyn のメソッド（dyn 値の場所はメソッドが書き込みうるときだけ書き込み先）、演算子の instance、`Owned.call`、`Seq.next` が実行する step 関数、破棄される一時値にも事実を当てはめ、値の破棄が実行する `drop` がセルを所有する関数値へ渡すものも残す。値の出どころからセルを所有する関数値を持ちえないと分かる値は、型が同じでも数えない（`match` のパターンで取り出した値は照合した値の出どころ、`mut` の仮引数は追えない値））。局所値の借用を `ref mut` の引数や呼び出し元のセルへ書き込むと書き込みの位置で `E1013`（`store_local_borrow_through_reference`。`Drop.drop` が書き込む値を束縛する所も）。局所の `Rc`・`Arc` の共有を呼び出し元のデータやセルを所有する関数値へ渡した後でブロックのセルへ書き込む借用もそこへ書き込んだものとし、型注釈・パターンを書いたラムダの仮引数や仮引数のフィールドの呼び出しは呼び出し元の実引数のその部分で、共有参照の先を照合したパターンの変数の借用は照合した値の借用として検査する。書き込める仮引数の先の借用を呼び出し元へ書き込んだ後の、その仮引数を通した借用した場所に届く書き込みは `E1014`（別のフィールドへの書き込みは受理）、関数値の仮引数へ渡した後に書き込むなら、受け取った値を残す関数値を渡す呼び出しが `E1013`。借用を読みうる `drop` を実行する値が同じブロックで後に宣言した変数の借用を持つと `E1013`（破棄の順序、第 6 回。一部の経路でだけムーブした値と、`break`・`continue`・例外で抜ける位置も、第 7 回。後に宣言した仮引数の借用を持つ仮引数も、第 8 回。`match` の腕のパターンの変数、後に作った一時値（か自分自身）に借用を保持させる一時値、自分の部分の借用を持つ値（`self_referential_store`）も、第 9 回）。値で受け取った仮引数の中のセルは関数が所有するものとして扱う（第 9 回）。これらの破棄の順序の検査は、どの記憶域にも 1 つの規則（借用を読みうる `drop` を実行する値は、より後に破棄される値か、読みうる部分より後に破棄される自分の部分の借用しか持てない）で判定し、呼び出し先が関数値へ渡す値は呼び出し先から見た型で数える。`ref mut` の仮引数の先の部分の借用を同じ先へ書き込む関数は、どう呼んでも（`ref mut` の変数、中継する関数、関数値の仮引数、本体の見えない関数値も）呼び出し元の値に自分の部分の借用を残す（第 9 回の後）。持ち上げたラムダの捕捉は関数値の環境のもの（`Owned.function` のラムダが捕捉したセルへの書き込みは環境に残る）、呼び出し先が借用した部分だけを呼び出し元に残し、値全体の代入は古い値の自分の部分の借用とともに古い値を解放する、ビューの先は配列の要素、`Rc`・`Arc` のブロックの中は値の部分の順序、呼び出し先がそのまま渡す引数は呼び出し元の実引数、本体の見えない関数値は `ref T`・`ref mut T` でもプログラムの関数が同じ型へする書き込みだけをする（第 10 回）。借用を読みうる `drop` を実行する値は、借用する変数が後で持つ借用（ロックのコールバックがそのセルへ書き込んだもの）も読みうるものとして数え、値全体の代入・`deref p = v`・ほかの部分が借用を持ちえないフィールドの代入は古い値の自分の部分の借用を終わらせて変数を使えるままにし、`ref mut`・`ref` の変数やパイプラインを通した呼び出しは借用した部分の共有の借用だけを残し、`Rc.share (ref rc)` を束縛した変数を通した借用は同じブロックの部分、関数値へ渡した仮引数の先の部分は部分のまま（第 11 回）。参照が複数の値のどれかを指しうる呼び出し（`target (if c then ref a else ref b)`）は値ごとに自分の部分の借用だけを残し、`ref mut` で貸した共有はブロックの持ち主でなくなり、`deref p = v` は写し・共有のブロック・`Drop.drop` の書き込みに残りうる自己の借用を終わらせず（`E1014`）、`Rc` の代入は共有を通したブロックの自己の借用も終わらせる（第 12 回、最終。残る穴と保守的な制限は [A33](_completed/A33-remaining-store-soundness-holes.md)）。ロックのコールバックが中身の借用をコールバックの外へ残すと `E1013`（`mutex_result_retains_borrow`、第 8 回）。書き込んだ借用を返す closed の関数は closed を取り消す。A28 のプログラム全体の条件・パイプラインの closed の門・排他参照の lends を外し、セルを渡す本文の読み通しの禁止、見えないコードの除外、`drops_store`、推論の段で書き込みうる本文が書き込める場所を渡すときの以前の規則は残す） |
 | A32 | [規約 `[Read]`・`[Mut]` の関数型が期待される位置へ、引数を `ref T`・`ref mut T` と注釈したラムダを直接書くと `E1003` になる（`if n > 0 then text_length else \(text: ref string) -> …`）](_completed/A32-annotated-reference-lambda-under-conventions.md) | P2 | S | A18 | done（規約 `[Read]`・`[Mut]` を持つ関数型（edition 2027 の既定の読み取りと `mut T`、2026 の `pure def` の読み取り）が期待される位置（`if`・`match` の枝、ジェネリックなレコード、`Vec.push` など）へ直接書いたラムダと、`def` の右辺のラムダは、引数のパターンの最上位が参照の型の注釈（`\(text: ref string)`、`\(counter: ref mut Counter)`、参照の型の別名、`(_: ref T)`、`((a, b): ref (A * B))`）なら、その引数を値 view にせず注釈のとおり参照として束縛する（`let` で束縛したラムダと同じ型と生成コード）。参照先の型が推論中の型・参照・型適用のとき（`def inspect :: 'a -> i64` の値と並べた `if` の `ref ?t`、要素型が先に `ref (ref T)` に決まった `Vec`）は従来どおり値 view と比べるので、今まで受理していたプログラムの型・診断・IR は変わらない（`tests/fixtures`・`examples` の IR は byte 単位で同じ）。注釈の無い引数・値の型の注釈・分解するパターンは従来どおり値 view。規約の無い値の引数への参照の注釈（`apply (\(text: ref string) -> …)`、外側のラムダの引数だけを `def` が受け取る `\(a: ref string) -> \(b: ref string) -> …` の内側）は `E1003` のまま） |
 | A33 | [格納と破棄の順序の検査に残る穴と保守的な制限を、記憶域の寿命と破棄の順序の 1 つのモデルで直す](_completed/A33-remaining-store-soundness-holes.md) | P0 | XL | A31 | done（`E::Interpolated` の `Format` 補間引数伝播、`ref r2 |> Rc.share` のブロック共有追跡、`keep_for_drop` の重複排除、および A34 との合同検証を実装） |
 | A34 | [`main` が受理する安全なプログラムを、A31 の格納と破棄の順序の検査が `E1013`・`E1014` で拒否する（フィールドや要素の `Rc.get` を束縛した変数、受け取った関数値を持つ値の破棄、書き込む部分の側の参照の変数、使い終えた共有の型の判定、`Rc.get (ref r)` の持ち主、参照の仮引数から作った共有、ループの中の置き換えの後の写し、セルへ書き込んだ複数 region のレコード）か、検査が収束せず `E1017` で打ち切る（参照の仮引数の先の借用をセルを所有する関数値へ渡すループ）](_completed/A34-store-check-safe-rejections.md) | P1 | L | A31 | done（9 項目すべて — `rcgetpart`・`fvdrop`・`refsrc`・`sharetype`・`rcgetowner`・`shareparam`・`replcopy`・`cellslots`・`loopplace` — の安全な形を受理しつつ対応する不安全な双子を引き続き拒否） |
@@ -419,6 +419,34 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC20 | [複合代入 `+=`・`-=`・`*=`・`/=`・`%=` と書き込み窓 `ref mut t[…]`（組み込みの `AddAssign` 系と `IndexBorrowMut`）](NC20-compound-assignment-and-mutable-index-views.md) | P2 | L | A37, A38, A39, NC18, NC19, (A40) | todo |
 | NC21 | [`Complex` と実数のスカラーの演算子（演算子の拡張インスタンス 8 個）](NC21-complex-real-scalar-operators.md) | P2 | S | NC19 | todo |
 
+### M. Tsuzuri だけで macOS のデスクトップアプリを書く（D-67）
+
+| ID | チケット | 優先 | 規模 | 依存 | 状態 |
+|---|---|---|---|---|---|
+| M01 | [Objective-C のクラスの型と所有（`extern class`・`ObjC.Object`・`ObjC.Sel`、retain/release を所有に下げる、nil は `Maybe`）](M01-objc-class-types.md) | P1 | L | (M22), (M20) | todo |
+| M02 | [型付きのメッセージ送信（`extern class` のメンバー、`objc_msgSend` を宣言どおりの C の型で呼ぶ、`BOOL`・`f32`・`f64`・構造体の結果、カテゴリー、定数の NSString）](M02-objc-typed-message-send.md) | P1 | XL | M01, (W36) | todo |
+| M03 | [Objective-C のクラスを Tsuzuri で定義する（`extern class export`・オーバーライド・プロトコル・`Super` への送信・`Anchor` の状態・構造体を受け返す IMP）](M03-objc-classes-defined-in-tsuzuri.md) | P2 | XL | M02, (W36), (M09) | todo |
+| M04 | [Block（`^{}`）を作る・受け取る（`ObjC.Block<F>`）](M04-objc-blocks.md) | P2 | L | M01, (M02), (M03), (M09) | todo |
+| M05 | [Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 の狭い解釈。D-67 の分岐 2 で承認）](M05-objc-exception-boundary.md) | P2 | M | M02 | todo |
+| M06 | [C の大域データシンボルの `extern` と NUL 終端の UTF-8 文字列 `ZUtf8String`](M06-extern-data-symbols-and-zutf8string.md) | P1 | L | (M01), (NS07) | todo |
+| M07 | [Apple SDK のヘッダーからの宣言の生成器（`tsuzuri bindgen --objc`）と公式の `apple` パッケージ（W27 の macOS 版）](M07-apple-sdk-bindgen-and-package.md) | P2 | XL | M01, M02, M06, M20, W17, (M03), (M04), (M05), (M09), (M17), (W27), (W36) | todo |
+| M08 | [macOS の GUI に `Routine.with_locked_thread` を勧める文書と `E1013` の誤り（with_locked_thread はワーカー M に固定し、メインスレッドにはならない）](M08-macos-main-thread-docs-and-e1013.md) | P1 | S | (W28) | todo |
+| M09 | [メインスレッドへの投入（`MainThread`）とメインスレッドに結び付くハンドル（`extern type main`・`extern class main`）](M09-main-thread-dispatch-and-handles.md) | P2 | L | (M01), (M08) | todo |
+| M10 | [tzroutine と `main` の autorelease pool（`ObjC.with_autorelease_pool`）](M10-objc-autorelease-pools.md) | P2 | M | M01, (M02) | todo |
+| M11 | [Swift のバインディングの生成（`--emit bindings-swift`）](M11-swift-bindings.md) | P3 | L | (NS02) | todo |
+| M12 | [ウィンドウへの GPU の表示（バンドルの中の GPU ランタイムの探索と CAMetalLayer への提示）](M12-gpu-presentation-to-window.md) | P3 | L | (NC13), (M01), (M02), (M15) | todo |
+| M13 | [デスクトップの OS サービスの公式パッケージ（クリップボード・ファイルダイアログ・通知・設定・バンドルの資源。std に入れない）](M13-desktop-os-services-package.md) | P3 | XL | M07, (M15), (M04), (M09) | todo |
+| M14 | [TLS と HTTP クライアントの公式パッケージ（E09 D13 に沿う。macOS は Network.framework）](M14-tls-http-packages.md) | P3 | XL | M04, M09, M20, (W17), (M07) | todo |
+| M15 | [`.app` バンドルの生成（`--emit app`）と `[macos]` の manifest の節・`.dSYM`・`Env.executable_path`](M15-macos-app-bundle.md) | P2 | L | (M17), (M20) | todo |
+| M16 | [Developer ID 署名・hardened runtime・公証（`tsuzuri notarize`）と生成コードの硬化の記録（W30 の macOS 版）](M16-macos-signing-notarization-hardening.md) | P2 | M | M15 | todo |
+| M17 | [最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）](M17-macos-min-version-and-weak-import.md) | P1 | M | (M22), (M01), (M06) | todo |
+| M18 | [Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針を改める決定が要る。D-67 の分岐 3 では改めないと決めた）](M18-intel-mac-and-universal2.md) | P3 | XL | (W36), (M17), (M02) | blocked（D-67 の分岐 3 で方針を改めないと決めた） |
+| M19 | [GUI として起動したときのトラップとランタイムの報告を unified logging（`os_log`）へ送る](M19-macos-trap-report-os-log.md) | P2 | M | – | todo |
+| M20 | [macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）](M20-macos-framework-link-inputs.md) | P1 | M | (W17), (M22) | todo |
+| M21 | [`extern view` の書き込みに一時の record を渡すとコンパイラが panic する](M21-extern-view-temporary-record-panic.md) | P1 | S | – | todo |
+| M22 | [本体のない `extern def` の直後の `@c_layout`・`@literal` が `E0002`（制約行）になる](M22-attribute-after-bodyless-extern-def.md) | P1 | S | – | todo |
+| M23 | [Objective-C の物体の出力引数（`NSError **`）と弱い参照（`ObjC.Weak<C>`）](M23-objc-out-parameters-and-weak-references.md) | P2 | L | M01, M02 | todo |
+
 ## 推奨フェーズ
 
 依存関係と価値の順に並べています。同じフェーズ内でも、上に書いたものから着手してください。
@@ -441,6 +469,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 13. 追加（2026-11-02） | F# の Anonymous Type-tagged Unions（FS-1092）に相当する匿名共用体 `(A \| B)` を入れる | A24 → A25・A26。詳細は [追加チケット（2026-11-02。匿名共用体）](#追加チケット2026-11-02匿名共用体) |
 | 14. 追加（2026-11-24） | 案 C（ハイブリッド）で NumPy 互換の数値計算基盤と最小の汎用言語拡張 2 点（借用演算子・汎用 `Index`）およびゼロコピー並列チャンクを整備する | ① NC01・NC02・NC03・NC04・NC15 → ② NC05・NC06 → NC07 → ③ NC08 → NC09・NC10 → ④ NC11・NC12（W13 後）・NC13・NC14。詳細は [追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) |
 | 15. 追加（2026-11-25） | 自然な添字・範囲・演算子（D-66）: `Index` の借用の不具合を直し、窓を返す添字に `ref` を必須にし、edition 2028 で範囲の構文を一本化して、多次元の角括弧・演算子の拡張インスタンス・複合代入を入れる。委任による決定で、添字の評価順（A38）・フィールドの排他借用（A39）・参照の被演算子（A40）・`Complex` とスカラーの演算子（NC21）・std の複製の除去（PM10）を足した | ① A37 → A38 → NC16（NC03・NC04 を含む最初のリリースの前）、NC17 Phase 1 → ② NC17 Phase 2 → NC18、NC06 →（A40）→ NC19 → NC21、NC20 Phase 1（独立）・A39 → ③ NC20 Phase 2・3 → NC17 Phase 3。PM10（_perfs）は独立。詳細は [追加チケット（2026-11-25。自然な添字・範囲・演算子）](#追加チケット2026-11-25自然な添字範囲演算子) |
+| 16. 追加（2026-11-26） | Tsuzuri だけで macOS のデスクトップアプリを書く（D-67。分岐は 2026-11-26 にすべて推奨の案で承認）: 調査で見つけた 2 つの不具合と文書の誤りを直し、Objective-C の型付きの連携、メインスレッド、framework のリンク、最低 OS 版、`.app`・署名・公証を足す | ① M21・M22・M08（承認不要）→ ② M20 Phase 1・M17・M06 Phase 1・M09 Phase 1（分岐 1 に依らない）、M17 → M15 → M16、M19 → ③ 分岐 1 の後に M01 → M02 → M03、M04・M05・M10・M23 → ④ M07 → M13・M14、M11・M12。M18 は分岐 3 で方針を改めないと決めたので着手しない（blocked）。詳細は [追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）](#追加チケット2026-11-26tsuzuri-だけで-macos-のデスクトップアプリを書く) |
 
 ## 依存関係図
 
@@ -751,7 +780,7 @@ graph LR
 
 ### なぜ置き換えるか
 
-- `Task` は OS スレッドのプール（`src/runtime/task.c`、追加ワーカーは `min(CPU 数, 32) - 1`）の上の同期フォーク・ジョインで、`Channel` の待ちは OS スレッドを止める。待つタスクの数がスレッド数を超えると完了せず（[channel.md の待ちの規則](../_tsuzuri/language-reference/built-in-types-and-modules/channel.md#待ちの規則)）、生産者・変換・消費のパイプラインの段数をスレッド数に合わせて設計する必要がある。
+- `Task` は OS スレッドのプール（`src/runtime/task.c`、追加ワーカーは `min(CPU 数, 32) - 1`）の上の同期フォーク・ジョインで、`Channel` の待ちは OS スレッドを止める。待つタスクの数がスレッド数を超えると完了せず（当時の channel.md の「待ちの規則」。tzroutine の後の規則は [channel.md の「待ちとデッドロック」](../_tsuzuri/language-reference/built-in-types-and-modules/channel.md#待ちとデッドロック)）、生産者・変換・消費のパイプラインの段数をスレッド数に合わせて設計する必要がある。
 - `Async` は 1 スレッドの協調的な中断で、継続のクロージャを中断のたびに作る（非末尾の `let!` の入れ子は O(n²)）。`Task` と型も実行器も別で、CPU 並列と I/O の待ちを 1 つのプログラムで混ぜにくい。
 - tzroutine は、tzroutine ごとに専用のスタックを持ち、少数の OS スレッドで多数（10 万単位）を走らせる M:N の実行。待つのは tzroutine だけで OS スレッドは止まらないので、待つ数とスレッド数の関係が消え、I/O の待ちも同じ書き方になる。
 
@@ -1037,14 +1066,14 @@ Tsuzuri を言語全体として完全な Null 安全にするための仕様調
 
 | 種別 | チケット | 概要 | 承認 |
 | --- | --- | --- | --- |
-| 修正 | [NS08](_completed/NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ（done） | 不要 |
+| 修正 | [NS08](_completed/NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](_completed/A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ（done） | 不要 |
 | 機能 | [NS01](_completed/NS01-nonnull-extern-handles.md) | ネイティブと生成バインディングで不透明ハンドル `extern type`（`H`・`ref H`）を厳格に非 Null にし、非 `Maybe` 境界の `NULL` を `TrapKind::NullHandle` で止めて `Some(NULL)` を根絶する。ネイティブの `Maybe<H>` に `Niche::NullPointer`（1 ポインタ）を与える | D1・D2 |
 | 機能 | [NS02](NS02-export-and-bindings-nullable.md) | [W15](_completed/W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す | D1 |
 | 改善 | [NS03](_completed/NS03-bindgen-nullability.md) | `tsuzuri bindgen` が捨てていた `_Nullable`・`_Nonnull`・`nonnull` / `returns_nonnull` 属性を反映し、非 Null の根拠がない C ポインタを既定で `Maybe` に写す（`--nonnull` 注釈を追加） | D1・D2 |
 | 改善 | [NS04](_completed/NS04-irrefutable-binding-patterns.md) | ラムダ引数・`for...in`・計算式束縛の単一パターンに網羅性検査を適用し、反駁可能パターン（`\(Some x) -> x` など）を 2027 で `E1021`、2026 で `W1012` にする。Phase 2 で不変 `let` に反駁不可能パターン分解を許す（done） | D1〜D3 |
 | 機能 | [NS05](NS05-warn-unchecked-unwrap.md) | `--warn unwrap` でルートパッケージの `Maybe.get`・`Result.get`・`Result.get_error` に警告 `W1011`（`unchecked_unwrap`）を出し、`--deny-warnings` と併用して検査なしアンラップを禁止できるようにする | D1・D2 |
 | 機能 | [NS06](NS06-if-let-conditional-binding.md) | 新しい予約語を増やさず `if let <pattern> = <expr> [when <guard>] then ... [elif ... \| else ...]` を 2 アーム `match` の糖衣として導入し、単一ケースの安全な取り出しを簡潔にする | D1 |
-| 改善 | [NS07](NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する | D1・D2 |
+| 改善 | [NS07](NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](_completed/W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する | D1・D2 |
 
 ### 進め方
 
@@ -1211,4 +1240,162 @@ graph LR
   A39 --> NC20
   NC18 --> NC20
   NC19 --> NC20
+```
+
+## 追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）
+
+利用者の依頼「_features にあるチケットをすべて実装できたと仮定した場合、その状況で Tsuzuri を使った macOS のデスクトップ アプリ開発はできるか検討し、その結果を報告して」に対して、arm64 の Mac で調査と実測を行った（HEAD `804b7970`）。結論は「条件付きでできる」だった。今でも C を書かずに AppKit のアプリが動くが、ABI の知識に頼る回避策の積み重ねであり、Objective-C の連携・バンドル・署名・公証・Intel Mac を扱うチケットは 1 件もなかった。続く依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から、M01〜M22 を起票した。M01〜M05・M07〜M19 は報告の「どのチケットにもない壁」に、M06・M20 は報告の「使った回避策」（`dlsym` で引いたデータシンボル、`u8"...\0"` の C 文字列、`-framework` の代わりの `.tbd`）を要らなくするものに、M21・M22 は「調査中に見つけたコンパイラの不具合」に当たる。起票の後の網羅性の検査で、壁 1 のうち物体の出力引数（`NSError **`）と弱い参照に行き先がないと分かり、M23 を足した。
+共通の決定と、確かめた事実は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) にある。D-67 の 7 つの分岐は、2026-11-26 に利用者がすべて推奨の案で承認した（「「決めていただきたいこと（D-67。どれも未承認）」については推奨の通りで進めてください。」）。各チケットの D-53・D-55 の登録と、分岐ではない「要承認」の決定は、各チケットの「承認」の行のとおり、まだ決まっていない。再現の結果と行番号は各チケットの「現状」にある。
+
+### 利用者が決めた点（D-67。2026-11-26）
+
+| 分岐 | 問い | 決定（すべて推奨の案） | 関係するチケット |
+| --- | --- | --- | --- |
+| 1. 言語の範囲 | Objective-C を、型付きの `extern` の宣言として言語に入れるか | X′: `extern class`・`extern category`・`extern protocol`・`extern class export`、組み込みのモジュール `ObjC` の型・Block・例外の境界を足す。生ポインター型と `unsafe` は入れない。ほかに Y′（ObjC は言語に入れない）と Z′（`objc_msgSend` 系に限って W14 の同一形の規則を外す属性だけ）がある | M01〜M05・M07・M10・M13・M14・M23、M12 の Phase 2（layer の受け方） |
+| 2. M05 と D-10 | ObjC の例外を、`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで値に変えることを、D-10 の狭い解釈として認めるか | 認める（巻き戻すのはホストのフレームだけ） | M05 |
+| 3. Intel Mac | d719cf68 の「5 つのプラットフォーム」の方針を改め、Intel Mac と Universal 2 に広げるか | 改めない（M18 は blocked） | M18 |
+| 4. 構造体の値渡し | NSRect・NSPoint・NSSize・NSRange の値渡しのために、W36 を Phase 2（AAPCS64）まで実装することを求めるか | (a) 求める。(b) は M02 が HFA だけを先に扱う案。(a) では W36 の停止条件 S1 の選択も要る（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷したので、値渡しに変えると既存のプログラムの C の ABI が変わる。A は互換を破る変更として承認し `docs/stability.md` に記録する、B は値渡しに別の綴りを使う） | M02・M03 の Phase 2、W36 |
+| 5. 公式パッケージ | `apple`・OS サービス・TLS と HTTP を、std の外の公式パッケージ（git）にするか | する（W27 の D3・D9 は W27 自身の決定として残る） | M07・M13・M14 |
+| 6. 既定の最低 OS 版 | 既定の native ビルドの最低 OS 版を、ビルド機の版のままにするか、名前付きの target と同じ 12.0 に固定するか | 12.0 に固定 | M17 |
+| 7. os_log | 標準エラーが閉じているか `/dev/null` のとき、macOS に限ってトラップとランタイムの報告を `os_log` へ送るか | 送る | M19 |
+
+分岐 4 の (a) では、W36 の停止条件 S1 の選択（A・B）に推奨がなく、まだ決まっていない。W36 の着手の前に要る（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷した（`src/` に `c_layout_by_value_pending` が無い）ので、S1 は W36 の Phase 1 にも当たる）。選ばれなかった案でだけ要るチケットは M18 だけで、状態を `blocked` にした（`scripts/repo-kb` が読む状態は `todo`・`doing`・`done`・`blocked`）。承認の要らない M08・M21・M22 は、すぐに進めてよい。
+
+### 共通の綴り（macOS。起票時に決めた契約）
+
+D-67 の「共通の綴りと規則」とチケットの「共通の綴り」は、この表を指す。綴りを変えるときは、この表と関係するチケットを同じ PR で直す。新しい ABI の形は native だけで、wasm32・wasm64 では `E1008`（`abi_native_only`）にする。Apple でない native の target で Apple だけの形（ObjC の形、`@weak`）に到達したら `E1008`（kind 案 `abi_apple_only`。最初に出荷したチケットが登録する）にする。どちらも `build` のときに出し、`check` は宣言を受理する。M06 のデータシンボルは Linux でも使え、Windows で到達したら `E1008`（kind 案 `data_symbol_target`）にする。OS の API（M09 の `MainThread`、M12 の Phase 2 の `Gpu.surface` など）は、Apple でない native で `E2002`（`platform_unsupported_api`）、wasm で `E2000` にする。新しい機能を使わないプログラムの IR・object・header・診断・既定の `.wasm` は 1 byte も変えない。例外は次のとおりで、各チケットに範囲を書いた。① 分岐 6 の既定の最低 OS 版（M17）。② M19 の報告の送り先。③ M12 の Phase 1 が、macOS で `Gpu` を使うプログラムのランタイムの object を変えること（M12 の D1 の承認のときに諮る）。④ M16 の D3 の生成コードの `ssp`（測定の後に要承認。採れば native の全 target の生成 IR が変わる）。⑤ M06 の D8 が改める `extern_view_link_name` の文。⑥ 予約のモジュール名を足す M01（`ObjC`）・M06 の Phase 2（`ZUtf8String`）・M09（`MainThread`）で、同じ名前の利用者のモジュールが `E1011` になること。⑦ 受け付ける綴りを並べる既存の誤りの文（CLI の `script` のオプション、`--emit` の種類、target の名前、manifest の節とキー）の一覧が増えること。修正の M08・M21・M22 は、直す誤りの出力だけを変える。ランタイムに足す OS の操作（M15 の `Env.executable_path`、M17 の `Env.os_version`）は、`Os.__read` に操作を足さず、到達したプログラムにだけ `-D` の門（`-DTZ_TRAP_BOUNDARY` と同じ形。driver の native と WASI のランタイム、`src/test_runner.rs` の 3 か所）で入れるので、ランタイムの object は変わらない（`os.c` の文字列が変わるので、ランタイムのキャッシュの項目は 1 回だけ作り直される）。新しい診断コードは足さず、既存のコードに kind を足す。予約語は足さない（新しい語は文脈キーワードか、既存の予約語の新しい位置）。ObjC の送信・retain・release・drop・Block の呼び出しは、効果 `extern` と権限 `ffi` を持つ（`@trusted` がなければ `W1010`）。コンパイラが呼ぶ libobjc の symbol は予約せず、`declare` は symbol ごとに 1 行にする（利用者の `extern` があればその行を使い、呼び出しは自分の関数型で `call` する）。
+
+| 機能 | 綴り | 要点 |
+| --- | --- | --- |
+| ObjC のクラスの型（M01） | `@trusted extern class NSObject : ObjC.Object`、`@trusted extern class NSView : NSResponder`、`@trusted extern "NSWindow" class Window : NSResponder`（文字列は実行時のクラス名。既定は型名）、`@trusted extern class sync NSNumber : NSObject` | 基底は必須で、連鎖の根は組み込みの `ObjC.Object`（W25 と同じく根を暗黙にしない）。宣言の連鎖はホストの階層の部分列でよい。値は強い参照を 1 つ所有する（+1）。drop で `objc_release`。Copy でない。既定のスレッドの性質は W19 の `local`（Send・Sync でなく、捕捉できず、効果 `pinned`）で、`sync` は Send・Sync（tzroutine・チャンネルへムーブでき、`Arc` で共有できる。drop で release するので、再利用できる関数値には捕捉できない）。`main` は M09 の Phase 2、`export` は M03 が足す。クラスの参照は `__objc_classrefs` から `OBJC_CLASS_$_<実行時名>` を読む（リンク時に解決するので、そのクラスの framework か libobjc のリンクが要る）。nil は `Maybe<C>` だけで表し、`Maybe` でない結果に nil が来たら NS01 の `null extern handle` でトラップする。基底の型への暗黙の変換はしない。M01 は本体のない宣言だけを扱い（本体は `E0002` `extern_class_syntax`）、`{ ... }` は M02 が足す。ほかのモジュールから使うときは `Module.NSView` |
+| 組み込みの ObjC の型とセレクター（M01） | `ObjC.Object`（id。所有）、`ObjC.Class`（copy・Send・Sync）、`ObjC.Sel`（copy・Send・Sync）、`ObjC.sel "setTitle:"` | `ObjC.sel` の引数はコンパイル時の定数で、clang と同じ `__objc_selrefs`・`__objc_methname` に下げ、`@llvm.compiler.used` に入れる。セレクターごとに 1 つにまとめ、並びは決定的にする。`ObjC.Class` の値は、M02 で `NSObject` に宣言する `+class` のメンバー（`class "class" class_object :: unit -> ObjC.Class`）で得る（M01 は型だけを足す）。ObjC の参照を持つ IR にだけ、clang 21 と同じ 6 つのモジュールのフラグを足す |
+| 借用・NULL・結果の位置（M01） | 引数 `ref C`・`Maybe<ref C>`、結果 `C`・`Maybe<C>` | `ref C` は `id` を +0 で渡す。所有する `C` の引数は `E1008` `objc_owned_object_argument`（例外は M02 の init の族の受け手）。`extern def` の `C` の結果は +0 とみなし、呼び出しに `clang.arc.attachedcall` の bundle（被演算子 `@llvm.objc.retainAutoreleasedReturnValue`。clang と同じ形）を付けて受ける（M01 の D6）。`@returns_retained` が付いていれば retain しない。`export def`・`@c_layout` の field・`FnPtr`・静的コールバックの引数と結果・`extern view`・`ref mut`・バッファの要素に ObjC の物体の型を置くと `E1008` `objc_object_position` |
+| 所有の操作（M01） | `ObjC.retain :: ref C -> C`、`ObjC.upcast :: ref C -> ref B`、`ObjC.upcast_owned :: C -> B`、`ObjC.downcast :: ref C -> Maybe<D>` | どれも 1 引数なので D-59 の例外は要らない。`upcast` は宣言の継承の連鎖で静的に検査し（`E1003` `objc_not_superclass`）、費用はない。`downcast` は実行時に `objc_opt_isKindOfClass` で確かめて retain する。`B`・`D` は期待型から決め、決まらなければ `E1015`。`D` がクラスでなければ `E1005` `objc_target_not_class`（W25 の `Com.cast` と同じ形） |
+| 所有の規則の属性（M01） | `@returns_retained`・`@returns_not_retained`（`extern def` と、M02 からは `extern class` のメンバーの前） | 既定: `extern def` は +0。メンバーは Cocoa の族の規則に従う。alloc・new・copy・mutableCopy は +1。init は受け手を消費して +1 を返す。族の判定は clang と同じで、最初のセレクターの部分から先頭の `_` を除き、族の語の次の文字が小文字でなければ族に入る（結果が物体の型のときだけ効き、init はインスタンスメソッドだけ）。M07 は `NS_RETURNS_RETAINED`・`NS_RETURNS_NOT_RETAINED` を写す |
+| メンバーと型付きの送信（M02） | `@trusted extern class NSWindow : NSResponder { "setTitle:" set_title :: ref NSString -> unit; frame :: unit -> NSRect; class alloc :: unit -> Self; "initWithContentRect:styleMask:backing:defer:" init_with_content_rect :: NSRect -> i64u -> i64u -> bool -> Maybe<Self> }`。呼び出しは `NSWindow.set_title (ref w) (ref s)`・`NSWindow.frame (ref w)`・`NSWindow.alloc ()` | メンバーは改行か `;` で区切る。メンバー `m :: P1 -> … -> R` は関数 `C.m :: ref C -> P1 -> … -> R` になり、`m :: unit -> R` は `ref C -> R`（W25 と同じ）。クラスメソッドは受け手を取らない。セレクターの文字列は引数のないメンバーでは省略でき、そのときは名前と同じ。`:` の数は下げた C の引数の数（受け手と `_cmd` を除く。buffer は 2 つ）と同じでなければならない（`E1008` `objc_selector_arity`。`:` を超える Tsuzuri の引数は `objc_variadic_method`）。init の族の受け手は消費する `C`。`Self` はメンバーの結果（`Self`・`Maybe<Self>`）でだけ書け、呼び出しに使った型名になる（instancetype）。基底のメンバーは派生の名前で呼べる。受け手を先に置くのは W25 と同じで、利用者が宣言する `extern` のメンバーなので D-59 の対象の外。呼び出しはすべての引数を与えた直接の呼び出しだけで、関数値と部分適用は `E1008` `objc_method_not_called`。下げ方は selref を読み `call <R> @objc_msgSend(ptr %recv, ptr %sel, <引数>)` を宣言どおりの型で呼ぶ（可変長の型では呼ばない） |
+| ObjC の位置の C の型（M02） | `bool`・`ref mut bool`・`f32`・`f64`・整数・`ObjC.Sel`・`ObjC.Class`・`ref C`・`Maybe<ref C>`・`@c_layout` record（ref なし。Phase 2） | メンバーの中の `bool` は `i1 zeroext`（arm64 の BOOL）。`ref mut bool` は 1 バイトの `BOOL *` で、非ゼロを true に正規化する。`extern def` の `bool` は今の `int32_t` のまま。受け手は型で非 nil なので、clang が nil の受け手に置く `sret` の 0 埋めは要らない（`@weak` のクラスは M17 が classref の NULL を検査する）。構造体の値渡しと値返しは Phase 2 で、W36 の Phase 2 の `llvm_byvalue::classify`（AAPCS64）を使う。HFA の引数は `[n x double\|float]`、結果は構造体。非 HFA は 8 バイト以下なら引数 `i64`・結果 `i{8s}`、16 バイト以下なら `[2 x i64]`。それより大きい引数は複写へのポインター、結果は `sret`（x8）。arm64 に `_stret` はない。Phase 2 の前は `E1008` `abi_record_by_value_target`（W36 と共有） |
+| カテゴリー（M02） | `@trusted extern category NSStringDrawing : NSString { "drawAtPoint:withAttributes:" draw_at_point :: NSPoint -> Maybe<ref ObjC.Object> -> unit }`、呼び出しは `NSStringDrawing.draw_at_point (ref s) p None` | カテゴリーは名前空間で、ほかのモジュールの型を開き直さない。受け手は `ref NSString`（`Self` は NSString）。この例の `NSPoint` の値渡しは Phase 2 |
+| 定数の NSString（M02） | `ObjC.literal "text"` | コンパイル時の定数で、CFSTR と同じ `__DATA,__cfstring` の構造体（`__CFConstantStringClassReference` を参照）を出す。途中に NUL のない ASCII なら flags 1992 と `__TEXT,__cstring`、それ以外は UTF-16 で flags 2000 と `__TEXT,__ustring`。フラグは clang の参照と照合する。結果は期待型に書いたクラス（実行時名 `NSString` のクラス、その基底の連鎖のクラス、`ObjC.Object`。派生は `E1003` `objc_literal_type`）の所有値で、不死なので release は効果を持たない。CoreFoundation のリンクが要る |
+| Tsuzuri で定義するクラス（M03） | `@trusted extern class export main TzView : NSView with NSTextInputClient { override "drawRect:" draw_rect :: NSRect -> unit = on_draw; "buttonClicked:" button_clicked :: Maybe<ref ObjC.Object> -> unit = on_click }`、実装は `def on_click :: ref TzView -> i64 -> Maybe<ref ObjC.Object> -> unit` | 修飾子の順は `extern class [export] [main\|sync] Name`。`= 関数名` は型引数のないトップレベルの関数で、型は `ref Name -> i64 -> 引数… -> 結果`（`Name` は export のクラス。`i64` は ivar `tz_state` から読む状態の鍵）。IMP の引数の ObjC の物体は +0 の借用（`ref C`・`Maybe<ref C>`）。物体を返すときは、包みが `objc_autoreleaseReturnValue` で +0 にして返す。init・copy・mutableCopy・new の族と `dealloc` のメンバーは Phase 1 では `E1008` `objc_export_family_unsupported`。`override` は継承したメンバーと型が完全に一致しなければならない（`E1003` `objc_override_mismatch`）。継承にあるセレクターに `override` がなければ `E1008` `objc_missing_override`。クラスはロード時の constructor で `objc_allocateClassPair`・`class_addIvar`・`class_addMethod`・`class_addProtocol`・`objc_registerClassPair` を使って登録する。`ObjC.set_state :: i64 -> ref C -> unit`。super は `TzView.Super.draw_rect (ref self) rect` と書き、`objc_msgSendSuper2` と `{ receiver, class }` に下げる（`= 関数名` で結んだ関数の本体の中だけ）。この例の `drawRect:` は Phase 2 |
+| プロトコル（M03） | `@trusted extern protocol NSApplicationDelegate { optional "applicationDidFinishLaunching:" did_finish_launching :: ref NSNotification -> unit }` | プロトコルの名前は型として使える（`ref P`・`Maybe<ref P>`・`P`。`id<P>` に当たる）。`with P` を宣言したクラス（基底の連鎖を含む。`with` は export でない `extern class` にも書ける）からは `ObjC.upcast`・`ObjC.upcast_owned` で変換できる（静的に検査する）。送信は `P.m (ref obj)` で、`optional` のメンバーの送信は `E1008` `objc_optional_member_called` |
+| Block（M04） | `ObjC.Block<(P1 -> … -> R)>`、`ObjC.block on_item token`、`ObjC.copy_block :: ref ObjC.Block<F> -> ObjC.Block<F>`、引数 `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>`、Phase 2 で `ObjC.call_block (ref b) a1 … an` | 値はヒープの Block への所有の参照で、drop で `_Block_release`。Copy でない。Send・Sync だが、drop を持つので再利用できる関数値には捕捉できない。`ObjC.block` の最初の引数は型 `i64 -> P1 -> … -> R` のトップレベルの関数の名前（静的コールバックと同じ規則）で、2 つ目は鍵（`Anchor.read f token` と同じ並び）。スタックの literal（`_NSConcreteStackBlock`、`BLOCK_HAS_SIGNATURE \| BLOCK_HAS_EXTENDED_LAYOUT`、型の符号）を `_Block_copy` してヒープに移す。invoke の包みは W12 のコールバックの契約に従い、GCD のスレッドから呼ばれることがある。`call_block` は資源のハンドルを先頭に置く D-59 の例外を要する（要承認） |
+| 例外の境界（M05） | メンバーか `extern def` の結果を `Result<R, ObjC.Exception>` にする。`ObjC.exception_name`・`ObjC.exception_reason :: ref ObjC.Exception -> string` | その呼び出しの地点だけを `invoke` にし、personality `__objc_personality_v0`、`catch ptr @OBJC_EHTYPE_id`、`objc_begin_catch`・`objc_end_catch` で例外の物体を retain して `Error` にする。そうした呼び出しを含む関数だけが巻き戻しの表を持つ。ほかの呼び出しとコールバックのフレームは今のまま（abort）。D-10 の狭い解釈として D-67 の分岐 2 で承認済み（2026-11-26）。名前（M05 の D9。D-55）は要承認 |
+| 大域データシンボル（M06） | `@trusted extern "NSDefaultRunLoopMode" view def default_run_loop_mode :: unit -> T`（symbol の場所の値を読む）、`@trusted extern "_dispatch_main_q" address def main_queue :: unit -> Queue`（symbol のアドレス） | `view` 形の `T` は、スカラー、`extern type copy`、`Maybe<copy H>`、W24 の view の record、M01 の ObjC の型（読んだ後に retain する）。`address` 形の結果は非 Null の `extern type copy`（NS07 の後は `ExternAddr` も）。W24 の `extern_view_link_name` の拒否は、アドレス（`i64`、NS07 の後は `ExternAddr`）を取る形にだけ残す。`__` で始まる symbol は今のとおり予約。Windows の target は、到達したら `E1008`（kind 案 `data_symbol_target`） |
+| NUL 終端の UTF-8（M06） | `ZUtf8String.of :: ref utf8string -> Result<ZUtf8String, ZUtf8String.Error>`、`ZUtf8String.literal "..."`、`ZUtf8String.to_utf8string :: ref ZUtf8String -> utf8string` | `std/ZUtf8String.tz`（W20 の `ZString` と同じ形）。`ref ZUtf8String` は `const char *` 1 つ、`Maybe<ref ZUtf8String>` の `None` は NULL。途中の U+0000 は `Error`。literal は静的なデータで確保しない。`@c_layout` の入力専用の field にも置ける。Phase 2 で、モジュールの名前 `ZUtf8String`（`RESERVED_MODULES` が 1 増える）は要承認（M06 の D2。`CString` は採らない） |
+| メインスレッドへの投入（M09） | `MainThread.post :: Owned.Function<unit, unit> -> unit`、`MainThread.after :: i64 -> Owned.Function<unit, unit> -> unit`、`MainThread.is_current :: unit -> bool`（Phase 1） | `Time.after_func :: i64 -> Owned.Function<unit, unit> -> Timer` と同じ形で、捕捉は Send に限る。macOS ではランタイムの C が `dispatch_async_f`・`dispatch_after_f` で main queue に投入する（データシンボルの構文は要らない）。ほかの native の OS では `E2002` `platform_unsupported_api`、wasm は `E2000`（新しい kind `wasm_main_thread_unsupported`）。投入した関数は W12 の静的コールバックと同じ境界の規則で呼ぶ。run loop（NSApp・CFRunLoop・dispatch_main）が回るときだけ実行され、`main`・`test`・`bench` の境界の終わりに残ったものは呼ばずに drop する。`--trap-mode return` との併用は `E2000` `option_conflict` |
+| メインスレッドに結び付くハンドル（M09） | `extern type main Window`、`extern class main NSView : NSResponder`（Phase 2） | `main` は `extern type`・`extern class` の直後で同じ行に型名が続くときだけの文脈キーワード（W18 の `copy` と同じ規則）。効果 `main_thread` を推論する（`main` を宣言したプログラムでだけ解析する）。使える文脈は `main` の本体、コールバック・IMP・Block の本体（入口の包みで `pthread_main_np` を検査し、違えばトラップ）、`MainThread.post`・`after` の本体。tzroutine の本体・`Time.after_func` などの関数引数と、それ以外の関数値は `E1013`（`main_thread_code_spawned`・`main_thread_function_value`）。`Routine.with_locked_thread` は効果を運ぶ（`main` の中では通り、tzroutine の中では起動の位置で拒まれる）。`main` の型への送信はブロッキングの包みを省く |
+| autorelease pool（M10） | `ObjC.with_autorelease_pool :: (unit -> 'a) -> 'a` | `Routine.with_locked_thread :: (unit -> 'a) -> 'a` と同じ形。tzroutine の中ではスレッドに固定し、`objc_autoreleasePoolPush`・`Pop` で挟む。ObjC を使うプログラムの生成した `@main`（IR）は、`main` の本体（`tz.fn.<main>` か `tsuzuri_main`）の呼び出しをプールで包む。Phase 2（要承認）は、ランタイムが tzroutine の実行の区間ごとにプールを回す |
+| framework のリンク（M20） | CLI `--framework AppKit`・`-F DIR`・`--rpath @executable_path/../Frameworks`。manifest `[native] frameworks = ["AppKit"]`・`framework_search`・`rpath`。Phase 2 は `@link(framework = "AppKit")`（W17 の拡張。`extern class` とデータシンボルにも付けられる） | リンクの行では `-F` を `-L` の後、`-framework X` を `-l` の後に置く。`@link` は名前だけなので git・registry のパッケージにも書ける（W17 D2 と同じ理由）。macOS でない target では、CLI の 3 つは `E2000`（既存の kind `option_unsupported_platform`）、manifest の 3 つは使わない（`[windows]` と同じ）。同梱の zig では SDK を探して `-F`・`-L` を足すか、明確な `E2002` にする。NC12:70 の `-framework Accelerate` はこれを指す |
+| 最低 OS 版と弱い import（M17） | `[macos] min_version = "13.0"`、`@weak` を `extern def`・`extern class`（M01）・データシンボル（M06）の前に置く | `[macos]` の節は M15・M16・M17 のうち先に入ったチケットが作り、ほかはキーを足す。ルートの節だけを読む。優先順は manifest、`MACOSX_DEPLOYMENT_TARGET`、既定（分岐 6）。native、`--target aarch64-apple-darwin`、同梱の zig、ランタイムの object とその鍵のすべてに効く。manifest の 12.0 より前は `E0002`（`invalid_macos_setting`）、名前付きの target の `MACOSX_DEPLOYMENT_TARGET` の誤りは `E2000`。`@weak` は明示の symbol を要り（`extern "sym" def`）、`extern_weak` に下がる。無い関数を呼ぶとトラップし、`Tsuzuri runtime: the weak symbol '<sym>' is not available on this system` と報告する。`@weak` のクラスの classref は読むたびに NULL を検査して同じ報告でトラップする。データシンボルは `Maybe` で受ける。版の問い合わせ `Env.os_version :: own unit -> IO<Result<string, Os.Error>>` も足す（D3 で採ったとき。ランタイムは到達したプログラムにだけ入る（`-DTZ_OS_VERSION`）） |
+| .app バンドル（M15） | `tsuzuri build --emit app -o Name.app`。`[macos]` の `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`。`Env.executable_path :: own unit -> IO<Result<string, Os.Error>>` | `Contents/MacOS`・`Info.plist`（決定的な XML）・`PkgInfo`・`Resources`・`Frameworks`（`embed` に書いたファイル。M20 の `[native] frameworks` はリンクするシステムの framework で、別のもの）を作る。`LSMinimumSystemVersion` はリンクした実行ファイルの `minos` から作る（M17 の版がそこに入る）。リンク行に rpath は足さない（`embed` の dylib には M20 の `--rpath`）。ad-hoc で bundle 全体を署名し直し、Identifier は `bundle_id`。`-g` では `<Name>.app.dSYM` を作る。`bundle_id` がなければ `E2000`。macOS でないホストと Apple でない target では `E2000`（`option_unsupported_platform`）。`Env.executable_path` のランタイムは、到達したプログラムにだけ入る（`-DTZ_OS_EXECUTABLE_PATH`） |
+| 署名と公証（M16） | `[macos] sign_identity`・`entitlements`・`hardened_runtime`・`timestamp`、`tsuzuri notarize Name.app --keychain-profile <名前>`、`TSUZURI_CODESIGN`・`TSUZURI_NOTARYTOOL` | 秘密は manifest に置かず、keychain の profile の名前だけを持つ。`hardened_runtime`・`timestamp` は明示したときだけ有効（既定は false。`tsuzuri notarize` が送信の前に署名を検査する）。`codesign` で内側（`Frameworks`）から署名し、公証は `notarytool submit --wait` と `stapler staple`。生成コードへの `ssp` は測定の後に要承認 |
+| Swift のバインディング（M11） | `--emit bindings-swift` | `--emit header` の C ヘッダーを包む `.swift` を出す。`Maybe` は NS02 の後に Optional、`--trap-mode return` の `tsuzuri_try_<name>` は `throws`、string は UTF-16 |
+| Apple SDK からの生成（M07） | `tsuzuri bindgen --objc --framework AppKit --api api.txt -o Apple/` | `clang -x objective-c -Xclang -ast-dump=json` を読む。availability は `clang -extract-api` の symbol graph から読む。ObjCInterface は `extern class`、Category は `extern category`、Protocol は `extern protocol`（M03 があり、D14 で `@optional` を決められるとき）。クラスの単位の `NS_SWIFT_UI_ACTOR` は `main`（M09 の Phase 2 がなければ `local`）、`NS_SWIFT_SENDABLE` は `sync`、nullability は `Maybe`、`NS_RETURNS_RETAINED` は属性、instancetype は `Self`、クラス・C の関数・データシンボルの availability が `--min-version` より新しければ `@weak`（M17 がなければ注記の行）、Block は `ObjC.Block`、`NSString * const` は `view def`、`const char *` の引数は M06 の Phase 2 があれば `ref ZUtf8String`（なければ `// skipped`）。可変長は `W2002` で飛ばす |
+| Intel Mac と Universal 2（M18） | `--target x86_64-apple-darwin`、Universal 2 は `--target universal2-apple-darwin`（D3）、`TSUZURI_LIPO` | 分岐 3 で方針を改めないと決めたので着手しない（blocked）。x86_64 の macOS では BOOL が `signed char`（`i8 signext`。`__OBJC_BOOL_IS_BOOL`=0）で、メモリーで返す構造体には `objc_msgSend_stret`・`objc_msgSendSuper2_stret` を使う。SysV の分類は W36 の Phase 2 |
+| os_log への報告（M19） | 新しい綴りはない | macOS で fd 2 が閉じているか `/dev/null` のときだけ、トラップ・デッドロック・スタックのあふれ・ランタイムの報告を `os_log` へ送る（`%{public}.*s`、subsystem 案 `dev.tsuzuri.runtime`）。端末・パイプ・ファイルへの出力は 1 byte も変えない。対象は Apple の実行ファイル（`build --emit exe`・`run`）だけで、変わる IR は `@tz.trap.write`（`--trap-info` のトラップと、W12 の `main` の後の呼び出しの報告）を持つものだけ。object・共有ライブラリ・テストのランナー・Linux・WASM は変えない |
+| 物体の出力引数（M23） | `extern def`・メンバーの引数 `ref mut Maybe<C>`（`NSError **` など） | pass-by-writeback（clang の ARC の `__autoreleasing` と同じ）: 今の値を retain せずに一時の領域へ写し、戻った後に `objc_storeStrong` で場所へ書き戻す。`ref mut C`（`Maybe` でない物体）は `E1008` `objc_inout_object`。Swift の `throws` のような `Result` への自動の写像は足さない（D5）。M07 は `__autoreleasing` の `NSError **` だけを写す |
+| 弱い参照（M23 の Phase 2） | `ObjC.Weak<C>`、`ObjC.weak :: ref C -> ObjC.Weak<C>`、`ObjC.load_weak :: ref ObjC.Weak<C> -> Maybe<C>`、`ObjC.copy_weak :: ref ObjC.Weak<C> -> ObjC.Weak<C>` | 弱い参照の場所は、値が所有するヒープの箱（8 バイト）に置く。`objc_initWeak`・`objc_loadWeakRetained`・`objc_copyWeak`・`objc_destroyWeak` を使い、箱は動かないので `objc_moveWeak` は要らない。スレッドの性質は `C` に従う。表現は M04 の D10 と同じ仕組み（先に入ったほうが作る）。M17 の `@weak`（弱い import）とは別のもの |
+
+### 種別ごとの一覧
+
+| 種別 | チケット | 概要 |
+| --- | --- | --- |
+| 修正 | M08 | macOS では、tzroutine の中の `Routine.with_locked_thread` はワーカー M に固定し、メインスレッドにはならない（実測で `pthread_main_np` = 0）。それなのに native-interop.md・routine.md と `E1013` の help が、GUI にそれを勧める。勧めに従うと `check` は通り、実行時に `NSInternalInconsistencyException` になる |
+| 修正 | M21 | `extern view` の書き込みに一時の record（`ref (P { x: 1, y: 2 })`）を渡すと、`check` は通り、`build` が `src/llvm.rs:6087` の `unreachable!` で panic する |
+| 修正 | M22 | 本体のない `extern def` の直後の `@c_layout`・`@literal` が `E0002`（`constraint lines must be indented after the 'def' signature`）になる。`@trusted` などは通る |
+| 機能 | M01 | ObjC のクラスの型 `extern class` と `ObjC.Object`・`ObjC.Class`・`ObjC.Sel`。retain・release を所有に下げ、nil は `Maybe` だけで表す。今の `id` と `SEL` は型のない `i64` で、誤りは実行時の SIGSEGV か abort になる |
+| 機能 | M02 | 型付きのメッセージ送信。`objc_msgSend` を宣言どおりの C の型で呼び、`BOOL`・`f64`・構造体の結果、カテゴリー、定数の NSString（`ObjC.literal`）を扱う。今の回避策（整数 9 個と double 4 個の上位形と 0 埋め、`method_invoke`）を不要にする |
+| 機能 | M03 | ObjC のクラスを Tsuzuri で定義する（`extern class export`）。delegate・target-action・オーバーライド・プロトコル・`Super` への送信。状態は `Anchor` の鍵 |
+| 機能 | M04 | Block を作る・受け取る（`ObjC.Block<F>`）。今は `dlsym` で引いた `_NSConcreteStackBlock`、`FnPtr` を入れた `@c_layout` の literal、`calloc` の記述子で手作りする。`free` は予約されていて記述子を解放できず、flags や大きさを誤るとランタイムが黙ってメモリーを壊す |
+| 機能 | M05 | ObjC の例外を、`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで値に変える。今は Tsuzuri のフレームを越えると abort する（exit 134） |
+| 機能 | M06 | C の大域データシンボルの `extern`（`NSDefaultRunLoopMode`・`_dispatch_main_q`）と、NUL 終端の UTF-8 文字列 `ZUtf8String`。今は `dlsym` と `extern view` でしか読めない |
+| 機能 | M07 | Apple SDK のヘッダーから宣言を生成する `tsuzuri bindgen --objc` と、公式の `apple` パッケージ（W27 の macOS 版）。今の bindgen は AppKit のヘッダーで `E2002` になる |
+| 機能 | M09 | メインスレッドへの投入（`MainThread.post`・`after`・`is_current`）と、メインスレッドに結び付くハンドル（`extern type main`・`extern class main`、効果 `main_thread`） |
+| 機能 | M11 | Swift のバインディングの生成（`--emit bindings-swift`）。Swift か ObjC のアプリに Tsuzuri をライブラリとして入れる構成を楽にする |
+| 機能 | M12 | ウィンドウへの GPU の表示。GPU のランタイムを Homebrew の絶対パスだけでなく `.app` の中からも探し、CAMetalLayer へ提示する |
+| 機能 | M13 | デスクトップの OS サービスの公式パッケージ（クリップボード・ファイルダイアログ・通知・設定・バンドルの資源）。std には入れない |
+| 機能 | M14 | TLS と HTTP クライアントの公式パッケージ（E09 D13 に沿う。macOS は Network.framework） |
+| 機能 | M15 | `.app` バンドルの生成（`--emit app`）と `[macos]` の manifest（Info.plist・アイコン・資源・同梱）、`.dSYM`、`Env.executable_path` |
+| 機能 | M16 | Developer ID 署名・hardened runtime・公証（`tsuzuri notarize`）と、生成コードの硬化の記録（W30 の macOS 版） |
+| 機能 | M17 | 最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）。今の既定の native ビルドの最低 OS 版はビルド機の版（実測で 27.2）になる |
+| 機能 | M18 | Intel Mac（`x86_64-apple-darwin`）と Universal 2。d719cf68 の「5 つのプラットフォーム」の方針の改訂が要る。D-67 の分岐 3 で方針を改めないと決めたので、着手しない（blocked） |
+| 機能 | M20 | macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）。今は SDK の `.tbd` を `--link` に渡す回避策（文書にない使い方で、Apple の ld だけが読める）しかない。NC12 の `-framework Accelerate` の前提もこれで満たす |
+| 機能 | M23 | Objective-C の物体の出力引数（`NSError **` を `ref mut Maybe<C>` で受ける）と弱い参照（`ObjC.Weak<C>`）。今は `ref mut i64` で受けて retain を手で書くしかなく、retain せずにプールの後で読むと解放後の使用になる（exit 139）。W13 の `ref mut` で `objc_initWeak` を呼ぶと、libobjc に登録される場所が copy-in/copy-out の一時の領域になり、後の読み出しで libobjc が落ちる（exit 139） |
+| 改善 | M10 | tzroutine と `main` の autorelease pool（`ObjC.with_autorelease_pool`）。今はプールのない tzroutine で autorelease した物体が漏れる（200 万個で maxrss が 5.6 MiB から 51.8 MiB。Foundation をリンクした `-O3`） |
+| 改善 | M19 | Finder から起動した GUI では標準エラーが `/dev/null` で、トラップとランタイムの報告が消える。標準エラーが閉じているか `/dev/null` のときだけ、unified logging（`os_log`）へ送る |
+
+### 進め方
+
+- **最初に（承認なしで始められる）**: M21・M22（修正。どちらも P1・S で互いに独立）と M08（文書と `E1013` の文の修正。W28 と同じ段落を触るので、後に入るほうが文を合わせる）。M22 は、属性を足す M01・M17・M20 の Phase 2・W16・W17 より先にマージする（後になった場合は、M22 が先読みの一覧に足された分を消す）。
+- **承認**: D-67 の分岐 1〜7 は承認済み（2026-11-26）。D-53・D-55 の登録と、分岐ではない「要承認」の決定は、各チケットの「承認」の行のとおりまだ決まっていない。承認が記録されるまで、該当する Phase に着手しない（GUIDE §0 の 1）。
+- **分岐 1 に依らない土台（分岐 1 の承認は要らない。要る承認は各チケットの「承認」の行）**: M20 の Phase 1（framework のリンク入力。Phase 2 の `@link(framework = ...)` は人間が求め、W17 が done のとき）、M17（最低 OS 版と `@weak`。既定の版は分岐 6）、M06 の Phase 1（データシンボル。Phase 2 の `ZUtf8String` は人間が求めたとき）、M09 の Phase 1（`MainThread.post`。M08 の後が望ましい）。この 4 つに強い依存はなく、ObjC の型と並行して進められる（M17 の `@weak` のデータシンボルとクラスの段は、M06・M01 と後に入るほうが足す）。
+- **配布**: M17 → M15 → M16 の順（`[macos]` の節は先に入ったほうが作る）。M15 はリンク行に rpath を足さないので、`embed` した dylib を rpath で読ませる E2E の段だけを M20 の後に足す。M19 は独立（分岐 7 は承認済み）。M18 は分岐 3 で方針を改めないと決めたので着手しない（blocked）。
+- **ObjC の型付きの連携（分岐 1 の X′ の後）**: M01 → M02 → M03 の順。M04 は M01 の後（M02・M03 があれば使う）。M05 は M02 の後（分岐 2 は承認済み（2026-11-26）。名前の D-55 の登録（M05 の D9）の承認が要る）。M10 は M01 の後で、M02 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。M23 の Phase 1（物体の出力引数）は M02 の後、Phase 2（弱い参照）は M01 の後で、Block の表現（M04 の D10）と同じ仕組みを使う（先に入ったほうが作る）。M07 は M23 があれば `NSError **` を写す。
+- **構造体の受け渡し**: 分岐 4 は (a) で承認済み（2026-11-26）。W36 の停止条件 S1 の選択（A・B。未決。W21 の出荷により W36 の Phase 1 にも当たる）と W36 の「承認」の行の承認の後に、W36 の Phase 1 → W36 の Phase 2 → M02 の Phase 2（D14）→ M03 の Phase 2（D11）の順。M02・M03 の Phase 2 は、人間が求めたときだけ（分岐 4 が求めたのは W36 の Phase 2）。M02 の Phase 2 が HFA だけを先に扱う (b) は選ばれなかった。
+- **メインスレッド**: M09 の Phase 2（`main` の型と効果 `main_thread`）は、D-53 の改訂と D-55 の `main` の承認（M09 の D11・D12）の後で、`extern class main` の段は M01 の後。Phase 3（別のスレッドから引ける預け先。M09 の D16）は M14 の着手より前に決める。
+- **生成器と公式パッケージ**: M07 は M01・M02・M06 の Phase 1・M20 の Phase 2（と W17）の後。M03・M04・M05・M09・M17 が入っていれば写し方を足す（std の外の公式パッケージ（git）にすることは分岐 5 で決まった（2026-11-26）。M07 の D8・M13 の D1・M14 の D4 の残り（置き場・名前・分け方など）は要承認。W27 の D3・D9 は W27 自身の決定として残る）。M13 は M07 の後（Phase 2 の通知は M15 の後）、M14 は M04 の Phase 2（`ObjC.call_block` と、F の中の Block の引数）・M09 の Phase 3・M20 の後。
+- **外側**: M11 は独立（NS02 の後なら `Maybe` を Optional に写せる）。M12 の Phase 1 は独立で、Phase 2 は NC13 の Metal の判断（D2）を見てから。
+- **macOS の挙動を変える PR には `ci:full` を付ける**（`targets.yml` は main への merge の後と `ci:full` でだけ動く）。GUI の E2E は headless（Prohibited か Accessory のポリシー、alphaValue 0、時間制限）で走らせ、残ったプロセスがないことを確かめる。Apple の ld と同梱の zig（lld）の両方でリンクを確かめる。
+
+```mermaid
+graph LR
+  M22 -.-> M01
+  M20 -.-> M01
+  M01 --> M02
+  W36 -.->|Phase 2| M02
+  M02 --> M03
+  W36 -.->|Phase 2| M03
+  M09 -.-> M03
+  M01 --> M04
+  M02 -.-> M04
+  M03 -.-> M04
+  M09 -.-> M04
+  M02 --> M05
+  M01 -.-> M06
+  NS07 -.-> M06
+  M01 --> M07
+  M02 --> M07
+  M06 --> M07
+  M20 --> M07
+  W17 --> M07
+  M03 -.-> M07
+  M04 -.-> M07
+  M05 -.-> M07
+  M09 -.-> M07
+  M17 -.-> M07
+  W27 -.-> M07
+  W36 -.-> M07
+  W28 -.-> M08
+  M01 -.-> M09
+  M08 -.-> M09
+  M01 --> M10
+  M02 -.-> M10
+  NS02 -.-> M11
+  NC13 -.-> M12
+  M01 -.-> M12
+  M02 -.-> M12
+  M15 -.-> M12
+  M07 --> M13
+  M15 -.-> M13
+  M04 -.-> M13
+  M09 -.-> M13
+  M04 --> M14
+  M09 -->|Phase 3| M14
+  M20 --> M14
+  W17 -.-> M14
+  M07 -.-> M14
+  M17 -.-> M15
+  M20 -.-> M15
+  M15 --> M16
+  M22 -.-> M17
+  M01 -.-> M17
+  M06 -.-> M17
+  W36 -.-> M18
+  M17 -.-> M18
+  M02 -.-> M18
+  W17 -.->|Phase 2| M20
+  M22 -.-> M20
+  M01 --> M23
+  M02 --> M23
+  M23 -.-> M07
 ```

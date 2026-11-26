@@ -35,6 +35,17 @@ pub struct Manifest {
     pub capabilities: Option<(CapabilitySet, Span)>,
     /// The `[windows]` section (W09). Only the root package's section counts.
     pub windows: WindowsSettings,
+    /// Where the `[package]` values are, for the diagnostics about them.
+    pub spans: PackageSpans,
+}
+
+/// The spans of the quoted `[package]` values, quotes included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackageSpans {
+    pub name: Span,
+    pub version: Span,
+    /// The `namespace` value, or the `name` value when the namespace is derived from the name.
+    pub namespace: Span,
 }
 
 /// A registry: a git repository whose `index/<name>.json` files list the
@@ -149,6 +160,7 @@ pub enum DependencySource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dependency {
     pub source: DependencySource,
+    /// The entry, from its key through its closing `}`.
     pub span: Span,
     /// `native = true`: the root package lets this dependency's `[native]` link inputs into the build.
     pub native: bool,
@@ -205,74 +217,102 @@ pub struct LockEntry {
 /// format 2 optionally `version`. Key order and whitespace are free; unknown or
 /// duplicate keys and names are errors.
 pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockEntry>, Diagnostic> {
+    use JsonStep::{Item, Key, Member};
     use serde_json::Value;
-    let span = Span::new(0, 0).in_source(source_id);
     if text.len() > MAX_PACKAGE_FILE_BYTES {
         return Err(Diagnostic::of(
             DiagnosticKind::LockfileTooLarge,
             "Tsuzuri.lock exceeds 1 MiB",
-            span,
+            Span::new(0, 0).in_source(source_id),
         ));
     }
-    let invalid = |detail: String| {
+    // Each error points at the key or value that it is about: the one at `path`, or the
+    // innermost value around it when it is missing.
+    let at = |path: &[JsonStep<'_>]| {
+        (0..=path.len())
+            .rev()
+            .find_map(|length| json_span(text, &path[..length]))
+            .unwrap_or_default()
+    };
+    let invalid = |detail: String, span: (usize, usize)| {
         Diagnostic::of(
             DiagnosticKind::InvalidLockfile,
             format!(
                 "Tsuzuri.lock is not a valid lockfile ({detail}); restore it from version control or delete it and run tsuzuri fetch"
             ),
-            span,
+            Span::new(span.0, span.1).in_source(source_id),
         )
     };
-    let value: Value = serde_json::from_str(text).map_err(|error| invalid(error.to_string()))?;
-    if let Some(key) = duplicate_json_key(text) {
-        return Err(invalid(format!("duplicate key '{key}'")));
+    let value: Value = serde_json::from_str(text).map_err(|error| {
+        let start = json_error_offset(text, &error);
+        let end = text[start..]
+            .chars()
+            .next()
+            .map_or(start, |character| start + character.len_utf8());
+        invalid(error.to_string(), (start, end))
+    })?;
+    if let Some((key, span)) = duplicate_json_key(text) {
+        return Err(invalid(format!("duplicate key '{key}'"), span));
     }
     let object = value
         .as_object()
-        .ok_or_else(|| invalid("expected an object".into()))?;
+        .ok_or_else(|| invalid("expected an object".into(), at(&[])))?;
     if let Some(key) = object
         .keys()
         .find(|key| !matches!(key.as_str(), "format" | "packages"))
     {
-        return Err(invalid(format!("unknown key '{key}'")));
+        return Err(invalid(format!("unknown key '{key}'"), at(&[Key(key)])));
     }
     let format = object.get("format").and_then(Value::as_u64);
     if !matches!(format, Some(1 | 2)) {
-        return Err(invalid("format must be 1 or 2".into()));
+        return Err(invalid(
+            "format must be 1 or 2".into(),
+            at(&[Member("format")]),
+        ));
     }
     let packages = object
         .get("packages")
         .and_then(Value::as_array)
-        .ok_or_else(|| invalid("packages must be an array".into()))?;
+        .ok_or_else(|| {
+            invalid(
+                "packages must be an array".into(),
+                at(&[Member("packages")]),
+            )
+        })?;
     let mut entries = BTreeMap::new();
-    for package in packages {
+    for (index, package) in packages.iter().enumerate() {
+        let item = [Member("packages"), Item(index)];
         let fields = package
             .as_object()
-            .ok_or_else(|| invalid("each package must be an object".into()))?;
+            .ok_or_else(|| invalid("each package must be an object".into(), at(&item)))?;
+        let member = |key: &str| at(&[item[0], item[1], Member(key)]);
         if let Some(key) = fields.keys().find(|key| {
             !matches!(key.as_str(), "name" | "git" | "rev" | "sha256")
                 && (format == Some(1) || key.as_str() != "version")
         }) {
-            return Err(invalid(format!("unknown package key '{key}'")));
+            return Err(invalid(
+                format!("unknown package key '{key}'"),
+                at(&[item[0], item[1], Key(key)]),
+            ));
         }
         let field = |key: &str| {
             fields
                 .get(key)
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid(format!("each package needs a string {key}")))
+                .ok_or_else(|| invalid(format!("each package needs a string {key}"), member(key)))
         };
         let name = field("name")?;
-        if namespace(name, span).is_err() {
-            return Err(invalid(format!("invalid package name '{name}'")));
+        if namespace(name, Span::default()).is_err() {
+            return Err(invalid(
+                format!("invalid package name '{name}'"),
+                member("name"),
+            ));
         }
         let version = match fields.get("version") {
             None => None,
-            Some(version) => Some(
-                version
-                    .as_str()
-                    .and_then(Version::parse)
-                    .ok_or_else(|| invalid(format!("invalid version of '{name}'")))?,
-            ),
+            Some(version) => Some(version.as_str().and_then(Version::parse).ok_or_else(|| {
+                invalid(format!("invalid version of '{name}'"), member("version"))
+            })?),
         };
         let entry = LockEntry {
             git: field("git")?.to_owned(),
@@ -281,19 +321,43 @@ pub fn parse_lock(text: &str, source_id: usize) -> Result<BTreeMap<String, LockE
             version,
         };
         if !valid_git_url(&entry.git) {
-            return Err(invalid(format!("invalid git url of '{name}'")));
+            return Err(invalid(
+                format!("invalid git url of '{name}'"),
+                member("git"),
+            ));
         }
         if !valid_rev(&entry.rev) {
-            return Err(invalid(format!("invalid rev of '{name}'")));
+            return Err(invalid(format!("invalid rev of '{name}'"), member("rev")));
         }
         if !lowercase_hex(&entry.sha256, 64) {
-            return Err(invalid(format!("invalid sha256 of '{name}'")));
+            return Err(invalid(
+                format!("invalid sha256 of '{name}'"),
+                member("sha256"),
+            ));
         }
         if entries.insert(name.to_owned(), entry).is_some() {
-            return Err(invalid(format!("duplicate package '{name}'")));
+            return Err(invalid(
+                format!("duplicate package '{name}'"),
+                member("name"),
+            ));
         }
     }
     Ok(entries)
+}
+
+/// The byte offset in `text` of the place that a `serde_json` syntax error names by line and
+/// column (columns count bytes, and the place is the last byte read).
+fn json_error_offset(text: &str, error: &serde_json::Error) -> usize {
+    let line_start = text
+        .split_inclusive('\n')
+        .take(error.line().saturating_sub(1))
+        .map(str::len)
+        .sum::<usize>();
+    let mut offset = (line_start + error.column().saturating_sub(1)).min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    offset
 }
 
 /// The canonical `Tsuzuri.lock`: two-space indentation, LF line ends, one final
@@ -346,7 +410,7 @@ pub struct IndexEntry {
 pub fn parse_index(name: &str, text: &str) -> Result<BTreeMap<Version, IndexEntry>, String> {
     use serde_json::Value;
     let value: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-    if let Some(key) = duplicate_json_key(text) {
+    if let Some((key, _)) = duplicate_json_key(text) {
         return Err(format!("duplicate key '{key}'"));
     }
     let object = value.as_object().ok_or("expected an object")?;
@@ -459,8 +523,9 @@ pub fn content_sha256<Bytes: AsRef<[u8]>>(files: &BTreeMap<String, Bytes>) -> St
 }
 
 /// The first key that occurs twice in one object of `text`, which must be JSON
-/// that `serde_json` accepted (`serde_json` keeps only the last duplicate).
-fn duplicate_json_key(text: &str) -> Option<String> {
+/// that `serde_json` accepted (`serde_json` keeps only the last duplicate), and the byte range
+/// of its second occurrence, quotes included.
+fn duplicate_json_key(text: &str) -> Option<(String, (usize, usize))> {
     let mut objects: Vec<Option<BTreeSet<String>>> = Vec::new();
     let mut expect_key = false;
     let mut characters = text.char_indices();
@@ -497,7 +562,7 @@ fn duplicate_json_key(text: &str) -> Option<String> {
                     if let Some(Some(keys)) = objects.last_mut()
                         && !keys.insert(key.clone())
                     {
-                        return Some(key);
+                        return Some((key, (start, end + 1)));
                     }
                 }
             }
@@ -505,6 +570,130 @@ fn duplicate_json_key(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// A step into a JSON value: the value of an object's member, the key of the member (the last
+/// step only), or an array's item.
+#[derive(Clone, Copy)]
+enum JsonStep<'a> {
+    Member(&'a str),
+    Key(&'a str),
+    Item(usize),
+}
+
+/// The byte range in `text`, JSON that `serde_json` accepted without duplicate keys, of the
+/// value at `path` or of the key that a last `Key` step names. `None` when there is none.
+fn json_span(text: &str, path: &[JsonStep<'_>]) -> Option<(usize, usize)> {
+    let mut scan = JsonScan {
+        bytes: text.as_bytes(),
+        at: 0,
+    };
+    for (index, step) in path.iter().enumerate() {
+        scan.space();
+        match *step {
+            JsonStep::Item(wanted) => {
+                scan.eat(b'[')?;
+                for _ in 0..wanted {
+                    scan.value()?;
+                    scan.space();
+                    scan.eat(b',')?;
+                }
+            }
+            JsonStep::Member(name) | JsonStep::Key(name) => {
+                scan.eat(b'{')?;
+                loop {
+                    scan.space();
+                    let start = scan.at;
+                    scan.string()?;
+                    let key = (start, scan.at);
+                    scan.space();
+                    scan.eat(b':')?;
+                    if serde_json::from_str::<String>(&text[key.0..key.1]).ok()? == name {
+                        if matches!(step, JsonStep::Key(_)) {
+                            return (index + 1 == path.len()).then_some(key);
+                        }
+                        break;
+                    }
+                    scan.value()?;
+                    scan.space();
+                    scan.eat(b',')?;
+                }
+            }
+        }
+    }
+    scan.value()
+}
+
+/// A cursor over valid JSON for [`json_span`].
+struct JsonScan<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl JsonScan<'_> {
+    fn space(&mut self) {
+        while matches!(self.bytes.get(self.at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+            self.at += 1;
+        }
+    }
+
+    fn eat(&mut self, byte: u8) -> Option<()> {
+        (self.bytes.get(self.at) == Some(&byte)).then(|| self.at += 1)
+    }
+
+    /// Passes a string at the cursor.
+    fn string(&mut self) -> Option<()> {
+        self.eat(b'"')?;
+        loop {
+            match *self.bytes.get(self.at)? {
+                b'\\' => self.at += 2,
+                b'"' => {
+                    self.at += 1;
+                    return Some(());
+                }
+                _ => self.at += 1,
+            }
+        }
+    }
+
+    /// Passes the value after the cursor and returns its range.
+    fn value(&mut self) -> Option<(usize, usize)> {
+        self.space();
+        let start = self.at;
+        match *self.bytes.get(self.at)? {
+            b'"' => self.string()?,
+            b'{' | b'[' => {
+                let mut depth = 0usize;
+                loop {
+                    match *self.bytes.get(self.at)? {
+                        b'"' => {
+                            self.string()?;
+                            continue;
+                        }
+                        b'{' | b'[' => depth += 1,
+                        b'}' | b']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                self.at += 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.at += 1;
+                }
+            }
+            b'}' | b']' | b',' | b':' => return None,
+            _ => {
+                while self.bytes.get(self.at).is_some_and(|byte| {
+                    !matches!(byte, b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r')
+                }) {
+                    self.at += 1;
+                }
+            }
+        }
+        Some((start, self.at))
+    }
 }
 
 pub fn namespace(name: &str, span: Span) -> Result<String, Diagnostic> {
@@ -703,8 +892,11 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             whole,
         ));
     }
+    // Each diagnostic points at the body of the problem (a key, a value, or a section header),
+    // or, when a token is missing, where it should be.
     let mut section = "";
     let mut sections = BTreeSet::new();
+    let mut package: Option<Span> = None;
     let mut fields = BTreeMap::new();
     let mut dependencies = BTreeMap::new();
     let mut wasm = WasmSettings::default();
@@ -715,17 +907,14 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut capabilities: Option<(Option<CapabilitySet>, Span)> = None;
     let mut offset = 0;
     for line in source.split_inclusive('\n') {
-        let span = Span::new(offset, offset + line.trim_end().len()).in_source(source_id);
+        let mut cursor = Line::new(line, offset, source_id);
         offset += line.len();
-        let mut cursor = Line {
-            rest: line.trim_end_matches(['\r', '\n']),
-            span,
-        };
         cursor.space();
         if cursor.rest.is_empty() || cursor.rest.starts_with('#') {
             continue;
         }
         if cursor.rest.starts_with('[') {
+            let header = cursor.header();
             let next = if section.is_empty() {
                 cursor.take("[package]").then_some("package")
             } else if cursor.take("[dependencies]") {
@@ -744,45 +933,52 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             match next {
                 Some(next) if sections.insert(next) => section = next,
                 _ => {
-                    return Err(cursor.error(DiagnosticKind::ManifestSectionOrder,
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ManifestSectionOrder,
                         "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+                        header,
                     ));
                 }
             }
-            if section == "native" {
-                native = Some((crate::driver::LinkInputs::default(), span));
-            }
-            if section == "registry" {
-                registry = Some((None, None, span));
-            }
-            if section == "capabilities" {
-                capabilities = Some((None, span));
+            match section {
+                "package" => package = Some(header),
+                "native" => native = Some((crate::driver::LinkInputs::default(), header)),
+                "registry" => registry = Some((None, None, header)),
+                "capabilities" => capabilities = Some((None, header)),
+                _ => {}
             }
             cursor.finish()?;
             continue;
         }
-        let key = cursor.key()?;
+        let (key, key_span) = cursor.key()?;
         cursor.expect("=")?;
+        let at_key = |kind: DiagnosticKind, message: &str| Diagnostic::of(kind, message, key_span);
         match section {
             "package" => {
                 if !matches!(key.as_str(), "name" | "version" | "namespace" | "edition") {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::UnknownManifestKey,
                         "unknown package key; expected name, version, namespace, or edition",
                     ));
                 }
-                let value = cursor.string()?;
-                if value.is_empty() || fields.insert(key, (value, span)).is_some() {
-                    return Err(cursor.error(
+                const FIELD: &str = "package fields must be nonempty and occur exactly once";
+                let (value, value_span) = cursor.string()?;
+                if value.is_empty() {
+                    return Err(Diagnostic::of(
                         DiagnosticKind::InvalidPackageField,
-                        "package fields must be nonempty and occur exactly once",
+                        FIELD,
+                        value_span,
                     ));
+                }
+                if fields.insert(key, (value, value_span)).is_some() {
+                    return Err(at_key(DiagnosticKind::InvalidPackageField, FIELD));
                 }
             }
             "dependencies" => {
-                namespace(&key, span)?;
+                namespace(&key, key_span)?;
                 cursor.expect("{")?;
-                let (source, native, granted) = match cursor.key()?.as_str() {
+                let (form, form_span) = cursor.key()?;
+                let (source, native, granted) = match form.as_str() {
                     "path" => cursor.path_dependency()?,
                     "git" => {
                         let (source, granted) = cursor.git_dependency()?;
@@ -793,12 +989,17 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                         (source, false, granted)
                     }
                     "rev" | "branch" | "tag" => {
-                        return Err(cursor.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::InvalidGitDependency,
+                            GIT_FORM,
+                            form_span,
+                        ));
                     }
                     _ => {
-                        return Err(cursor.error(
+                        return Err(Diagnostic::of(
                             DiagnosticKind::InvalidDependencyForm,
                             "expected a path, git, or version dependency",
+                            form_span,
                         ));
                     }
                 };
@@ -807,24 +1008,22 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                         key,
                         Dependency {
                             source,
-                            span,
+                            span: cursor.since(key_span.start),
                             native,
                             capabilities: granted,
                         },
                     )
                     .is_some()
                 {
-                    return Err(Diagnostic::of(
+                    return Err(at_key(
                         DiagnosticKind::DuplicateDependency,
                         "duplicate package dependency",
-                        span,
                     ));
                 }
                 if dependencies.len() > 1024 {
-                    return Err(Diagnostic::of(
+                    return Err(at_key(
                         DiagnosticKind::TooManyDependencies,
                         "a package may have at most 1024 dependencies",
-                        span,
                     ));
                 }
             }
@@ -833,18 +1032,18 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     "max-memory" => &mut wasm.max_memory,
                     "stack-size" => &mut wasm.stack_size,
                     _ => {
-                        return Err(cursor.error(
+                        return Err(at_key(
                             DiagnosticKind::UnknownManifestKey,
                             "unknown wasm key; expected max-memory or stack-size",
                         ));
                     }
                 };
-                let text = cursor.string()?;
+                let (text, value_span) = cursor.string()?;
                 let size = parse_size(&text).ok_or_else(|| {
-                    cursor.error(DiagnosticKind::InvalidWasmSize, "WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\"")
+                    Diagnostic::of(DiagnosticKind::InvalidWasmSize, "WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\"", value_span)
                 })?;
                 if slot.replace(size).is_some() {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "wasm keys must occur at most once",
                     ));
@@ -854,22 +1053,26 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 let (index, rev, _) = registry
                     .as_mut()
                     .expect("the [registry] header precedes its keys");
-                let value = cursor.string()?;
+                let (value, value_span) = cursor.string()?;
                 let (slot, valid, rule) = match key.as_str() {
                     "index" => (index, valid_git_url(&value), GIT_URL_RULE),
                     "rev" => (rev, valid_rev(&value), GIT_REV_RULE),
                     _ => {
-                        return Err(cursor.error(
+                        return Err(at_key(
                             DiagnosticKind::UnknownManifestKey,
                             "unknown registry key; expected index or rev",
                         ));
                     }
                 };
                 if !valid {
-                    return Err(cursor.error(DiagnosticKind::InvalidRegistrySetting, rule));
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::InvalidRegistrySetting,
+                        rule,
+                        value_span,
+                    ));
                 }
                 if slot.replace(value).is_some() {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "registry keys must occur at most once",
                     ));
@@ -880,14 +1083,14 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     .as_mut()
                     .expect("the [capabilities] header precedes its keys");
                 if key != "allow" {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::UnknownManifestKey,
                         "unknown capabilities key; expected allow",
                     ));
                 }
                 let names = cursor.capability_names("allow")?;
                 if allow.replace(names).is_some() {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "capabilities keys must occur at most once",
                     ));
@@ -898,7 +1101,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 if !matches!(key.as_str(), "link" | "libraries" | "search")
                     || !native_keys.insert(key.clone())
                 {
-                    return Err(cursor.error(DiagnosticKind::InvalidNativeSection, FORM));
+                    return Err(at_key(DiagnosticKind::InvalidNativeSection, FORM));
                 }
                 let values = cursor.string_array(FORM)?;
                 let inputs = &mut native
@@ -907,24 +1110,26 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     .0;
                 match key.as_str() {
                     "libraries" => {
-                        if let Some(message) = values
-                            .iter()
-                            .find_map(|name| crate::driver::library_name_error(name))
-                        {
-                            return Err(
-                                cursor.error(DiagnosticKind::InvalidNativeLibraryName, &message)
-                            );
+                        if let Some((message, span)) = values.iter().find_map(|(name, span)| {
+                            crate::driver::library_name_error(name).map(|message| (message, *span))
+                        }) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InvalidNativeLibraryName,
+                                message,
+                                span,
+                            ));
                         }
-                        inputs.libraries = values;
+                        inputs.libraries = values.into_iter().map(|(name, _)| name).collect();
                     }
                     _ => {
                         let paths = values
                             .into_iter()
-                            .map(|value| {
+                            .map(|(value, span)| {
                                 relative_path(value).ok_or_else(|| {
-                                    cursor.error(
+                                    Diagnostic::of(
                                         DiagnosticKind::InvalidNativePath,
                                         "link and search paths must be nonempty relative paths",
+                                        span,
                                     )
                                 })
                             })
@@ -939,31 +1144,32 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             }
             "windows" => {
                 if key != "subsystem" {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::UnknownManifestKey,
                         "unknown windows key; expected subsystem",
                     ));
                 }
-                let text = cursor.string()?;
+                let (text, value_span) = cursor.string()?;
                 let value = match text.as_str() {
                     "console" => crate::driver::Subsystem::Console,
                     "windows" => crate::driver::Subsystem::Windows,
                     _ => {
-                        return Err(cursor.error(
+                        return Err(Diagnostic::of(
                             DiagnosticKind::InvalidWindowsSetting,
                             "subsystem must be \"console\" or \"windows\"",
+                            value_span,
                         ));
                     }
                 };
                 if windows.subsystem.replace(value).is_some() {
-                    return Err(cursor.error(
+                    return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "windows keys must occur at most once",
                     ));
                 }
             }
             _ => {
-                return Err(cursor.error(
+                return Err(at_key(
                     DiagnosticKind::ManifestSectionOrder,
                     "expected [package] before fields",
                 ));
@@ -975,7 +1181,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         Diagnostic::of(
             DiagnosticKind::MissingPackageField,
             "[package] requires name and version",
-            whole,
+            package.unwrap_or(whole),
         )
     };
     let registry = match registry {
@@ -1000,8 +1206,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             ));
         }
     };
-    let (name, span) = fields.remove("name").ok_or_else(missing)?;
-    let (version, _) = fields.remove("version").ok_or_else(missing)?;
+    let (name, name_span) = fields.remove("name").ok_or_else(missing)?;
+    let (version, version_span) = fields.remove("version").ok_or_else(missing)?;
     let edition = match fields.remove("edition") {
         None => Edition::MANIFEST_DEFAULT,
         Some((value, span)) => Edition::parse(&value).ok_or_else(|| {
@@ -1015,8 +1221,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             )
         })?,
     };
-    let derived = namespace(&name, span)?;
-    let namespace = match fields.remove("namespace") {
+    let derived = namespace(&name, name_span)?;
+    let (namespace, namespace_span) = match fields.remove("namespace") {
         Some((namespace, span)) if !valid_namespace(&namespace, edition) => {
             return Err(Diagnostic::of(
                 DiagnosticKind::InvalidPackageNamespace,
@@ -1025,8 +1231,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
             ));
         }
         // Namespaces are dotted inside the compiler, as module keys are.
-        Some((namespace, _)) => namespace.replace("::", "."),
-        None => derived,
+        Some((namespace, span)) => (namespace.replace("::", "."), span),
+        None => (derived, name_span),
     };
     Ok(Manifest {
         namespace,
@@ -1039,6 +1245,11 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         registry,
         capabilities,
         windows,
+        spans: PackageSpans {
+            name: name_span,
+            version: version_span,
+            namespace: namespace_span,
+        },
     })
 }
 
@@ -1053,14 +1264,61 @@ fn relative_path(path: String) -> Option<PathBuf> {
     (!path.is_empty() && !path.contains('\0') && !rooted).then(|| path.into())
 }
 
+/// One line of a manifest, read from left to right.
 struct Line<'a> {
+    /// What is left of the line, without its line end.
     rest: &'a str,
-    span: Span,
+    /// The offset in the manifest just past the line's text, before its line end.
+    end: usize,
+    /// The offset just past the line's last character that is not a space or a tab.
+    content_end: usize,
+    source: usize,
 }
 
-impl Line<'_> {
+impl<'a> Line<'a> {
+    /// `line` starts at `start` in the manifest and may end with its line end.
+    fn new(line: &'a str, start: usize, source: usize) -> Self {
+        let text = line.trim_end_matches(['\r', '\n']);
+        Self {
+            rest: text,
+            end: start + text.len(),
+            content_end: start + text.trim_end_matches([' ', '\t']).len(),
+            source,
+        }
+    }
+
+    /// The offset of the start of `rest`.
+    fn offset(&self) -> usize {
+        self.end - self.rest.len()
+    }
+
+    /// From `start` to the start of `rest`.
+    fn since(&self, start: usize) -> Span {
+        Span::new(start, self.offset()).in_source(self.source)
+    }
+
+    /// The next character after spaces and tabs, or the empty span just past the line's last
+    /// character: what stands where a token is expected.
+    fn here(&self) -> Span {
+        let rest = self.rest.trim_start_matches([' ', '\t']);
+        let start = (self.end - rest.len()).min(self.content_end);
+        let width = rest.chars().next().map_or(0, char::len_utf8);
+        Span::new(start, start + width).in_source(self.source)
+    }
+
+    /// The section header at the start of `rest`: through its first `]`, or to the end of the
+    /// line without one.
+    fn header(&self) -> Span {
+        let start = self.offset();
+        let end = self
+            .rest
+            .find(']')
+            .map_or(self.content_end, |at| start + at + 1);
+        Span::new(start, end).in_source(self.source)
+    }
+
     fn error(&self, kind: DiagnosticKind, message: &str) -> Diagnostic {
-        Diagnostic::of(kind, message, self.span)
+        Diagnostic::of(kind, message, self.here())
     }
 
     fn space(&mut self) {
@@ -1088,7 +1346,8 @@ impl Line<'_> {
         }
     }
 
-    fn key(&mut self) -> Result<String, Diagnostic> {
+    /// A bare key and its span.
+    fn key(&mut self) -> Result<(String, Span), Diagnostic> {
         self.space();
         let end = self
             .rest
@@ -1098,23 +1357,28 @@ impl Line<'_> {
         if end == 0 {
             return Err(self.error(DiagnosticKind::ManifestSyntaxError, "expected a bare key"));
         }
+        let start = self.offset();
         let key = self.rest[..end].to_owned();
         self.rest = &self.rest[end..];
-        Ok(key)
+        Ok((key, self.since(start)))
     }
 
-    fn string(&mut self) -> Result<String, Diagnostic> {
+    /// A quoted string and its span, quotes included.
+    fn string(&mut self) -> Result<(String, Span), Diagnostic> {
         self.expect("\"")?;
+        let start = self.offset() - 1;
         let mut value = String::new();
         while let Some(character) = self.rest.chars().next() {
+            let at = self.offset();
             self.rest = &self.rest[character.len_utf8()..];
             match character {
-                '"' => return Ok(value),
+                '"' => return Ok((value, self.since(start))),
                 '\\' => {
                     let Some(escaped) = self.rest.chars().next() else {
-                        return Err(self.error(
+                        return Err(Diagnostic::of(
                             DiagnosticKind::ManifestSyntaxError,
                             "unterminated string escape",
+                            self.since(at),
                         ));
                     };
                     self.rest = &self.rest[escaped.len_utf8()..];
@@ -1124,30 +1388,33 @@ impl Line<'_> {
                         'r' => '\r',
                         't' => '\t',
                         _ => {
-                            return Err(self.error(
+                            return Err(Diagnostic::of(
                                 DiagnosticKind::ManifestSyntaxError,
                                 "unsupported string escape; use \\\" \\\\ \\n \\r or \\t",
+                                self.since(at),
                             ));
                         }
                     });
                 }
                 character if character.is_control() => {
-                    return Err(self.error(
+                    return Err(Diagnostic::of(
                         DiagnosticKind::ManifestSyntaxError,
                         "unescaped control character in string",
+                        self.since(at),
                     ));
                 }
                 character => value.push(character),
             }
         }
-        Err(self.error(
+        Err(Diagnostic::of(
             DiagnosticKind::ManifestSyntaxError,
             "unterminated quoted string",
+            self.since(start),
         ))
     }
 
-    /// A one-line array of strings; `form` is the error for anything else.
-    fn string_array(&mut self, form: &str) -> Result<Vec<String>, Diagnostic> {
+    /// A one-line array of strings and their spans; `form` is the error for anything else.
+    fn string_array(&mut self, form: &str) -> Result<Vec<(String, Span)>, Diagnostic> {
         if !self.take("[") {
             return Err(self.error(DiagnosticKind::InvalidNativeSection, form));
         }
@@ -1175,20 +1442,22 @@ impl Line<'_> {
             if !self.rest.starts_with('"') {
                 return Err(self.error(DiagnosticKind::InvalidCapabilities, &form));
             }
-            let name = self.string()?;
+            let (name, span) = self.string()?;
             let Some(capability) = Capability::from_name(&name) else {
-                return Err(self.error(
+                return Err(Diagnostic::of(
                     DiagnosticKind::UnknownCapability,
-                    &format!(
+                    format!(
                         "unknown capability '{name}'; expected one of {}",
                         Capability::NAMES
                     ),
+                    span,
                 ));
             };
             if names.contains(capability) {
-                return Err(self.error(
+                return Err(Diagnostic::of(
                     DiagnosticKind::DuplicateCapability,
-                    &format!("capability '{name}' is listed twice"),
+                    format!("capability '{name}' is listed twice"),
+                    span,
                 ));
             }
             names.insert(capability);
@@ -1210,9 +1479,10 @@ impl Line<'_> {
         if self.rest.is_empty() || self.rest.starts_with('#') {
             Ok(())
         } else {
-            Err(self.error(
+            Err(Diagnostic::of(
                 DiagnosticKind::ManifestSyntaxError,
                 "unexpected content after manifest field",
+                Span::new(self.offset(), self.content_end).in_source(self.source),
             ))
         }
     }
@@ -1221,8 +1491,10 @@ impl Line<'_> {
     fn path_dependency(
         &mut self,
     ) -> Result<(DependencySource, bool, Option<CapabilitySet>), Diagnostic> {
+        const KEYS: &str =
+            "only the path, native, and capabilities keys are supported in a dependency";
         self.expect("=")?;
-        let path = self.string()?;
+        let (path, path_span) = self.string()?;
         // Windows treats `/dir` and `C:dir` as non-absolute, but both escape the package root.
         let rooted = Path::new(&path).has_root()
             || matches!(
@@ -1230,15 +1502,17 @@ impl Line<'_> {
                 Some(Component::Prefix(_))
             );
         if path.is_empty() || path.contains('\0') || rooted {
-            return Err(self.error(
+            return Err(Diagnostic::of(
                 DiagnosticKind::InvalidDependencyPath,
                 "dependency path must be a nonempty relative path",
+                path_span,
             ));
         }
         let mut native = false;
         let mut capabilities = None;
         if self.take(",") {
-            match self.key()?.as_str() {
+            let (key, key_span) = self.key()?;
+            match key.as_str() {
                 "native" => {
                     self.expect("=")?;
                     native = if self.take("true") {
@@ -1253,18 +1527,21 @@ impl Line<'_> {
                     };
                     // Only `capabilities` may follow `native`.
                     if self.take(",") {
-                        match self.key()?.as_str() {
+                        let (key, key_span) = self.key()?;
+                        match key.as_str() {
                             "capabilities" => capabilities = self.dependency_capabilities()?,
                             "native" => {
-                                return Err(self.error(
+                                return Err(Diagnostic::of(
                                     DiagnosticKind::DuplicateManifestKey,
                                     "duplicate key 'native' in a dependency",
+                                    key_span,
                                 ));
                             }
                             _ => {
-                                return Err(self.error(
+                                return Err(Diagnostic::of(
                                     DiagnosticKind::UnknownManifestKey,
-                                    "only the path, native, and capabilities keys are supported in a dependency",
+                                    KEYS,
+                                    key_span,
                                 ));
                             }
                         }
@@ -1272,9 +1549,10 @@ impl Line<'_> {
                 }
                 "capabilities" => capabilities = self.dependency_capabilities()?,
                 _ => {
-                    return Err(self.error(
+                    return Err(Diagnostic::of(
                         DiagnosticKind::UnknownManifestKey,
-                        "only the path, native, and capabilities keys are supported in a dependency",
+                        KEYS,
+                        key_span,
                     ));
                 }
             }
@@ -1290,8 +1568,14 @@ impl Line<'_> {
         if !self.take("=") {
             return Err(self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM));
         }
-        let version = Version::parse(&self.string()?)
-            .ok_or_else(|| self.error(DiagnosticKind::InvalidRegistryDependency, VERSION_RULE))?;
+        let (text, span) = self.string()?;
+        let version = Version::parse(&text).ok_or_else(|| {
+            Diagnostic::of(
+                DiagnosticKind::InvalidRegistryDependency,
+                VERSION_RULE,
+                span,
+            )
+        })?;
         let capabilities =
             self.trailing_capabilities(DiagnosticKind::InvalidRegistryDependency, VERSION_FORM)?;
         if !self.take("}") {
@@ -1310,32 +1594,41 @@ impl Line<'_> {
         if !self.take(",") {
             return Ok(None);
         }
-        if self.key().ok().as_deref() != Some("capabilities") {
-            return Err(self.error(kind, form));
+        match self.key() {
+            Ok((key, _)) if key == "capabilities" => self.dependency_capabilities(),
+            Ok((_, span)) => Err(Diagnostic::of(kind, form, span)),
+            Err(_) => Err(self.error(kind, form)),
         }
-        self.dependency_capabilities()
     }
 
     /// The rest of `{ git = "<url>", rev = "<commit>", capabilities = [...] }` after `git`, through `}`.
     fn git_dependency(&mut self) -> Result<(DependencySource, Option<CapabilitySet>), Diagnostic> {
+        let kind = DiagnosticKind::InvalidGitDependency;
         if !self.take("=") {
-            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
+            return Err(self.error(kind, GIT_FORM));
         }
-        let url = self.string()?;
+        let (url, url_span) = self.string()?;
         if !valid_git_url(&url) {
-            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_URL_RULE));
+            return Err(Diagnostic::of(kind, GIT_URL_RULE, url_span));
         }
-        if !self.take(",") || self.key().ok().as_deref() != Some("rev") || !self.take("=") {
-            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
+        if !self.take(",") {
+            return Err(self.error(kind, GIT_FORM));
         }
-        let rev = self.string()?;
+        match self.key() {
+            Ok((key, _)) if key == "rev" => {}
+            Ok((_, span)) => return Err(Diagnostic::of(kind, GIT_FORM, span)),
+            Err(_) => return Err(self.error(kind, GIT_FORM)),
+        }
+        if !self.take("=") {
+            return Err(self.error(kind, GIT_FORM));
+        }
+        let (rev, rev_span) = self.string()?;
         if !valid_rev(&rev) {
-            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_REV_RULE));
+            return Err(Diagnostic::of(kind, GIT_REV_RULE, rev_span));
         }
-        let capabilities =
-            self.trailing_capabilities(DiagnosticKind::InvalidGitDependency, GIT_FORM)?;
+        let capabilities = self.trailing_capabilities(kind, GIT_FORM)?;
         if !self.take("}") {
-            return Err(self.error(DiagnosticKind::InvalidGitDependency, GIT_FORM));
+            return Err(self.error(kind, GIT_FORM));
         }
         Ok((DependencySource::Git { url, rev }, capabilities))
     }
@@ -1346,6 +1639,342 @@ mod tests {
     use super::*;
 
     const PACKAGE: &str = "[package]\nname = \"sample-app\"\nversion = \"0.1.0\"\n";
+
+    /// `text` without the markers '«' and '»', and the byte range between them.
+    fn marked(text: &str) -> (String, (usize, usize)) {
+        let start = text.find('«').expect("the case marks its span");
+        let end = text.find('»').expect("the case marks its span") - '«'.len_utf8();
+        (text.replace(['«', '»'], ""), (start, end))
+    }
+
+    /// Each diagnostic of a manifest points at the body of the problem: the key, the value, or
+    /// the section header, or where a missing token belongs; never at the start of the file.
+    #[test]
+    fn manifest_errors_point_at_their_cause() {
+        let git = "https://example.org/a.git";
+        let rev = "0123456789abcdef0123456789abcdef01234567";
+        // Each case: the text after PACKAGE with the span between '«' and '»', the kind, and the
+        // 1-based line and column of the span's start.
+        let cases = [
+            // Unknown sections and the order of sections.
+            ("\n  «[other]» # x\n", "manifest_section_order", 5, 3),
+            ("[wasm]\n«[wasm]»\n", "manifest_section_order", 5, 1),
+            ("[native]\n«[package]»\n", "manifest_section_order", 5, 1),
+            ("«[dependencies»\n", "manifest_section_order", 4, 1),
+            // Unknown keys.
+            ("  «foo» = 1\n", "unknown_manifest_key", 4, 3),
+            (
+                "[wasm]\n«memory» = \"64MiB\"\n",
+                "unknown_manifest_key",
+                5,
+                1,
+            ),
+            ("[registry]\n«url» = \"x\"\n", "unknown_manifest_key", 5, 1),
+            (
+                "[capabilities]\n«deny» = []\n",
+                "unknown_manifest_key",
+                5,
+                1,
+            ),
+            ("[windows]\n«foo» = \"bar\"\n", "unknown_manifest_key", 5, 1),
+            (
+                "[native]\nlink = [\"a\"]\n«bogus» = [\"x\"]\n",
+                "invalid_native_section",
+                6,
+                1,
+            ),
+            (
+                "[native]\nlink = []\n«link» = []\n",
+                "invalid_native_section",
+                6,
+                1,
+            ),
+            // The shape and the rules of values.
+            ("[native]\nlink = «\"»m\"\n", "invalid_native_section", 5, 8),
+            (
+                "[native]\nlink = [\"a\" «\"»b\"]\n",
+                "invalid_native_section",
+                5,
+                13,
+            ),
+            (
+                "[native]\nlink = [\"a\"«»\n",
+                "invalid_native_section",
+                5,
+                12,
+            ),
+            (
+                "[native]\nlibraries = [\"m\", «\"libm\"»]\n",
+                "invalid_native_library_name",
+                5,
+                19,
+            ),
+            (
+                "[native]\nsearch = [«\"/abs\"»]\n",
+                "invalid_native_path",
+                5,
+                11,
+            ),
+            (
+                "[windows]\nsubsystem = «\"bogus\"»\n",
+                "invalid_windows_setting",
+                5,
+                13,
+            ),
+            (
+                "[wasm]\nmax-memory = «\"64MB\"»\n",
+                "invalid_wasm_size",
+                5,
+                14,
+            ),
+            (
+                "[wasm]\nmax-memory = «6»7108864\n",
+                "manifest_syntax_error",
+                5,
+                14,
+            ),
+            ("edition = «\"2030\"»\n", "unsupported_edition", 4, 11),
+            (
+                "namespace = «\"acme-tools\"»\n",
+                "invalid_package_namespace",
+                4,
+                13,
+            ),
+            (
+                "[registry]\nindex = «\"http://e.org/i.git\"»\n",
+                "invalid_registry_setting",
+                5,
+                9,
+            ),
+            (
+                "[capabilities]\nallow = «\"»fs\"\n",
+                "invalid_capabilities",
+                5,
+                9,
+            ),
+            (
+                "[capabilities]\nallow = [«1»]\n",
+                "invalid_capabilities",
+                5,
+                10,
+            ),
+            (
+                "[capabilities]\nallow = [\"fs\", «\"files\"»]\n",
+                "unknown_capability",
+                5,
+                16,
+            ),
+            (
+                "[capabilities]\nallow = [\"fs\", «\"fs\"»]\n",
+                "duplicate_capability",
+                5,
+                16,
+            ),
+            // Keys that occur twice.
+            ("«version» = \"2\"\n", "invalid_package_field", 4, 1),
+            (
+                "[wasm]\nstack-size = \"1MiB\"\n«stack-size» = \"2MiB\"\n",
+                "duplicate_manifest_key",
+                6,
+                1,
+            ),
+            (
+                "[windows]\nsubsystem = \"console\"\n «subsystem» = \"windows\"\n",
+                "duplicate_manifest_key",
+                6,
+                2,
+            ),
+            (
+                "[capabilities]\nallow = []\n«allow» = []\n",
+                "duplicate_manifest_key",
+                6,
+                1,
+            ),
+            // The syntax of a line.
+            (
+                "edition = \"2026\" «x # y»   \n",
+                "manifest_syntax_error",
+                4,
+                18,
+            ),
+            (
+                "edition = \"2026\" «ここ»\n",
+                "manifest_syntax_error",
+                4,
+                18,
+            ),
+            ("edition «\"»2026\"\n", "manifest_syntax_error", 4, 9),
+            ("«=» \"2026\"\n", "manifest_syntax_error", 4, 1),
+            ("edition = \"20«\\q»26\"\n", "manifest_syntax_error", 4, 14),
+            ("edition = «\"2026»\n", "manifest_syntax_error", 4, 11),
+            ("edition = \"20«\\»\n", "manifest_syntax_error", 4, 14),
+            // Dependencies.
+            (
+                "[dependencies]\n«Bad_Name» = { path = \"a\" }\n",
+                "invalid_package_name",
+                5,
+                1,
+            ),
+            (
+                "[dependencies]\na = { path = «\"/abs\"» }\n",
+                "invalid_dependency_path",
+                5,
+                14,
+            ),
+            (
+                "[dependencies]\na = { path = \"a\" }\n«a» = { path = \"b\" }\n",
+                "duplicate_dependency",
+                6,
+                1,
+            ),
+            (
+                "[dependencies]\na = { «url» = \"x\" }\n",
+                "invalid_dependency_form",
+                5,
+                7,
+            ),
+            (
+                "[dependencies]\na = «\"»a\"\n",
+                "manifest_syntax_error",
+                5,
+                5,
+            ),
+            (
+                "[dependencies]\na = { «tag» = \"v1\" }\n",
+                "invalid_git_dependency",
+                5,
+                7,
+            ),
+            (
+                "[dependencies]\na = { path = \"a\", native = «y»es }\n",
+                "invalid_dependency_native_flag",
+                5,
+                28,
+            ),
+            (
+                "[dependencies]\na = { path = \"a\", «link» = true }\n",
+                "unknown_manifest_key",
+                5,
+                19,
+            ),
+            (
+                "[dependencies]\na = { path = \"a\", native = true, «native» = true }\n",
+                "duplicate_manifest_key",
+                5,
+                34,
+            ),
+            (
+                "[dependencies]\na = { path = \"a\"«»  \n",
+                "manifest_syntax_error",
+                5,
+                17,
+            ),
+            (
+                "[dependencies]\na = { version = «\"1.2\"» }\n",
+                "invalid_registry_dependency",
+                5,
+                17,
+            ),
+            (
+                "[dependencies]\na = { version = \"1.2.3\", «native» = true }\n",
+                "invalid_registry_dependency",
+                5,
+                26,
+            ),
+        ];
+        let cases = cases
+            .into_iter()
+            .map(|(text, kind, line, column)| (text.to_owned(), kind, line, column));
+        let git_cases = [
+            (
+                format!("[dependencies]\na = {{ git = \"{git}\" «}}»\n"),
+                5,
+                41,
+            ),
+            (
+                format!(
+                    "[dependencies]\na = {{ git = «\"http://e.org/a.git\"», rev = \"{rev}\" }}\n"
+                ),
+                5,
+                13,
+            ),
+            (
+                format!("[dependencies]\na = {{ git = \"{git}\", rev = «\"main\"» }}\n"),
+                5,
+                48,
+            ),
+            (
+                format!("[dependencies]\na = {{ git = \"{git}\", «branch» = \"main\" }}\n"),
+                5,
+                42,
+            ),
+        ];
+        let git_cases = git_cases
+            .into_iter()
+            .map(|(text, line, column)| (text, "invalid_git_dependency", line, column));
+        for (text, kind, line, column) in cases.chain(git_cases) {
+            let (source, span) = marked(&format!("{PACKAGE}{text}"));
+            let error = parse_manifest(&source, 5).unwrap_err();
+            assert_eq!(error.kind, Some(kind), "{text}: {}", error.message);
+            assert_eq!(error.span.source, Some(5), "{text}");
+            assert_eq!((error.span.start, error.span.end), span, "{text}");
+            assert_eq!(
+                crate::diagnostic::location(&source, error.span.start),
+                (line, column),
+                "{text}"
+            );
+        }
+        // A manifest without name or version: the [package] header, or the whole file without one.
+        for (text, span) in [
+            ("# about\n«[package]» # the package\nname = \"a\"\n", None),
+            ("# only a comment\n", Some((0, 17))),
+            ("", Some((0, 0))),
+        ] {
+            let (source, span) = span.map_or_else(|| marked(text), |span| (text.to_owned(), span));
+            let error = parse_manifest(&source, 0).unwrap_err();
+            assert_eq!(error.kind, Some("missing_package_field"), "{text}");
+            assert_eq!((error.span.start, error.span.end), span, "{text}");
+        }
+        for (text, kind) in [
+            ("«[registry]»\n", "missing_registry_index"),
+            ("«[capabilities]»\n", "missing_capabilities_allow"),
+        ] {
+            let (source, span) = marked(&format!("{PACKAGE}{text}"));
+            let error = parse_manifest(&source, 0).unwrap_err();
+            assert_eq!(error.kind, Some(kind), "{text}");
+            assert_eq!((error.span.start, error.span.end), span, "{text}");
+        }
+        // CRLF line ends do not move the columns.
+        let crlf = "[package]\r\nname = \"a\"\r\nversion = \"1\"\r\n\t«foo» = 1\r\n";
+        let (source, span) = marked(crlf);
+        let error = parse_manifest(&source, 0).unwrap_err();
+        assert_eq!((error.span.start, error.span.end), span);
+        assert_eq!(
+            crate::diagnostic::location(&source, error.span.start),
+            (4, 2)
+        );
+    }
+
+    /// The spans that later diagnostics use: each dependency's entry and the `[package]` values.
+    #[test]
+    fn manifest_keeps_the_spans_of_entries_and_package_values() {
+        let source = "[package]\nname = \"sample-app\"\nversion = \"0.1.0\"\nnamespace = \"Acme::Tools\"\n[dependencies]\n  geo = { path = \"../geo\" } # local\n";
+        let manifest = parse_manifest(source, 2).unwrap();
+        let text = |span: Span| {
+            assert_eq!(span.source, Some(2));
+            &source[span.start..span.end]
+        };
+        assert_eq!(
+            text(manifest.dependencies["geo"].span),
+            "geo = { path = \"../geo\" }"
+        );
+        assert_eq!(text(manifest.spans.name), "\"sample-app\"");
+        assert_eq!(text(manifest.spans.version), "\"0.1.0\"");
+        assert_eq!(text(manifest.spans.namespace), "\"Acme::Tools\"");
+        // A namespace derived from the name is at the name.
+        let derived = parse_manifest(PACKAGE, 0).unwrap();
+        assert_eq!(derived.spans.namespace, derived.spans.name);
+    }
 
     #[test]
     fn parses_manifest_comments_escapes_and_crlf() {
@@ -1749,41 +2378,36 @@ mod tests {
         // The key may stand anywhere in [package], before or after the others.
         let before = "[package]\nedition = \"2026\"\nname = \"app\"\nversion = \"1\"\n";
         assert_eq!(parse_manifest(before, 0).unwrap().edition, Edition::E2026);
-        // Each case: the keys after PACKAGE, the zero-based line of the error, its message.
-        for (keys, line, message) in [
+        // Each case: the keys after PACKAGE with the error's span between '«' and '»', its message.
+        for (keys, message) in [
             (
-                "edition = \"2030\"\n",
-                0,
+                "edition = «\"2030\"»\n",
                 "unsupported edition '2030'; supported editions: 2026, 2027, 2028",
             ),
             (
-                "edition = \" 2026\"\n",
-                0,
+                "edition = «\" 2026\"»\n",
                 "unsupported edition ' 2026'; supported editions: 2026, 2027, 2028",
             ),
-            ("edition = 2026\n", 0, "expected '\"'"),
+            ("edition = «2»026\n", "expected '\"'"),
             (
-                "edition = \"\"\n",
-                0,
+                "edition = «\"\"»\n",
                 "package fields must be nonempty and occur exactly once",
             ),
             (
-                "edition = \"2026\"\nedition = \"2026\"\n",
-                1,
+                "edition = \"2026\"\n«edition» = \"2026\"\n",
                 "package fields must be nonempty and occur exactly once",
             ),
             (
-                "license = \"MIT\"\n",
-                0,
+                "«license» = \"MIT\"\n",
                 "unknown package key; expected name, version, namespace, or edition",
             ),
         ] {
-            let error = parse_manifest(&format!("{PACKAGE}{keys}"), 7).unwrap_err();
+            let (source, span) = marked(&format!("{PACKAGE}{keys}"));
+            let error = parse_manifest(&source, 7).unwrap_err();
             assert_eq!(error.code, "E0002", "{keys}");
             assert_eq!(error.message, message, "{keys}");
             assert_eq!(error.span.source, Some(7), "{keys}");
-            let start = PACKAGE.len() + keys.lines().take(line).map(|l| l.len() + 1).sum::<usize>();
-            assert_eq!(error.span.start, start, "{keys}");
+            assert_eq!((error.span.start, error.span.end), span, "{keys}");
         }
         // The edition also reads the namespace: a segment is an identifier of that edition.
         let source = format!("{PACKAGE}edition = \"2026\"\nnamespace = \"Acme::Tools\"\n");

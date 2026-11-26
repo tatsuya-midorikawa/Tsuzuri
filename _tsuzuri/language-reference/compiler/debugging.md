@@ -166,7 +166,7 @@ Windows で、MSVC のリンカー（`link.exe`）でリンクする Clang（配
 
 PDB には、Tsuzuri の値の表示を定義した natvis が埋め込まれます。natvis は `string`、`utf8string`、`Vec`、`Map`、`Set`、`Maybe`、`Result` を Tsuzuri の値として表示します。`TSUZURI_STRINGS=compact` の `string`（長さの語の bit 62 が立っているもの）は、natvis が `s8`（UTF-8）の文字列として表示するので、ASCII の文字列はそのまま読めますが、ASCII でない Latin-1 の文字は文字化けします（natvis に ISO-8859-1 の指定子がありません）。要素の表示（`[0]`、`[1]`…）はバイトの値で、長さは低位 62 bit です。この natvis は Windows で確かめていません。natvis の型名のワイルドカードはテンプレートの引数にしか使えないので、配列、リスト、利用者の union には natvis の表示がありません。これらはデバッガーの既定の表示になり、union の `$tag` は case 名を表示します。`Maybe<string>` と `Maybe<utf8string>` はタグを持たない（`$niche` が `-1` なら `None`）ので、型名を指定した専用の定義があります。`Maybe<[T]>`、ネイティブの `Maybe<ref T>`、`Maybe` の値が関数値のもの、タグを持たない利用者の union は既定の表示で、`$niche` が値を持たない case の列挙子のときだけ case 名になります。
 
-ネイティブの実行ファイルには、入口（`def main` かトップレベルのコード）、`export def`、`Drop` の実装から到達できる関数だけが入ります。どこからも呼ばれない公開関数は、実行ファイルの内部関数で外から呼べないのに `-O0` ではコンパイルされていたので、入れません。そのため DWARF にもトラップ位置の表にも載りません。すべての公開関数を含めて確かめたいときは、`--emit object` か `--emit llvm` でビルドします。未使用の公開関数の型エラーは `check` が今までどおり報告します。その関数だけが使う OS API や `extern` のシンボルで失敗していたビルドが通る点は [出力とターゲット](option.md#出力とターゲット) にあります。
+ネイティブの実行ファイルには、入口（`def main` かトップレベルのコード）、`export def`、`Drop` の実装から到達できる関数だけが入ります。どこからも呼ばれない公開関数は、実行ファイルの内部関数で外から呼べないのに `-O0` ではコンパイルされていたので、入れません。そのため DWARF にもトラップ位置の表にも載りません。すべての公開関数を含めて確かめたいときは、`--emit object` か `--emit llvm` でビルドします。未使用の公開関数の型エラーは `check` が今までどおり報告します。その関数だけが使う C のランタイムや `extern` のシンボルで失敗していたビルドが通る点は [出力とターゲット](option.md#出力とターゲット) にあります。
 
 `--emit object` と `--emit llvm` の `-g` も CodeView を含みます。自分で MSVC のリンカーでリンクするときは、`/DEBUG` と `/NATVIS:<配布物>/share/natvis/tsuzuri.natvis` を付けます。
 

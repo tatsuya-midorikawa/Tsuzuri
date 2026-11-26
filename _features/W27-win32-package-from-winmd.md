@@ -6,7 +6,7 @@
 | 優先度 | P2 |
 | 規模 | XL（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | [W01](_completed/W01-callback-extern-temporary-string.md), W13, W14, W15, W16, W17, W18, W19, W20, W21, W22, W23, W24, W25（起票時の「W13〜W25」。Phase 1 は W13・W14・W15・W16・W17・W18・W20・W21 の Phase 1・W22。Phase 2 は W19・W23・W24・W25） |
-| 後続 | – |
+| 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md)。M07 はこのチケットの macOS 版で、配布の形と生成した宣言の `@trusted` の決定を共有する） |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（配布の形、生成物の `@trusted`）。決定事項の D1・D3・D5・D9 |
@@ -60,7 +60,7 @@ W13〜W25 がそろうと、Win32 の API を C と同じ意味で、型付き�
 
 ### 停止条件
 
-- **S1** `unsafe` か新しい crate なしには winmd を読めない（GUIDE §1 規則 8）。
+- **S1** `unsafe` か新しい crate なしには winmd を読めない（GUIDE §1 規則 10）。
 - **S2** ライセンスが再配布を許さない。生成器（Phase 1）は利用者が自分の winmd から生成する形として進め、公式パッケージ（Phase 2）は作らずに報告する。
 - **S3** 手順 1 の計測で、GUI の核に絞った公式パッケージでも、依存の型検査が利用者の `check` の時間を支配する（hello の数倍）。分け方（D3）を変える前に報告する（CI に速度の閾値は入れない）。
 - **S4** 写像の表の型が前提のチケットに無い、または名前が違う。推測で別の型に写さず、その宣言を `// skipped` にする。公式パッケージの核（早見の API）が生成できなくなるなら止めて報告する。
@@ -79,7 +79,7 @@ W13〜W25 がそろうと、Win32 の API を C と同じ意味で、型付き�
 - **std と方針**: std はコンパイラに埋め込まれ、予約モジュール名は 73 個（`src/stdlib.rs`）。std の公開関数は D-59（対象は最後）に従い、`tests/std_argument_order.rs` が検査する。GUI フレームワークの同梱は非目標（strategy.md、`_features/README.md` の「採用しない改善」）。D-63 は Win32 の宣言を std の外の公式パッケージにする案を W27 の既定案とした。
 - **`@trusted` と `W1010`**: `@trusted` は「人がその外部関数の契約を確かめた」印で、`tsuzuri bindgen` は付けない（E15、docs/language.md の「ホスト関数のインポート」）。印のない `extern` を `extern` でない関数が参照すると、`tsuzuri audit` は全パッケージの宣言に `W1010` を出す（`src/capabilities.rs` の `untrusted_externs`）。依存のパッケージのソースはルートの作者が書き換えられないので、依存の印のない `extern` の `W1010` はルートからは消せない。
 - **import library**: 同梱の zig の `lib/libc/mingw/lib-common/` に 783 個の `.def`（`.def.in` を含む）があり、うち 389 個が `api-ms-win-*`。`user32.def.in`・`gdi32.def`・`comctl32.def`・`comdlg32.def`・`ole32.def.in`・`uiautomationcore.def` などもある。SDK 10.0.26100 の `um/x64` に `Ole32.Lib`・`UIAutomationCore.lib` などがある（W25 の「現状」）。
-- **依存できる crate**: `Cargo.toml` の依存は `rustc_apfloat`・`serde_json`（と任意の Cranelift）だけで、新しい crate は足さない（GUIDE §1 規則 8）。`unsafe` は `unsafe_code = "forbid"`。
+- **依存できる crate**: `Cargo.toml` の依存は `rustc_apfloat`・`serde_json`（と任意の Cranelift）だけで、新しい crate は足さない（GUIDE §1 規則 10）。`unsafe` は `unsafe_code = "forbid"`。
 
 ## 仕様
 
@@ -219,7 +219,7 @@ tsuzuri bindgen --winmd FILE --api LIST -o DIR [--json]
 
 ## 前提とする他チケットのインターフェース
 
-- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `ref mut T`・`ref mut [T]`・`Buffer::{I16U, I32, I32U}`・`@count`。[W15](_completed/W15-abi-nullable-handles.md): `Maybe<H>`・`Maybe<ref R>`・`Maybe<ref ZString>`。[W16](W16-last-error-attribute.md): `@last_error` と結果の組の型 `R * i32u`。[W17](W17-link-attribute-dllimport.md): `@link("name")`（git・registry の依存からも使える）。[W18](_completed/W18-copy-extern-type.md): `extern type copy`・`HandleKind::Copy`。[W19](_completed/W19-thread-bound-handles.md): `extern type local`。[W20](_completed/W20-zstring.md): `ZString`・`ref ZString`。[W21](W21-c-layout-records.md): `@c_layout`・`pack`・固定長の配列の field（Phase 2 で `FnPtr` の field）。[W22](_completed/W22-fnptr-values.md): `FnPtr<F>`。[W24](W24-extern-view.md): `extern view` の宣言の形。[W25](W25-extern-interface-com.md): `extern interface`、`Result<J, i32>`、`Com.create` の `const` の CLSID、`Com.Iid<I>`、連鎖の中の同じ名前の `E1001`。
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `ref mut T`・`ref mut [T]`・`Buffer::{I16U, I32, I32U}`・`@count`。[W15](_completed/W15-abi-nullable-handles.md): `Maybe<H>`・`Maybe<ref R>`・`Maybe<ref ZString>`。[W16](W16-last-error-attribute.md): `@last_error` と結果の組の型 `R * i32u`。[W17](W17-link-attribute-dllimport.md): `@link("name")`（git・registry の依存からも使える）。[W18](_completed/W18-copy-extern-type.md): `extern type copy`・`HandleKind::Copy`。[W19](_completed/W19-thread-bound-handles.md): `extern type local`。[W20](_completed/W20-zstring.md): `ZString`・`ref ZString`。[W21](_completed/W21-c-layout-records.md): `@c_layout`・`pack`・固定長の配列の field（Phase 2 で `FnPtr` の field）。[W22](_completed/W22-fnptr-values.md): `FnPtr<F>`。[W24](_completed/W24-extern-view.md): `extern view` の宣言の形。[W25](W25-extern-interface-com.md): `extern interface`、`Result<J, i32>`、`Com.create` の `const` の CLSID、`Com.Iid<I>`、連鎖の中の同じ名前の `E1001`。
 - [W14](_completed/W14-extern-multiple-declarations.md): 利用者が同じ symbol を別の型で宣言しても衝突しない（生成物と手書きの宣言が並ぶ）。
 - [W23](_completed/W23-anchor-state.md)（Phase 2）: `Anchor.create`・`Anchor.token`・`Anchor.read`・`Anchor.update`。公式パッケージの例（ウィンドウプロシージャから `GWLP_USERDATA` の鍵で窓の状態に届く書き方）に使う。生成器の写像には使わない。
 - [W01](_completed/W01-callback-extern-temporary-string.md): コールバックを取る `extern` に一時値を渡す呼び出しが正しく下がる。

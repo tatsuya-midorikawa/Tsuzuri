@@ -165,7 +165,7 @@ $"len={len}"
 len=1
 ```
 
-seed を付けても走査順は変わりません。同じ操作列なら、seed なしと同じ順序です。`randomized ()` は `unit` を取るので、`randomized()` ではなく `randomized ()` と書きます。既定の wasm32 では `E2000`、Windows 上のコンパイラが OS API に到達するネイティブビルドを作ると `E2002` です。
+seed を付けても走査順は変わりません。同じ操作列なら、seed なしと同じ順序です。`randomized ()` は `unit` を取るので、`randomized()` ではなく `randomized ()` と書きます。既定の wasm32 では `E2000` です。
 
 ## API リファレンス
 

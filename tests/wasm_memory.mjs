@@ -232,15 +232,17 @@ try {
   assert.match(cli(["test", packaged, "--target", "wasm32"]).stdout, /2 passed; 0 failed; 0 ignored/);
   manifest("");
   assert.deepEqual(packagedBuild("options", "--wasm-max-memory", "64MiB", "--wasm-stack-size", "2MiB"), fromManifest);
-  for (const [wasm, code, message] of [
-    ["max-memory = \"100000\"", "E2000", "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32 (after applying the root package's [wasm])"],
-    ["stack-size = \"16MiB\"", "E2000", "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size (after applying the root package's [wasm])"],
-    ["max-memory = \"64MB\"", "E0002", "WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\""],
+  // A size that the manifest cannot hold is at its value (line 7); a combination that the build
+  // rejects names the [wasm] section without a position.
+  for (const [wasm, place, code, message] of [
+    ["max-memory = \"100000\"", "1:1", "E2000", "--wasm-max-memory must be a multiple of 64 KiB and at most 4 GiB - 64 KiB on wasm32 (after applying the root package's [wasm])"],
+    ["stack-size = \"16MiB\"", "1:1", "E2000", "--wasm-max-memory must be at least the stack size plus 64 KiB; raise the memory limit or lower --wasm-stack-size (after applying the root package's [wasm])"],
+    ["max-memory = \"64MB\"", "7:14", "E0002", "WASM sizes must be a quoted byte count or a number followed by KiB, MiB, or GiB, such as \"64MiB\""],
   ]) {
     manifest(`[wasm]\n${wasm}\n`);
     const result = execute(compiler, ["build", packaged, "--target", "wasm32", "--no-cache", "-o", join(directory, "invalid.wasm")], false);
     assert.notEqual(result.status, 0, wasm);
-    assert.ok(result.stderr.includes(`Tsuzuri.toml:1:1: error[${code}]: ${message}`), `${wasm}\n${result.stderr}`);
+    assert.ok(result.stderr.includes(`Tsuzuri.toml:${place}: error[${code}]: ${message}`), `${wasm}\n${result.stderr}`);
   }
   console.log("WASM memory: root manifest [wasm] matches the options, yields to them, skips dependencies and reports invalid sizes");
 

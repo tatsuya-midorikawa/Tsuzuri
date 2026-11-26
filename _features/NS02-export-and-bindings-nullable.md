@@ -6,12 +6,12 @@
 | 優先度 | P2（公開 C ABI とホスト言語バインディングでオプション引数・欠損ハンドルを `0` や別フラグに頼らず型安全に受け渡す） |
 | 規模 | M（`abi::parameter`・`result` の拡張、`wrapper` の入出力変換、`bindings_native.rs` の 3 言語対応、WASM の `abi_native_only` 検査、テストと文書） |
 | 依存 | W15, NS01 |
-| 後続 | – |
+| 後続 | –（弱い後続: [M11](M11-swift-bindings.md)。`Maybe` を Swift の Optional に写す） |
 | 状態 | todo |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（[W15](_completed/W15-abi-nullable-handles.md) D3 の解除と公開 ABI の拡張。決定事項 D1 が要承認、D2〜D5 は既定案） |
 | 手本にする既存実装 | [W15](_completed/W15-abi-nullable-handles.md) の `abi::nullable`・`c_view` とコールバック引数のデコード、`src/llvm_abi.rs` の `wrapper`・`try_wrappers`・`try_prototype`、`src/bindings_native.rs` の `Shape` と C#・Python・C++ の入出力コード生成 |
-| 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/bindings.rs`, `src/bindings_native.rs`, `tests/abi_nullable.rs`, `tests/host_bindings_native.mjs`, `docs/language.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/built-in-types-and-modules/maybe.md`, `_tsuzuri/language-reference/compiler/webassembly.md` |
+| 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm.rs`, `src/llvm_abi.rs`, `src/bindings.rs`, `src/bindings_native.rs`, `tests/abi_nullable.rs`, `tests/host_bindings.mjs`, `docs/language.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/built-in-types-and-modules/maybe.md`, `_tsuzuri/language-reference/compiler/webassembly.md` |
 
 ## 実装者向け早見
 
@@ -31,7 +31,7 @@
 
 - [W15](_completed/W15-abi-nullable-handles.md) と [NS01](_completed/NS01-nonnull-extern-handles.md) が `done` であること。
 - 決定事項 D1 の承認があること。
-- `node scripts/repo-kb.mjs brief NS02` を読み、`ABI_VERSION`（`src/bindings.rs`）と既存の `tests/host_bindings_native.mjs` の構成を確認する。
+- `node scripts/repo-kb.mjs brief NS02` を読み、`ABI_VERSION`（`src/bindings.rs`）と既存の `tests/host_bindings.mjs` の構成を確認する。
 
 ### 停止条件
 
@@ -94,13 +94,13 @@
 
 1. **変更**: なし（ブランチ `feat/ns02-export-nullable`）。**内容**: `node scripts/repo-kb.mjs brief NS02`、既存バインディング出力のスナップショット保存。**確認**: 基準値を記録。
 2. **変更**: `src/abi.rs`, `src/check.rs`, `src/llvm.rs`, `src/llvm_abi.rs`。**内容**: `export def` での `Maybe` 受理、`wrapper`・ヘッダー・`try_prototype` 対応、WASM と `bindings-js` での `abi_native_only` 拒否。**確認**: `tests/abi_nullable.rs`、T1。
-3. **変更**: `src/bindings_native.rs`, `tests/host_bindings_native.mjs`。**内容**: C#・Python・C++ バインディングの `NullableHandle`・`NullableRecord` 生成と実行テスト。**確認**: `node tests/host_bindings_native.mjs target/debug/tsuzuri`（通常と `--trap-mode return` の両方）。
+3. **変更**: `src/bindings_native.rs`, `tests/host_bindings.mjs`。**内容**: C#・Python・C++ バインディングの `NullableHandle`・`NullableRecord` 生成と実行テスト。**確認**: `node tests/host_bindings.mjs target/debug/tsuzuri`（通常と `--trap-mode return` の両方）。
 4. **変更**: 文書。**内容**: `docs/language.md`・`native-interop.md`・`maybe.md`・`webassembly.md` の更新。**確認**: T2、`node scripts/check-docs.mjs <変更したページ>`。PR に `ci:full`。
 
 ## テスト計画
 
 - `tests/abi_nullable.rs`: `export_nullable_positions_are_accepted`、`export_other_maybe_payloads_fail_with_abi_nullable_payload`、`wasm_and_bindings_js_reject_nullable_exports`、`try_wrapper_handles_nullable_export_result`。
-- `tests/host_bindings_native.mjs`: `Maybe<H>` 引数・結果と `Maybe<ref Point>` 引数を持つ共有ライブラリをビルドし、C#・Python・C++ の各ホストから `null` / 非 `null` の両方を渡して受け取るテスト（通常モード・`--trap-mode return` の両方）。アライメント違反ポインタを C から渡したときにトラップになることも確認。
+- `tests/host_bindings.mjs`: `Maybe<H>` 引数・結果と `Maybe<ref Point>` 引数を持つ共有ライブラリをビルドし、C#・Python・C++ の各ホストから `null` / 非 `null` の両方を渡して受け取るテスト（通常モード・`--trap-mode return` の両方）。アライメント違反ポインタを C から渡したときにトラップになることも確認。
 
 ## ドキュメント
 

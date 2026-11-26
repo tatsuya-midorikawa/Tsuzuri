@@ -330,7 +330,7 @@ geometry-core = { path = "../geometry-core" }
 依存パッケージ内の `Point.tz` は `GeometryCore::Point`（`namespace = "Acme::Tools"` の場合は `Acme::Tools::Point`）となり、依存パッケージの内部コードからであっても完全修飾して安全に参照されます。ルートパッケージには不要なプレフィックスは付与されず、依存パッケージ側に `Main.tz` が存在していてもルートプロジェクトのエントリーポイントとして誤認されることはありません。
 正規化されたルートパスが同一であるパッケージは共有され、循環依存、同一名を持つ別パスのパッケージの重複、ルートパッケージとの名前空間の衝突、予約名前空間の使用、およびシンボリックリンクは `E1011` エラーとして厳格に拒否されます。
 パッケージ依存グラフは最大 1024 パッケージ、依存深度最大 128、プロジェクト全体のソースファイル数最大 4096 件までに制限され、超過時は `E1017` リソース上限エラーとなります。ネストした依存パッケージのルートを親パッケージとして二重に重複走査することはありません。
-マニフェストの文法は、上記に示したセクションおよびキーのみを許容する安全な限定的 TOML です。コメント記号 `#`、空行、CRLF 改行、ダブルクォーテーションで囲まれた UTF-8 文字列、ならびにエスケープシーケンス `\"`、`\\`、`\n`、`\r`、`\t` のみをサポートし、未知のキー、不正なエスケープ、あるいは未対応の TOML 構文は `E0002` エラーとなります。
+マニフェストの文法は、上記に示したセクションおよびキーのみを許容する安全な限定的 TOML です。コメント記号 `#`、空行、CRLF 改行、ダブルクォーテーションで囲まれた UTF-8 文字列、ならびにエスケープシーケンス `\"`、`\\`、`\n`、`\r`、`\t` のみをサポートし、未知のキー、不正なエスケープ、あるいは未対応の TOML 構文は `E0002` エラーとなります。マニフェストの診断は原因の行と列を指します。未知のキーと 2 回目のキーはそのキー、形や規則に合わない値はその値、順序の違う節や未知の節はその見出し、足りない記号はそれがあるべき場所、`name` か `version` の欠落は `[package]` の見出し、依存の項目についての診断（パスが見つからない、名前が合わない、取得の誤りなど）はその項目の先頭のキー、名前空間の予約と衝突は `namespace`（なければ `name`）の値、`publish` の版の形と `Tsuzuri.lock` と食い違う版は `version` の値です。`Tsuzuri.lock` の `E2007` も、原因のキーか値（ないキーはそれを持つべきオブジェクト、JSON の構文の誤りはその場所）を指します。
 マニフェストファイル、`Tsuzuri.lock`、および依存パッケージのソースコードも、すべてファイル出力保護機構の管理対象となります。外部モジュールを取り込む宣言は `using` のみであり、専用の `import` 宣言は存在しません。ビルドスクリプトの実行機能はありません。
 
 #### git 依存と Tsuzuri.lock
@@ -370,11 +370,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
 
-`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup` は後から予約語として追加されたモジュール名です。
+`HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
 また、`Maybe` は従来の `Option` を刷新したものです。`Option` は廃止されて予約から外れており、`Option.map` や `Option<i64>` は `Maybe.map` や `Maybe<i64>` へ、`Result.to_option` や `Result.of_option` は `Result.to_maybe` や `Result.of_maybe` へと移行されました。
 case 名の `None` および `Some` はそのまま維持されています。旧名称である `Maybe.tz` などのファイルを自前で作成していたプロジェクトもファイル名の改名が必要です。
@@ -417,7 +417,7 @@ let d = Point.distance p
 
 #### 可視性（`private`）
 
-すべての宣言はデフォルトで公開（public）扱いとなります。非公開にしたい場合は `private def`、`private record`、`private union`、`private type` と記述し、宣言したモジュールの内部からのみ参照可能とします。
+すべての宣言はデフォルトで公開（public）扱いとなります。非公開にしたい場合は `private def`（`private pure def`・`private const def`・`private @literal def` を含む）、`private record`、`private union`、`private type`、`private const`、`private extern def`、`private extern view def`、`private extern type`（`copy`・`local` も）と記述し、宣言したモジュールの内部からのみ参照可能とします。
 `private union` を宣言した場合、その配下のすべての case コンストラクタも自動的に private となります。
 なお、`fn`、`and`、`let` による関数の実装側は、対応する `def` シグネチャの可視性を自動的に継承するため、実装側に `private` を重ねて記述する必要はありません。
 
@@ -484,7 +484,7 @@ Tsuzuri コード内でハンドル型の値を直接構築するリテラル構
 スコープ終了時にリソースを確実に自動クローズさせたい場合は、修飾のないハンドル値を record 型でラップしたうえで `instance Drop` を実装し、その `drop` メソッド内部から借用参照を受け取るクローズ用 extern 関数を呼び出す設計パターンを採用してください（詳細は [利用者定義の解放](#利用者定義の解放drop) 参照）。
 
 C 言語 ABI においてハンドル型を配置できる場所は、extern 関数（値 `H`、共有借用 `ref H`、ネイティブの `Maybe<H>`・`Maybe<ref H>`、およびネイティブの `extern type copy` ハンドルに対する `ref mut CopyH`）、`export def` 関数、およびコールバック関数の引数位置（値 `H` または共有借用 `ref H`。さらにネイティブのコールバック関数の引数では `Maybe<H>`・`Maybe<ref H>`）、ならびに extern 関数および `export def` 関数の戻り値位置（値 `H`。さらにネイティブの extern 関数の戻り値では `Maybe<H>`）に限定されます。ABI 境界のレコードのフィールド型、バッファの要素型、あるいは `copy` でないハンドルの可変借用 `ref mut H` として配置した場合は `E1008` エラーとなります。なお、ABI 境界以外の通常の Tsuzuri コード内であれば、レコード、union、配列、`Maybe` の内部へ自由に格納可能です。
-ネイティブ環境におけるハンドル値（`H` および `ref H`）は**常に非 Null ポインタ**（LLVM `ptr != null`）であるという不変条件を持ちます。非 `Maybe` の `H` を返す `extern def` に C 側が `NULL` を返した場合、ならびに `export def` や静的コールバックの非 `Maybe` 引数 `H`・`ref H` にホスト側が `NULL` を渡した場合は、境界で即座に `null extern handle`（`TrapKind::NullHandle`）でトラップします（`--trap-mode return` ではステータス `1` として返り、C#・Python・C++ の生成バインディングでも呼び出し前後に `0`／`None`／`nullptr` を例外で拒否します）。この非 Null 不変条件により、ネイティブ環境での `Maybe<H>`（および同じ形の 2 ケース共用体）はタグを持たない単一の `ptr`（`Niche::NullPointer`、`None` = `null`、`Some h` = `h`、8 バイト）として表現され、`Some(NULL)` が生じることはありません。一方、wasm32／wasm64 環境ではハンドルはホスト側のテーブル番号（JavaScript 上では `0` も有効値となり得る整数）であるため、非 Null 検査も NULL niche も行われず従来どおりタグ付き共用体として扱われます。`ref H` の場合であっても、ポインタへのポインタではなくハンドル値そのものがホストへ受け渡されます。生成される C ヘッダーには、プロトタイプ宣言に先立って `typedef struct tz_handle_<長さ付き修飾名>_s *tz_handle_<…>;` という型定義が 1 回だけ出力されます。
+ネイティブ環境におけるハンドル値（`H` および `ref H`）は**常に非 Null ポインタ**（LLVM `ptr != null`）であるという不変条件を持ちます。非 `Maybe` の `H` を返す `extern def` に C 側が `NULL` を返した場合、ならびに `export def` や静的コールバックの非 `Maybe` 引数 `H`・`ref H` にホスト側が `NULL` を渡した場合は、境界で即座に `null extern handle`（`TrapKind::NullHandle`）でトラップします（`--trap-mode return` ではステータス `1` として返り、C#・Python・C++ の生成バインディングでも呼び出し前後に `0`／`None`／`nullptr` を例外で拒否します）。この非 Null 不変条件により、ネイティブ環境での `Maybe<H>`（および同じ形の 2 ケース共用体）はタグを持たない単一の `ptr`（`Niche::NullPointer`、`None` = `null`、`Some h` = `h`、8 バイト）として表現され、`Some(NULL)` が生じることはありません。一方、wasm32／wasm64 環境ではハンドルはホスト側のテーブル番号（JavaScript 上では `0` も有効値となり得る整数）であるため、非 Null 検査も NULL niche も行われず従来どおりタグ付き共用体として扱われます。`ref H` の場合であっても、ポインタへのポインタではなくハンドル値そのものがホストへ受け渡されます。生成される C ヘッダーには、プロトタイプ宣言に先立って `typedef struct tz_handle_<長さ付き修飾名>_s *tz_handle_<…>;` という型定義が、ガード `TSUZURI_HANDLE_tz_handle_<…>` の中に 1 回だけ出力されます（同じハンドルを使う複数のライブラリのヘッダーを一緒に読んでも、定義は翻訳単位に 1 つです）。
 
 #### コールバック
 
@@ -1478,7 +1478,7 @@ match Random.pcg_next_u32 generator with
 - `Os.Error.code` には WASI 仕様の errno 番号が格納されます。ファイルパスは、preopen されたディレクトリのうちスラッシュ `/` 境界で最長一致するプレフィックスを起点として解決され、いずれにも一致しないパスは最初の preopen ディレクトリからの相対パスとして扱われます。`Env.current_dir ()` は最初の preopen ディレクトリ名（例: `/work`）を返し、`Process.run` は `Other` エラーとなります。
 - 動作は Node.js の `node:wasi` 実装を用いて検証されており、システム固有のエラーコード番号の差異を除いてネイティブ環境の実行結果と完全に一致します（なお、WASI preview2 および WebAssembly コンポーネントモデルは現時点で未対応です）。
 
-Windows 環境上で動作するコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。`src/runtime/os.c` は POSIX の API で書いてあり、Windows 向けの実装がないためで、推測してリンクはしません（OS API を使用しない純粋計算プログラムには影響しません。Windows x64 と Arm64 の MSVC の実行は、CI の `windows-2022` と `windows-11-arm` が `cargo test` と E2E で検証します。`Net` のソケットは Winsock で対応し、実行は `vscode.yml` の Windows の job が検証します。[G10](../_features/_completed/G10-windows.md)）。`--target` で名指しした Windows の target も、ビルド機に関係なく同じ `E2002` です。対応するネイティブ環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 だけで、それ以外の `--target` は引数解析で `E2000` です。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW、`--target native` と名指しした Windows の target）では、OS API を Win32 の API で実装します（W11。`src/runtime/os.c` の Windows の半分が `src/runtime/os-windows.h` で、driver が `os.c` に取り込みます。リンクには `bcrypt` を足します）。パスと名前は UTF-8 と UTF-16 の間で厳密に変換し（`MultiByteToWideChar`・`WideCharToMultiByte` の不正な文字の検出つき。孤立サロゲートは `InvalidEncoding`）、248 単位以上のパスは絶対パスにして `\\?\` を付けてから渡します。`Os.Error.code` は Win32 のエラー番号（`GetLastError`。`BCryptGenRandom` の失敗は NTSTATUS をビットのまま）で、`ERROR_FILE_NOT_FOUND`・`ERROR_PATH_NOT_FOUND` は `NotFound`、`ERROR_ACCESS_DENIED`・`ERROR_SHARING_VIOLATION` は `PermissionDenied`、`ERROR_FILE_EXISTS`・`ERROR_ALREADY_EXISTS` は `AlreadyExists`、`ERROR_INVALID_PARAMETER`・`ERROR_INVALID_NAME`・`ERROR_FILENAME_EXCED_RANGE`・`ERROR_DIRECTORY` は `InvalidInput`、`ERROR_NO_UNICODE_TRANSLATION` は `InvalidEncoding`、それ以外は `Other` です。`Env.args` は `GetCommandLineW` を `def main :: Array<string> -> i32` と同じ規則（`src/runtime/arguments-split.h`）で分けます。`Time.monotonic_ns` は `QueryPerformanceCounter`、`unix_ns` は `GetSystemTimePreciseAsFileTime`、`sleep_ms` は期限まで `Sleep` を繰り返します（tzroutine の中ではその tzroutine だけが待ちます）。`Process.run` は `CreateProcessW` で、プログラム名が `/`・`\`・`:` を含まなければ `PATH` のディレクトリだけを探し（作業ディレクトリは探しません）、`.bat`・`.cmd` は子を作らずに `InvalidInput`、引数は MSVC の C ランタイムと `CommandLineToArgvW` が戻せる形に引用し、`signal` は常に 0、`code` は終了コードのビットです。実行は CI の `windows.yml`（MSVC、x64 の `windows-2022` と Arm64 の `windows-11-arm`）と `vscode.yml`（同梱の MinGW）が `tests/os.mjs` を `-O0`・`-O3` で走らせて検証します。ランタイムを埋め込む Windows の COFF の `--emit object` は、OS API に限らず `E2002` です（実行ファイルを作るか、`--emit llvm` の IR とランタイムを 1 回だけリンクします）。`Net` のソケットは Winsock で対応します。対応するネイティブ環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 だけで、それ以外の `--target` は引数解析で `E2000` です。
 
 ### ネットワーク（Net）
 
@@ -4917,6 +4917,8 @@ wasm64 においては、すべてのポインタ値（`tsuzuri_alloc` の戻り
 レコード内の `bool` や狭小な整数フィールドも C 言語側では 32-bit 幅へと正規化されるため、コンパイラ内部の LLVM レイアウトや C コンパイラごとの構造体値渡し規約の差異に左右されることはありません。
 生成される C 言語の typedef 名はモジュール名の長さプレフィックスと型引数のエンコーディングによって一意に識別され、C/C++ の予約語と衝突するフィールド名には自動的に接頭辞 `tz_` が付与されます（名前変換後にシンボルが衝突した場合は `E1008` エラーとなります）。
 
+別々にビルドした複数のライブラリの C ヘッダーは、1 つの C・C++ の翻訳単位で一緒に include できます。ホスト ABI か `--trap-mode return` を使うヘッダーは、どれも同じ内容の共通の宣言（`tsuzuri_i64`・`f64`・`ubyte`・`string`・`utf8string` の `_slice`／`_buffer` と `tsuzuri_trap_info`）を、版の付いた 1 つのガード `TSUZURI_COMMON_DECLARATIONS_<版>` の中に持ちます（現在の版は 1。モジュールが使わない種類も含めてすべて出し、スカラーだけのヘッダーには出しません）。生成するすべての struct には typedef と同じ名前の tag が付きます（tag のない `typedef struct { ... }` は同じ形でも別の型になり、2 回目の定義は C でも C++ でもエラーになるため）。版は宣言の形が変わったときだけ上がり、版の違うヘッダーを一緒に読むと、ガードの中の `#error`（`Tsuzuri headers with different versions of the common declarations cannot be included together; ...`）で止まります。同じ名前の型が違う形を持つことになり、黙って片方を残すと他方のライブラリの関数へ違う配置を渡すことになるからです。レコードの struct は `TSUZURI_LAYOUT_<typedef 名>` のガードの中にあり、その値は定義の文字列の SHA-256 の先頭 64 bit です。2 つのライブラリが同じモジュール（共通の依存パッケージなど）のレコードを export すれば 2 つめの定義は読み飛ばされ、同じ typedef 名でフィールドが違えば `#error "<typedef 名> has other fields in another Tsuzuri header: ..."` で止まります。ハンドルの typedef は `TSUZURI_HANDLE_<typedef 名>` のガードの中にあります。関数のプロトタイプ（`tsuzuri_alloc`・`tsuzuri_free` を含む）はガードの外で、同じ宣言の繰り返しは C・C++ とも有効です。`tz_<name>` はライブラリをまたいで区別されないので、同じ名前を export する 2 つのライブラリは一緒に使えません。
+
 ホスト側から渡された借用バッファは、Tsuzuri 関数の実行期間中のみ読み取りアクセスされ、Tsuzuri 側で勝手に複製されたり解放されたりすることはありません。ホスト側は自然なアライメントと、指定された要素数分の有効なメモリ領域を保証する責任を持ち、Tsuzuri 関数の呼び出し中にそのバッファを変更したり解放したりしてはなりません。
 負の長さ、バッファサイズのオーバーフロー、不正な null ポインタ、およびアライメント違反は、Tsuzuri 内部の処理を開始する前に安全にトラップします（なお、null ポインタと長さ 0 の組み合わせは正当な空バッファとして受理されます）。
 WASM 環境では、渡されたポインタが現在の線形メモリの有効範囲内に完全に収まっているかも厳密に検証されます（なおネイティブ環境においては、任意の生ポインタの物理的妥当性を完全に自動検証することは不可能なため、正当なポインタを引き渡すことはホスト側の責任となります）。
@@ -4998,7 +5000,7 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 `--allocator counting` は `system` の allocator を同じ 16 バイトのヘッダーで包み、確保回数・解放回数・現在の要求バイト数・その最大値を数えます（原子的に更新します）。ホストは次の関数で値を読みます。WASM では `tsuzuri_alloc_stats`・`tsuzuri_alloc`・`tsuzuri_free`・`memory` を export するので、`tsuzuri_alloc(32)` で確保した 8 バイト境界の領域を渡します（この確保も数に入ります）。
 
 ```c
-typedef struct {
+typedef struct tsuzuri_allocation_stats {
     uint64_t allocations;
     uint64_t frees;
     uint64_t live_bytes;
@@ -5006,6 +5008,8 @@ typedef struct {
 } tsuzuri_allocation_stats;
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
+
+ヘッダーでは、この struct は `TSUZURI_ALLOCATION_STATS_DEFINED` のガードの中にあり、`--allocator counting` の 2 つのライブラリのヘッダーを一緒に読んでも 1 回だけ定義されます。
 
 `Alloc` は opt-in の標準モジュールで、`Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }`、`snapshot :: unit -> Stats`、`since :: Stats -> Stats`、`measure :: (unit -> 'a) -> Stats * 'a` を提供します。
 `snapshot` は累計、`since` は以前の snapshot との差、`measure` は callback 1 回分の `(差分, 結果)` です。読み取り自体は確保せず、窓は入れ子にできます。`since` の対象 `Stats` は最後の引数です。
@@ -5134,7 +5138,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W2001` | キャッシュや知識グラフを使えなかったときのツール警告（ソースの警告ではない。`--json` のときだけ、このコードの JSON オブジェクトになる） |
 | `W2002` | `tsuzuri bindgen` が変換できずに省いた C 宣言（警告。理由をメッセージに示し、出力にも `// skipped` 行を残す） |
 | `E2000` | CLI コマンドライン引数・オプション・拡張子の不備（`tsuzuri find` の引数・読めない問い合わせの型 `find_bad_arguments` と、どのモジュールにも当たらない `--module` の `find_unknown_module` を含む）、デフォルト wasm32 出力モードにおいて OS API（`File`、`Dir`、`Env`、`Time`、`Random`、`Process`）や `Net` のソケットに到達するコードのビルド拒否、`--freestanding` での `Mutex` と `DataChannel` |
-| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target で OS API に到達した場合の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
+| `E2001` / `E2002` | I/O エラー／LLVM ツールチェーン実行失敗、Windows の target でランタイムを埋め込む COFF の `--emit object` の `E2002` エラー（`E2001` は `TSUZURI_RUNNER` を起動できない場合も） |
 | `E2003` / `E2004` / `E2005` | 出力ファイル保護エラー／エントリーポイント要件不一致（`Main.tz` の `main` シグネチャ違反等）／プログラム実行時の異常終了（`def main` または `IO<i32>` のエントリーポイントが非ゼロのステータスで終了した場合の `E2005` を含む） |
 | `E2006` | 言語内テストケースの実行失敗（アサーション不一致等） |
 | `E2007` | 依存の取得・検証の失敗（`Tsuzuri.lock` の欠落・古い項目・形式違反、ストアにない依存、内容のハッシュの不一致、`git` の欠落・失敗、取得したリポジトリの危険なエントリ、registry の index にない版や index と食い違うパッケージ、`publish` の commit とディレクトリの不一致） |

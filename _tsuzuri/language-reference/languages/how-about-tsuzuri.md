@@ -303,7 +303,7 @@ flowchart TD
 
 ## 今の範囲
 
-Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。Windows 上で OS API に到達するネイティブビルドは `E2002` エラーとなります。また、tzroutine が OS スレッドを止めずに待てる I/O は `Net` のソケットだけで、TLS と HTTP はありません。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
+Tsuzuri 0.1.0 は、計算処理を切り出して検証・実行できる初版です。依存パッケージはローカルの `path` 指定のみに対応し、GPU 連携は実験的です。また、tzroutine が OS スレッドを止めずに待てる I/O は `Net` のソケットだけで、TLS と HTTP はありません。REPL（`tsuzuri repl`）は、入力ごとにプログラムを作り直して実行する方式で、JIT はありません（[コンパイラの使い方](../compiler/usage.md#repl)）。設計方針は[Tsuzuri 言語の戦略](./strategy.md)、他言語との比較は[なぜ Tsuzuri なのか](./why-tsuzuri.md)を参照してください。
 
 ## まとめ
 

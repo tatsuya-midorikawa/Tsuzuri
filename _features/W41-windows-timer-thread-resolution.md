@@ -197,7 +197,7 @@ static void tzr_hires_wake(tzr_hires *h);                 /* SetEvent when there
 
 ## 対象外
 
-- [W11](W11-windows-os-api.md) が入れる Windows の `Time.sleep_ms` の、tzroutine の外の待ち（`Sleep` の繰り返し。刻みに丸まる）。tzroutine の中ではフック（TZ05 D6）でこのチケットの待ちに乗る。
+- [W11](_completed/W11-windows-os-api.md) が入れる Windows の `Time.sleep_ms` の、tzroutine の外の待ち（`Sleep` の繰り返し。刻みに丸まる）。tzroutine の中ではフック（TZ05 D6）でこのチケットの待ちに乗る。
 - sysmon の待ち（[W34](W34-windows-sysmon-timer-resolution.md)）とコールバックの遅延（[W29](W29-callback-latency.md)）。
 - 1803 より前の Windows での速さ（今の経路のまま）。
 - TZ05 の対象外（分解能の保証）を改めること。
