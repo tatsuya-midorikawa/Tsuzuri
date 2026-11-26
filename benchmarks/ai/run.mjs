@@ -77,7 +77,7 @@ export function verifyTask(task, ctx) {
   const rows = task.needs ?? [];
   const files = task.type === "diagnostic" ? tree.files(".") : task.corpus.flatMap((root) => tree.files(root));
   for (const [path] of rows) if (!files.includes(path)) throw new Error(`task ${task.id}: need path ${path} is outside the corpus`);
-  for (const [path] of task.docs?.needs ?? []) if (!path.startsWith("_tsuzuri/language-reference/")) {
+  for (const [path] of task.docs?.needs ?? []) if (!path.startsWith("docs/") && path !== "README.md") {
     throw new Error(`task ${task.id}: need path ${path} is outside the corpus`);
   }
   const needs = resolveNeeds(rows, tree);

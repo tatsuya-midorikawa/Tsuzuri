@@ -6,7 +6,7 @@ Each table has the columns `| ID | Rule | Doc | Tests | Status |`:
 
 - **ID**: numbered from 001 in each area, in order. A number is never reused; a rule whose meaning changes becomes `retired` and the new meaning gets the next number.
 - **Rule**: one sentence that says `MUST`, `MUST NOT` or `MAY` (never `SHOULD`), at most 240 characters, ending with a period. A rule of one edition starts with `In edition 2026, `, `In edition 2027, `, or `In edition 2028, `.
-- **Doc**: the one link to the document that states the rule (`docs/*.md`, `_tsuzuri/language-reference/**`, `README.md`). `node scripts/check-spec.mjs --link PAGE "HEADING"` prints it.
+- **Doc**: the one link to the document that states the rule (`docs/*.md`, `README.md`). `node scripts/check-spec.mjs --link PAGE "HEADING"` prints it.
 - **Tests**: the stems of the tests under `tests/conformance/<AREA>/` that name the rule. `check-spec --write` fills it; do not edit it by hand.
 - **Status**: `active` or `retired`.
 
@@ -32,4 +32,25 @@ To add a rule:
 5. `node scripts/check-spec.mjs --write`, then `node scripts/check-spec.mjs` passes.
 6. Put `<!-- rule: ID -->` on the statement in the Doc file: on its own line before a paragraph, at the start of a table cell, or at the end of a list item's first line (a line that starts with `<!--`, a list item's text included, is an HTML block in CommonMark and loses its Markdown); never inside a generated block; `node scripts/check-spec.mjs --require-markers` and `node scripts/check-docs.mjs PAGE` pass.
 
-The language reference page `compiler/conformance.md` shows the coverage of each area.
+## Coverage
+
+<!-- generated:spec-coverage -->
+| Area | Active | Retired | Tested | Tests | Marked |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| LEX | 10 | 0 | 10 | 10 | 10 |
+| SYN | 10 | 0 | 10 | 10 | 10 |
+| TYP | 26 | 0 | 26 | 27 | 26 |
+| OWN | 32 | 0 | 32 | 33 | 32 |
+| EVL | 21 | 0 | 21 | 21 | 21 |
+| NUM | 30 | 0 | 30 | 30 | 30 |
+| STR | 10 | 0 | 10 | 10 | 10 |
+| CTL | 30 | 1 | 30 | 30 | 30 |
+| MOD | 10 | 0 | 10 | 10 | 10 |
+| TSK | 21 | 10 | 21 | 21 | 21 |
+| DIA | 12 | 0 | 12 | 12 | 12 |
+| CLI | 10 | 0 | 10 | 11 | 10 |
+| ABI | 14 | 0 | 14 | 15 | 14 |
+| STD | 10 | 0 | 10 | 10 | 10 |
+| EDN | 11 | 1 | 11 | 11 | 11 |
+| Total | 257 | 12 | 257 | 261 | 257 |
+<!-- /generated:spec-coverage -->

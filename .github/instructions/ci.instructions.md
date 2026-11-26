@@ -10,8 +10,7 @@ Lessons from the PR #3 and #4 VS Code workflow failures, and from the Windows ga
   archive smoke hid the Windows integration, VSIX, and installed-extension steps. Compare with earlier runs
   (`gh run list`) to separate inherited failures from new ones.
 - Which workflow runs when: `ci.yml` (fast gate) on every pull request that touches code, tests or what the tests embed or
-  read (`benchmarks/`, `guide/`, the language reference), `reference.yml` on one that
-  touches the language reference (and every night); `targets.yml`, `windows.yml` and `vscode.yml` on every push to
+  read (`benchmarks/`, `guide/`, `docs/`), `docs.yml` on documentation and drift checks (the user language reference lives in `Tsuzuri-Reference`); `targets.yml`, `windows.yml` and `vscode.yml` on every push to
   `main` that changes what they build or read (their `paths`) and, on a pull request, only with the label `ci:full`.
   Put the label on a change that can behave differently per OS or toolchain, and watch the first post-merge run of these
   three.

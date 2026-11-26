@@ -118,17 +118,28 @@ export function collect(root, prepared) {
     // later tables of single topics are not. A row may start with rule markers (G33) and name a range of codes.
     const meanings = new Map();
     let generated = false;
-    for (const line of (texts.get('_tsuzuri/language-reference/compiler/diagnostics.md') ?? '').split('\n')) {
+    const diagDoc = texts.get('docs/language.md') ?? texts.get('_tsuzuri/language-reference/compiler/diagnostics.md') ?? '';
+    for (const line of diagDoc.split('\n')) {
         if (/^<!-- generated:[^ ]+ -->$/.test(line.trim())) generated = true;
         else if (/^<!-- \/generated:[^ ]+ -->$/.test(line.trim())) generated = false;
-        const m = !generated && /^\| (?:<!--[^>]*-->\s*)*`([EW])([0-9]{4})`(?:\s*[–〜~-]\s*`\1([0-9]{4})`)? \| (.+) \|$/.exec(line);
-        if (!m) continue;
-        const first = Number(m[2]);
-        const last = m[3] && Number(m[3]) >= first && Number(m[3]) - first <= 60 ? Number(m[3]) : first;
-        const meaning = m[4].split(' | ')[0].replace(/<!--[^>]*-->/g, '').trim();
-        for (let n = first; n <= last; n++) {
-            const code = `${m[1]}${String(n).padStart(4, '0')}`;
-            if (!meanings.has(code)) meanings.set(code, meaning);
+        if (generated || !line.startsWith('| ')) continue;
+        const cells = line.replace(/\s*\|\s*$/, '').slice(2).split(' | ');
+        if (cells.length < 2) continue;
+        const firstCell = cells[0].replace(/<!--[^>]*-->/g, '').trim();
+        const meaning = cells[1].replace(/<!--[^>]*-->/g, '').trim();
+        const range = /^`([EW])([0-9]{4})`\s*[–〜~-]\s*`\1([0-9]{4})`$|^`([EW])([0-9]{4})`$/.exec(firstCell);
+        if (range) {
+            const prefix = range[1] ?? range[4];
+            const first = Number(range[2] ?? range[5]);
+            const last = range[3] && Number(range[3]) >= first && Number(range[3]) - first <= 60 ? Number(range[3]) : first;
+            for (let n = first; n <= last; n++) {
+                const code = `${prefix}${String(n).padStart(4, '0')}`;
+                if (!meanings.has(code)) meanings.set(code, meaning);
+            }
+        } else if (/^(?:`[EW][0-9]{4}`\s*\/\s*)+`[EW][0-9]{4}`$/.test(firstCell)) {
+            for (const match of firstCell.matchAll(/`([EW][0-9]{4})`/g)) {
+                if (!meanings.has(match[1])) meanings.set(match[1], meaning);
+            }
         }
     }
     const codes = new Set([...sites.map(s => s.code), ...meanings.keys(), ...kinds.map(k => k.code)]);

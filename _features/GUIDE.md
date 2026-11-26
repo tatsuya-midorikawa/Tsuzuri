@@ -534,20 +534,20 @@ fn rejects(source: &str, code: &str) {
 
 ## 8. ドキュメント更新規約
 
-機能を追加・変更・修正・削除したら、**同じプルリクエストで**（動作が固まったところで一度）`_tsuzuri/language-reference/`（目次は `index.md`）の
-関連ページを最新にする。チケットを Phase ごとの PR に分けるときは PR ごとに行い、チケットのない修正にも適用する
+言語リファレンス（利用者マニュアル）は専用リポジトリ **`tatsuya-midorikawa/Tsuzuri-Reference`**（`docs/`、目次は `docs/index.md`）へ分離・移行した。
+機能を追加・変更・修正・削除したら、**同じプルリクエストで**（動作が固まったところで一度）本リポジトリの `docs/language.md` を最新にし、あわせて `Tsuzuri-Reference` の関連ページも更新する。チケットを Phase ごとの PR に分けるときは PR ごとに行い、チケットのない修正にも適用する
 （`AGENTS.md` の「Language reference」と同じ規則）。対象は、利用者から見えるすべての振る舞い（構文・意味・型・組み込み関数・
 std の API・診断コードとメッセージ・CLI オプション・ターゲット・ホスト連携・文書に書いた性能特性・既知の制限と不具合）である。
 
-1. 関連ページをすべて探す。機能の名前・キーワード・診断コード・CLI オプションでリファレンス全体を検索し
-   （例: `grep -rnE "Int\.min|E1005|--emit" _tsuzuri/language-reference`）、いちばん目立つページだけで終わらせない。
-2. 本文、例と `run=` の期待値、表（シグネチャ・計算量・他言語との比較）、mermaid 図、`index.md` を直す。新しい機能は、読者が探す場所に
+1. 関連ページをすべて探す。機能の名前・キーワード・診断コード・CLI オプションで `docs/language.md` および `Tsuzuri-Reference/docs` 全体を検索し
+   （例: `grep -rnE "Int\.min|E1005|--emit" ../Tsuzuri-Reference/docs`）、いちばん目立つページだけで終わらせない。
+2. 本文、例と `run=` の期待値、表（シグネチャ・計算量・他言語との比較）、mermaid 図、`docs/index.md` を直す。新しい機能は、読者が探す場所に
    節かページを足す。削除した機能は説明と例を消し、代わりの書き方を示す。
 3. 計画中の機能を実装したとき、既知の不具合を直したときは、「計画中」の注記や既知の不具合の警告と、`_features/`・`_perfs/` のチケットへの
    リンクを、実際の振る舞いの説明に置き換える。
 4. 今のコンパイラの振る舞いだけを書く。主張は実装とコンパイラの実行で確かめ、計画中の対応は分けて書く（チケットへリンクする）。
-5. `node scripts/check-docs.mjs <変更したページ>` を通す。リンクと見出しへのリンクを検査し、すべての例を `tsuzuri check` し、
-   `run=` の例を native の `-O0`／`-O3` で実行し、テストを含む例は `tsuzuri test` する。
+5. 本リポジトリで `node scripts/gen-docs.mjs --check` と `node scripts/check-cli-docs.mjs`、`Tsuzuri-Reference` リポジトリで
+   `TSUZURI_BIN=<path/to/tsuzuri> TSUZURI_REPO=<path/to/Tsuzuri> node scripts/check-docs.mjs <変更したページ>` を通す。
 6. 更新したページを PR の説明（チケットでは §13.2 の完了報告）に書く。更新が要らなければ、その理由を書く。
 
 そのほかの規約:

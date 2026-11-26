@@ -49,7 +49,7 @@ pipelines (`x |> M.f a`) and compositions (`M.f a >> M.g b`) working in every mo
 `tests/std_argument_order.rs` enforces them on the `def` lines of every `std/` file and on the schemes of the `Array`,
 `List`, `Vec`, `String` and `Utf8String` builtins: it fails for a function that breaks the rule and for a `std/` file that
 its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.md` D-59. User-facing text:
-`_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md`.
+`Tsuzuri-Reference` (`docs/stdlib/conventions.md`).
 
 - **The subject is the last argument.** The value that a function reads, transforms or updates (a collection, a
   string, a `Maybe` or `Result`, an `IO` action, a matrix or tensor view, an arena, a writer) is its last parameter.
@@ -78,7 +78,7 @@ its `MODULES` table does not classify. Record of the decision: `_features/GUIDE.
   `Array.split_at_mut`, which `Builtin::name` in `src/check.rs` lists) changes together with its hook: search `src/`
   for the name before you reorder, and run the compact-strings suites.
 - New module or function: decide the subject first and write it last; add the file to `MODULES` (`subject(&["Type"])`,
-  or an exemption with its reason); give the module page an "引数の順序" section and keep `argument-order.md` true.
+  or an exemption with its reason); give the module page in `Tsuzuri-Reference` an "引数の順序" section and keep `conventions.md` true.
 
 ## Verification
 
@@ -90,7 +90,7 @@ report the work done; T3 is CI. Do not run the whole suite before you start: the
 | --- | --- | --- |
 | T0, every edit | `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, the tests of the area (README, 変更の種類別) | seconds |
 | T1, every step | `cargo nextest run --locked` (`cargo install --locked cargo-nextest`; without it `cargo test --locked`) | 2 to 6 min |
-| T2, before done | T1, the node suites of the area on the dev binary (`cargo build`, then `node tests/<suite>.mjs target/debug/tsuzuri`), `node scripts/check-docs.mjs <changed pages>`, and `sh scripts/check-runtime-includes.sh` after a change in `src/runtime/` | 10 to 20 min |
+| T2, before done | T1, the node suites of the area on the dev binary (`cargo build`, then `node tests/<suite>.mjs target/debug/tsuzuri`), `node scripts/gen-docs.mjs --check`, `node scripts/check-cli-docs.mjs`, and `sh scripts/check-runtime-includes.sh` after a change in `src/runtime/` | 10 to 20 min |
 | T3, CI | the release build, every suite, every platform, fuzzers, sanitizers, benchmarks | CI |
 
 The dev profile is `opt-level = 1` (`Cargo.toml`), so the Rust tests and the dev binary are fast enough: build
@@ -100,8 +100,8 @@ it runs 0 tests: check `running N tests`.
 ## CI
 
 - A pull request gets `ci.yml` (15 to 25 minutes in five parallel jobs: `lint` with fmt, clippy and a type check of the
-  other platforms, three slices of the Rust tests, and `suites` with the core end-to-end suites) and, when it changes the
-  language reference, `reference.yml` (the changed pages). `targets.yml`, `windows.yml` and `vscode.yml` (35 to 55
+  other platforms, three slices of the Rust tests, and `suites` with the core end-to-end suites) and `docs.yml` when it changes
+  `docs/` or `README.md`. `targets.yml`, `windows.yml` and `vscode.yml` (35 to 55
   minutes, each host split into parallel jobs) run after every merge to `main` that changes what they build or read and
   on a pull request with the label `ci:full`; add it when the change can behave differently per OS or toolchain
   (`src/runtime/`, `scripts/toolchain/`, caches, paths, child processes, line endings, `vsc/`).
@@ -112,34 +112,24 @@ it runs 0 tests: check `running N tests`.
 
 ## Language reference
 
-`_tsuzuri/language-reference/` (contents: `index.md`) is the user manual. Every
-change that adds, changes, fixes, or removes user-visible behavior updates the
-related pages in the same pull request: once, when the behavior has settled, not
-after every step. This covers syntax, semantics, types,
+The user-facing Japanese language reference lives in the companion repository
+`tatsuya-midorikawa/Tsuzuri-Reference` (`docs/`, contents: `docs/index.md`). Inside this repository,
+`docs/language.md` is the authoritative language specification. Every change that adds, changes,
+fixes, or removes user-visible behavior updates `docs/language.md` in the same pull request and
+keeps `Tsuzuri-Reference` synchronized. This covers syntax, semantics, types,
 builtins, `std` APIs, diagnostic codes and messages, CLI options, targets, host
 interop, documented performance characteristics, and known limitations or bugs.
 
-- Find every affected page by searching for the feature's names, keywords,
+- In `Tsuzuri-Reference`, find every affected page by searching for the feature's names, keywords,
   diagnostic codes, and CLI flags, for example
-  `grep -rnE "Int\.min|E1005|--emit" _tsuzuri/language-reference`.
-- Update the prose, examples and their `run=` output, tables, diagrams, and
-  `index.md`. Document a new feature where readers will look for it. For a
-  removed feature, delete its text and examples and name the replacement.
-- When a planned feature ships or a known bug is fixed, replace the planned
-  note or known-bug warning, and its `_features/` or `_perfs/` link, with the
-  actual behavior.
-- Describe only what the current compiler does. Check claims against the
-  implementation and keep planned support separate.
-- Run `node scripts/check-docs.mjs <changed pages>`. It checks links and
-  anchors, type-checks every example, runs `run=` examples natively at `-O0`
-  and `-O3`, and runs examples that contain tests. `reference.yml` runs it for the
-  pages a pull request changes, and every night for all pages.
+  `grep -rnE "Int\.min|E1005|--emit" docs/`, and verify changed pages with
+  `TSUZURI_BIN=<path/to/tsuzuri> TSUZURI_REPO=<path/to/Tsuzuri> node scripts/check-docs.mjs <changed pages>`.
 - A block between `<!-- generated:NAME -->` and `<!-- /generated:NAME -->` (the diagnostic kinds, the
   complexity tables of the std collections, the benchmark tables) is made by `node scripts/gen-docs.mjs`:
   do not edit it by hand. After changing its source (`std/` tags, the diagnostic registry,
   `docs/benchmarks-data/*.json`), run `node scripts/gen-docs.mjs`; `node scripts/gen-docs.mjs --check` and
-  `node scripts/check-cli-docs.mjs` (flags, commands, variables, codes, versions and std functions that the
-  documents miss) run in `docs.yml`.
+  `node scripts/check-cli-docs.mjs` (flags, commands, variables, codes, versions, and optionally `--reference-dir ../Tsuzuri-Reference`)
+  run in `docs.yml`.
 - Keep `docs/language.md` consistent in the same pull request. `README.md`
   states the quickstart, the feature list, the CLI synopsis and the validation
   commands: change it when the change makes one of those wrong. Pages

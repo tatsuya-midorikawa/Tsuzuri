@@ -29,7 +29,7 @@ try {
 
 ## WASM threads
 
-ブラウザでは、`--emit bindings-js --wasm-feature threads` が生成するグルーがWeb Workerのスレッドプールを作ります。`.wasm`も同じソースから`--wasm-feature threads`でビルドします。次の`app`は、[スレッドのグルー](../../_tsuzuri/language-reference/compiler/webassembly.md#スレッドのグルー)の例と同じ`with_tax`と`host.mjs`を持つプロジェクトです。
+ブラウザでは、`--emit bindings-js --wasm-feature threads` が生成するグルーがWeb Workerのスレッドプールを作ります。`.wasm`も同じソースから`--wasm-feature threads`でビルドします。次の`app`は、[WebAssembly 出力とホスト連携](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/webassembly.md)の例と同じ`with_tax`と`host.mjs`を持つプロジェクトです。
 
 ```sh
 tsuzuri build app --target wasm32 --wasm-feature threads --emit bindings-js -o app.mjs
@@ -44,7 +44,7 @@ console.log(await api.exports.with_tax(BigInt64Array.of(100n, 200n))); // BigInt
 await api.close();
 ```
 
-ページと`app.mjs`、`app.wasm`、`host.mjs`は、HTTPSかlocalhostから`Cross-Origin-Opener-Policy: same-origin`と`Cross-Origin-Embedder-Policy: require-corp`付きで配信します。満たさないページでは、`load`がワーカーを起動せずに`Error`を投げます。exportはWorkerで動いて`Promise`を返し、ホスト関数は各Workerで`host.mjs`の`createImports({ workerId, data })`から作ります。グルーは自分自身をmodule workerとして起動するので、`app.mjs`はバンドルせずに配信します。詳しくは[WebAssembly への出力](../../_tsuzuri/language-reference/compiler/webassembly.md#スレッドのグルー)を見てください。
+ページと`app.mjs`、`app.wasm`、`host.mjs`は、HTTPSかlocalhostから`Cross-Origin-Opener-Policy: same-origin`と`Cross-Origin-Embedder-Policy: require-corp`付きで配信します。満たさないページでは、`load`がワーカーを起動せずに`Error`を投げます。exportはWorkerで動いて`Promise`を返し、ホスト関数は各Workerで`host.mjs`の`createImports({ workerId, data })`から作ります。グルーは自分自身をmodule workerとして起動するので、`app.mjs`はバンドルせずに配信します。詳しくは[WebAssembly 出力とホスト連携](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/webassembly.md)を見てください。
 
 Node.jsの実行ホストは`src/runtime/wasm-threads.mjs`で、`tests/wasm_threads.mjs`が使い方の例です。
 

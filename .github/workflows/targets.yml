@@ -2,7 +2,7 @@ name: Tsuzuri targets
 
 # G15: native targets named with `--target TRIPLE`, cross-linked with the bundled Zig toolchain, and
 # the compiler's tests on the three Linux/macOS hosts that ship a toolchain bundle. The documentation's tier table
-# (_tsuzuri/language-reference/compiler/platforms.md) may claim only what a step of this file checks:
+# (Tsuzuri-Reference docs/compiler/platforms.md) may claim only what a step of this file checks:
 #   - "executed on a matching runner":  the host's own triple, run by tests/targets.mjs on each job;
 #   - "executed through an emulator":   the static musl triples, run by qemu-user on the Linux jobs;
 #   - "linked and inspected":           the triples that the Zig bundle links, whose headers are read back;

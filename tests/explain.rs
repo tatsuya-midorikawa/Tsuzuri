@@ -569,11 +569,8 @@ fn kind_table() -> String {
 
 #[test]
 fn the_docs_list_every_kind() {
-    let page = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/_tsuzuri/language-reference/compiler/diagnostics.md"
-    ))
-    .unwrap();
+    let page =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/language.md")).unwrap();
     let (start, end) = (
         "<!-- generated:diagnostic-kinds -->\n",
         "<!-- /generated:diagnostic-kinds -->",
@@ -583,6 +580,6 @@ fn the_docs_list_every_kind() {
     let expected = kind_table();
     assert!(
         page[begin..finish] == expected,
-        "replace the block between the markers of compiler/diagnostics.md with:\n{expected}"
+        "replace the block between the markers of docs/language.md with:\n{expected}"
     );
 }

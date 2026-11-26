@@ -9,6 +9,7 @@ import { checkBlocks, createContext } from './gen-docs.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiler = resolve(process.env.TSUZURI_BIN ?? join(root, 'target/release/tsuzuri'));
+const referenceDir = process.env.TSUZURI_REFERENCE_DIR ? resolve(process.env.TSUZURI_REFERENCE_DIR) : null;
 const temporary = mkdtempSync(join(tmpdir(), 'tsuzuri-docs-'));
 const requested = process.argv.slice(2).map(path => resolve(path));
 const pages = [];
@@ -18,6 +19,7 @@ let tests = 0;
 let links = 0;
 
 function collect(directory) {
+    if (!existsSync(directory)) return;
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) collect(path);
@@ -40,12 +42,13 @@ function headings(source) {
 }
 
 try {
-    collect(join(root, '_tsuzuri'));
+    if (referenceDir) collect(join(referenceDir, 'docs'));
+    else for (const page of requested) if (existsSync(page)) pages.push(page);
     pages.sort();
     for (const page of pages) {
         if (requested.length && !requested.includes(page)) continue;
         const source = readFileSync(page, 'utf8');
-        const label = relative(root, page);
+        const label = relative(referenceDir ?? root, page);
         assert.ok(source.endsWith('\n'), `${label}: missing final newline`);
         assert.ok(!/^[ \t]+```tsuzuri/m.test(source), `${label}: an indented tsuzuri code fence is not checked; start it at column 1`);
         const prose = source.replace(/^```[^\n]*\n[\s\S]*?^```\s*$/gm, '');
@@ -60,7 +63,7 @@ try {
             }
             links++;
         }
-        if (existsSync(join(dirname(page), '.tsuzuri-docs'))) continue;
+        if (!referenceDir || existsSync(join(dirname(page), '.tsuzuri-docs'))) continue;
         const projects = new Map();
         let block = 0;
         for (const match of source.matchAll(/^```tsuzuri(?: ([^\n]+))?\n([\s\S]*?)^```\s*$/gm)) {

@@ -12,7 +12,6 @@ import { fileURLToPath } from 'node:url';
 import { createContext } from './gen-docs.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const REFERENCE = '_tsuzuri/language-reference/';
 const unique = (values) => [...new Set(values)].sort();
 
 // ---- cli ------------------------------------------------------------------------------------------
@@ -24,26 +23,32 @@ export function extractCli(help) {
     };
 }
 export const EXEMPT_FLAGS = { '--sysroot': 'a flag of the C compiler named in the TSUZURI_SYSROOT sentence of --help' };
-/** The flags and variables that README.md or option.md lacks, and the commands that README.md lacks. */
+/** The flags and variables that the given pages lack, and the commands that README.md lacks. */
 export function checkCli(cli, pages) {
     const messages = [];
     // A whole token: `--rev` is not documented by `--reverse`, nor `TSUZURI_KG` by `TSUZURI_KG_DIR`.
     const names = (text, name) => new RegExp(`(?<![\\w-])${name}(?![\\w-])`).test(text);
-    for (const page of ['README.md', 'option.md']) {
-        for (const flag of cli.flags) if (!(flag in EXEMPT_FLAGS) && !names(pages[page], flag)) messages.push(`${page} lacks flag ${flag}`);
-        for (const variable of cli.variables) if (!names(pages[page], variable)) messages.push(`${page} lacks variable ${variable}`);
+    for (const [page, text] of Object.entries(pages)) {
+        for (const flag of cli.flags) if (!(flag in EXEMPT_FLAGS) && !names(text, flag)) messages.push(`${page} lacks flag ${flag}`);
+        for (const variable of cli.variables) if (!names(text, variable)) messages.push(`${page} lacks variable ${variable}`);
     }
-    for (const command of cli.commands) {
-        if (!new RegExp(`tsuzuri (?:\\[${command}\\]|${command})(?![A-Za-z0-9_-])`).test(pages['README.md'])) messages.push(`README.md lacks command ${command}`);
+    if ('README.md' in pages) {
+        for (const command of cli.commands) {
+            if (!new RegExp(`tsuzuri (?:\\[${command}\\]|${command})(?![A-Za-z0-9_-])`).test(pages['README.md'])) messages.push(`README.md lacks command ${command}`);
+        }
     }
     return messages;
 }
 
 // ---- codes ----------------------------------------------------------------------------------------
-/** The codes in the first cell of each table row of `text`; a range `E1001`–`E1003` is expanded. */
+/** The codes in the first cell of each non-generated table row of `text`; a range `E1001`–`E1003` is expanded. */
 export function documentedCodes(text) {
     const codes = [];
+    let generated = false;
     for (const line of text.split('\n')) {
+        if (/^<!-- generated:[^ ]+ -->$/.test(line.trim())) { generated = true; continue; }
+        if (/^<!-- \/generated:[^ ]+ -->$/.test(line.trim())) { generated = false; continue; }
+        if (generated) continue;
         const row = /^\| (.+?) \|/.exec(line);
         if (!row) continue;
         const range = /`([EW])([0-9]{4})`\s*[–-]\s*`([EW])([0-9]{4})`/.exec(row[1]);
@@ -86,9 +91,85 @@ export function checkVersion(version, versionOutput, mentions) {
 }
 
 // ---- std ------------------------------------------------------------------------------------------
-export const STD_PAGES = { MatrixView: 'built-in-types-and-modules/matrix-view.md',
-  SendOnly: 'built-in-types-and-modules/channel.md', ReceiveOnly: 'built-in-types-and-modules/channel.md' };
-export const stdPage = (module) => STD_PAGES[module] ?? `built-in-types-and-modules/${module.toLowerCase()}.md`;
+export const STD_PAGES = {
+    Alloc: 'stdlib/testing/alloc.md',
+    Anchor: 'stdlib/memory/anchor.md',
+    Arc: 'stdlib/memory/rc.md',
+    Arena: 'stdlib/memory/arena.md',
+    Array: 'stdlib/collections/array.md',
+    Atomic: 'stdlib/sync/atomic.md',
+    Bench: 'stdlib/testing/bench.md',
+    BigInt: 'stdlib/numeric/bigint.md',
+    Cbor: 'stdlib/encoding/cbor.md',
+    Channel: 'stdlib/sync/channel.md',
+    Char: 'stdlib/text/char.md',
+    Complex: 'stdlib/numeric/complex.md',
+    Cond: 'stdlib/sync/cond.md',
+    Context: 'stdlib/sync/context.md',
+    DataChannel: 'stdlib/sync/datachannel.md',
+    Debug: 'stdlib/core/debug.md',
+    Dir: 'stdlib/sys/dir.md',
+    Domain: 'stdlib/core/domain.md',
+    Env: 'stdlib/sys/env.md',
+    ErrGroup: 'stdlib/sync/errgroup.md',
+    Exception: 'stdlib/core/exception.md',
+    File: 'stdlib/sys/file.md',
+    FnPtr: 'stdlib/memory/fnptr.md',
+    Format: 'stdlib/text/format.md',
+    Gen: 'stdlib/testing/gen.md',
+    Gpu: 'stdlib/numeric/gpu.md',
+    HashMap: 'stdlib/collections/hashmap.md',
+    HashSet: 'stdlib/collections/hashset.md',
+    IO: 'stdlib/sys/io.md',
+    Int: 'stdlib/numeric/int.md',
+    Json: 'stdlib/encoding/json.md',
+    List: 'stdlib/collections/list.md',
+    Map: 'stdlib/collections/map.md',
+    Math: 'stdlib/numeric/math.md',
+    Matrix: 'stdlib/numeric/matrix.md',
+    MatrixView: 'stdlib/numeric/matrix-view.md',
+    Maybe: 'stdlib/core/maybe.md',
+    Monoid: 'stdlib/core/monoid.md',
+    Monoids: 'stdlib/core/monoid.md',
+    Mutex: 'stdlib/sync/mutex.md',
+    Net: 'stdlib/sys/net.md',
+    Once: 'stdlib/sync/once.md',
+    OnceValue: 'stdlib/sync/once.md',
+    Os: 'stdlib/sys/os.md',
+    Owned: 'stdlib/memory/owned.md',
+    Parallel: 'stdlib/sync/parallel.md',
+    Path: 'stdlib/sys/path.md',
+    Process: 'stdlib/sys/process.md',
+    Random: 'stdlib/sys/random.md',
+    Rc: 'stdlib/memory/rc.md',
+    ReceiveOnly: 'stdlib/sync/channel.md',
+    Regex: 'stdlib/text/regex.md',
+    RegexText: 'stdlib/text/regex.md',
+    Result: 'stdlib/core/result.md',
+    Routine: 'stdlib/sync/routine.md',
+    RwMutex: 'stdlib/sync/rwmutex.md',
+    Semaphore: 'stdlib/sync/semaphore.md',
+    SendOnly: 'stdlib/sync/channel.md',
+    Seq: 'stdlib/collections/seq.md',
+    Set: 'stdlib/collections/set.md',
+    Simd: 'stdlib/numeric/simd.md',
+    Slice: 'stdlib/numeric/slice.md',
+    String: 'stdlib/text/string.md',
+    SyncMap: 'stdlib/sync/syncmap.md',
+    Tensor: 'stdlib/numeric/tensor.md',
+    Test: 'stdlib/testing/test.md',
+    Text: 'stdlib/text/text.md',
+    Ticker: 'stdlib/sync/timer.md',
+    Time: 'stdlib/sys/time.md',
+    Timer: 'stdlib/sync/timer.md',
+    Unicode: 'stdlib/text/unicode.md',
+    Utf8Char: 'stdlib/text/char.md',
+    Utf8String: 'stdlib/text/utf8string.md',
+    Vec: 'stdlib/collections/vec.md',
+    WaitGroup: 'stdlib/sync/waitgroup.md',
+    ZString: 'stdlib/text/zstring.md',
+};
+export const stdPage = (module) => STD_PAGES[module] ?? `stdlib/${module.toLowerCase()}.md`;
 /** The public std functions that their module's reference page does not mention; `readPage` returns null for no page. */
 export function checkStd(modules, readPage) {
     const messages = [];
@@ -107,45 +188,66 @@ export function checkStd(modules, readPage) {
 
 // ---- running the checks ----------------------------------------------------------------------------
 export const CHECKS = ['cli', 'codes', 'version', 'std'];
-export function runChecks(context, compiler, names) {
+export function runChecks(context, compiler, names, referenceRoot = null) {
     const read = (path) => readFileSync(resolve(context.root, path), 'utf8');
     const run = (args) => spawnSync(compiler, args, { cwd: context.root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    const refDocs = referenceRoot ? resolve(referenceRoot, 'docs') : null;
     return CHECKS.filter((name) => names.includes(name)).map((name) => {
         if (name === 'cli') {
             const help = run(['--help']);
             if (help.status !== 0) throw new Error(`${compiler} --help failed: ${help.stderr}`);
             const cli = extractCli(help.stdout);
+            const pages = { 'README.md': read('README.md') };
+            if (refDocs && existsSync(join(refDocs, 'compiler/options.md'))) {
+                pages['options.md'] = readFileSync(join(refDocs, 'compiler/options.md'), 'utf8');
+            }
             return { name, summary: `${cli.flags.length} flags, ${cli.commands.length} commands, ${cli.variables.length} variables`,
-                messages: checkCli(cli, { 'README.md': read('README.md'), 'option.md': read(`${REFERENCE}compiler/option.md`) }) };
+                messages: checkCli(cli, pages) };
         }
         if (name === 'codes') {
             const emitted = emittedCodes(context);
+            const pages = { 'docs/language.md': read('docs/language.md') };
+            if (refDocs && existsSync(join(refDocs, 'compiler/diagnostics.md'))) {
+                pages['Tsuzuri-Reference/docs/compiler/diagnostics.md'] = readFileSync(join(refDocs, 'compiler/diagnostics.md'), 'utf8');
+            }
             return { name, summary: `${emitted.length} codes`,
-                messages: checkCodes(emitted, { [`${REFERENCE}compiler/diagnostics.md`]: read(`${REFERENCE}compiler/diagnostics.md`), 'docs/language.md': read('docs/language.md') }) };
+                messages: checkCodes(emitted, pages) };
         }
         if (name === 'version') {
             const version = /^version = "(\d+\.\d+\.\d+)"/m.exec(read('Cargo.toml'))[1];
-            const files = ['README.md', ...readdirSync(resolve(context.root, 'docs')).filter((file) => file.endsWith('.md') && file !== 'benchmarks.md').map((file) => `docs/${file}`),
-                ...walk(resolve(context.root, '_tsuzuri'), '.md').map((file) => relative(context.root, file))];
+            const files = ['README.md', ...readdirSync(resolve(context.root, 'docs')).filter((file) => file.endsWith('.md') && file !== 'benchmarks.md').map((file) => `docs/${file}`)];
             const mentions = files.flatMap((file) => versionMentions(read(file)).map((found) => ({ file, version: found })));
+            if (refDocs && existsSync(refDocs)) {
+                for (const file of walk(refDocs, '.md')) {
+                    for (const found of versionMentions(readFileSync(file, 'utf8'))) {
+                        mentions.push({ file: `Tsuzuri-Reference/${relative(referenceRoot, file)}`, version: found });
+                    }
+                }
+            }
             return { name, summary: `${version} (${mentions.length} mentions)`, messages: checkVersion(version, run(['--version']).stdout.trim(), mentions) };
         }
         const modules = context.std();
-        const readPage = (page) => (existsSync(resolve(context.root, REFERENCE, page)) ? read(`${REFERENCE}${page}`) : null);
         const functions = Object.values(modules).reduce((sum, entries) => sum + entries.length, 0);
-        return { name, summary: `${functions} public functions in ${Object.values(modules).filter((entries) => entries.length > 0).length} modules`, messages: checkStd(modules, readPage) };
+        const moduleCount = Object.values(modules).filter((entries) => entries.length > 0).length;
+        if (!refDocs || !existsSync(refDocs)) {
+            return { name, summary: `${functions} public functions in ${moduleCount} modules (reference pages live in Tsuzuri-Reference)`, messages: [] };
+        }
+        const readPage = (page) => (existsSync(join(refDocs, page)) ? readFileSync(join(refDocs, page), 'utf8') : null);
+        return { name, summary: `${functions} public functions in ${moduleCount} modules`, messages: checkStd(modules, readPage) };
     });
 }
 
 // ---- command line ----------------------------------------------------------------------------------
-const USAGE = 'usage: node scripts/check-cli-docs.mjs [--only cli|codes|version|std]... [--bin PATH]';
+const USAGE = 'usage: node scripts/check-cli-docs.mjs [--only cli|codes|version|std]... [--bin PATH] [--reference-dir PATH]';
 
 export function main(argv) {
     const only = [];
     let compiler = process.env.TSUZURI_BIN ?? join(root, 'target/release/tsuzuri');
+    let referenceRoot = process.env.TSUZURI_REFERENCE_DIR ? resolve(process.env.TSUZURI_REFERENCE_DIR) : null;
     for (let index = 0; index < argv.length; index += 1) {
         if (argv[index] === '--only' && index + 1 < argv.length) only.push(argv[++index]);
         else if (argv[index] === '--bin' && index + 1 < argv.length) compiler = resolve(argv[++index]);
+        else if (argv[index] === '--reference-dir' && index + 1 < argv.length) referenceRoot = resolve(argv[++index]);
         else {
             console.error(`check-cli-docs: unknown option '${argv[index]}'\n${USAGE}`);
             return 2;
@@ -161,7 +263,7 @@ export function main(argv) {
         return 2;
     }
     let failed = 0;
-    const results = runChecks(createContext({ root, compiler }), compiler, only.length > 0 ? only : CHECKS);
+    const results = runChecks(createContext({ root, compiler }), compiler, only.length > 0 ? only : CHECKS, referenceRoot);
     for (const result of results) {
         if (result.messages.length === 0) console.log(`ok ${result.name}: ${result.summary}`);
         else {

@@ -10,7 +10,6 @@ on:
       - scripts/check-spec.mjs
       - scripts/conformance/**
       - docs/**
-      - _tsuzuri/**
       - README.md
       - .github/workflows/spec.yml
 

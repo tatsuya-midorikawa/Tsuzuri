@@ -185,8 +185,8 @@ test "empty order costs nothing" =
 
 ### ドキュメントを読む
 
-**Tsuzuri: Open Documentation** で、言語の概要、言語リファレンス、組み込み型・標準モジュール、コンパイラの使い方を含む日本語ハンドブックを VS Code の中に開きます。
-同じ内容は [GitHub](../_tsuzuri/language-reference/index.md) でも読めます。
+**Tsuzuri: Open Documentation** で、同梱の日本語言語仕様ハンドブックを VS Code の中に開きます。
+言語リファレンス全文は [Tsuzuri-Reference](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/index.md) でも読めます。
 
 ## コマンド
 
@@ -236,7 +236,7 @@ VS Code 1.103 以降が必要です。
 - 対象外の OS／CPU では、拡張機能は起動時に対応ホストを示すエラーで停止し、LSP・ビルド・実行・テストを開始しません。開発用コンパイラを設定しても同じです。
 - Remote - SSH、WSL、Dev Containers では、リモート側に拡張機能をインストールしてください。
 - Linux で作る実行ファイルは、同梱の musl を使います。
-- VS Code を使わない環境（CI、サーバー、ほかのエディター）では、同じツールチェーンを CLI の配布物（`tsuzuri-<version>-<host>.tar.gz`）として使えます。導入手順は[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#配布物を使う)を参照してください。
+- VS Code を使わない環境（CI、サーバー、ほかのエディター）では、同じツールチェーンを CLI の配布物（`tsuzuri-<version>-<host>.tar.gz`）として使えます。導入手順は[CLI コマンドリファレンス](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)を参照してください。
 
 ## 現在の制限
 
@@ -251,7 +251,7 @@ VS Code 1.103 以降が必要です。
 ## リンク
 
 - [Tsuzuri のリポジトリ](https://github.com/tatsuya-midorikawa/Tsuzuri)
-- [日本語ドキュメント](../_tsuzuri/language-reference/index.md)
+- [日本語ドキュメント（Tsuzuri-Reference）](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/index.md)
 - [問題の報告](https://github.com/tatsuya-midorikawa/Tsuzuri/issues)
 - [拡張機能の開発者向け情報](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/main/vsc/Development.md)
 

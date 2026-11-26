@@ -3,7 +3,7 @@ name: Windows MSVC
 # The execution gate of the Windows x64 and Arm64 (MSVC ABI) native targets, on GitHub-hosted
 # windows-2022 and windows-11-arm runners with MSVC 14.44 (Visual Studio 2022/2026) and pinned LLVM 21.1.8.
 # W1-W8 extend the gate of _features/_completed/G10-windows.md; the tiers in
-# _tsuzuri/language-reference/compiler/platforms.md claims only what a step of this file checks.
+# Tsuzuri-Reference docs/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
 #   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 the Rust tests. Each host runs W3 in jobs of its own
 #   (`matrix.group` tests-N: cargo-nextest, in slices of the whole list, `--partition slice:N/M`: three on win32-x64, whose
@@ -32,7 +32,7 @@ on:
         description: Skip W3, the Rust tests (25 to 40 minutes in jobs of their own)
         type: boolean
         default: false
-  # A merge that changes none of what the gate builds or reads (the language reference is read by Rust tests) starts no run.
+  # A merge that changes none of what the gate builds or reads (docs/ is read by Rust tests) starts no run.
   push:
     branches:
       - main
@@ -44,7 +44,7 @@ on:
       - benchmarks/**
       - guide/**
       - scripts/**
-      - _tsuzuri/**
+      - docs/**
       - Cargo.*
       - .config/**
       - .github/workflows/windows.yml

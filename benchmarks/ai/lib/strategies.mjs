@@ -44,7 +44,7 @@ function baseline(ctx, task, mode) {
   return { agent, complete: needs.every((need) => agent.covers(need)) };
 }
 function baselineDocs(ctx, task) {
-  const agent = new Agent(ctx.tree), index = "_tsuzuri/language-reference/index.md";
+  const agent = new Agent(ctx.tree), index = "README.md";
   agent.read(index, 1, ctx.tree.lines(index).length);
   const needs = resolveNeeds(task.docs.needs, ctx.tree);
   chunkUntilCovered(agent, needs);

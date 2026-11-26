@@ -2790,13 +2790,18 @@ mod tests {
         );
     }
 
-    /// The language reference's examples, the std sources, the fixtures and the examples write
-    /// every variant that the parser produces; the rest come from hand-built programs.
+    /// The documentation and guide examples, the std sources, the conformance tests, the fixtures
+    /// and the examples write every variant that the parser produces; the rest come from
+    /// hand-built programs.
     #[test]
     fn round_trips_every_variant() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut pages = Vec::new();
-        let mut pending = vec![root.join("_tsuzuri/language-reference")];
+        let mut pending = vec![
+            root.join("docs"),
+            root.join("guide"),
+            root.join("src/explain"),
+        ];
         while let Some(directory) = pending.pop() {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let path = entry.unwrap().path();
@@ -2831,6 +2836,7 @@ mod tests {
             seen.extend(round_trips(text, 0).unwrap());
         }
         let mut paths = Vec::new();
+        sources(&root.join("tests/conformance"), &mut paths);
         sources(&root.join("tests/fixtures"), &mut paths);
         sources(&root.join("examples"), &mut paths);
         for path in paths {

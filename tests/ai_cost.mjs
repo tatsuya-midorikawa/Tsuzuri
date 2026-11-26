@@ -237,7 +237,7 @@ test("windows_merge_adjacent_ranges", () => {
   assert.deepEqual(mergeWindows([[5,5]]), [[5,5]]);
 });
 test("docs_strategy_reads_the_index_first", () => {
-  const dir = join(scratch,"docs-fixture"), index = "_tsuzuri/language-reference/index.md", page = "_tsuzuri/language-reference/maybe.md";
+  const dir = join(scratch,"docs-fixture"), index = "README.md", page = "docs/maybe.md";
   put(join(dir,index),"Synthetic index\n"); put(join(dir,page),"| answer |\n");
   const t = new Tree(dir), calls = [], original = t.lines.bind(t);
   t.lines = (path) => { calls.push(path); return original(path); };
