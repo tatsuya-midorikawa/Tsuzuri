@@ -133,7 +133,6 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 - npm、NuGet、crates.io のライブラリを、そのまま依存にしたい開発。
 - ファイルを含む汎用の非同期 I/O、成熟した GPU カーネル開発。tzroutine が OS スレッドを止めずに待てる I/O は、`Net` のソケットだけです。
 - GC に任せた共有グラフや、循環するオブジェクトをそのまま写すモデル。循環は [Arena](../built-in-types-and-modules/arena.md) のハンドルで表し直します。
-- Windows の OS API に依存するネイティブアプリ。到達すると `E2002` です。
 
 > [!WARNING]
 > 公開の registry、TLS や HTTP などソケットより上のネットワーク API、汎用 GPU 実行、ファイルの非同期 I/O は、0.1.0 にはありません（標準の [Net](../built-in-types-and-modules/net.md) は TCP・UDP・名前解決を持ちます。GPU は、WebGPU と Vulkan 上のカーネル実行が実験的にあるだけです）。計画中の構文を、今のコンパイラへ書いても通りません。registry の仕組み自体はあり、index は利用者が置きます（[パッケージ](../organizing-tsuzuri/packages.md#registry-の運用と-tsuzuri-publish)）。
@@ -146,7 +145,7 @@ Tsuzuri は、型エラーがあるとコードを出しません。数値型の
 | --- | --- |
 | VS Code 拡張の案内 | Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 環境だけです。Windows Arm64 のソースデバッグは未対応です。根拠は [vsc/README.md](../../../vsc/README.md) です。 |
 | 処理系の Windows の実行 | [Windows MSVC の CI](../../../.github/workflows/windows.yml) が x64 の `windows-2022` と Arm64 の `windows-11-arm` で Rust テスト、native とホストの MSVC triple の `-O0`・`-O3`、ファイルの置換、WASM を検証します。MinGW の配布物は `vscode.yml` が検証します。 |
-| OS API | Windows 上のコンパイラが、OS API に到達するネイティブバイナリを出すと `E2002` です。純粋な計算には影響しません。仕様は[WASM と Windows](../../../docs/language.md#wasm-と-windows)にあります。 |
+| OS API | macOS・Linux は POSIX、Windows は Win32 の API で動きます。Windows の x64 と Arm64 の実行は、`windows.yml`（MSVC）と `vscode.yml`（同梱の MinGW）が `tests/os.mjs` で検証します。既定の wasm32 は `E2000` です。仕様は[WASM と Windows](../../../docs/language.md#wasm-と-windows)にあります。 |
 | CI | `.github/workflows/` には、5 環境の型検査をする `ci.yml`、5 環境の拡張機能と配布物の `vscode.yml`、macOS と Linux の 3 ホストの `targets.yml`、Windows x64/Arm64 の `windows.yml` があります。 |
 
 macOS では、`IO` を使うプログラムのブレークポイントが止まらない既知の問題が、拡張機能の文書にあります。`IO` を使わないプログラムでは停止します。
@@ -172,7 +171,7 @@ flowchart TD
 - 関数型の書き方と、GC のない所有権を、計算カーネルに使いたいときに候補になります。
 - C/C++ より契約を検査でき、Rust より関数の合成を中心に書けます。エコシステムの広さでは、どちらにも及びません。
 - C#、F#、TypeScript のライブラリや実行基盤の置き換えには、まだ向きません。
-- GPU は実験的、非同期 I/O はソケットだけ、公開の registry は運営されていません。Windows の OS API は未対応で、`E2002` で拒否されます。
+- GPU は実験的、非同期 I/O はソケットだけ、公開の registry は運営されていません。
 - 採用するなら、期待値が明確な計算を一つ照合してから範囲を決めます。
 
 ## 関連項目

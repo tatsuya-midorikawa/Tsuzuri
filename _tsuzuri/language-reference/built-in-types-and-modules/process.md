@@ -91,7 +91,14 @@ record Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }
 
 既定の wasm32 で `Process.run` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` ではコンパイル可能ですが、実行時に `Other` エラーとなります。WASI preview1 にはプロセス生成に相当するシステムコールが存在しないためです。
 
-Windows のネイティブビルドは、OS API に到達すると `E2002` で失敗します。また、`/bin/echo` は POSIX 環境のコマンドであるため、Windows 環境では動作しません。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、`CreateProcessW` で子を起動します。シェルを通さないことは同じで、POSIX との違いは次のとおりです。
+
+- プログラム名が `/`・`\`・`:` を含めば、作業ディレクトリからのパスとしてだけ探します。含まなければ、環境変数 `PATH` のディレクトリだけを順に探し、作業ディレクトリと実行ファイルのディレクトリは探しません。名前に `.` がなければ `.exe`、`.com` の順に足し、あれば名前そのもの、`.exe` の順です。見つからなければ `NotFound` です。
+- `.bat` と `.cmd` は、子を作らずに `InvalidInput` です。バッチファイルは `cmd.exe` が独自の規則でコマンドラインを解釈するので、引数から別のコマンドを注入できるからです。バッチファイルを動かすときは `Process.run "cmd.exe" ["/d", "/c", ...]` と書き、`cmd.exe` の解釈を自分で引き受けます。
+- プログラム名が `"` を含むと `InvalidInput` です。引数は、MSVC の C ランタイムと `CommandLineToArgvW` が元の配列に戻せる形に引用して、1 本のコマンドラインにします。子が Tsuzuri のプログラムのときは、`main` の引数の分け方（[Env](./env.md#引数と-main)）が違うので、`"` を含む引数と、空白を含み `\` で終わる引数は同じ形で届きません。
+- `signal` は常に 0 で、`code` は `GetExitCodeProcess` の値をビットのまま `i32` にしたものです。トラップで終わった Tsuzuri の子の `code` は `-1073741795`（`0xC000001D`）です。
+
+上の例の `/bin/echo` は POSIX 環境のコマンドなので、Windows では動作しません。
 
 子プロセスは、入口のスレッドのほか、`tzroutine { ... }` の本体からも `let!` で起動できます。子の終了を待つ間も、ほかの tzroutine は走り続けます（[OS を待つ呼び出し](../async-tasks-and-lazy/tzroutine.md#os-を待つ呼び出し)）。
 

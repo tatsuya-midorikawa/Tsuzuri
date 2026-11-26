@@ -87,9 +87,20 @@ not found (os error 2)
 | `EILSEQ` | `InvalidEncoding` |
 | それ以外（`ENOTEMPTY`、`ELOOP`、`ENOSPC`、`EIO` など） | `Other` |
 
+Windows のネイティブビルドでは、`code` は Win32 のエラー番号（`GetLastError()`）で、種類は次の表で決まります。
+
+| Win32 のエラー | `Os.ErrorKind` |
+| --- | --- |
+| `ERROR_FILE_NOT_FOUND`（2）、`ERROR_PATH_NOT_FOUND`（3） | `NotFound` |
+| `ERROR_ACCESS_DENIED`（5）、`ERROR_SHARING_VIOLATION`（32） | `PermissionDenied` |
+| `ERROR_FILE_EXISTS`（80）、`ERROR_ALREADY_EXISTS`（183） | `AlreadyExists` |
+| `ERROR_INVALID_PARAMETER`（87）、`ERROR_INVALID_NAME`（123）、`ERROR_FILENAME_EXCED_RANGE`（206）、`ERROR_DIRECTORY`（267） | `InvalidInput` |
+| `ERROR_NO_UNICODE_TRANSLATION`（1113） | `InvalidEncoding` |
+| それ以外（`ERROR_DIR_NOT_EMPTY`（145）など） | `Other` |
+
 `EINTR` はランタイムが再試行します。今の API が `Interrupted` を呼び出し元へ返すことはありません。それでもケースはあるので、種類を網羅する `match` では枝が要ります。省略するとコンパイルが失敗します。
 
-番号は環境で違います。macOS と Linux で `ENOENT` はどちらも 2 ですが、`ENOTEMPTY` は違います。分岐は `kind` で行い、`Os.message` は人に見せる文字列として使います。
+番号は環境で違います。macOS と Linux で `ENOENT` はどちらも 2 ですが、`ENOTEMPTY` は違います。Windows の番号は `errno` とは別の体系です。分岐は `kind` で行い、`Os.message` は人に見せる文字列として使います。
 
 [Net](./net.md) の失敗も `Os.Error` です。接続の拒否やタイムアウトのように `Os.ErrorKind` の 7 種類に当てはまらないものは `Other` で、`code` に `errno` が入ります。`Net.error_kind` がその `code` を、`ConnectionRefused` や `TimedOut` などへ分類します。
 
@@ -138,9 +149,9 @@ match failed with
 - `Env.current_dir ()` は最初の preopen の名前です。`Process.run` は `Other` です。
 - WASI preview2 とコンポーネントモデルには対応していません。
 
-Windows 環境でコンパイラがネイティブバイナリをビルドする際、コードが OS API に到達している場合は `E2002` エラーとなります。`src/runtime/os.c` は POSIX のヘッダーで書いてあり、Windows 向けの実装がないためです（OS API を使用しない純粋な計算プログラムには影響しません。MSVC の実行は x64 の `windows-2022` と Arm64 の `windows-11-arm` で検証します。[G10](../../../_features/_completed/G10-windows.md)）。そのため、Windows ネイティブ環境で OS API を使うことはできません。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、OS API を Win32 の API で実装します（`src/runtime/os-windows.h`）。パスや名前は UTF-8 と UTF-16 の間で厳密に変換し、`Os.Error.code` は Win32 のエラー番号です（[errno と種類](#errno-と種類)）。CI の Windows の job（x64 と Arm64。MSVC と同梱の MinGW）が、`tests/os.mjs` を `-O0` と `-O3` で実行して確かめています。API ごとの違いは、[File](./file.md#所有権と対応環境)・[Dir](./dir.md#対応環境)・[Env](./env.md#対応環境)・[Time](./time.md#所有権と対応環境)・[Random](./random.md#対応環境)・[Process](./process.md#対応環境) にあります。
 
-`--target` で名指しした場合も、ビルド機ではなく target で決まります。Windows x64/Arm64 は同じく `E2002`、macOS Arm64 と Linux x64/Arm64 は受け付けます。それ以外の native target は `--target` の引数解析で `E2000` です（[対応プラットフォームとクロスコンパイル](../compiler/platforms.md#os-ごとの違い)）。
+`--target` で名指しした場合も、ビルド機ではなく target で決まります。Windows x64/Arm64、macOS Arm64、Linux x64/Arm64 は受け付けます。それ以外の native target は `--target` の引数解析で `E2000` です（[対応プラットフォームとクロスコンパイル](../compiler/platforms.md#os-ごとの違い)）。Windows の target でランタイムを埋め込む COFF の `--emit object` は、OS API に限らず `E2002` です。実行ファイルを作るか、`--emit llvm` の IR とランタイムを 1 回だけリンクします。
 
 ## 公開 API
 
@@ -163,7 +174,7 @@ Windows 環境でコンパイラがネイティブバイナリをビルドする
 - 分岐は `kind`、表示は `Os.message` です。エラーコードの番号は環境によって異なります。
 - 文字は UTF-8 で厳密に変換されます。暗黙の置換や部分的な成功はありません。
 - `Interrupted` は現状のランタイムでは返却されませんが、`match` 式でパターン網羅性を満たすためにハンドラが必要です。
-- 既定の WASM と Windows ネイティブ（`--target` で名指しした Windows を含む）では、OS API に到達するビルドは失敗します。Windows は、実装がないためです。
+- 既定の WASM では、OS API に到達するビルドは `E2000` で失敗します。Windows ネイティブでは Win32 の API で動き、`code` は Win32 のエラー番号です。
 
 ## 関連項目
 
