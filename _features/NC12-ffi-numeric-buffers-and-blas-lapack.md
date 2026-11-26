@@ -5,7 +5,7 @@
 | ID | NC12 |
 | 優先度 | P2（大規模行列積・分解でネイティブ最高速を得るための外部数値ライブラリ接続基盤） |
 | 規模 | L（`abi.rs` の数値バッファ拡張＋`Linalg.*_blas` の明示オプトイン接続） |
-| 依存 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md), [NC01](_completed/NC01-complex-and-extended-math.md), [NC08](NC08-linalg-core-and-einsum.md) |
+| 依存 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md), [NC01](_completed/NC01-complex-and-extended-math.md), [NC08](_completed/NC08-linalg-core-and-einsum.md) |
 | 後続 | [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -31,7 +31,7 @@
 
 ### 着手条件
 
-- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](_completed/NC01-complex-and-extended-math.md)（`Complex`）、[NC08](NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](_completed/NC01-complex-and-extended-math.md)（`Complex`）、[NC08](_completed/NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -80,7 +80,7 @@
 
 - [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `abi::extern_parameter`, `ref mut [T..]`, `@count`, `abi_native_only`。
 - [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<'a>`。
-- [NC08](NC08-linalg-core-and-einsum.md): `Linalg` の基準実装（精度照合用）。
+- [NC08](_completed/NC08-linalg-core-and-einsum.md): `Linalg` の基準実装（精度照合用）。
 
 ## 他チケットへ提供するインターフェース
 

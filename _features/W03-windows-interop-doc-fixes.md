@@ -194,7 +194,7 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 - `ref` のない `string` の `E1008` に `ref string` の修正案（D-51 の `fixes`）を足すこと。
 - C のソースをリンク入力として正式に受けること（コンパイルのオプションの決定とテストが要る機能。[E12](_completed/E12-ffi-extensions.md) D6 の拡張）。
 - docs/language.md の「コールバック」節の寿命の文（[W12](_completed/W12-static-callback-lifetime.md)）。
-- システムライブラリを `extern` ごとに求めること（[W17](W17-link-attribute-dllimport.md)）。この hint はその前後で同じ。
+- システムライブラリを `extern` ごとに求めること（[W17](_completed/W17-link-attribute-dllimport.md)）。この hint はその前後で同じ。
 
 ## 決定事項
 

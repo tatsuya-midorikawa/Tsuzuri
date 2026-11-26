@@ -5,7 +5,7 @@
 | ID | NC13 |
 | 優先度 | P2（外部 BLAS なし環境や WASM・GPU で実用的な数値計算性能を達成する） |
 | 規模 | XL（4 Phase に分割: Phase 1 x86-64 FMA & `f16` SIMD、Phase 2 テンソル SIMD & 軸並列カーネル、Phase 3 キャッシュタイリング GEMM、Phase 4 GPU 2D/リダクション/複数バッファ/行列積） |
-| 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md), [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](_completed/NC15-parallel-borrowed-chunk-input.md)) |
+| 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md), [NC07](_completed/NC07-tensor-reductions-stats-and-sorting.md), [NC08](_completed/NC08-linalg-core-and-einsum.md), ([NC15](_completed/NC15-parallel-borrowed-chunk-input.md)) |
 | 後続 | –（弱い後続: [M12](M12-gpu-presentation-to-window.md)。M12 の Phase 2（CAMetalLayer への提示）は、このチケットの D2（Metal）が決まってから着手する） |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -32,13 +32,13 @@
 
 ## 目的
 
-案 C の純 Tsuzuri 基盤（[NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)〜[NC08](NC08-linalg-core-and-einsum.md)）が機能面で揃った後、外部 BLAS に頼れない環境（単一バイナリ配布・WASM・GPU）でも実用に耐える計算速度を、Tsuzuri の安全・決定論ポリシーを一切妥協せずに達成する。
+案 C の純 Tsuzuri 基盤（[NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)〜[NC08](_completed/NC08-linalg-core-and-einsum.md)）が機能面で揃った後、外部 BLAS に頼れない環境（単一バイナリ配布・WASM・GPU）でも実用に耐える計算速度を、Tsuzuri の安全・決定論ポリシーを一切妥協せずに達成する。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- Phase 1 は独立着手可能。Phase 2〜4 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md) が done。
+- Phase 1 は独立着手可能。Phase 2〜4 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md)・[NC07](_completed/NC07-tensor-reductions-stats-and-sorting.md)・[NC08](_completed/NC08-linalg-core-and-einsum.md) が done。
 - Phase 4 は決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -82,7 +82,7 @@
 ### 3. Phase 3: キャッシュタイリング GEMM と段階的ブロック化分解
 
 - 出力のブロック $(M_c, N_c)$ に対して内側 $k$ を昇順ブロック $K_c$ ごとに進めるタイリング＋パッキング（各 $(i, j)$ の更新式は厳密に `k = 0, 1, ..., K-1` の昇順 `out[i, j] += a[i, k] * b[k, j]` を保存するため、ビット完全一致を保ったまま L1/L2 キャッシュヒット率を最大化できる）。
-- `Matrix.mul` / `Matrix.mul_parallel` / `Linalg.matmul` へ適用し、小行列ではオーバーヘッドを避けて既存ループへフォールバックする閾値を実測で決める。[NC08](NC08-linalg-core-and-einsum.md) の共通 `B` 行結合経路および [NC15](_completed/NC15-parallel-borrowed-chunk-input.md) のゼロコピー並列チャンクと組み合わせた上で、アーキテクチャ別の手書きマイクロカーネルが必要かを実測で判断する。
+- `Matrix.mul` / `Matrix.mul_parallel` / `Linalg.matmul` へ適用し、小行列ではオーバーヘッドを避けて既存ループへフォールバックする閾値を実測で決める。[NC08](_completed/NC08-linalg-core-and-einsum.md) の共通 `B` 行結合経路および [NC15](_completed/NC15-parallel-borrowed-chunk-input.md) のゼロコピー並列チャンクと組み合わせた上で、アーキテクチャ別の手書きマイクロカーネルが必要かを実測で判断する。
 - **数値契約の厳格な分離**: 別丸めの厳密 `mul`/`matmul` と、`mul_fma`/`matmul_fma`（`k` 昇順でも別ビットになる）、さらに細長い行列向けに将来検討しうる固定木 Split-K（自らの固定木では再現可能だが逐次とは別ビット）は必ず別名の API として分離し、既定経路へ混ぜない。
 - **分解のブロック化（計測ベースで狭く着手）**: LU/QR/SVD/固有値分解を一括でブロック化せず、まず GEMM 更新が支配的と実測されたら最小対象の `Linalg.cholesky` からブロック化を検証する。SVD・固有値分解は残差・直交性・収束性（`DidNotConverge`）を独立に評価する。
 
@@ -100,7 +100,7 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md)・[NC07](NC07-tensor-reductions-stats-and-sorting.md)・[NC08](NC08-linalg-core-and-einsum.md): 最適化対象の `Tensor`/`Linalg` API と決定論基準実装。
+- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md)・[NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md)・[NC07](_completed/NC07-tensor-reductions-stats-and-sorting.md)・[NC08](_completed/NC08-linalg-core-and-einsum.md): 最適化対象の `Tensor`/`Linalg` API と決定論基準実装。
 - 弱い依存 [NC15](_completed/NC15-parallel-borrowed-chunk-input.md): `Parallel.for_each_chunk_with`（Phase 2 の 2 入力/`_into`/軸並列と Phase 3 のゼロコピー並列 GEMM 用）。
 
 ## 他チケットへ提供するインターフェース

@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | ([M22](M22-attribute-after-bodyless-extern-def.md)), ([M01](M01-objc-class-types.md)), ([M06](M06-extern-data-symbols-and-zutf8string.md))（M22 が後なら `weak` を `signature` の先読みに足す。M01・M06 は `@weak` をクラスとデータシンボルに付ける段） |
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md), [M15](M15-macos-app-bundle.md), [M18](M18-intel-mac-and-universal2.md)） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 2（既定の native ビルドの minos がビルド機の版 27.2 になり、古い macOS で起動しない。版を選ぶ正式な手段も弱い import もない）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 6（既定の native ビルドの最低 OS 版。12.0 に固定）は承認済み（2026-11-26）。決定事項 D1（分岐 6）は承認済み。要承認: D-55（`[macos]` の節とキー `min_version`、属性 `@weak`）。決定事項 D2（`[macos]`・`min_version`）・D3（`@weak` と検査の形、版の問い合わせの API）が要承認、ほかは既定案 |
 | 改善する劣位 | C（clang の `-mmacosx-version-min` と `__attribute__((weak_import))`）・Swift（Deployment Target と `#available`）比: 最低 OS 版を manifest で選べず、既定の native ビルドがビルド機の版（実測 27.2）になって古い macOS で起動しない。新しい OS にだけある関数を参照すると、呼ばない経路でも古い OS で dyld が起動を止める |

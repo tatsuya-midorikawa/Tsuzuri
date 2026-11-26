@@ -21,7 +21,7 @@
 - 最初に読む: ① 「現状」2（W13 の下げ方）・6（clang の参照）・7（計画の形を手で書いた IR の結果）② 仕様 2 の所有の表 ③ M01 の仕様 3 と D6 ④ M05 の仕様 2（例外の経路では書き戻さない）。
 - 最初に書くテスト: `tests/objc_out_params.rs` の `accepts_object_out_parameters` と `lowers_like_arc_writeback`（`--emit llvm --target aarch64-apple-darwin`）→ `tests/objc_out_params.mjs` の `fail_then_drain`。
 - 触ってはいけない: W13 の `ref mut R`・`ref mut T`・`ref mut H`（`copy`）の意味・IR・診断。M01 の所有の規則。出力引数と `ObjC.Weak` を使わないプログラムの IR・object・header・診断・既定の `.wasm`（1 byte も変えない）。
-- 完了の見分け方（Phase 1）: 次のプログラムを arm64 の Mac で `--link <SDK>/System/Library/Frameworks/Foundation.framework/Foundation.tbd`（[M20](M20-macos-framework-link-inputs.md) があれば `--framework Foundation`）で作ると、`-O0`・`-O3` で `true false 260 4` を出して 0 で終わる。`NSZombieEnabled=YES` でも同じで、`deallocated instance` を出さない（260 は `NSFileReadNoSuchFileError`、4 は `NSFileNoSuchFileError`）。
+- 完了の見分け方（Phase 1）: 次のプログラムを arm64 の Mac で `--link <SDK>/System/Library/Frameworks/Foundation.framework/Foundation.tbd`（[M20](_completed/M20-macos-framework-link-inputs.md) があれば `--framework Foundation`）で作ると、`-O0`・`-O3` で `true false 260 4` を出して 0 で終わる。`NSZombieEnabled=YES` でも同じで、`deallocated instance` を出さない（260 は `NSFileReadNoSuchFileError`、4 は `NSFileNoSuchFileError`）。
 
 ```tsuzuri
 @trusted
@@ -108,7 +108,7 @@ macOS 27.2.1 arm64、Apple clang 21.0.0、SDK 27.2、HEAD の `target/debug/tsuz
 
 - M01 の仕様 3（`_features/M01-objc-class-types.md:366`）は、物体の型を `ref mut` に置くと `E1008` `objc_object_position` にする。対象外（同 513 行）は起票の時点で弱い参照と `NSError **` を理由なしで外していた（M23 の起票に合わせて M23 を指す文に直された）。
 - M07 の仕様 7（`_features/M07-apple-sdk-bindgen-and-package.md:339`）は `NSError **` を `pointer to an object pointer` で `// skipped` にして `W2002` を出し、D13（574 行）の理由は起票の時点で「M01・M02 に出力の物体の形が無い」だった（M23 の起票に合わせて「M23 の Phase 1 の前は」の文に直された）。200 行は `-fobjc-arc` の AST の綴り `NSError *__autoreleasing _Nullable * _Nullable` を記録している。
-- `__weak` を扱うチケットはない（`rg -n '__weak|objc_initWeak|ObjC\.Weak' _features` はこのファイルのほかに M01 の対象外だけ）。[M17](M17-macos-min-version-and-weak-import.md) の「弱い参照」は symbol の弱い import で、別のものである。
+- `__weak` を扱うチケットはない（`rg -n '__weak|objc_initWeak|ObjC\.Weak' _features` はこのファイルのほかに M01 の対象外だけ）。[M17](_completed/M17-macos-min-version-and-weak-import.md) の「弱い参照」は symbol の弱い import で、別のものである。
 
 ### 2. W13 の `ref mut` の下げ方
 

@@ -6,7 +6,7 @@
 | 優先度 | P2（[W24](_completed/W24-extern-view.md) の `extern view` が生の `i64` を直接受けると、アドレス `0`（NULL）の検査漏れがコンパイル時ではなく実行時トラップになる） |
 | 規模 | S（opt-in の `std/ExternAddr.tz` と `W24` の `extern view` 引数型の `ExternAddr` 化、テストと文書） |
 | 依存 | W24 |
-| 後続 | –（弱い後続: [M06](M06-extern-data-symbols-and-zutf8string.md)。データシンボルの `address` の結果に `ExternAddr` を許す） |
+| 後続 | –（弱い後続: [M06](_completed/M06-extern-data-symbols-and-zutf8string.md)。データシンボルの `address` の結果に `ExternAddr` を許す） |
 | 状態 | todo |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（opt-in モジュール `ExternAddr` の登録（D-55）と [W24](_completed/W24-extern-view.md) の署名型の改訂。決定事項 D1・D2 が要承認、D3〜D5 は既定案） |

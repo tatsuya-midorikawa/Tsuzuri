@@ -21,7 +21,7 @@
 - 最初に読む: ① 「現状」の再現と clang の参照の IR ② 仕様 1〜6 ③ M01 の所有と classref・selref ④ W25 の仕様 3 と D3 ⑤ `host_call`。
 - 最初に書くテスト: `tests/objc_send.rs` の `parses_members_and_categories` と `lowers_with_exact_c_types`（`--emit llvm --target aarch64-apple-darwin` の `call` の型を手で書いた期待と比べる）→ `tests/objc_send_host.m` の dealloc を数えるクラス。
 - 触ってはいけない: `extern def`・`extern type`・コールバック・`export def` の型・ABI・header・診断（`extern def` の `bool` は `int32_t` のまま）。利用者の `extern "objc_msgSend"` に対する W14 の規則。送信を使わないプログラムの IR・object・header・診断・既定の `.wasm`（1 byte も変えない）。
-- 完了の見分け方（Phase 1）: 次のプログラムを arm64 の Mac で `tsuzuri build <dir> -o probe --link $SDK/System/Library/Frameworks/Foundation.framework/Foundation.tbd`（[M20](M20-macos-framework-link-inputs.md) があれば `--framework Foundation`）で作ると、`-O0`・`-O3` で `2.5 2.5 true 5 true` を出して 0 で終わる。IR の `declare ptr @objc_msgSend(ptr, ptr, ...)` は 1 行で、`call double @objc_msgSend(`・`call float @objc_msgSend(`・`call zeroext i1 @objc_msgSend(` がある。
+- 完了の見分け方（Phase 1）: 次のプログラムを arm64 の Mac で `tsuzuri build <dir> -o probe --link $SDK/System/Library/Frameworks/Foundation.framework/Foundation.tbd`（[M20](_completed/M20-macos-framework-link-inputs.md) があれば `--framework Foundation`）で作ると、`-O0`・`-O3` で `2.5 2.5 true 5 true` を出して 0 で終わる。IR の `declare ptr @objc_msgSend(ptr, ptr, ...)` は 1 行で、`call double @objc_msgSend(`・`call float @objc_msgSend(`・`call zeroext i1 @objc_msgSend(` がある。
 
 ```tsuzuri
 @trusted
@@ -372,7 +372,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 - `@returns_*` は結果の所有だけを変え、init の受け手の消費は変えない。
 - 受け手（D9）: インスタンスメソッドは `ref C`（+0）。init の族だけは所有する `C` を消費する（`C.init :: C -> Maybe<C>`）。送信の後に受け手を drop しない。失敗した init の nil では、受け手は呼ばれた側が release 済みなので release しない。成功した init が別の物体を返す場合（クラスクラスター）も正しい。
 - `Maybe` でない物体の結果の nil は M01 の規則で `null extern handle` のトラップ。`Maybe<…>` は `None`。
-- 受け手は型で非 nil。clang の `sret` の前の 0 埋め（Phase 2）は要らない。クラスの受け手の classref が NULL になりうるのは [M17](M17-macos-min-version-and-weak-import.md) の `@weak` のクラスだけで、M17 が検査する。
+- 受け手は型で非 nil。clang の `sret` の前の 0 埋め（Phase 2）は要らない。クラスの受け手の classref が NULL になりうるのは [M17](_completed/M17-macos-min-version-and-weak-import.md) の `@weak` のクラスだけで、M17 が検査する。
 - 引数の物体は `ref C`・`Maybe<ref C>`（+0）。所有する `C` の引数は M01 の `E1008` `objc_owned_object_argument`（init の受け手を除く）。
 
 #### 5. ObjC の位置の C の型（D7）
@@ -484,7 +484,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 - [M01](M01-objc-class-types.md): 本体のない `extern class` の AST（`ExternClassDecl`）、`HandleKind::ObjcLocal`・`ObjcSync` と述語、クラスの脇の表 `ObjcClassInfo`（実行時名・基底・`sync`）、基底の連鎖の解決、組み込みのモジュール `ObjC` と `ObjC.Object`・`ObjC.Class`・`ObjC.Sel`、`llvm_objc::classref(&mut self, runtime_name)`・`selref(&mut self, selector)`（`tz.objc.selref.<n>`・`tz.objc.classref.<実行時名>`、`externally_initialized`、`@llvm.compiler.used`、モジュールのフラグ）、`-lobjc`（`llvm::uses_objc`）、drop の `objc_release`、+0 の結果の retain と nil のトラップ、`@returns_retained`・`@returns_not_retained`、`ref C`・`Maybe<ref C>` の検査、kind `abi_apple_only`・`objc_owned_object_argument`・`objc_object_position`・`objc_class_limit`・`misplaced_returns_retained_attribute`・`returns_retained_conflict`・`objc_returns_retained_not_object`・`objc_invalid_selector`・`objc_builtin_not_called`・`extern_class_syntax`、監査の行。名前が違えば止めて報告する（GUIDE-LITE §11）。
 - [W14](_completed/W14-extern-multiple-declarations.md): `module.extern_abis` と `intrinsics`。[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)・[W15](_completed/W15-abi-nullable-handles.md)・[W18](_completed/W18-copy-extern-type.md)・[W21](_completed/W21-c-layout-records.md): `host_call` が下げる形（共有する）。
 - [W36](W36-c-layout-by-value.md)（Phase 2）: `llvm_byvalue::{ByValue, classify, classify_call}`、`FunctionEmitter::{by_value_slot, by_value_to_abi, by_value_from_abi}`、`abi::extern_record_passing`、kind `abi_record_by_value_target`。
-- [M20](M20-macos-framework-link-inputs.md)（あれば）: `--framework`。無ければテストは SDK の `.tbd` を `--link` で渡す。
+- [M20](_completed/M20-macos-framework-link-inputs.md)（あれば）: `--framework`。無ければテストは SDK の `.tbd` を `--link` で渡す。
 
 ## 他チケットへ提供するインターフェース
 
@@ -493,7 +493,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 - [M23](M23-objc-out-parameters-and-weak-references.md): `abi::objc_parameter`（`ref mut Maybe<C>` を `ptr` 1 つにする）、セレクターの数の `c`（同じく 1 つ）、`host_call` の分割（引数の共通の部分が物体の出力引数の写し込みと書き戻しを持つ）、`ObjcCallSite`。
 - [M07](M07-apple-sdk-bindgen-and-package.md): 宣言の文法（`[class] "sel" name :: T`、`extern category`、`@returns_*`、`Self`）、同じ名前は `E1001` なので生成器が名前を変える、buffer は 2 つの C の引数、可変長は書けない、Phase 2 の前は構造体のメソッドを飛ばす。
 - [M04](M04-objc-blocks.md)（弱い）: `objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口。[M10](M10-objc-autorelease-pools.md)（弱い）: +0 の結果は M01 の D6 の bundle で retain する（返された物体はハンドシェイクが効けば pool を経ないが、呼ばれた側の中で autorelease された物体は pool に入る）。[M12](M12-gpu-presentation-to-window.md)（弱い）: CAMetalLayer への送信。[M18](M18-intel-mac-and-universal2.md)（弱い）: 仕様 5 の表を target ごとの表にし、x86_64 の行（`BOOL` は `i8 signext`、`objc_msgSend_stret`）を足せる形にする。
-- [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2: `main` の型への送信の包みを省く印。[M17](M17-macos-min-version-and-weak-import.md): クラスの受け手の classref の load に NULL の検査を差し込む所。
+- [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2: `main` の型への送信の包みを省く印。[M17](_completed/M17-macos-min-version-and-weak-import.md): クラスの受け手の classref の load に NULL の検査を差し込む所。
 
 ## 実装手順
 

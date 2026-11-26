@@ -5,7 +5,7 @@
 | ID | M18 |
 | 優先度 | P3（D-67 の分岐 3 で方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実。着手時に確かめる）） |
 | 規模 | XL（Phase 1・2。方針を改める決定があるまで着手しない） |
-| 依存 | ([W36](W36-c-layout-by-value.md)), ([M17](M17-macos-min-version-and-weak-import.md)), ([M02](M02-objc-typed-message-send.md)) |
+| 依存 | ([W36](W36-c-layout-by-value.md)), ([M17](_completed/M17-macos-min-version-and-weak-import.md)), ([M02](M02-objc-typed-message-send.md)) |
 | 後続 | – |
 | 状態 | blocked（D-67 の分岐 3 で、d719cf68 の「5 つのプラットフォーム」の方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 3（Intel Mac 向けの出力と Universal 2 が作れない）」に当たる。HEAD `804b7970` で確認） |
@@ -188,7 +188,7 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 - 受けるコマンドと出力は、ほかの名前付きの target と同じ: `build` のすべての native の `--emit`、`run`・`test`（ビルド機で動かせないので `TSUZURI_RUNNER` が要る。Rosetta 2 があれば `arch -x86_64`。D7）。`bench`・`test --coverage`・`test -g` は今の規則で `E2000`。
 - IR: `x86_64-unknown-linux-gnu` と同じ（`@cpu` は `sse4.2`・`avx2`・`avx512` の版、`Math.fma` はソフトウェア）。実行ファイルの生成コードは Mach-O の `__TEXT,__tz_text` に置く（今の `platform.mach_o()` の分岐）。
 - リンク: macOS のホストは Apple の ld（今の `link_args`）。ほかのホストは `-fuse-ld=lld`（`ld64.lld` と `TSUZURI_SYSROOT` の SDK が要る）か、同梱の toolchain（launcher が `x86_64-macos.12.0` に写す）。
-- 最低版は 12.0（`aarch64-apple-darwin` と同じ）。[M17](M17-macos-min-version-and-weak-import.md) が入っていれば、その有効な版が x86_64 にも効く（`x86_64-apple-macosx<版>`、launcher は `x86_64-macos.<版>`）。
+- 最低版は 12.0（`aarch64-apple-darwin` と同じ）。[M17](_completed/M17-macos-min-version-and-weak-import.md) が入っていれば、その有効な版が x86_64 にも効く（`x86_64-apple-macosx<版>`、launcher は `x86_64-macos.<版>`）。
 - 署名: macOS のホストでは、x86_64 の Mach-O の実行ファイルと共有ライブラリを、リンクの直後（出力の場所へ移す前）に `codesign -s -` で ad-hoc に署名する。macOS でないホストでは署名しない（D6）。
 - `-g`: macOS のホストの `dsymutil` が今の arm64 と同じく `.dwarf` を作る。
 - ランタイム: C は変えない（D5）。
@@ -251,7 +251,7 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 ## 前提とする他チケットのインターフェース
 
 - [W36](W36-c-layout-by-value.md)（弱い）: Phase 2 の System V x86-64 の分類（`llvm_byvalue::classify`）。W36:164 の「Intel の macOS」は、この target がある場合に効く。M18 が先なら、W36 の Phase 2 は x86_64-apple-darwin を Linux と同じ分類で扱う（macOS の x86-64 は System V に従う）。
-- [M17](M17-macos-min-version-and-weak-import.md)（弱い）: `[macos] min_version` と、版を Clang の target と launcher に渡す口。x86_64 にも同じ版を使う。
+- [M17](_completed/M17-macos-min-version-and-weak-import.md)（弱い）: `[macos] min_version` と、版を Clang の target と launcher に渡す口。x86_64 にも同じ版を使う。
 - [M02](M02-objc-typed-message-send.md)（弱い）: ObjC の送信の下げ方。M02 が後なら、M02 が仕様 2 の差を足す（このチケットの参照の表を使う）。
 - [M16](M16-macos-signing-notarization-hardening.md)（あれば）: `TSUZURI_CODESIGN` と署名の手順。M16 の Developer ID の署名は bundle の中の fat のファイルの全スライスを署名し直すので、仕様 1 の ad-hoc の署名と矛盾しない。
 

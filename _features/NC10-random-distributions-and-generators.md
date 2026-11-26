@@ -5,7 +5,7 @@
 | ID | NC10 |
 | 優先度 | P2（モンテカルロ法・統計シミュレーション・機械学習の重み初期化とデータシャッフル） |
 | 規模 | M（2 Phase: Phase 1 常時ロード `std/Random.tz` のスカラー分布拡張、Phase 2 opt-in `std/RandomTensor.tz` のテンソル生成・軸シャッフル・多変量正規） |
-| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([NC08](NC08-linalg-core-and-einsum.md)) |
+| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([NC08](_completed/NC08-linalg-core-and-einsum.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -32,7 +32,7 @@
 ### 着手条件
 
 - Phase 1 は [NC01](_completed/NC01-complex-and-extended-math.md) が done。
-- Phase 2 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done（`multivariate_normal` は [NC08](NC08-linalg-core-and-einsum.md) も done）および決定事項 D1 の承認。
+- Phase 2 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done（`multivariate_normal` は [NC08](_completed/NC08-linalg-core-and-einsum.md) も done）および決定事項 D1 の承認。
 
 ### 停止条件
 
@@ -89,7 +89,7 @@
 
 - [NC01](_completed/NC01-complex-and-extended-math.md): `Math.log1p`, `Math.expm1`, `Math.log`, `Math.sqrt`。
 - [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`（Phase 2）。
-- 弱い依存 [NC08](NC08-linalg-core-and-einsum.md): `Linalg.cholesky`（Phase 2 の `multivariate_normal` 用）。
+- 弱い依存 [NC08](_completed/NC08-linalg-core-and-einsum.md): `Linalg.cholesky`（Phase 2 の `multivariate_normal` 用）。
 
 ## 他チケットへ提供するインターフェース
 

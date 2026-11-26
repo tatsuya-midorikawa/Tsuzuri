@@ -351,7 +351,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](_completed/W14-extern-multiple-declarations.md) | P1 | S | – | done |
 | W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](_completed/W15-abi-nullable-handles.md) | P1 | M | – | done |
 | W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
-| W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](W17-link-attribute-dllimport.md) | P2 | M | – | todo |
+| W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](_completed/W17-link-attribute-dllimport.md) | P2 | M | – | done（`@link("name")` 属性・Windows `dllimport`・到達シンボルの `-l<name>` 自動収集・`tsuzuri audit` の `link` 表示） |
 | W18 | [`extern type copy`（所有しない識別子のハンドル）](_completed/W18-copy-extern-type.md) | P1 | M | – | done |
 | W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](_completed/W19-thread-bound-handles.md) | P1 | M | W18 | done |
 | W20 | [NUL 終端の UTF-16 文字列 `ZString`](_completed/W20-zstring.md) | P1 | M | W13 | done |
@@ -403,8 +403,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC04 | [汎用 `Index` 型クラスとスライス記述子モジュール `Slice`（案 C・言語拡張 ②）](_completed/NC04-generic-index-class-and-slice.md) | P1 | L | (NC02) | done（Phase 1–2: 組み込み 3 引数クラス `Index`/`IndexMut`、`FRONTEND_FORMAT = 27`、opt-in `std/Slice.tz`、`Tensor`/`Matrix`/`MatrixView`/`Map`/`HashMap` のインスタンスと `slice`） |
 | NC05 | [`Tensor` の形状操作・結合/分割・ファンシーインデキシング・ブールマスク](_completed/NC05-tensor-shape-indexing-and-masking.md) | P1 | M | NC02, (NC04) | done（形状操作・`pad` 5 モード・結合/ゼロコピー分割・ブールマスク/ファンシーインデキシング・`Tensor`/`View`/`Mut` マスク `Index`/`IndexMut` インスタンス） |
 | NC06 | [ブロードキャスト対応の要素ごと演算（ufunc）・比較・インプレース出力・演算子インスタンス](_completed/NC06-tensor-ufuncs-and-elementwise.md) | P1 | L | NC01, NC02, (NC03), (A37) | done（ブロードキャスト反復エンジン `map_into`/`map2`/`map2_into`/`map3`/`map3_into`/`map2_in_place`、四則/床除算/数学/比較/論理/ビット ufunc、両側スカラー版、`_into`・`_in_place`、同型 `Tensor` 演算子インスタンスと非公開 `*_or_trap` カーネル、計 130 公開関数） |
-| NC07 | [軸指定の還元・統計・累積・ソート・探索・集合演算](NC07-tensor-reductions-stats-and-sorting.md) | P1 | L | NC02, NC05, NC06 | todo |
-| NC08 | [線形代数モジュール `Linalg` とテンソル縮約（`matmul`/`tensordot`/`einsum`/分解/求解）](NC08-linalg-core-and-einsum.md) | P1 | XL | NC01, NC02, NC05, NC06 | todo |
+| NC07 | [軸指定の還元・統計・累積・ソート・探索・集合演算](_completed/NC07-tensor-reductions-stats-and-sorting.md) | P1 | L | NC02, NC05, NC06 | done（`AxisOptions`/`AxesOptions`/`VarianceOptions`、単一軸・複数軸縮約と `nan*` 版、累積・有限差分・数値微分・台形積分・1D 畳み込み/相互相関・線形補間、分位点 5 手法・ヒストグラム・`bincount`・`digitize`・`cov`/`corrcoef`、`NaN` 末尾安定ソート・期待 $O(n)$ introselect・`searchsorted`・1D 集合演算、`numpy-migration.md`） |
+| NC08 | [線形代数モジュール `Linalg` とテンソル縮約（`matmul`/`tensordot`/`einsum`/分解/求解）](_completed/NC08-linalg-core-and-einsum.md) | P1 | XL | NC01, NC02, NC05, NC06 | done（Phase 1–3: opt-in `std/Linalg.tz`、バッチ `matmul` と共通 `B` 行結合高速経路・`tensordot`・`einsum`/`einsum_path`・複素数版、部分ピボット `lu`・`cholesky`・Householder `qr`・1D/複数右辺 `solve`・再利用求解・SVD `lstsq`・`inv`/`det`/`slogdet`/`matrix_power`/ノルム/`cond`、Hestenes-Jacobi `svd`/`pinv`/`matrix_rank`・実対称/複素エルミート `eigh`・Hessenberg+Francis 実 Schur `eig`） |
 | NC09 | [高速フーリエ変換 `Fft` と多項式 `Polynomial`](NC09-fft-and-polynomial.md) | P2 | L | NC01, NC02, NC08, (NC15) | todo |
 | NC10 | [`Random` の数値計算向け拡張（PCG64・`SeedSequence`・確率分布）と opt-in `RandomTensor`](NC10-random-distributions-and-generators.md) | P2 | M | NC01, NC02, (NC08) | todo |
 | NC11 | [テンソル永続化モジュール `TensorCodec`（`.npy`/`.npz`/Safetensors/CSV）と `TensorIO`（ファイル/`mmap`）](NC11-tensor-codec-and-io.md) | P2 | L | NC01, NC02, (W11) | todo |
@@ -428,9 +428,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | M03 | [Objective-C のクラスを Tsuzuri で定義する（`extern class export`・オーバーライド・プロトコル・`Super` への送信・`Anchor` の状態・構造体を受け返す IMP）](M03-objc-classes-defined-in-tsuzuri.md) | P2 | XL | M02, (W36), (M09) | todo |
 | M04 | [Block（`^{}`）を作る・受け取る（`ObjC.Block<F>`）](M04-objc-blocks.md) | P2 | L | M01, (M02), (M03), (M09) | todo |
 | M05 | [Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 の狭い解釈。D-67 の分岐 2 で承認）](M05-objc-exception-boundary.md) | P2 | M | M02 | todo |
-| M06 | [C の大域データシンボルの `extern` と NUL 終端の UTF-8 文字列 `ZUtf8String`](M06-extern-data-symbols-and-zutf8string.md) | P1 | L | (M01), (NS07) | todo |
+| M06 | [C の大域データシンボルの `extern` と NUL 終端の UTF-8 文字列 `ZUtf8String`](_completed/M06-extern-data-symbols-and-zutf8string.md) | P1 | L | (M01), (NS07) | done（Phase 1–2: `extern "sym" view def`・`extern "sym" address def`、opt-in `std/ZUtf8String.tz` と `ZUtf8String.literal`、`ref ZUtf8String` / `Maybe<ZUtf8String>` の C ABI と `tsuzuri audit` 報告） |
 | M07 | [Apple SDK のヘッダーからの宣言の生成器（`tsuzuri bindgen --objc`）と公式の `apple` パッケージ（W27 の macOS 版）](M07-apple-sdk-bindgen-and-package.md) | P2 | XL | M01, M02, M06, M20, W17, (M03), (M04), (M05), (M09), (M17), (W27), (W36) | todo |
-| M08 | [macOS の GUI に `Routine.with_locked_thread` を勧める文書と `E1013` の誤り（with_locked_thread はワーカー M に固定し、メインスレッドにはならない）](M08-macos-main-thread-docs-and-e1013.md) | P1 | S | (W28) | todo |
+| M08 | [macOS の GUI に `Routine.with_locked_thread` を勧める文書と `E1013` の誤り（with_locked_thread はワーカー M に固定し、メインスレッドにはならない）](_completed/M08-macos-main-thread-docs-and-e1013.md) | P1 | S | (W28) | done（`E1013` 診断文・`E1013.md`・`native-interop.md`・`routine.md`・`docs/language.md` のメインスレッド注意事項明記） |
 | M09 | [メインスレッドへの投入（`MainThread`）とメインスレッドに結び付くハンドル（`extern type main`・`extern class main`）](M09-main-thread-dispatch-and-handles.md) | P2 | L | (M01), (M08) | todo |
 | M10 | [tzroutine と `main` の autorelease pool（`ObjC.with_autorelease_pool`）](M10-objc-autorelease-pools.md) | P2 | M | M01, (M02) | todo |
 | M11 | [Swift のバインディングの生成（`--emit bindings-swift`）](M11-swift-bindings.md) | P3 | L | (NS02) | todo |
@@ -439,12 +439,12 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | M14 | [TLS と HTTP クライアントの公式パッケージ（E09 D13 に沿う。macOS は Network.framework）](M14-tls-http-packages.md) | P3 | XL | M04, M09, M20, (W17), (M07) | todo |
 | M15 | [`.app` バンドルの生成（`--emit app`）と `[macos]` の manifest の節・`.dSYM`・`Env.executable_path`](M15-macos-app-bundle.md) | P2 | L | (M17), (M20) | todo |
 | M16 | [Developer ID 署名・hardened runtime・公証（`tsuzuri notarize`）と生成コードの硬化の記録（W30 の macOS 版）](M16-macos-signing-notarization-hardening.md) | P2 | M | M15 | todo |
-| M17 | [最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）](M17-macos-min-version-and-weak-import.md) | P1 | M | (M22), (M01), (M06) | todo |
+| M17 | [最低 OS 版の指定（`[macos] min_version`）と弱い import（`@weak`）](_completed/M17-macos-min-version-and-weak-import.md) | P1 | M | (M22), (M01), (M06) | done（`[macos] min_version` と既定 `12.0`、`@weak` Mach-O 関数/データシンボル弱参照、`Env.os_version`） |
 | M18 | [Intel Mac（`x86_64-apple-darwin`）と Universal 2（d719cf68 の「5 つのプラットフォーム」の方針を改める決定が要る。D-67 の分岐 3 では改めないと決めた）](M18-intel-mac-and-universal2.md) | P3 | XL | (W36), (M17), (M02) | blocked（D-67 の分岐 3 で方針を改めないと決めた） |
 | M19 | [GUI として起動したときのトラップとランタイムの報告を unified logging（`os_log`）へ送る](M19-macos-trap-report-os-log.md) | P2 | M | – | todo |
-| M20 | [macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）](M20-macos-framework-link-inputs.md) | P1 | M | (W17), (M22) | todo |
-| M21 | [`extern view` の書き込みに一時の record を渡すとコンパイラが panic する](M21-extern-view-temporary-record-panic.md) | P1 | S | – | todo |
-| M22 | [本体のない `extern def` の直後の `@c_layout`・`@literal` が `E0002`（制約行）になる](M22-attribute-after-bodyless-extern-def.md) | P1 | S | – | todo |
+| M20 | [macOS の framework のリンク入力（`--framework`・`-F`・`--rpath`・`[native] frameworks`・`@link(framework = ...)`）](_completed/M20-macos-framework-link-inputs.md) | P1 | M | (W17), (M22) | done（Phase 1–2: `--framework`/`-F`/`--rpath`、`[native] frameworks`/`framework_search`/`rpath`、同梱 clang 用 `xcrun` SDK 解決、`@link(framework = "...")`） |
+| M21 | [`extern view` の書き込みに一時の record を渡すとコンパイラが panic する](_completed/M21-extern-view-temporary-record-panic.md) | P1 | S | – | done（`extern view` 書き込みの `BorrowOperand` を `operand_borrow` + `release_operands` で一時領域に下げる修正） |
+| M22 | [本体のない `extern def` の直後の `@c_layout`・`@literal` が `E0002`（制約行）になる](_completed/M22-attribute-after-bodyless-extern-def.md) | P1 | S | – | done（宣言列の任意の `@ident` で本体のない signature を終端する構文修正） |
 | M23 | [Objective-C の物体の出力引数（`NSError **`）と弱い参照（`ObjC.Weak<C>`）](M23-objc-out-parameters-and-weak-references.md) | P2 | L | M01, M02 | todo |
 
 ## 推奨フェーズ
@@ -1104,8 +1104,8 @@ Tsuzuri で NumPy 互換の数値計算機能を提供するためのギャッ�
 | 言語 | [NC04](_completed/NC04-generic-index-class-and-slice.md) | **案 C 言語拡張 ②**: 既存の `x[k]` 構文をユーザー型へ開放する汎用 `Index`（Phase 2 で `IndexMut`）クラスと標準スライス記述子モジュール `Slice` を追加 | D1・D2 |
 | 機能 | [NC05](_completed/NC05-tensor-shape-indexing-and-masking.md) | `Tensor` の形状操作（`-1` 推論 `reshape`/`squeeze`/`expand_dims`/`flip`/`pad`/`tile`）、結合・分割（`concatenate`/`stack`/`split`）、ファンシーインデキシング・ブールマスク（`mask`/`where_select`/`take`/`nonzero`/`clip`） | 不要 |
 | 機能 | [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) | ブロードキャスト対応の要素ごと演算（四則・`floor_divide`/`floor_mod`/`ieee_remainder`・スカラー・ビット・論理・比較 `allclose`・全数学 ufunc）、ゼロ確保 `_into` 版、`NC03` 後の `Tensor` 演算子インスタンス | 不要 |
-| 機能 | [NC07](NC07-tensor-reductions-stats-and-sorting.md) | 軸指定・`keepdims` 対応の還元・統計（`sum`〜`std`・`nan*` 版・`median`/`percentile`/`histogram`/`cov`/`corrcoef`）、累積・差分・補間・畳み込み、軸指定 `sort`/`argsort`/`partition`/`searchsorted`/`unique`/集合演算、NumPy 対応・差分表（`numpy-migration.md`） | 不要 |
-| 機能 | [NC08](NC08-linalg-core-and-einsum.md) | opt-in 線形代数モジュール `Linalg`（Phase 1: バッチ `matmul`・共通 `B` 行結合/`tensordot`/`einsum`、Phase 2: LU/Cholesky/QR/複数右辺 `solve`・`lu_solve`/`cholesky_solve`/`solve_triangular`/`lstsq`/`inv`/`det`/`norm`、Phase 3: SVD/`eigh`/`eig`）。純 Tsuzuri 決定論基準実装 | D1・D2 |
+| 機能 | [NC07](_completed/NC07-tensor-reductions-stats-and-sorting.md) | 軸指定・`keepdims` 対応の還元・統計（`sum`〜`std`・`nan*` 版・`median`/`percentile`/`histogram`/`cov`/`corrcoef`）、累積・差分・補間・畳み込み、軸指定 `sort`/`argsort`/`partition`/`searchsorted`/`unique`/集合演算、NumPy 対応・差分表（`numpy-migration.md`） | 不要 |
+| 機能 | [NC08](_completed/NC08-linalg-core-and-einsum.md) | opt-in 線形代数モジュール `Linalg`（Phase 1: バッチ `matmul`・共通 `B` 行結合/`tensordot`/`einsum`、Phase 2: LU/Cholesky/QR/複数右辺 `solve`・`lu_solve`/`cholesky_solve`/`solve_triangular`/`lstsq`/`inv`/`det`/`norm`、Phase 3: SVD/`eigh`/`eig`）。純 Tsuzuri 決定論基準実装 | D1・D2 |
 | 機能 | [NC09](NC09-fft-and-polynomial.md) | opt-in `Fft`（呼び出し内準備共有・不変 `Fft.Plan<'a>`・`i64` モジュラ位相・実測ベースの混合基数 `{2,3,5}` と並列バッチ/ND）と `Polynomial`（べき基底・Chebyshev/Legendre の評価・最小二乗フィット・求根） | D1 |
 | 機能 | [NC10](NC10-random-distributions-and-generators.md) | Phase 1 で常時ロード `Random` に `Pcg64`・`SeedSequence`・全スカラー確率分布（純粋状態引き回し `pcg64_*`）を追加し、Phase 2 で opt-in `RandomTensor` に分離して `Tensor` 一括生成・多変量分布・軸シャッフルを提供 | D1（Phase 2） |
 | 機能 | [NC11](NC11-tensor-codec-and-io.md) | 中立な永続化モジュール `TensorCodec`（純粋 `[ubyte]` 変換: `.npy`/`.npz`/Safetensors/CSV、WASM 動作）と `TensorIO`（ファイル I/O＋非ジェネリック `MappedTensor` と専用借用スライス合成による読み取り専用 `mmap`） | D1・D2 |
@@ -1193,7 +1193,7 @@ NumPy の `a[1:-1, 0]`・`a[1:] - a[:-1]`・`a += b` に当たる書き方を、
 | 言語 | [NC20](NC20-compound-assignment-and-mutable-index-views.md) | 複合代入 `+=`・`-=`・`*=`・`/=`・`%=`（組み込み型は `p = p op e` と同じ IR）、組み込みクラス `AddAssign` 系による `Tensor` の確保なしの更新、書き込み窓 `ref mut t[…]`（組み込みクラス `IndexBorrowMut`） | Phase 1 は不要。D1〜D5 は承認済み（D-66 の委任。D2 の std だけの特権は A39 の一般の規則に置き換え）。D13・D14 は決定（D13 の (a) は PM10、(b) は A38。D14 は連鎖した書き込み窓） |
 | 言語 | [NC21](NC21-complex-real-scalar-operators.md) | `Complex` と実数のスカラーの 8 個の OEI（`c * 2.0`・`2.0 - c`・`c / s` など）。`BigInt` と整数の OEI は採らない | 承認済み（D-66 の委任） |
 | 改訂 | [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) | 演算子は同じ型どうしの `Tensor` だけを残し、NC19・NC20 が呼ぶ非公開のトラップ版カーネル（`*_or_trap`・`*_in_place_or_trap`）、両側のスカラー版、累積のインプレース版を足した。演算子インスタンスの段（手順 3）は A37 の手順 5 の後 | 不要（既存のまま） |
-| 性能 | [PM10](../_perfs/PM10-std-consume-copies.md) | 文書が「複製しない」と書く std の関数（`Tensor.update`・`Tensor.to_array`・`Matrix.set` など）の要素の複製の除去と、A17 の X1 の精密化（A39・NC20 が作る借用の根を含む） | 決定（D-66 の委任） |
+| 性能 | [PM10](../_perfs/_completed/PM10-std-consume-copies.md) | 文書が「複製しない」と書く std の関数（`Tensor.update`・`Tensor.to_array`・`Matrix.set` など）の要素の複製の除去と、A17 の X1 の精密化（A39・NC20 が作る借用の根を含む） | 決定（D-66 の委任） |
 
 ### 委任による決定（2026-11-25）
 

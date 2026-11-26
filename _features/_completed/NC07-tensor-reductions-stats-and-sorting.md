@@ -7,7 +7,7 @@
 | 規模 | L（軸指定リダクション・`nan*` 版・累積/差分/補間/畳み込み・分位点/ヒストグラム/相関・軸ソート/探索/集合演算） |
 | 依存 | [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC05](_completed/NC05-tensor-shape-indexing-and-masking.md), [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) |
 | 後続 | [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 不要（既定案のみ。新予約語・構文・モジュール追加なし。すべて `std/Tensor.tz` または新規 `std/Stats.tz` かは D1 で整理） |
 | 手本にする既存実装 | `std/Array.tz`（`sum`/`sum_pairwise`/`sum_kahan`/`average`/`sort`/`binary_search`/`distinct`）、`std/Tensor.tz`（`fold`） |

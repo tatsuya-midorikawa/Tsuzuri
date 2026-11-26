@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | – |
 | 後続 | –（弱い後続: [M01](M01-objc-class-types.md), [M17](M17-macos-min-version-and-weak-import.md), [M20](M20-macos-framework-link-inputs.md)。[W16](W16-last-error-attribute.md)・[W17](W17-link-attribute-dllimport.md) の `signature` の先読みの段も要らなくなる） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「調査中に見つけたコンパイラの不具合 B2（自分で再現済み）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 不要（正しいプログラムを受理する構文の修正。新しい名前・診断コード・kind を足さない）。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)（承認の要らない M22 はすぐに進めてよい。属性を足す M01・M17・M20 の Phase 2・W16・W17 より先にマージする） |
 | 手本にする既存実装 | `src/parser.rs` の `Parser::signature` の先読み（2389-2401 行。次の宣言の属性で signature を終える）と制約行の検査（2402-2410 行）、`Parser::attributes`（1408 行。トップレベルの属性の読み）、`tests/effects_attributes.rs` の `an_attribute_after_constraint_lines_starts_the_next_declaration`（#63 のレビューで足した同じ種類の検査） |

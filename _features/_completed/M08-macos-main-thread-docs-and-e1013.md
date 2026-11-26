@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | ([W28](W28-ui-on-fibers.md))（同じ段落を W28 の D1 も改める。後に入るほうが文を合わせる） |
 | 後続 | –（弱い後続: [M09](M09-main-thread-dispatch-and-handles.md)） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 3（文書と E1013 が、macOS では誤った直し方へ導く。check は通るが実行時に NSInternalInconsistencyException）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 不要（文書と診断の文の誤りの修正。新しい名前を足さず、`E1013` のコード・kind・位置も変えない）。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)（承認の要らない M08 はすぐに進めてよい） |
 | 手本にする既存実装 | `src/pinned_rules.rs` の `report_spawned`・`report_function_value`（`;` で区切って直し方を並べる英語の診断の文体）、`tests/thread_bound_handles.rs` の `message.contains(…)` の検査、[W03](W03-windows-interop-doc-fixes.md)（言語リファレンスの誤りだけを直す修正チケット） |

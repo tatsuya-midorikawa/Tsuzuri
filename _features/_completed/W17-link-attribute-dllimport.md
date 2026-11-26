@@ -7,7 +7,7 @@
 | 規模 | M（属性の構文と符号化、検査、`declare` の `dllimport`、5 か所のリンク行、`tsuzuri audit` の出力、パッケージの規則、テストと文書） |
 | 依存 | – |
 | 後続 | [W27](W27-win32-package-from-winmd.md)（win32metadata の `DllImport` の写し先と、公式の `win32` パッケージの配布）, [M07](M07-apple-sdk-bindgen-and-package.md)（公式の `apple` パッケージのリンクの要求）（弱い後続: [M14](M14-tls-http-packages.md), [M20](M20-macos-framework-link-inputs.md)。M20 の Phase 2 が `@link(framework = "...")` に広げる） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E12 D6 の拡張、D-53）。決定事項 D1・D2 が要承認、D3〜D9 は既定案 |
 | 手本にする既存実装 | `src/parser.rs` の `attributes`・`trusted_attribute`、`src/syntax.rs` の `Program::trusted`、`src/driver.rs` の `library_name_error`・`LinkInputs::add_to`・`build_complete` の `-lws2_32`（ランタイムが要るシステムライブラリを足す所）、`src/runtime_cache.rs` の `RuntimeSymbols`（IR の名前から要るものを決める形）、`src/llvm_imports.rs` の `host_call` の `declare`、`src/capabilities.rs` の `ExternReport` と `Report` の文字と JSON の出力 |
