@@ -417,7 +417,7 @@ let d = Point.distance p
 
 #### 可視性（`private`）
 
-すべての宣言はデフォルトで公開（public）扱いとなります。非公開にしたい場合は `private def`（`private pure def`・`private const def` を含む）、`private record`、`private union`、`private type`、`private const`、`private extern def`、`private extern view def`、`private extern type`（`copy`・`local` も）と記述し、宣言したモジュールの内部からのみ参照可能とします。
+すべての宣言はデフォルトで公開（public）扱いとなります。非公開にしたい場合は `private def`（`private pure def`・`private const def`・`private @literal def` を含む）、`private record`、`private union`、`private type`、`private const`、`private extern def`、`private extern view def`、`private extern type`（`copy`・`local` も）と記述し、宣言したモジュールの内部からのみ参照可能とします。
 `private union` を宣言した場合、その配下のすべての case コンストラクタも自動的に private となります。
 なお、`fn`、`and`、`let` による関数の実装側は、対応する `def` シグネチャの可視性を自動的に継承するため、実装側に `private` を重ねて記述する必要はありません。
 

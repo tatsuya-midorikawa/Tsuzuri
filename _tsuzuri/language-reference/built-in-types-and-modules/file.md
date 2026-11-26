@@ -263,7 +263,7 @@ Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、Wi
 - テキストは UTF-8 です。BOM は残り、不正なバイト列は呼び出し全体が失敗します。
 - 上書きは原子的ではありません。ハンドルは `with_open` か `close` で閉じます。
 - 同じパスを再利用するときは `string` を複製します。ハンドルのフィールドは触れません。
-- 既定の WASM と、Windows ネイティブビルドでは、これらの API に到達できません。Windows は、`src/runtime/os.c` に Windows 向けの実装がないためです。
+- 既定の WASM では、これらの API に到達するビルドは `E2000` です。Windows ネイティブビルドでは Win32 の API で動き、`Os.Error.code` は Win32 のエラー番号です。
 
 ## 関連項目
 

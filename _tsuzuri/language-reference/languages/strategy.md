@@ -168,7 +168,7 @@ Tsuzuri が直接支えるのは、変換、判定、集計、数値計算です
 | WASM の型付きグルー、共有ライブラリ、C#・Python・C++ のバインディング | 実装済み | E13。Windows の共有ライブラリは未対応 |
 | 整数 WGSL、緩い `f32`・`f16` の WGSL（名前で選ぶ）、`Gpu.request Gpu.WebGpu` による WebGPU 上の実行と WebGPU ホスト試作、SPIR-V 生成と `Gpu.request Gpu.Vulkan` による Vulkan 上の実行（厳密な整数と、報告と適合プローブを通るデバイスの厳密な `f32`、緩い `f32`）、測って選ぶ `Gpu.Auto` | 実験的 | F07、F09 の Phase 1〜3。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけ |
 | WASM threads | 実装済みの opt-in | F06。ブラウザ向けのグルーは E13 の `--emit bindings-js --wasm-feature threads` |
-| Windows x64（MSVC）の実行検証 | 検証済み | [G10](../../../_features/_completed/G10-windows.md)。CI の `windows-2022`（x64）と `windows-11-arm`（Arm64）が `cargo test`、native の `-O0`・`-O3`、WASM を実行する。MinGW の配布物は `vscode.yml` が検証する。OS API は W11 で対応し、`windows.yml` と `vscode.yml` が `tests/os.mjs` を実行する。共有ライブラリは `E2000` |
+| Windows x64・Arm64 の実行検証 | 検証済み | [G10](../../../_features/_completed/G10-windows.md)。CI の `windows-2022`（x64）と `windows-11-arm`（Arm64）が Rust テスト（`cargo nextest`）、native の `-O0`・`-O3`、WASM を実行する。MinGW の配布物は `vscode.yml` が検証する。OS API は W11 で対応し、`windows.yml` と `vscode.yml` が `tests/os.mjs` を実行する。共有ライブラリは `E2000` |
 | 非同期計算（`Async`） | 削除（TZ13） | B08。I/O を待ちながらほかの計算を進める処理は tzroutine と netpoller（TZ08）で書く（[Async からの移行](../async-tasks-and-lazy/tzroutine.md#async-からの移行)）。ホスト駆動の実行器と仮想時刻には後継がない |
 | ネットワーク | 実装済み | [Net](../built-in-types-and-modules/net.md)、E09。TCP・UDP・アドレス・名前解決。native（Linux と Windows の実行は CI だけで検証）と、`--wasm-feature jspi --wasm-feature net` の wasm32（Node.js）。TLS は含まない |
 | 線形時間の正規表現 `Regex`、Unicode 17.0.0 の表 `Unicode` | 実装済み | D09。後戻りしない Pike VM |

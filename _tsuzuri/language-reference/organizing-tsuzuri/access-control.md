@@ -7,7 +7,7 @@ Tsuzuri におけるアクセス制御（可視性）は、モジュールの内
 ## この記事のポイント
 
 - Tsuzuri の宣言は既定で public です。非公開にする場合のみ `private` を明示します。
-- `private` は `def`（`pure def`・`const def` を含む）、`record`、`union`、`type`、`const`、`extern def`、`extern view def`、`extern type` に付与できます。
+- `private` は `def`（`pure def`・`const def`・`@literal def` を含む）、`record`、`union`、`type`、`const`、`extern def`、`extern view def`、`extern type` に付与できます。
 - 関数の実装側（`fn`、`and`、`let`）には `private` を付けず、先行する `def` シグネチャの可視性を自動継承します。
 - public な関数や型から同一モジュール内の private 型を漏洩させることは禁止されています（`E1022`）。 <!-- rule: MOD-004 -->
 - `export` は C ABI や WASM ホスト環境に対する公開指定であり、モジュール間の可視性制御とは無関係です。
@@ -69,6 +69,7 @@ id
 | `private const` | ○ | モジュール内限定の定数 |
 | `private const def` | ○ | モジュール内限定の、コンパイル時に評価できる関数 |
 | `private pure def` | ○ | モジュール内限定の純粋関数 |
+| `private @literal def` | ○ | モジュール内限定のコンパイル時定数。`@literal private def` も同じ（[属性](../values-and-functions/attributes.md)） |
 | `private extern def` | ○ | モジュール内限定の外部ホスト関数（`private extern "シンボル" def` などリンク名を持つ形も） |
 | `private extern view def` | ○ | モジュール内限定のホストメモリの読み書きビュー（[ネイティブ連携](../compiler/native-interop.md#ホストメモリの読み書きビューextern-view)） |
 | `private extern type` | ○ | モジュール内限定の不透明ハンドル型。`private extern type copy`・`private extern type local` も同じ |
@@ -173,7 +174,7 @@ Tsuzuri モジュール内だけで使う関数を他モジュールへ公開し
 ## まとめ
 
 - すべての宣言は既定で public です。非公開にする要素にのみ `private` を明示します。
-- `private` は `def`（`pure def`・`const def` を含む）、`record`、`union`、`type`、`const`、`extern def`、`extern view def`、`extern type` に付与できます。
+- `private` は `def`（`pure def`・`const def`・`@literal def` を含む）、`record`、`union`、`type`、`const`、`extern def`、`extern view def`、`extern type` に付与できます。
 - 関数の実装側（`fn` / `let`）は先行する `def` の可視性を自動継承するため、実装側に `private` は付けません。
 - public なシグネチャから同一モジュールの private 型を漏洩させることは禁止されています（`E1022`）。
 - 型クラスとインスタンスは言語仕様上常に public です。
