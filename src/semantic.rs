@@ -1087,6 +1087,7 @@ fn index_function(
         if !matches!(&expression.kind,
             TypedExprKind::Cast(operand) | TypedExprKind::SaturatingIndex(operand)
                 if operand.span == expression.span)
+            && !matches!(&expression.kind, TypedExprKind::FromEnd { .. })
         {
             expressions.push(expression);
         }

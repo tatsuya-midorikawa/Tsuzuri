@@ -1136,21 +1136,40 @@ pub fn execute(project: &mut Project, arguments: &Arguments) -> Result<Execution
     execute_with(project, arguments, &mut analyze_project)
 }
 
-/// The edition move's first step: the canonical-form fixes (`W1007`, A22), applied in memory to
-/// the sources in `scope`. The project's texts are the fixed ones afterwards.
+/// The edition move's first step: the canonical-form fixes (`W1007` rejected by `target`, plus
+/// `W1013` `legacy_bare_slice_range` when moving into a `range_family` edition), applied in memory
+/// to the sources in `scope`. The project's texts are the fixed ones afterwards.
 pub fn canonical_round(
     project: &mut Project,
     scope: Scope,
+    current: crate::syntax::Edition,
+    target: crate::syntax::Edition,
     analyze: &mut dyn FnMut(&Project, bool) -> Analysis,
 ) -> Result<Report, SourceError> {
+    use crate::syntax::NoncanonicalKind;
     run(
         project,
         &Options {
             threshold: Threshold::Certain,
             scope,
-            only_codes: Some(&["W1007"]),
+            only_codes: Some(&["W1007", "W1013"]),
         },
-        &mut |project| analyze(project, true),
+        &mut |project| {
+            let mut analysis = analyze(project, true);
+            analysis.warnings.retain(|d| match d.code {
+                "W1007" => {
+                    !(d.kind == Some("bare_range_in_for")
+                        && !NoncanonicalKind::BareRange.rejected_in(target))
+                }
+                "W1013" => {
+                    target.range_family()
+                        && !current.range_family()
+                        && d.kind == Some("legacy_bare_slice_range")
+                }
+                _ => false,
+            });
+            analysis
+        },
         &|| false,
     )
 }
@@ -1805,7 +1824,14 @@ mod tests {
             }
             analysis(Vec::new(), 0, warnings)
         };
-        let report = canonical_round(&mut project, Scope::Project, &mut analyze).unwrap();
+        let report = canonical_round(
+            &mut project,
+            Scope::Project,
+            crate::syntax::Edition::E2026,
+            crate::syntax::Edition::E2027,
+            &mut analyze,
+        )
+        .unwrap();
         assert_eq!(project.sources[0].text, "y z");
         assert_eq!(applied(&report), 1);
         assert!(asked.iter().all(|canonical| *canonical));

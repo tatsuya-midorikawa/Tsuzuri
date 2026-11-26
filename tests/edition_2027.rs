@@ -68,7 +68,7 @@ fn edition_2027_accepts_the_canonical_forms() {
     let text = "let x = 1\nlet mut y = 2\nfor i in 1 ..= 3 do ()\nfor i in 1 ..< 3 do ()\nlet a = 86i8u\n\
                 let b = 1.5f32\nlet r = ref x\nlet m = ref mut y\nlet c = deref r + 1\n\
                 let g = \\(r: ref i64) -> deref r\nlet h = \\(a: i64) (b: i64) -> a + b\n\
-                let xs = [1, 2, 3]\nlet s = ref xs[0..2]\nlet t = ref xs[..=1]\n\
+                let xs = [1, 2, 3]\nlet s = ref xs[0..<2]\nlet t = ref xs[..=1]\n\
                 h c (g r) + s.length + t.length + (a as i64) + (b as i64)\n";
     let program = parse_with_source_all(text, 0, Edition::E2027).unwrap();
     assert!(program.noncanonical.is_empty());

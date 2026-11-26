@@ -29,6 +29,37 @@ impl Parser<'_> {
         });
     }
 
+    /// A bare `..` in a slice with an end bound (`ref xs[a..b]`, `ref xs[..b]`): `LegacyBareSliceRange`
+    /// in editions 2026/2027 (fix `..<`), or `BareSliceRangeMeaningChanged` in edition 2028+ (NC17).
+    #[inline(never)]
+    pub(super) fn record_slice_range(&mut self, span: Span, range: &RangeKey) {
+        if range.end.is_none() {
+            return;
+        }
+        if self.edition.range_family() {
+            self.push_noncanonical(Noncanonical {
+                kind: NoncanonicalKind::BareSliceRangeMeaningChanged,
+                span,
+                spelling: "..".into(),
+                canonical: "..=".into(),
+                level: FixLevel::Unavailable,
+                edits: Vec::new(),
+            });
+        } else {
+            self.push_noncanonical(Noncanonical {
+                kind: NoncanonicalKind::LegacyBareSliceRange,
+                span,
+                spelling: "..".into(),
+                canonical: "..<".into(),
+                level: FixLevel::Certain,
+                edits: vec![TextEdit {
+                    span,
+                    text: "..<".into(),
+                }],
+            });
+        }
+    }
+
     /// A numeric literal with a short suffix (`86uy`): the type name says the same.
     #[inline(never)]
     pub(super) fn record_short_suffix(&mut self, span: Span) {

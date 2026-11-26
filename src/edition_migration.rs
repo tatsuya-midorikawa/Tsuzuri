@@ -238,12 +238,22 @@ pub fn prepare(
     } else {
         crate::fix::Scope::File(project.root)
     };
-    crate::fix::canonical_round(&mut project, scope, &mut crate::fix::analyze_project)?;
-    let mut semantic = crate::check::semantic::SemanticIndex::default();
-    crate::analyze_inputs_semantic(&project.inputs(), &mut semantic)
-        .map_err(crate::first_error)
-        .map_err(|diagnostic| analysis_error(&project, diagnostic))?;
-    let mut changes = preserve_parameters(&mut project, &indices, &semantic)?;
+    crate::fix::canonical_round(
+        &mut project,
+        scope,
+        current,
+        target,
+        &mut crate::fix::analyze_project,
+    )?;
+    let mut changes = if !current.borrows_parameters() && target.borrows_parameters() {
+        let mut semantic = crate::check::semantic::SemanticIndex::default();
+        crate::analyze_inputs_semantic(&project.inputs(), &mut semantic)
+            .map_err(crate::first_error)
+            .map_err(|diagnostic| analysis_error(&project, diagnostic))?;
+        preserve_parameters(&mut project, &indices, &semantic)?
+    } else {
+        Vec::new()
+    };
     // A file that the canonical round changed is one change from its text on disk.
     for (id, original) in originals {
         let source = &project.sources[id];

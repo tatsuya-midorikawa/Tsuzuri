@@ -41,7 +41,15 @@ test "area" = assert (area (Circle 2) == 12)
 - `do! action` runs an effect statement; `let! line = IO.readln ()` binds its result. `main :: unit -> i32` returns the exit code.
 - `if c then a else b`, several lines: `elif`. `match v with | P -> e | _ -> d`. Lambda: `\x -> x + 1`. `let mut x = 0`, then `x = x + 1`.
 - `for x in xs do`, `for i in a ..= b do` (includes `b`), `for i in a ..< b do` (excludes `b`), `while c do`, `break`, `continue`.
-- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.
+<!--if edition=2026-->
+- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..<3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.
+<!--endif-->
+<!--if edition=2027-->
+- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs.length`, `Array.map f xs`, slice `ref xs[1..<3]` (half-open). Growable: `let mut v: Vec<i64> = Vec.empty()`, `v = Vec.push_owned 1 v`.
+<!--endif-->
+<!--if edition>=2028-->
+- Strings: `a + b`, `$"n = {n}"`, `s.length`, `to_string 5`. Arrays: `[1, 2]`, `xs[i]`, `xs[^0]` (last), `xs.length`, slice `ref xs[1..3]` (includes 3; `..<`/`<..` open). `let mut v: Vec<i64> = Vec.empty()`, `Vec.push 1 v`.
+<!--endif-->
 - Errors are values: `Maybe<T>` (`Some x`, `None`), `Result<T, E>` (`Ok x`, `Error e`). No `?` and no unwinding: `try ... with` only turns the `OverflowException` of `@checked` arithmetic in the same function into a `Result`.
 - Std names are qualified (`Array.sum xs`, `Int.abs n`, `Math.sqrt x`). A def without parameters is called `f()`.
 
@@ -69,8 +77,8 @@ def main :: unit -> i32 = \() ->
 <!--if edition=2026-->
    Edition 2026: a plain parameter `T` also takes ownership (like `own T`).
 <!--endif-->
-<!--if edition=2027-->
-   Edition 2027: a plain parameter `T` of such a type borrows it to read (like `ref T`); `mut T` borrows it to write.
+<!--if edition>=2027-->
+   Edition 2027+: a plain parameter `T` of such a type borrows it to read (like `ref T`); `mut T` borrows it to write.
 <!--endif-->
 2. To keep using a value, borrow it: parameter `ref T` reads, `ref mut T` writes. `f x` borrows automatically; `ref x` and `ref mut x` also work. `deref r` reads, `deref r = v` assigns.
 3. Assignment and `ref mut` need `let mut` (else E1014). While a `ref mut` lives, any other use of the value is E1014. Many `ref` may coexist.
@@ -83,7 +91,7 @@ def main :: unit -> i32 = \() ->
 <!--if edition=2026-->
 - `p.x = 1` and `xs[i] = v` are E1012 (fields and elements are immutable): `{ p with x = 1 }`, `xs = Array.update_at i v xs`.
 <!--endif-->
-<!--if edition=2027-->
+<!--if edition>=2027-->
 - `p.x = 1`, `ref mut p.x`, and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014). `{ p with x = 1 }` works in every edition.
 <!--endif-->
 - `IO.writeln s` as a statement is E1003 (`expected unit, found IO<unit>`): `do! IO.writeln s`.

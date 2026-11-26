@@ -292,6 +292,10 @@ fn borrowed_comparisons_preserve_conflicts_and_source_borrow_rules() {
     );
     rejects(
         "record Named { text: string }\ninstance Eq<Named> { fn eq left right = left == right; fn ne left right = false }",
+        "E1019",
+    );
+    rejects(
+        "record Named { text: string }\ninstance Eq<Named> { fn eq left right = (&left) == (&right); fn ne left right = false }",
         "E1005",
     );
     rejects(

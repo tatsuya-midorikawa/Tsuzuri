@@ -5570,6 +5570,9 @@ pub enum TypedExprKind {
         descending: bool,
         /// `start ..< finish` (A22): the counter stops before `finish`.
         exclusive: bool,
+        /// `start <.. finish` (NC17, edition 2028): the first value is `start + 1`, or 0 iterations
+        /// when `start` is the integer type's maximum.
+        start_open: bool,
     },
     ForEach {
         owner: Local,
@@ -5622,6 +5625,12 @@ pub enum TypedExprKind {
     /// saturated to the `i64` range: a value that `i64` cannot hold becomes `i64::MIN` or
     /// `i64::MAX`, which no collection reaches (`Checker::index_operand`). Its type is `i64`.
     SaturatingIndex(Box<TypedExpr>),
+    /// NC17 `^k`: position `n - 1 - k` (`after == false`) or derived bound `n - k`
+    /// (`after == true`) against the enclosing built-in collection or slice base length `n`.
+    FromEnd {
+        offset: Box<TypedExpr>,
+        after: bool,
+    },
     /// A case used as a function value, `Some : 'a -> Maybe<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
@@ -5860,6 +5869,7 @@ impl TypedExpr {
             | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -5962,6 +5972,7 @@ impl TypedExpr {
             | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -6116,6 +6127,7 @@ impl TypedExpr {
             | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -6315,6 +6327,8 @@ struct Names {
     declared: Vec<DeclaredFunction>,
     warning_options: warnings::WarningOptions,
     borrowing_modules: BTreeSet<String>,
+    module_editions: BTreeMap<String, crate::syntax::Edition>,
+    root_user_modules: BTreeSet<String>,
     modules: BTreeMap<String, ModuleOrigin>,
     /// Module keys by full name (`Namespace.File`), and each module's namespace by key.
     full_modules: BTreeMap<String, String>,
@@ -8440,6 +8454,15 @@ fn check_modules_collect(
         .filter(|(_, edition)| edition.borrows_parameters())
         .map(|(module, _)| (*module).to_owned())
         .collect();
+    names.module_editions = module_editions
+        .iter()
+        .map(|(module, edition)| ((*module).to_owned(), *edition))
+        .collect();
+    names.root_user_modules = modules
+        .iter()
+        .filter(|input| input.origin == ModuleOrigin::User && input.package.is_none())
+        .map(|input| input.name.to_owned())
+        .collect();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
         if diagnostics.is_full() {
@@ -10414,6 +10437,9 @@ fn check_modules_collect(
                     function_warnings.extend(warnings::unused_locals(function, &function_names));
                     function_warnings.append(&mut checker.shadowing_warnings);
                     function_warnings.append(&mut checker.contract_warnings);
+                    if names.root_user_modules.contains(&function.module) {
+                        function_warnings.append(&mut checker.range_warnings);
+                    }
                 }
                 if function.name == "$entry" {
                     entry_result(&mut function.body, &names, &classes, &types);
@@ -10521,6 +10547,21 @@ fn check_modules_collect(
         &references,
         entry,
     ));
+    let noncanonical = root_noncanonical(modules, &reference_borrows);
+    let root_source_editions: BTreeMap<usize, crate::syntax::Edition> = modules
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| input.origin == ModuleOrigin::User && input.package.is_none())
+        .map(|(source, input)| (source, input.edition))
+        .collect();
+    warnings.extend(crate::canonical::default_warnings(
+        &noncanonical,
+        |source| {
+            source
+                .and_then(|source| root_source_editions.get(&source).copied())
+                .unwrap_or(crate::syntax::Edition::E2026)
+        },
+    ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
     let extern_abis: BTreeMap<String, crate::abi::CSignature> = explicit_symbols
@@ -10552,7 +10593,7 @@ fn check_modules_collect(
         gpu: Default::default(),
         statics,
         effects: None,
-        noncanonical: root_noncanonical(modules, &reference_borrows),
+        noncanonical,
         generic_declarations: Vec::new(),
         extern_abis,
     };
@@ -13126,6 +13167,7 @@ struct CheckerWatermark {
     coverage_len: usize,
     shadowing_warnings_len: usize,
     contract_warnings_len: usize,
+    range_warnings_len: usize,
     poisoned: bool,
     recovering: bool,
     recovered_len: usize,
@@ -13206,6 +13248,8 @@ struct Checker<'a> {
     shadowing_warnings: Vec<Diagnostic>,
     /// A21: `W1009` for the contract lines of the function being checked.
     contract_warnings: Vec<Diagnostic>,
+    /// NC17: `W1014` (`negative_literal_range_bound`, `negative_literal_index`) in the function body.
+    range_warnings: Vec<Diagnostic>,
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
@@ -13273,6 +13317,7 @@ impl<'a> Checker<'a> {
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
             contract_warnings: Vec::new(),
+            range_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
             mutable_locals: BTreeSet::new(),
             default_reads: BTreeMap::new(),
@@ -14717,18 +14762,16 @@ impl<'a> Checker<'a> {
             ExprKind::Utf8Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Utf8Char),
             ExprKind::Slice {
                 value,
-                start,
-                end,
+                range,
                 mutable,
-                op,
-            } => self.slice(
-                value,
-                start.as_deref(),
-                end.as_deref(),
-                *mutable,
-                *op == RangeOp::Closed,
-                expression.span,
-            )?,
+            } => self.slice(value, range, *mutable, expression.span)?,
+            ExprKind::FromEnd(_) => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndOutsideIndex,
+                    "'^' counts from the end only at the start of an index or a slice bound, as in 'xs[^0]' or 'ref xs[1..^1]'",
+                    expression.span,
+                ));
+            }
             ExprKind::Break | ExprKind::Continue => {
                 let breaking = matches!(expression.kind, ExprKind::Break);
                 if self.normal_loop_depth == 0 {
@@ -15038,6 +15081,16 @@ impl<'a> Checker<'a> {
                             | Type::Utf8String
                     );
                     if !built_in_index {
+                        if matches!(key_expr.kind, ExprKind::FromEnd(_)) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::FromEndNeedsLength,
+                                format!(
+                                    "'^' counts from the end of an array, a list, a Vec, a string, a utf8string or a fixed-length array, not of {}",
+                                    inner_ty.display_with(self.names)
+                                ),
+                                key_expr.span,
+                            ));
+                        }
                         let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
                         if !raw_is_mut_ref {
                             Self::require_mutable_reference(&raw_target)?;
@@ -15802,7 +15855,21 @@ impl<'a> Checker<'a> {
             _ => None,
         };
         if let Some(ty) = built_in_ty {
-            let index = self.index_operand(key_expr)?;
+            let index = if let ExprKind::FromEnd(offset) = &key_expr.kind {
+                self.negative_from_end_warning(offset);
+                let offset = self.bound_operand(offset)?;
+                TypedExpr {
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: false,
+                    },
+                    ty: Type::I64,
+                    span: key_expr.span,
+                }
+            } else {
+                self.negative_index_warning(key_expr);
+                self.index_operand(key_expr)?
+            };
             let expected = match cover {
                 IndexBorrowCover::Uncovered | IndexBorrowCover::Direct { .. } => built_in_expected,
                 IndexBorrowCover::ChainInner => None,
@@ -15816,6 +15883,16 @@ impl<'a> Checker<'a> {
             return Ok((finished, false));
         }
         let self_ty = self.inference.resolve(&value.ty);
+        if matches!(key_expr.kind, ExprKind::FromEnd(_)) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::FromEndNeedsLength,
+                format!(
+                    "'^' counts from the end of an array, a list, a Vec, a string, a utf8string or a fixed-length array, not of {}",
+                    self_ty.display_with(self.names)
+                ),
+                key_expr.span,
+            ));
+        }
         let hint = self
             .classes
             .index_key_hint(&self_ty, false, &mut self.inference, &self.types);
@@ -16645,6 +16722,7 @@ impl<'a> Checker<'a> {
             coverage_len: self.coverage.len(),
             shadowing_warnings_len: self.shadowing_warnings.len(),
             contract_warnings_len: self.contract_warnings.len(),
+            range_warnings_len: self.range_warnings.len(),
             poisoned: self.poisoned,
             recovering: self.recovering,
             recovered_len: self.recovered.len(),
@@ -16694,6 +16772,7 @@ impl<'a> Checker<'a> {
         self.shadowing_warnings
             .truncate(mark.shadowing_warnings_len);
         self.contract_warnings.truncate(mark.contract_warnings_len);
+        self.range_warnings.truncate(mark.range_warnings_len);
         self.poisoned = mark.poisoned;
         self.recovering = mark.recovering;
         self.recovered.truncate(mark.recovered_len);
@@ -17654,13 +17733,120 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn module_edition(&self) -> crate::syntax::Edition {
+        self.names
+            .module_editions
+            .get(self.module)
+            .copied()
+            .unwrap_or(crate::syntax::Edition::E2026)
+    }
+
+    fn negative_literal(expr: &Expr) -> Option<(u128, String, Span)> {
+        if let ExprKind::Unary(UnaryOp::Negate, inner) = &expr.kind
+            && let ExprKind::Integer(value, suffix) = &inner.kind
+            && *value != 0
+        {
+            let text = match suffix {
+                Some(suffix) => format!("-{value}{suffix}"),
+                None => format!("-{value}"),
+            };
+            Some((*value, text, expr.span))
+        } else {
+            None
+        }
+    }
+
+    fn range_bound_help(&self) -> &'static str {
+        if self.module_edition().range_family() {
+            "count from the end with '^': '^0' is the last element, so 'ref xs[..^1]' drops it (NumPy 'a[:-1]')"
+        } else {
+            "edition 2028 counts from the end with '^'; here compute the position from 'xs.length'"
+        }
+    }
+
+    fn negative_slice_bound_warning(&mut self, bound: &Expr) {
+        if let Some((_, text, span)) = Self::negative_literal(bound) {
+            let help = self.range_bound_help();
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralRangeBound,
+                    format!(
+                        "'{text}' is a negative position; slice bounds never count from the end"
+                    ),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    fn negative_from_end_warning(&mut self, offset: &Expr) {
+        if let Some((_, text, span)) = Self::negative_literal(offset) {
+            let help = self.range_bound_help();
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralRangeBound,
+                    format!("'^{text}' counts past the end; '^0' is the last element"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    pub(crate) fn negative_bound_warnings(&mut self, range: &crate::syntax::RangeKey) {
+        for bound in [range.start.as_deref(), range.end.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let ExprKind::FromEnd(offset) = &bound.kind {
+                self.negative_from_end_warning(offset);
+            } else {
+                self.negative_slice_bound_warning(bound);
+            }
+        }
+    }
+
+    pub(crate) fn negative_index_warning(&mut self, index: &Expr) {
+        if let Some((k, text, span)) = Self::negative_literal(index) {
+            let k_minus_1 = k - 1;
+            let help = if self.module_edition().range_family() {
+                format!("'^0' is the last element: write 'xs[^{k_minus_1}]' for NumPy 'a[-{k}]'")
+            } else {
+                format!("write 'xs[xs.length - {k}]'; edition 2028 writes 'xs[^{k_minus_1}]'")
+            };
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralIndex,
+                    format!("'{text}' is a negative position; an index never counts from the end"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    fn wrapping_add_one(bound: TypedExpr, span: Span) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Binary(
+                BinaryOp::Add,
+                Box::new(bound),
+                Box::new(TypedExpr {
+                    kind: TypedExprKind::Int(1),
+                    ty: Type::I64,
+                    span,
+                }),
+            ),
+            ty: Type::I64,
+            span,
+        }
+    }
+
     fn slice(
         &mut self,
         source: &Expr,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
+        range: &crate::syntax::RangeKey,
         mutable: bool,
-        inclusive: bool,
         span: Span,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let mut source = self.expression(source, None)?;
@@ -17691,43 +17877,69 @@ impl<'a> Checker<'a> {
                 ));
             }
         };
+        if let Some(step) = &range.step {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ArraySliceWithStep,
+                "array slices are contiguous; a range with a step cannot slice an array",
+                step.span,
+            )
+            .with_help("copy the selected elements with a loop over 'first .. step .. last'"));
+        }
         if mutable {
             Self::require_mutable_reference(&source)?;
             Self::named_slice_source(&source, span)?;
         }
-        let start = start
-            .map(|value| self.index_operand(value).map(Box::new))
-            .transpose()?;
-        let end = end
-            .map(|value| {
-                if inclusive {
-                    self.bound_operand(value)
-                } else {
-                    self.index_operand(value)
-                }
-                .map(Box::new)
-            })
-            .transpose()?;
-        // A22: `xs[a..=b]` ends at `b + 1`, a wrapping addition, so that the slice's unsigned
-        // bounds checks reject `b = MAX` and negative ends as they reject any other bad end.
-        let end = match end {
-            Some(end) if inclusive => {
-                let span = end.span;
+        self.negative_bound_warnings(range);
+        let start = match range.start.as_deref() {
+            None => None,
+            Some(Expr {
+                kind: ExprKind::FromEnd(offset),
+                span: bound_span,
+                ..
+            }) => {
+                let offset = self.bound_operand(offset)?;
                 Some(Box::new(TypedExpr {
-                    kind: TypedExprKind::Binary(
-                        BinaryOp::Add,
-                        end,
-                        Box::new(TypedExpr {
-                            kind: TypedExprKind::Int(1),
-                            ty: Type::I64,
-                            span,
-                        }),
-                    ),
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: range.ends.start_open,
+                    },
                     ty: Type::I64,
-                    span,
+                    span: *bound_span,
                 }))
             }
-            end => end,
+            Some(value) if range.ends.start_open => {
+                let bound = self.bound_operand(value)?;
+                let bound_span = bound.span;
+                Some(Box::new(Self::wrapping_add_one(bound, bound_span)))
+            }
+            Some(value) => Some(Box::new(self.index_operand(value)?)),
+        };
+        // A22 / NC17: an inclusive end `b` becomes `b + 1` (a wrapping addition on a saturated
+        // `bound_operand`) so the slice's unsigned bounds checks reject `b = MAX` and negative
+        // ends identically to any other out-of-bounds end.
+        let end = match range.end.as_deref() {
+            None => None,
+            Some(Expr {
+                kind: ExprKind::FromEnd(offset),
+                span: bound_span,
+                ..
+            }) => {
+                let offset = self.bound_operand(offset)?;
+                Some(Box::new(TypedExpr {
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: range.ends.end_closed,
+                    },
+                    ty: Type::I64,
+                    span: *bound_span,
+                }))
+            }
+            Some(value) if range.ends.end_closed => {
+                let bound = self.bound_operand(value)?;
+                let bound_span = bound.span;
+                Some(Box::new(Self::wrapping_add_one(bound, bound_span)))
+            }
+            Some(value) => Some(Box::new(self.index_operand(value)?)),
         };
         let ty = if mutable {
             Type::Reference(Box::new(Type::ArrayView(element)), true)

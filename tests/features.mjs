@@ -12,6 +12,7 @@ import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
+import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
@@ -3110,6 +3111,17 @@ const suites = {
       ["record_sum", [], 51n],
       ["scalar_refs", [], 41n],
     ],
+  },
+  // NC17: edition 2028 inclusive range family and `^k` from-end positions against BigInt reference.
+  range_reference: {
+    cases: rangeReferenceCases,
+    traps: rangeReferenceTraps,
+    trapKind: "index out of bounds",
+    inspect(ir) {
+      const match = ir.match(/^define [^\n]*@tz\.fn\.Main\.array_closed_i64\([^\n]*\{([\s\S]*?)^\}/m);
+      assert.ok(match, "array_closed_i64 is emitted");
+      assert.match(match[1], /add i64 %[\w.]+, 1/);
+    },
   },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative

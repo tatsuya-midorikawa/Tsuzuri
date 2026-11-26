@@ -540,7 +540,7 @@ index = "https://example.org/tsuzuri-index.git"
 
 依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](_tsuzuri/language-reference/organizing-tsuzuri/packages.md) を参照してください。
 
-`edition` は、そのパッケージのソースを読むときの言語版です。対応する値は `"2026"` と `"2027"` で、既存 manifest の省略時は互換性のため `2026` のままです。新規パッケージ・manifest のない CLI 入力・script・REPL・std は最新の `2027` を使います。依存パッケージは自分の `Tsuzuri.toml` の版で読まれ、異なる edition を 1 つのプログラムにまとめられます。2027 は A18 の明示的な例外として、通常の引数を読み取り既定にし、`own T` と `mut T` で所有・更新を表します。2026 の契約を保存して移行するには `tsuzuri fix --edition 2027 --from 2026 app/` を使います。保証と例外は [安定性と互換性の方針](docs/stability.md) にあります。
+`edition` は、そのパッケージのソースを読むときの言語版です。対応する値は `"2026"`・`"2027"`・`"2028"` で、既存 manifest の省略時は互換性のため `2026` のままです。新規パッケージ・manifest のない CLI 入力・script・REPL・std は最新の `2027` を使います。依存パッケージは自分の `Tsuzuri.toml` の版で読まれ、異なる edition を 1 つのプログラムにまとめられます。2027 以降は A18 の明示的な例外として、通常の引数を読み取り既定にし、`own T` と `mut T` で所有・更新を表します。2028 は D-66c の例外として、終端を含むスライスの素の `..`、`<..`・`<..<`、末尾からの位置 `^k` などの範囲の構文の族を導入します。旧契約やスライスの意味を保存して移行するには `tsuzuri fix --edition 2027 --from 2026 app/` や `tsuzuri fix --edition 2028 --from 2027 app/` を使います。保証と例外は [安定性と互換性の方針](docs/stability.md) にあります。
 
 ---
 
@@ -948,7 +948,7 @@ tsuzuri serve --status directory | --stop directory
 tsuzuri check|build ... [--no-server]
 tsuzuri fmt source.tz|directory [--check] [--json]
 tsuzuri doc source.tz|source.tt|source.tc|directory -o outdir [--json]
-tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]
+tsuzuri new directory [--namespace NAME] [--edition 2026|2027|2028] [--no-agent-files]
 tsuzuri guide [--level 0|1] [--topic NAME] [--list] [--json] [--edition YEAR]
 tsuzuri guide std [MODULE] | --agents [DIR] | --llms-txt [DIR]
 tsuzuri fetch directory [--json]
@@ -990,7 +990,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--debug-output` | WASM の `Debug` 出力の import を有効にします（native は常に出力を書きます）。 |
 | `--version` | コンパイラの版（`tsuzuri 0.1.0` の形）を出して終了します。 |
 | `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
-| `--edition 2026\|2027` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
+| `--edition 2026\|2027\|2028` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2027。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
 | `--report parallel` | `check` だけ。検査が通ったあと、`Parallel` に置き換えられる `Array` の呼び出しの提案と、`Parallel` の呼び出しのコールバックが純粋か（`parallel_safe`）を標準出力に出します（`--json` で JSON Lines。自動では書き換えません）。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。macOS・Linux の実行ファイルは、`TSUZURI_TRAP_REPORT` があればトラップの呼び出しの連鎖も書きます。 |

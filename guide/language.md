@@ -38,10 +38,18 @@ def main :: unit -> i32 = \() ->
 - `if c then a elif d then b else e` is an expression. Conditions are `bool` only.
 - `match v with | p when c -> e | _ -> d` must be exhaustive (E1021). Patterns: literals, `_`, tuples, records `{ x = a }`, cases, lists `[|a|]` and `h :: t`, arrays `[a, b]`, `p | q`, `p as all`.
 - Guard clauses right after `->` match the arguments; `where` holds shared values.
+<!--if edition=2026-->
 - `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `for i in a ..= b do` includes `b` and `for i in a ..< b do` excludes it. `for i = a to b do` is E0002 in a body that uses `do!` or `let!`. `while c do`, `break`, `continue`.
-- `def rec f` recurses (mutual: `and`). A direct self tail call becomes a loop unless the function takes a borrow (`ref T`) or a function value; other recursion uses the stack.
+<!--endif-->
 <!--if edition=2027-->
-- Edition 2027: a bare non-Copy parameter is a borrow, so write `own T` where a tail call must loop.
+- `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `for i in a ..= b do` includes `b` and `for i in a ..< b do` excludes it. `for i = a to b do` is E0002 in a body that uses `do!` or `let!`. `while c do`, `break`, `continue`.
+<!--endif-->
+<!--if edition>=2028-->
+- `for x in xs do` walks arrays, lists, `Vec`, strings, ranges and `Seq`; `a .. b` / `a ..= b` include `b`, `a ..< b` excludes `b`, `a <.. b` / `a <..< b` exclude `a`. `for i = a to b do` is E0002 with `do!` / `let!`. `while c do`, `break`, `continue`.
+<!--endif-->
+- `def rec f` recurses (mutual: `and`). A direct self tail call becomes a loop unless the function takes a borrow (`ref T`) or a function value; other recursion uses the stack.
+<!--if edition>=2027-->
+- Edition 2027+: a bare non-Copy parameter is a borrow, so write `own T` where a tail call must loop.
 <!--endif-->
 ```tsuzuri run=Point%20%7B%20x%3A%201%2C%20y%3A%205%20%7D%20true%20big
 record Point { x: i64, y: i64 } deriving (Eq, Ord, Display)
@@ -63,8 +71,8 @@ def main :: unit -> i32 = \() ->
 ## Generics and type classes
 - `'a` is a type variable. A local `let` function is not generic: use a `def`.
 - Constraints: `def add :: Add<'a> => own 'a -> own 'a -> 'a = \x y -> x + y`; several: `(Add<'a>, Copy<'a>) =>`. A call without the instance is E1005.
-<!--if edition=2027-->
-- Edition 2027: a bare `'a` parameter borrows; write `own 'a` to consume or return it.
+<!--if edition>=2027-->
+- Edition 2027+: a bare `'a` parameter borrows; write `own 'a` to consume or return it.
 <!--endif-->
 - Built-in classes: `Add Sub Mul Div Rem Neg Pow`, `Eq Ord`, `Display` (`to_string x`), `Hash`, `Default`, `Parse` (`let n: Maybe<i64> = Parse.parse (ref "42")`), `Drop`; markers `Copy Send Sync`.
 - A class goes in a `.tt` file, instances in `.tz`; call a method via its module: `Shapes.Shape.area x`. `instance Add<P> { fn add a b = ... }` gives `+`; `instance Eq<'a> => Eq<Box<'a>>` is conditional. One instance per class and type.

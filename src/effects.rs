@@ -2172,6 +2172,7 @@ impl<'s, 'a> Scan<'s, 'a> {
             | K::Assign(..)
             | K::Cast(_)
             | K::SaturatingIndex(_)
+            | K::FromEnd { .. }
             | K::UnionTag(_)
             | K::UnionPayload { .. } => false,
             K::Construct { payload, .. } => {

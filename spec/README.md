@@ -5,7 +5,7 @@
 Each table has the columns `| ID | Rule | Doc | Tests | Status |`:
 
 - **ID**: numbered from 001 in each area, in order. A number is never reused; a rule whose meaning changes becomes `retired` and the new meaning gets the next number.
-- **Rule**: one sentence that says `MUST`, `MUST NOT` or `MAY` (never `SHOULD`), at most 240 characters, ending with a period. A rule of one edition starts with `In edition 2026, ` or `In edition 2027, `.
+- **Rule**: one sentence that says `MUST`, `MUST NOT` or `MAY` (never `SHOULD`), at most 240 characters, ending with a period. A rule of one edition starts with `In edition 2026, `, `In edition 2027, `, or `In edition 2028, `.
 - **Doc**: the one link to the document that states the rule (`docs/*.md`, `_tsuzuri/language-reference/**`, `README.md`). `node scripts/check-spec.mjs --link PAGE "HEADING"` prints it.
 - **Tests**: the stems of the tests under `tests/conformance/<AREA>/` that name the rule. `check-spec --write` fills it; do not edit it by hand.
 - **Status**: `active` or `retired`.

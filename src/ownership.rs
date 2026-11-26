@@ -549,6 +549,7 @@ fn ownership_free(body: &TypedExpr) -> bool {
                 | E::Unary(..)
                 | E::Cast(_)
                 | E::SaturatingIndex(_)
+                | E::FromEnd { .. }
                 | E::Binary(..)
                 | E::If { .. }
         ) {
@@ -3663,6 +3664,7 @@ fn partial_results(module: &CheckedModule) -> BTreeSet<Type> {
                 | E::Assign(..)
                 | E::Cast(_)
                 | E::SaturatingIndex(_)
+                | E::FromEnd { .. }
                 | E::CaseConstructor { .. }
                 | E::Construct { .. }
                 | E::UnionTag(_)
@@ -15888,7 +15890,10 @@ impl<'a, 'run> Checker<'a, 'run> {
             {
                 self.eval(value, Use::Read, &during)?;
             }
-            E::Unary(_, value) | E::Cast(value) | E::SaturatingIndex(value) => {
+            E::Unary(_, value)
+            | E::Cast(value)
+            | E::SaturatingIndex(value)
+            | E::FromEnd { offset: value, .. } => {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::Int(_)

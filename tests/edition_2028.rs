@@ -1,0 +1,259 @@
+//! NC17 Phase 2: edition 2028 canonical rules and `tsuzuri fix --edition 2028` migrations.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use tsuzuri::parser::parse_with_source_all;
+use tsuzuri::syntax::Edition;
+
+const REJECTED_IN_2028: [&str; 7] = [
+    "let a = 86uy",
+    "let a = 1.5f",
+    "let r = &x",
+    "let r = &mut y",
+    "let r = ref x\nlet a = *r + 1",
+    "let g = \\(r: &i64) -> deref r",
+    "let g = a -> b -> a + b",
+];
+
+fn scratch(name: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/scratch/edition-2028")
+        .join(format!(
+            "{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn write(root: &Path, relative: &str, text: &str) {
+    let path = root.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+fn tsuzuri(arguments: &[&str], directory: &Path, cache: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(arguments)
+        .current_dir(directory)
+        .env("TSUZURI_CACHE_DIR", cache)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn edition_2028_rejects_five_legacy_forms_and_accepts_bare_for_range() {
+    for body in REJECTED_IN_2028 {
+        let text = format!("let x = 1\nlet mut y = 2\n{body}\n0\n");
+        let findings = parse_with_source_all(&text, 0, Edition::E2026)
+            .unwrap()
+            .noncanonical;
+        assert_eq!(findings.len(), 1, "{body}");
+        let errors = parse_with_source_all(&text, 0, Edition::E2028).unwrap_err();
+        assert_eq!(errors.len(), 1, "{body}");
+        assert_eq!(errors[0].code, "E0004", "{body}");
+        assert_eq!(
+            errors[0].message,
+            format!(
+                "'{}' is not allowed in edition 2028; write '{}'",
+                findings[0].spelling, findings[0].canonical
+            )
+        );
+    }
+
+    // Bare `..` in `for` is canonical again in edition 2028.
+    let ok_text = "let mut s = 0\nfor i in 1 .. 3 do\n    s = s + i\nfor j in 1 .. 2 .. 5 do\n    s = s + j\ns\n";
+    let parsed = parse_with_source_all(ok_text, 0, Edition::E2028).unwrap();
+    assert!(parsed.noncanonical.is_empty());
+    let checked = tsuzuri::analyze_with_edition(ok_text, Edition::E2028).unwrap();
+    assert!(checked.warnings.is_empty());
+}
+
+#[test]
+fn fix_2027_to_2028_adds_no_own() {
+    let root = scratch("from-2027");
+    let cache = root.join("cache");
+    write(
+        &root,
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2027\"\n",
+    );
+    write(
+        &root,
+        "app/Main.tz",
+        "def len_and_sub :: string -> [i64] -> i64 = \\s xs ->\n\
+         \x20   s.length + (ref xs[0..2]).length + (ref xs[..1]).length\n\
+         export def entry :: i64 = len_and_sub \"hello\" [10, 20, 30]\n",
+    );
+    let before = tsuzuri(
+        &["build", "app", "--emit", "llvm", "-O0", "-o", "before.ll"],
+        &root,
+        &cache,
+    );
+    assert!(
+        before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    let before_ir = std::fs::read_to_string(root.join("before.ll")).unwrap();
+
+    let migrate = tsuzuri(
+        &["fix", "--edition", "2028", "--from", "2027", "app"],
+        &root,
+        &cache,
+    );
+    assert!(
+        migrate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+
+    let migrated = std::fs::read_to_string(root.join("app/Main.tz")).unwrap();
+    assert!(
+        !migrated.contains("own "),
+        "2027 -> 2028 must not add 'own': {migrated}"
+    );
+    assert!(migrated.contains("ref xs[0..<2]"), "{migrated}");
+    assert!(migrated.contains("ref xs[..<1]"), "{migrated}");
+
+    let after = tsuzuri(
+        &["build", "app", "--emit", "llvm", "-O0", "-o", "after.ll"],
+        &root,
+        &cache,
+    );
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("after.ll")).unwrap(),
+        before_ir
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn fix_2026_to_2028_keeps_the_bare_for_range() {
+    let root = scratch("from-2026");
+    let cache = root.join("cache");
+    write(
+        &root,
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    );
+    write(
+        &root,
+        "app/Main.tz",
+        "def consume :: string -> i64 = \\s -> s.length\n\
+         export def total :: ref [i64] -> i64 = \\xs ->\n\
+         \x20   let mut sum = 0i64\n\
+         \x20   for i in 1 .. 3 do\n\
+         \x20       sum = sum + (i as i64)\n\
+         \x20   sum + consume \"hi\" + (ref xs[0..2]).length\n",
+    );
+    let before = tsuzuri(
+        &["build", "app", "--emit", "llvm", "-O0", "-o", "before.ll"],
+        &root,
+        &cache,
+    );
+    assert!(
+        before.status.success(),
+        "{}",
+        String::from_utf8_lossy(&before.stderr)
+    );
+    let before_ir = std::fs::read_to_string(root.join("before.ll")).unwrap();
+
+    let migrate = tsuzuri(
+        &["fix", "--edition", "2028", "--from", "2026", "app"],
+        &root,
+        &cache,
+    );
+    assert!(
+        migrate.status.success(),
+        "{}",
+        String::from_utf8_lossy(&migrate.stderr)
+    );
+
+    let migrated = std::fs::read_to_string(root.join("app/Main.tz")).unwrap();
+    assert!(
+        migrated.contains("for i in 1 .. 3 do"),
+        "bare for range kept: {migrated}"
+    );
+    assert!(
+        migrated.contains("ref xs[0..<2]"),
+        "bare slice migrated to ..<: {migrated}"
+    );
+
+    let after = tsuzuri(
+        &["build", "app", "--emit", "llvm", "-O0", "-o", "after.ll"],
+        &root,
+        &cache,
+    );
+    assert!(
+        after.status.success(),
+        "{}",
+        String::from_utf8_lossy(&after.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("after.ll")).unwrap(),
+        before_ir
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn corpus_2027_migrates_to_2028_without_changing_the_ir() {
+    let root = scratch("corpus");
+    let cache = root.join("cache");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/canonical_2026");
+    std::fs::create_dir_all(root.join("app")).unwrap();
+    for file in ["Tsuzuri.toml", "Main.tz"] {
+        std::fs::copy(fixture.join(file), root.join("app").join(file)).unwrap();
+    }
+    let build_ir = |name: &str| {
+        let out = tsuzuri(
+            &["build", "app", "--emit", "llvm", "-O0", "-o", name],
+            &root,
+            &cache,
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        std::fs::read_to_string(root.join(name)).unwrap()
+    };
+    let ir_2026 = build_ir("2026.ll");
+    let to_2027 = tsuzuri(
+        &["fix", "--edition", "2027", "--from", "2026", "app"],
+        &root,
+        &cache,
+    );
+    assert!(
+        to_2027.status.success(),
+        "{}",
+        String::from_utf8_lossy(&to_2027.stderr)
+    );
+    assert_eq!(build_ir("2027.ll"), ir_2026);
+
+    let to_2028 = tsuzuri(
+        &["fix", "--edition", "2028", "--from", "2027", "app"],
+        &root,
+        &cache,
+    );
+    assert!(
+        to_2028.status.success(),
+        "{}",
+        String::from_utf8_lossy(&to_2028.stderr)
+    );
+    assert_eq!(build_ir("2028.ll"), ir_2026);
+    let manifest = std::fs::read_to_string(root.join("app/Tsuzuri.toml")).unwrap();
+    assert!(manifest.contains("edition = \"2028\""), "{manifest}");
+    let _ = std::fs::remove_dir_all(&root);
+}

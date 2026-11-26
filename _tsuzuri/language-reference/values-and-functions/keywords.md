@@ -41,7 +41,7 @@ get().n
 
 予約語は字句解析の段階で、いつもキーワードとして読まれます。文脈キーワードは、特定の位置に来たときだけキーワードになり、それ以外は普通の名前です。
 
-予約語の集合は、ソースを読む言語版（edition）で決まります。`Tsuzuri.toml` の `edition` がパッケージごとに選び、今ある `2026` では、このページの一覧がすべてです。新しい edition が予約語を足しても、前の edition のパッケージは、その語を識別子として使い続けられます（[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)、[安定性と互換性の方針](../../../docs/stability.md#edition)）。
+予約語の集合は、ソースを読む言語版（edition）で決まります。`Tsuzuri.toml` の `edition` がパッケージごとに選び、今ある `2026`・`2027`・`2028` では予約語は増えず、このページの一覧がすべてです。新しい edition が予約語を足しても、前の edition のパッケージは、その語を識別子として使い続けられます（[パッケージ](../organizing-tsuzuri/packages.md#言語版edition)、[安定性と互換性の方針](../../../docs/stability.md#edition)）。
 
 ```mermaid
 flowchart TD

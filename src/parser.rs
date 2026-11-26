@@ -5,14 +5,29 @@ use crate::syntax::*;
 /// An effect attribute before a declaration: its kind and the span of `@` and its name (A20).
 type EffectMark = (EffectKind, Span);
 
-/// The range operator that a token spells (A22).
-pub(super) fn range_op(kind: &TokenKind) -> RangeOp {
+/// The range operator that a token spells (A22 / NC17). Exhaustive over the five range tokens.
+pub(super) fn range_op(kind: &TokenKind) -> Option<RangeOp> {
     match kind {
-        TokenKind::DotDotEqual => RangeOp::Closed,
-        TokenKind::DotDotLess => RangeOp::Open,
-        _ => RangeOp::Bare,
+        TokenKind::DotDot => Some(RangeOp::Bare),
+        TokenKind::DotDotEqual => Some(RangeOp::Closed),
+        TokenKind::DotDotLess => Some(RangeOp::Open),
+        TokenKind::LessDotDot => Some(RangeOp::StartOpen),
+        TokenKind::LessDotDotLess => Some(RangeOp::BothOpen),
+        _ => None,
     }
 }
+
+pub(super) fn range_op_spelling(op: RangeOp) -> &'static str {
+    match op {
+        RangeOp::Bare => "..",
+        RangeOp::Closed => "..=",
+        RangeOp::Open => "..<",
+        RangeOp::StartOpen => "<..",
+        RangeOp::BothOpen => "<..<",
+    }
+}
+
+pub(super) const EDITION_2028_RANGE_HELP: &str = "set edition = \"2028\" in Tsuzuri.toml; 'tsuzuri fix --edition 2028' migrates the sources first";
 
 /// The attributes before a top-level declaration (D-53).
 #[derive(Default)]
@@ -1656,10 +1671,7 @@ impl Parser<'_> {
 
     /// Whether the current token is a range operator: `..`, `..=` or `..<` (A22).
     pub(super) fn range_operator_ahead(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::DotDot | TokenKind::DotDotEqual | TokenKind::DotDotLess
-        )
+        range_op(&self.current().kind).is_some()
     }
 
     /// The effect attribute that starts at the current token, with the span of `@` and its name.
@@ -4540,72 +4552,255 @@ impl Parser<'_> {
         }
     }
 
+    fn parse_from_end(&mut self) -> Result<Expr, Diagnostic> {
+        let caret = self.take().span;
+        if !self.edition.range_family() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                "'^' (a position from the end) requires edition 2028",
+                caret,
+            )
+            .with_help(EDITION_2028_RANGE_HELP));
+        }
+        let inner = self.term(true, false)?;
+        if !matches!(
+            self.current().kind,
+            TokenKind::RightBracket | TokenKind::Comma
+        ) && !self.range_operator_ahead()
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::FromEndInExpression,
+                "'^' takes one term; parenthesize a computed offset, as in '^(k + 1)'",
+                self.current().span,
+            ));
+        }
+        let span = caret.through(inner.span);
+        let depth = inner.depth + 1;
+        self.make(ExprKind::FromEnd(Box::new(inner)), span, depth)
+    }
+
+    fn bound_in_brackets(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at(&TokenKind::Caret) {
+            self.parse_from_end()
+        } else {
+            self.expression(0, true)
+        }
+    }
+
+    fn check_new_range_op_edition(&self, op: RangeOp, span: Span) -> Result<(), Diagnostic> {
+        if matches!(op, RangeOp::StartOpen | RangeOp::BothOpen) && !self.edition.range_family() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                format!("'{}' requires edition 2028", range_op_spelling(op)),
+                span,
+            )
+            .with_help(EDITION_2028_RANGE_HELP));
+        }
+        Ok(())
+    }
+
+    /// Reads one bracket component (`Expr`, `Range`, or `Whole`), stopping before `]` or `,`
+    /// so `NC18` can reuse it across comma-separated multi-axis keys.
+    pub(super) fn index_component(&mut self) -> Result<IndexComponent, Diagnostic> {
+        let first = if self.range_operator_ahead() {
+            None
+        } else {
+            Some(self.bound_in_brackets()?)
+        };
+        if !self.range_operator_ahead() {
+            return Ok(IndexComponent::Expr(
+                first.expect("a non-range component parsed its expression"),
+            ));
+        }
+        let op1_token = self.take();
+        let op1 = range_op(&op1_token.kind).expect("range operator checked");
+        self.check_new_range_op_edition(op1, op1_token.span)?;
+        if first.is_none() && matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen) {
+            let form = range_op_spelling(op1);
+            return Err(Diagnostic::of(
+                DiagnosticKind::StartOpenRangeNeedsStart,
+                format!(
+                    "'{form}' excludes its start, so it needs one; write '..b' or '..<b' to start at the first element"
+                ),
+                op1_token.span,
+            ));
+        }
+        let at_component_end = |parser: &Self| {
+            matches!(
+                parser.current().kind,
+                TokenKind::RightBracket | TokenKind::Comma
+            )
+        };
+        let second = if !at_component_end(self) && !self.range_operator_ahead() {
+            Some(self.bound_in_brackets()?)
+        } else {
+            None
+        };
+        let (step, end, end_op_token, end_op) = if self.range_operator_ahead() {
+            let Some(step_expr) = second else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    self.current().span,
+                ));
+            };
+            let op2_token = self.take();
+            let op2 = range_op(&op2_token.kind).expect("range operator checked");
+            self.check_new_range_op_edition(op2, op2_token.span)?;
+            if !self.edition.range_family() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeFormNeedsEdition2028,
+                    "a step inside brackets requires edition 2028",
+                    op2_token.span,
+                )
+                .with_help(EDITION_2028_RANGE_HELP));
+            }
+            if matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen) {
+                let form = range_op_spelling(op1);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op1_token.span,
+                ));
+            }
+            if matches!(op2, RangeOp::StartOpen | RangeOp::BothOpen) {
+                let form = range_op_spelling(op2);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op2_token.span,
+                ));
+            }
+            if op1 != RangeOp::Bare {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    op1_token.span,
+                ));
+            }
+            if matches!(step_expr.kind, ExprKind::FromEnd(_)) {
+                let caret_span = Span {
+                    start: step_expr.span.start,
+                    end: step_expr.span.start + 1,
+                    source: step_expr.span.source,
+                };
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndStep,
+                    "a step is a count, not a position; it cannot start with '^'",
+                    caret_span,
+                ));
+            }
+            let last = if !at_component_end(self) {
+                Some(self.bound_in_brackets()?)
+            } else {
+                None
+            };
+            if self.range_operator_ahead() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    self.current().span,
+                ));
+            }
+            let neg_literal_step = matches!(
+                &step_expr.kind,
+                ExprKind::Unary(UnaryOp::Negate, inner)
+                    if matches!(inner.kind, ExprKind::Integer(v, _) if v != 0)
+            );
+            if neg_literal_step && op2 == RangeOp::Open {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceStepDownExcludesEnd,
+                    "a slice range that counts down cannot exclude its end; write its last index with '..' or leave the end out",
+                    op2_token.span,
+                ));
+            }
+            (Some(Box::new(step_expr)), last, op2_token, op2)
+        } else {
+            (None, second, op1_token, op1)
+        };
+
+        if end.is_none() && matches!(end_op, RangeOp::Closed | RangeOp::Open | RangeOp::BothOpen) {
+            let msg = match end_op {
+                RangeOp::Closed => {
+                    "an inclusive slice needs an end bound; write 'ref xs[start..=end]', or 'ref xs[start..]' to slice to the end"
+                }
+                RangeOp::Open => {
+                    "a half-open slice with '..<' needs an end bound; write 'ref xs[start..<end]', or 'ref xs[start..]' to slice to the end"
+                }
+                RangeOp::BothOpen => {
+                    "a slice with '<..<' needs an end bound; write 'ref xs[start<..<end]', or 'ref xs[start<..]' to slice to the end"
+                }
+                _ => unreachable!(),
+            };
+            return Err(Diagnostic::of(
+                DiagnosticKind::SliceRangeNeedsEnd,
+                msg,
+                end_op_token.span,
+            ));
+        }
+
+        if first.is_none() && end.is_none() && step.is_none() && end_op == RangeOp::Bare {
+            return Ok(IndexComponent::Whole(end_op_token.span));
+        }
+
+        let start_open = matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen);
+        let end_closed = match end_op {
+            RangeOp::Closed | RangeOp::StartOpen => true,
+            RangeOp::Open | RangeOp::BothOpen => false,
+            RangeOp::Bare => self.edition.range_family(),
+        };
+        let key = RangeKey {
+            start: first.map(Box::new),
+            end: end.map(Box::new),
+            step,
+            ends: RangeEnds {
+                start_open,
+                end_closed,
+            },
+        };
+        if end_op == RangeOp::Bare {
+            self.record_slice_range(end_op_token.span, &key);
+        }
+        Ok(IndexComponent::Range(Box::new(key)))
+    }
+
     fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
         let outer = self.enter_delimited();
         let borrowed = outer.slice_context;
         self.stop_at_slice_dotdot = true;
         let parsed = (|| {
-            let first = if self.range_operator_ahead() {
-                None
-            } else {
-                Some(self.expression(0, true)?)
-            };
-            let operator = self.range_operator_ahead().then(|| self.take());
-            let slice = operator.is_some();
-            let op = operator
-                .as_ref()
-                .map_or(RangeOp::Bare, |token| range_op(&token.kind));
-            let last = if slice && !self.at(&TokenKind::RightBracket) {
-                Some(self.expression(0, true)?)
-            } else {
-                None
-            };
-            // A22: `..=` and `..<` need the end that they include or exclude.
-            if let Some(token) = &operator
-                && last.is_none()
-                && op != RangeOp::Bare
-            {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::SliceRangeNeedsEnd,
-                    if op == RangeOp::Closed {
-                        "an inclusive slice needs an end bound; write 'ref xs[start..=end]', or 'ref xs[start..]' to slice to the end"
-                    } else {
-                        "a half-open slice with '..<' needs an end bound; write 'ref xs[start..<end]', or 'ref xs[start..]' to slice to the end"
-                    },
-                    token.span,
-                ));
-            }
+            let component = self.index_component()?;
             let end = self.expect(&TokenKind::RightBracket, "']'")?;
-            Ok((first, operator, last, end))
+            Ok((component, end))
         })();
         self.leave_delimited(DelimitedFlags {
             slice_context: None,
             ..outer
         });
-        let (first, operator, last, end) = parsed?;
-        let slice = operator.is_some();
-        let op = operator
-            .as_ref()
-            .map_or(RangeOp::Bare, |token| range_op(&token.kind));
+        let (component, end) = parsed?;
         let span = left.span.through(end.span);
-        let depth = first
-            .iter()
-            .chain(&last)
-            .map(|value| value.depth)
-            .max()
-            .unwrap_or(0)
-            .max(left.depth)
-            + 1;
-        let kind = if slice {
-            let Some(mutable) = borrowed else {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::SliceMustBeBorrowed,
-                    "array slices must be borrows; write 'ref xs[start..end]' for a shared slice or 'ref mut xs[start..end]' for an exclusive slice",
+        match component {
+            IndexComponent::Expr(index) => {
+                let depth = left.depth.max(index.depth) + 1;
+                self.make(
+                    ExprKind::Index(Box::new(left), Box::new(index)),
                     span,
-                ));
-            };
-            if first.is_none() && last.is_none() {
-                return Err(Diagnostic::of(
+                    depth,
+                )
+            }
+            IndexComponent::Whole(_) => {
+                let Some(mutable) = borrowed else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SliceMustBeBorrowed,
+                        "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice",
+                        span,
+                    ));
+                };
+                Err(Diagnostic::of(
                     DiagnosticKind::SliceWithoutBounds,
                     if mutable {
                         "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
@@ -4613,22 +4808,37 @@ impl Parser<'_> {
                         "a slice needs at least one bound; borrow the whole array with 'ref xs'"
                     },
                     span,
-                ));
+                ))
             }
-            ExprKind::Slice {
-                value: Box::new(left),
-                start: first.map(Box::new),
-                end: last.map(Box::new),
-                mutable,
-                op,
+            IndexComponent::Range(range) => {
+                let Some(mutable) = borrowed else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::SliceMustBeBorrowed,
+                        "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice",
+                        span,
+                    ));
+                };
+                let depth = range
+                    .start
+                    .iter()
+                    .chain(&range.end)
+                    .chain(&range.step)
+                    .map(|value| value.depth)
+                    .max()
+                    .unwrap_or(0)
+                    .max(left.depth)
+                    + 1;
+                self.make(
+                    ExprKind::Slice {
+                        value: Box::new(left),
+                        range,
+                        mutable,
+                    },
+                    span,
+                    depth,
+                )
             }
-        } else {
-            ExprKind::Index(
-                Box::new(left),
-                Box::new(first.expect("an index has one expression")),
-            )
-        };
-        self.make(kind, span, depth)
+        }
     }
 
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
@@ -4796,6 +5006,13 @@ impl Parser<'_> {
             TokenKind::Mut => {
                 return Err(self.error_of(DiagnosticKind::MutAsExpression,
                     "'mut' is not an expression; write 'ref mut x' to borrow exclusively, or 'let mut x = ...' for a mutable binding",
+                ));
+            }
+            TokenKind::Caret => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndOutsideIndex,
+                    "'^' counts from the end only at the start of an index or a slice bound, as in 'xs[^0]' or 'ref xs[1..^1]'",
+                    start,
                 ));
             }
             TokenKind::True | TokenKind::False => {

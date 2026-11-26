@@ -5,7 +5,7 @@
 ## この記事のポイント
 
 - `Slice.Axis` は `All`・`At of i64`・`Range of (i64 * i64)`・`From of i64`・`To of i64`・`Step of (Maybe<i64> * Maybe<i64> * i64)`・`NewAxis` からなる値型共用体です。
-- 負の位置は軸の長さ `len` に対して `len + i` と解釈します。範囲指定は軸の端に丸められ、範囲外の `At` と `step == 0` は `Slice.resolve` でトラップします。
+- 負の位置は軸の長さ `len` に対して `len + i` と解釈します。範囲指定（`Slice.range start stop` はどの edition でも半開 `[start, stop)` で、edition 2028 の角括弧の範囲構文 `a..b` とは異なります）は軸の端に丸められ、範囲外の `At` と `step == 0` は `Slice.resolve` でトラップします。
 - すべての関数は `pure` であり、新しい予約語や専用構文を増やさずに `ref t[[Slice.step 1 4 2, Slice.rev()]]` のように書けます。
 
 ## 使い方

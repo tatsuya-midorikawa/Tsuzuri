@@ -105,7 +105,7 @@ Latin-1 から UTF-8 への変換・`to_ascii` の複写が対象です。`Strin
 | `slice` | `i64 -> i64 -> ref string -> Maybe<string>` | 負の位置、`last < first`、範囲外なら `None` | O(切り出し長) |
 | `sub` | `i64 -> i64 -> ref string -> Maybe<string>` | 負の位置、加算オーバーフロー、範囲外なら `None` | O(切り出し長) |
 
-`slice first last text` の `last` は結果に含まれません。`sub first count text` は `first` から `count` コード単位を切り出します。どちらも新しい所有文字列を `Some` で返します。
+`slice first last text` の `last` は結果に含まれません（edition 2028 で素の `..` が終端を含むのは範囲構文だけで、`String.slice` はどの edition でも半開のままです）。`sub first count text` は `first` から `count` コード単位を切り出します。どちらも新しい所有文字列を `Some` で返します。文字列には範囲スライス構文はありませんが、1 コード単位の添字 `text[i]` では edition 2028 から末尾基準の `text[^0]`（末尾）も書け、負の整数リテラルの添字 `text[-1]` はトラップし警告 `W1014` が出ます。
 
 負の位置、`last < first`、範囲外の指定、および加算オーバーフローが発生した場合は安全に `None` を返します（トラップしません）。サロゲートペアの途中インデックスであっても、位置として有効であればそのまま切り出します。
 

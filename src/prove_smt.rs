@@ -577,7 +577,8 @@ impl<'a> Translator<'a> {
             | K::GenericInteger(..)
             | K::GenericFloat(_)
             | K::CaseConstructor { .. }
-            | K::SaturatingIndex(_) => Err(unsupported("an unresolved expression", span)),
+            | K::SaturatingIndex(_)
+            | K::FromEnd { .. } => Err(unsupported("an unresolved expression", span)),
             K::Float(_) => Err(unsupported("a floating-point value", span)),
             K::String(_) | K::StringLength(_) => Err(unsupported("a string", span)),
             K::StructuralHash(_) => Err(unsupported("a hash", span)),

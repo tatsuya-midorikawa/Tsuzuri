@@ -465,6 +465,7 @@ impl<'a> Run<'a, '_> {
             | K::ListTail(..)
             | K::NewList(..)
             | K::Slice { .. }
+            | K::FromEnd { .. }
             | K::Borrow(..)
             | K::BorrowOperand(_)
             | K::Dereference(_)
@@ -849,6 +850,7 @@ impl<'a> Run<'a, '_> {
             local,
             descending,
             exclusive,
+            start_open,
             ..
         } = &expression.kind
         else {
@@ -870,11 +872,24 @@ impl<'a> Run<'a, '_> {
                 "range step is zero; use a nonzero step",
             ));
         }
-        // A22 `start ..< finish`: a non-empty range runs as the closed range that ends one value
-        // before `finish`, in the direction of the step.
+        let mut start = start;
         let mut finish = finish;
         let mut nonempty = true;
-        if *exclusive {
+        if *start_open {
+            let type_max = if signed_type {
+                (1u128 << (bits - 1)) - 1
+            } else {
+                mask(bits)
+            };
+            if start == type_max {
+                nonempty = false;
+            } else {
+                start = start.wrapping_add(1) & mask(bits);
+            }
+        }
+        // A22 `start ..< finish`: a non-empty range runs as the closed range that ends one value
+        // before `finish`, in the direction of the step.
+        if nonempty && *exclusive {
             let up = !signed_type || signed(step, bits) > 0;
             let (below, above) = if signed_type {
                 (

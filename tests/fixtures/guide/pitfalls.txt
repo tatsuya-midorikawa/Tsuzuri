@@ -23,14 +23,14 @@ def main :: unit -> i32 = \() ->
     let mut xs = [1, 2]
     xs[0] = 5
     0
-## P03b p.x = 1 => E1014 @2027
+## P03b p.x = 1 => E1014 @>=2027
 record P { x: i64 }
 
 def main :: unit -> i32 = \() ->
     let p = P { x: 0 }
     p.x = 1
     0
-## P04b xs[i] = v => E1014 @2027
+## P04b xs[i] = v => E1014 @>=2027
 def main :: unit -> i32 = \() ->
     let xs = [1, 2]
     xs[0] = 5

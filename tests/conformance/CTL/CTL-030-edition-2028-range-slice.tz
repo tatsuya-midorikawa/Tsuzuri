@@ -1,0 +1,11 @@
+let xs = [10, 20, 30, 40, 50]
+let mid = ref xs[1..3]
+let init = ref xs[..^1]
+assert (mid.length == 3 && mid[2] == 40)
+assert (init.length == 4 && xs[^0] == 50)
+let bad = ref xs[0..5]
+bad.length
+
+// rule: CTL-030
+// edition: 2028
+// expect: trap kind=bounds

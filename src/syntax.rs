@@ -30,18 +30,25 @@ pub struct Edition(pub(crate) u16);
 impl Edition {
     pub const E2026: Self = Self(2026);
     pub const E2027: Self = Self(2027);
+    pub const E2028: Self = Self(2028);
     /// What CLI projects without a manifest and the embedded standard library are read with.
     /// Rust's source-only compatibility APIs retain E2026; explicit inputs choose their edition.
     pub const LATEST: Self = Self::E2027;
     /// What a manifest without `edition` means. It never changes, or a compiler update would
     /// give the manifests that already exist new reserved words.
     pub const MANIFEST_DEFAULT: Self = Self::E2026;
-    pub const SUPPORTED: &'static [Self] = &[Self::E2026, Self::E2027];
+    pub const SUPPORTED: &'static [Self] = &[Self::E2026, Self::E2027, Self::E2028];
     /// What `tsuzuri new` writes into a new manifest (A22).
     pub const NEW_PROJECT: Self = Self::E2027;
 
     pub fn borrows_parameters(self) -> bool {
-        matches!(self, Self::E2027)
+        self >= Self::E2027
+    }
+
+    /// Edition 2028 unified range family (D-66 / NC17): inclusive bare `..` in slices, `<..`,
+    /// `<..<`, `^k` from-end positions, and stepped bracket ranges.
+    pub fn range_family(self) -> bool {
+        self >= Self::E2028
     }
 
     /// The supported edition that `text` names, such as `2026`.
@@ -151,6 +158,10 @@ pub enum TokenKind {
     DotDotEqual,
     /// `..<`: a range that excludes its end (A22).
     DotDotLess,
+    /// `<..`: a range that excludes its start and includes its end (NC17).
+    LessDotDot,
+    /// `<..<`: a range that excludes both endpoints (NC17).
+    LessDotDotLess,
     At,
     Hash,
     /// `?`: a typed hole (G25).
@@ -1107,14 +1118,18 @@ impl Expr {
                     value.visit_mut(visitor);
                 }
             }
-            Slice {
-                value, start, end, ..
-            } => {
+            Slice { value, range, .. } => {
                 value.visit_mut(visitor);
-                for bound in start.iter_mut().chain(end.iter_mut()) {
+                for bound in range
+                    .start
+                    .iter_mut()
+                    .chain(range.end.iter_mut())
+                    .chain(range.step.iter_mut())
+                {
                     bound.visit_mut(visitor);
                 }
             }
+            FromEnd(offset) => offset.visit_mut(visitor),
             Computation(_, body) => body.visit_expressions_mut(visitor),
             Interpolated(interpolation) => {
                 for hole in &mut interpolation.holes {
@@ -1256,14 +1271,13 @@ impl Expr {
                     value.visit(visitor);
                 }
             }
-            Slice {
-                value, start, end, ..
-            } => {
+            Slice { value, range, .. } => {
                 value.visit(visitor);
-                for bound in start.iter().chain(end) {
+                for bound in range.start.iter().chain(&range.end).chain(&range.step) {
                     bound.visit(visitor);
                 }
             }
+            FromEnd(offset) => offset.visit(visitor),
             Computation(_, body) => body.visit_expressions(visitor),
             Interpolated(interpolation) => {
                 for hole in &interpolation.holes {
@@ -1339,8 +1353,8 @@ pub enum ExprKind {
         finish: Box<Expr>,
         counted: bool,
         descending: bool,
-        /// The operator before `finish`; `for i = a to b` is `Closed` (A22).
-        op: RangeOp,
+        /// Which endpoints are open/closed, settled by the parser from the source's edition (NC17).
+        ends: RangeEnds,
     },
     Match {
         value: Box<Expr>,
@@ -1372,15 +1386,14 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
-    /// `ref xs[a..b]`, or with `mutable` the exclusive `ref mut xs[a..b]` (C08).
+    /// `ref xs[a..b]`, or with `mutable` the exclusive `ref mut xs[a..b]` (C08 / NC17).
     Slice {
         value: Box<Expr>,
-        start: Option<Box<Expr>>,
-        end: Option<Box<Expr>>,
+        range: Box<RangeKey>,
         mutable: bool,
-        /// `..` and `..<` exclude `end`; `..=` includes it (A22).
-        op: RangeOp,
     },
+    /// `^k`: position `n - 1 - k` from the end; only at the start of an index component or slice bound (NC17).
+    FromEnd(Box<Expr>),
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),
@@ -1432,6 +1445,10 @@ pub enum NoncanonicalKind {
     SymbolicReferenceType,
     /// `x -> e` and `x -> y -> e`: `\x -> e`, `\x y -> e`.
     LegacyLambda,
+    /// Edition 2026/2027 bare `..` slice with an end bound (`W1013`, enabled by default, fix `..<`).
+    LegacyBareSliceRange,
+    /// Edition 2028+ bare `..` slice with an end bound, noted as `W1013` on manifest-less sources.
+    BareSliceRangeMeaningChanged,
 }
 
 impl NoncanonicalKind {
@@ -1445,6 +1462,8 @@ impl NoncanonicalKind {
             | Self::SymbolicDeref
             | Self::SymbolicReferenceType
             | Self::LegacyLambda => edition == Edition::E2026,
+            Self::LegacyBareSliceRange => !edition.range_family(),
+            Self::BareSliceRangeMeaningChanged => edition.range_family(),
         }
     }
 
@@ -1457,12 +1476,16 @@ impl NoncanonicalKind {
             | Self::SymbolicDeref
             | Self::SymbolicReferenceType
             | Self::LegacyLambda => edition >= Edition::E2027,
+            Self::LegacyBareSliceRange | Self::BareSliceRangeMeaningChanged => false,
         }
     }
 
     /// The warning code associated with this kind when warned (`"W1007"` or `"W1013"`).
     pub fn code(self) -> &'static str {
-        "W1007"
+        match self {
+            Self::LegacyBareSliceRange | Self::BareSliceRangeMeaningChanged => "W1013",
+            _ => "W1007",
+        }
     }
 }
 
@@ -1497,13 +1520,38 @@ pub struct Noncanonical {
     pub edits: Vec<TextEdit>,
 }
 
-/// The operator of a range (A22): `..`, which a `for` reads as closed and a slice as half-open,
-/// `..=` (closed) and `..<` (half-open).
+/// The spelling of a range operator during parsing only; never stored in the AST (NC17 D4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RangeOp {
     Bare,
     Closed,
     Open,
+    StartOpen,
+    BothOpen,
+}
+
+/// Which endpoints of a range are open/closed, settled by the parser from the source's edition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RangeEnds {
+    pub start_open: bool,
+    pub end_closed: bool,
+}
+
+/// One range inside brackets; shared by single-axis slices and multi-axis keys (NC17 / NC18).
+#[derive(Clone, Debug)]
+pub struct RangeKey {
+    pub start: Option<Box<Expr>>,
+    pub end: Option<Box<Expr>>,
+    pub step: Option<Box<Expr>>,
+    pub ends: RangeEnds,
+}
+
+/// One bracket component parsed by `Parser::index_component` (NC17 / NC18).
+#[derive(Clone, Debug)]
+pub enum IndexComponent {
+    Expr(Expr),
+    Range(Box<RangeKey>),
+    Whole(Span),
 }
 
 /// Spelling of a borrow or dereference. Both spellings produce the same typed tree.

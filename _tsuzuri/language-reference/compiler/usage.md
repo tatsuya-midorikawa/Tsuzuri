@@ -338,7 +338,7 @@ parallel report: 2 suggestions, 2 sites
 
 提案するのは、呼び出しを含む関数が自分のモジュールのもので、ソースに `Array.map` のように名前をそのまま書いた完全な呼び出し（パイプや別名は対象外）で、コールバックが純粋で（`pure def` と同じ規則。外から渡された関数値は純粋とみなしません）、要素と結果の型がスレッドへ渡せて、コールバックが借用・`Atomic`・`Mutex` を捕捉せず、入力の長さが静的に 4,096 未満と分かる（要素が 4,096 個未満の配列リテラル、整数リテラルの長さの `new`）ものでないときだけです。浮動小数点の `Array.sum` は、和の順序が変わってビットが違いうるので提案しません。`--json` を付けると、報告は `tz-report-parallel/1` の JSON Lines になります。1 行目が要約（`schema`・`suggestions`・`sites`・`truncated`）で、各行は `kind`・`call`・`replacement`（提案だけ）・`parallel_safe`・`reason`（純粋でない地点だけ）・`path`・`span`・`fixes`（提案だけ。`applicability` は常に `maybe`）です。行は（パス・位置）の順で、1,000 行を超えた分は捨てて `truncated` に数えます。検査が失敗したときと、`--deny-warnings` で終了コード 1 になるときは報告を出しません。`--report` は `check` だけが受け付け、標準出力に証明の結果を書く `--contracts prove` とは組み合わせられません（`E2000`）（[Parallel](../built-in-types-and-modules/parallel.md#逐次と同じ結果になる条件)）。
 
-`--warn canonical` を付けると、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に、正準形への書き換えを修正案として持つ警告 `W1007` を出します（edition 2026 のソースだけに出ます）。`--edition 2026` は、`Tsuzuri.toml` のないプロジェクトのソースを edition 2026 で読みます（`build`・`run`・`test`・`script` でも同じ。マニフェストがあると `E2000`）。
+`--warn canonical` を付けると、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に、正準形への書き換えを修正案として持つ警告 `W1007` を出します（edition 2026 のソースだけに出ます）。`--edition 2026|2027|2028` は、`Tsuzuri.toml` のないプロジェクトのソースを指定した edition で読みます（`build`・`run`・`test`・`script` でも同じ。マニフェストがあると `E2000`）。
 
 `--warn untrusted-extern` を付けると、ルートのパッケージで宣言して使っている `extern` の関数のうち、`@trusted` のないものに警告 `W1010` を出します（`build`・`run`・`test` でも同じ。[属性](../values-and-functions/attributes.md#trusted-extern-の信頼の印)）。ルートのマニフェストに権限の宣言があれば、許可の外の使用を `E1036` で報告し、終了コード 1 です（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。
 
@@ -628,13 +628,11 @@ tsuzuri fix app/Main.tz
 
 標準エラー出力には、書いた後のプロジェクトに残った診断を `check` と同じ形で出します（`--dry-run` では出しません）。終了コードは、適用した・適用するものがない・診断が残っている、のどれでも 0、`E2008` などで止まったときは 1、引数の誤りは 2 です。修正案を持つ診断は、未使用のローカル（`W1001`。名前に `_` を付ける `certain`）、消えた・改名された名前（`E1040`。今の名前への置き換え。`certain`）、`@deprecated` の案内が同じシグネチャの関数を名指しする使用（`W1005`。その関数への置き換え。`likely`）、網羅していない `match`（`E1021`。`maybe`）、ヒントの字句の置き換え（`likely` か `maybe`）です（[診断](diagnostics.md#関連する位置help修正案)）。
 
-`--edition YEAR` は、旧版の値渡しの契約を保って edition を移行します。所有する引数を `own` で明示し、
-Array／List の値 callback と消費する `Vec.push` を `_owned` 入口へ変更します。
-同名の利用者定義や依存パッケージは書き換えません。
+`--edition YEAR` は、旧版の意味と契約を保って edition を移行します。移行先が拒否する非正準表記の `certain` 修正案（2026 → 2028 では `for` の素の `..` を残して残り 5 種）、および 2028 以降へ移るときの終端ありの素の `..` のスライスから `..<` への書き換え（`W1013`）を先に当て、2026 から 2027 以降へ移るときだけ所有する引数を `own` で明示し、Array／List の値 callback と消費する `Vec.push` を `_owned` 入口へ変更します（2027 → 2028 では `own` を足しません）。`///` の中の例と依存パッケージは書き換えません。
 
 ```sh
 tsuzuri fix --edition 2027 --from 2026 --dry-run app/
-tsuzuri fix --edition 2027 --from 2026 app/
+tsuzuri fix --edition 2028 --from 2027 app/
 ```
 
 `--edition YEAR` は移行先、`--from YEAR` は旧版です。既存 manifest の旧版と違う `--from` は拒否し、

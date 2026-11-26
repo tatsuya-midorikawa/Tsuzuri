@@ -1,0 +1,8 @@
+let xs = [10, 20, 30, 40]
+let sub = ref xs[1..3]
+sub.length
+
+// rule: DIA-011
+// edition: 2027
+// expect: check-warning W1013 line=2 kind=legacy_bare_slice_range
+// expect: stdout "2\n"

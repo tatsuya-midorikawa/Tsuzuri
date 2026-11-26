@@ -685,6 +685,7 @@ fn closed_callable<'a>(
             }
             K::Cast(value)
             | K::SaturatingIndex(value)
+            | K::FromEnd { offset: value, .. }
             | K::Borrow(value, _)
             | K::BorrowOperand(value)
             | K::Dereference(value) => pending.push((value, direct, staged)),
@@ -1102,6 +1103,7 @@ impl<'a> Scanner<'a> {
                     | K::Assign(..)
                     | K::Cast(_)
                     | K::SaturatingIndex(_)
+                    | K::FromEnd { .. }
                     | K::Construct { .. }
                     | K::UnionTag(_)
                     | K::UnionPayload { .. }
@@ -1587,7 +1589,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            169
+            170
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

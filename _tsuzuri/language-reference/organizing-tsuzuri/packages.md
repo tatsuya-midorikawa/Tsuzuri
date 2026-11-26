@@ -47,7 +47,7 @@ namespace = "GeometryTools"
 | --- | --- | --- | --- |
 | `name` | 必須 | 文字列 | 小文字の ASCII kebab-case。各要素は英小文字で始まり、続きは英小文字か数字。全体で最大 255 バイト。`app2` は可、`Demo` は `E1011`。 |
 | `version` | 必須 | 文字列 | 空でない版の文字列（例: `"0.1.0"`）。registry に公開するパッケージは `MAJOR.MINOR.PATCH`（先頭の 0 なし）でなければなりません。パス依存と git 依存では版の選択に使いません。 |
-| <!-- rule: EDN-001 --><!-- rule: EDN-002 --><!-- rule: EDN-008 -->`edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"` と `"2027"` です。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027`）です。 |
+| <!-- rule: EDN-001 --><!-- rule: EDN-002 --><!-- rule: EDN-008 --><!-- rule: EDN-011 -->`edition` | 任意 | 文字列 | 言語版。対応する値は `"2026"`、`"2027"`、`"2028"` です。省略すると `2026` です。ほかの値は `E0002`（`unsupported edition '2030'; supported editions: 2026, 2027, 2028`）です。 |
 | `namespace` | 任意 | 文字列 | 既定名前空間。`::` でつないだ ASCII 識別子（最大 16 階層、255 バイト）。 |
 
 `namespace` を省略すると、`name` を PascalCase にした名前が既定になります。`geometry-tools` なら `GeometryTools` です。PascalCase は自動変換の形であり、書いた名前が小文字でも、識別子なら受理されます。
@@ -57,11 +57,11 @@ namespace = "GeometryTools"
 
 ### 言語版（edition）
 
-`edition` は、そのパッケージのソースを読む規則の版です。`2026` と `2027` に対応します。
+`edition` は、そのパッケージのソースを読む規則の版です。`2026`・`2027`・`2028` に対応します。
 値を省略したマニフェストは、新しい edition ができても `2026` のままです。
-2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。また、同じ意味の書き方が複数あった表記を正準形に絞ります（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、`x -> e` の旧ラムダは `E0004`。[診断](../compiler/diagnostics.md)）。manifest のない CLI 入力・script・REPL、
-新規プロジェクトも 2027 です（`tsuzuri new --edition 2026` で 2026 を選べます。manifest のない入力は `--edition 2026` で 2026 として読めます）。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
-旧ソースは [`fix --edition 2027 --from 2026`](../compiler/usage.md#fix) で契約を保って移行できます。
+2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。また、同じ意味の書き方が複数あった表記を正準形に絞ります（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、`x -> e` の旧ラムダは `E0004`。[診断](../compiler/diagnostics.md)）。2028 は 2027 の引数規約を引き継ぎつつ、終端を含むスライスの素の `..`、`for` の素の `..`、`<..`・`<..<`、末尾からの位置 `^k` などの範囲の構文の族を導入します。manifest のない CLI 入力・script・REPL、
+新規プロジェクトは現在の最新の 2027 です（`tsuzuri new --edition 2028` で 2028 を選べます。manifest のない入力も `--edition 2026|2027|2028` でその edition として読めます）。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
+旧ソースは [`fix --edition 2027 --from 2026` や `fix --edition 2028 --from 2027`](../compiler/usage.md#fix) で契約とスライスの意味を保って移行できます。
 詳しくは[引数の所有権](../values-and-functions/functions.md#引数の所有権own-と-edition-2027)を参照してください。
 
 ```toml

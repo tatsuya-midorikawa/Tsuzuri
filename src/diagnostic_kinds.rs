@@ -101,6 +101,9 @@ diagnostic_kinds! {
         (ExternTypeWithLinkName, "extern_type_with_link_name", "E0002"),
         (ExternViewLinkName, "extern_view_link_name", "E0002"),
         (ForLoopNeedsIdentifier, "for_loop_needs_identifier", "E0002"),
+        (FromEndInExpression, "from_end_in_expression", "E0002"),
+        (FromEndOutsideIndex, "from_end_outside_index", "E0002"),
+        (FromEndStep, "from_end_step", "E0002"),
         (HeaderPathOnSameLine, "header_path_on_same_line", "E0002"),
         (HeaderPathSpacing, "header_path_spacing", "E0002"),
         (IntegerLiteralTooLarge, "integer_literal_too_large", "E0002"),
@@ -151,6 +154,7 @@ diagnostic_kinds! {
         (NegativePatternNeedsNumber, "negative_pattern_needs_number", "E0002"),
         (PatternNestingTooDeep, "pattern_nesting_too_deep", "E0002"),
         (PrefixKeywordOperand, "prefix_keyword_operand", "E0002"),
+        (RangeFormNeedsEdition2028, "range_form_needs_edition_2028", "E0002"),
         (RangeTakesOneStep, "range_takes_one_step", "E0002"),
         (RecursiveLetBang, "recursive_let_bang", "E0002"),
         (RecursiveWhereBinding, "recursive_where_binding", "E0002"),
@@ -163,7 +167,10 @@ diagnostic_kinds! {
         (SignatureWithoutDefinition, "signature_without_definition", "E0002"),
         (SliceMustBeBorrowed, "slice_must_be_borrowed", "E0002"),
         (SliceRangeNeedsEnd, "slice_range_needs_end", "E0002"),
+        (SliceStepDownExcludesEnd, "slice_step_down_excludes_end", "E0002"),
         (SliceWithoutBounds, "slice_without_bounds", "E0002"),
+        (StartOpenRangeNeedsStart, "start_open_range_needs_start", "E0002"),
+        (StartOpenRangeWithStep, "start_open_range_with_step", "E0002"),
         (StrayAndMember, "stray_and_member", "E0002"),
         (SyntaxNestingTooDeep, "syntax_nesting_too_deep", "E0002"),
         (TooManyActivePatternCases, "too_many_active_pattern_cases", "E0002"),
@@ -233,6 +240,7 @@ diagnostic_kinds! {
         (TypeUsedAsLength, "type_used_as_length", "E1004"),
         (UnknownTypeName, "unknown_type_name", "E1004"),
         // E1005
+        (ArraySliceWithStep, "array_slice_with_step", "E1005"),
         (AtomicElementType, "atomic_element_type", "E1005"),
         (CallNonFunction, "call_non_function", "E1005"),
         (CaptureExclusiveInReusableFunction, "capture_exclusive_in_reusable_function", "E1005"),
@@ -247,6 +255,7 @@ diagnostic_kinds! {
         (FixedSliceSource, "fixed_slice_source", "E1005"),
         (ForOverFixedArray, "for_over_fixed_array", "E1005"),
         (ForSourceNotIterable, "for_source_not_iterable", "E1005"),
+        (FromEndNeedsLength, "from_end_needs_length", "E1005"),
         (FunctionConstraintUnresolvable, "function_constraint_unresolvable", "E1005"),
         (FunctionConstraintUnsatisfied, "function_constraint_unsatisfied", "E1005"),
         (IndexNonIndexable, "index_non_indexable", "E1005"),
@@ -968,6 +977,12 @@ diagnostic_kinds! {
         (UntrustedExtern, "untrusted_extern", "W1010"),
         // W1012
         (RefutableBindingPatternWarning, "refutable_binding_pattern_warning", "W1012"),
+        // W1013
+        (BareSliceRangeMeaningChanged, "bare_slice_range_meaning_changed", "W1013"),
+        (LegacyBareSliceRange, "legacy_bare_slice_range", "W1013"),
+        // W1014
+        (NegativeLiteralIndex, "negative_literal_index", "W1014"),
+        (NegativeLiteralRangeBound, "negative_literal_range_bound", "W1014"),
         // W2001
         (IntegerOverflowWrapped, "integer_overflow_wrapped", "W2001"),
         (ToolNotice, "tool_notice", "W2001"),

@@ -257,6 +257,7 @@ fn collect_locals<'a>(
         | Assign(..)
         | Cast(_)
         | SaturatingIndex(_)
+        | FromEnd { .. }
         | CaseConstructor { .. }
         | Construct { .. }
         | UnionTag(_)
@@ -669,7 +670,8 @@ impl TypeReferences<'_> {
             | NewLiteral(value)
             | Field(value, _)
             | Borrow(value, ..)
-            | Dereference(value, _) => self.expression(value),
+            | Dereference(value, _)
+            | FromEnd(value) => self.expression(value),
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
@@ -707,11 +709,14 @@ impl TypeReferences<'_> {
                 }
                 self.expression(finish);
             }
-            Slice {
-                value, start, end, ..
-            } => {
+            Slice { value, range, .. } => {
                 self.expression(value);
-                for bound in start.iter().chain(end.iter()) {
+                for bound in range
+                    .start
+                    .iter()
+                    .chain(range.step.iter())
+                    .chain(range.end.iter())
+                {
                     self.expression(bound);
                 }
             }

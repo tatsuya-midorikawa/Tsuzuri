@@ -361,6 +361,7 @@ pub(super) fn validate_function(
             | K::ListTail(..)
             | K::NewList(..)
             | K::Slice { .. }
+            | K::FromEnd { .. }
             | K::Borrow(_, true)
             | K::CaseConstructor { .. }
             | K::Try(_)

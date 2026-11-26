@@ -27,8 +27,10 @@ Tsuzuri では、区切り文字、括弧、矢印記号、演算子、コメン
 | `;` | 波括弧ブロック内の文の区切り、空文 | `{ a; b }` | [ステートメント](./statements.md) |
 | `,` | タプル、配列、引数列、型パラメータの要素区切り | `(1, 2)`, `[1, 2, 3]` | [リテラル](../literals-and-strings/literals.md) |
 | `.` | レコードやモジュールのメンバー参照、小数点 | `user.name`, `Array.map` | [演算子と式](./op-and-expressions.md) |
-| `..` | 配列スライスの半開区間。必ず `ref` か `ref mut` と組む | `ref values[1..4]` | [演算子と式](./op-and-expressions.md) |
+| `..` | 配列スライス・`for` の範囲（終端ありスライスは edition 2028 では閉区間、2026・2027 では半開区間） | `ref values[1..]`<br/>`for i in 1 .. 4` | [演算子と式](./op-and-expressions.md) |
 | `..=` / `..<` | 終端を含む・含まない範囲。`for...in` の整数範囲と配列スライス | `for i in 0 ..< n`<br/>`ref values[1..=3]` | [for...in 式](../loops-and-conditionals/for-in.md#整数範囲の反復) |
+| `<..` / `<..<` | 始端を含まず終端を含む・両端を含まない範囲（edition 2028） | `ref values[1 <.. 3]`<br/>`for i in 0 <..< n` | [配列](../built-in-types-and-modules/array.md#スライスとインプレース更新) |
+| `^` | ビット排他的論理和（中置）、および角括弧内の末尾からの位置（前置、edition 2028） | `a ^ b`<br/>`values[^0]` | [演算子と式](./op-and-expressions.md) |
 | `\|` | match アームの区切り、union ケース区切り、匿名共用体の要素の区切り（括弧の中の型）、ビット OR | `\| Case ->`<br/>`\| Circle of f64`<br/>`(i64 \| string)` | [パターンマッチング](../pattern-matching/pattern-matching.md)<br/>[Union](../built-in-types-and-modules/union.md)<br/>[匿名共用体](../built-in-types-and-modules/anonymous-union.md) |
 | `\|>` | パイプライン演算子（値を関数の引数へ渡す） | `data \|> process` | [演算子と式](./op-and-expressions.md) |
 | `'a` | ジェネリック型変数（小文字で始まる識別子） | `'a`, `'key`, `'value` | [ジェネリック関数と型パラメータ制約](./generics-functions.md) |
@@ -114,7 +116,7 @@ moved.x
 10
 ```
 
-配列のスライスは終了位置を含まない半開区間で、`ref values[1..4]` または `ref mut values[1..4]` と書きます。裸の `values[1..4]` と、両端を省略した `ref values[..]` は `E0002` です。リストや文字列にはこの構文はなく、`E1005` になります。
+配列のスライスは `ref values[1..<4]`（終端を含まない半開区間）や `ref values[1..=3]`（終端を含む閉区間。edition 2028 では `ref values[1..3]` も閉区間）のように `ref` または `ref mut` と組んで書きます。裸の `values[1..<4]` と、両端を省略した `ref values[..]` は `E0002` です。リストや文字列にはこのスライス構文はなく、`E1005` になります。
 
 ## コロン (:) とダブルコロン (::) の使い分け
 

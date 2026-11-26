@@ -93,6 +93,7 @@ pub(crate) fn bears_facts(kind: &TypedExprKind) -> bool {
         | Assign(..)
         | Cast(_)
         | SaturatingIndex(_)
+        | FromEnd { .. }
         | CaseConstructor { .. }
         | Construct { .. }
         | UnionTag(_)

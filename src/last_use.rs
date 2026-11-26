@@ -248,6 +248,7 @@ impl Analysis<'_> {
             Unary(_, value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Checked(value)
             | Construct {
                 payload: Some(value),
