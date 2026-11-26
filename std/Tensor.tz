@@ -24,6 +24,49 @@ union Error =
     | NonContiguous
     deriving (Eq)
 
+/// Axis and dimension-retention options for single-axis tensor reductions (`NC07`).
+record AxisOptions { axis: i64, keepdims: bool } deriving (Eq)
+
+/// Multi-axis and dimension-retention options for multi-axis tensor reductions (`NC07`).
+record AxesOptions { axes: [i64], keepdims: bool } deriving (Eq)
+
+/// Axis, dimension-retention, and delta-degrees-of-freedom options for variance and standard deviation (`NC07`).
+record VarianceOptions { axis: Maybe<i64>, keepdims: bool, ddof: i64 }
+
+/// Output boundary mode for 1-D discrete convolution and cross-correlation (`NC07`).
+union ConvolveMode =
+    | Full
+    | Same
+    | Valid
+    deriving (Eq)
+
+/// Interpolation rule for `quantile` and `percentile` (`NC07`).
+union QuantileMethod =
+    | Linear
+    | Lower
+    | Higher
+    | Midpoint
+    | Nearest
+    deriving (Eq)
+
+/// Method, axis, and dimension-retention options for `quantile_with` and `percentile_with` (`NC07`).
+record QuantileOptions { method: QuantileMethod, axis: Maybe<i64>, keepdims: bool }
+
+/// Tie-breaking side for binary search in `searchsorted` (`NC07`).
+union SearchSide =
+    | Left
+    | Right
+    deriving (Eq)
+
+/// Full output of `unique_full`: sorted unique `values`, first-occurrence flat `indices`,
+/// reconstruction `inverse` indices, and occurrence `counts` (`NC07`).
+record UniqueResult<'a> {
+    values: Tensor<'a>,
+    indices: Tensor<i64>,
+    inverse: Tensor<i64>,
+    counts: Tensor<i64>
+}
+
 instance Display<Error> {
     fn display err =
         match err with
@@ -5330,6 +5373,2472 @@ fn accumulate f axis view =
                         acc = f acc out[slot]
                         Array.write slot acc (ref mut out)
         Tensor { shape: out_shape, data: out }
+
+// ============================================================================
+// NC07 — Axis reductions, NaN-ignoring stats, cumulative/diff/interp/convolve,
+//        quantiles, histograms, covariance, sorting, selection & 1-D set ops
+// ============================================================================
+
+private def total_cmp :: Ord<'a> => own 'a -> own 'a -> i64
+fn total_cmp left right =
+    let l_nan = !(left == left)
+    let r_nan = !(right == right)
+    if l_nan && r_nan then 0
+    elif l_nan then 1
+    elif r_nan then -1
+    elif left < right then -1
+    elif right < left then 1
+    else 0
+
+private def normalize_axes_sorted :: ref [i64] -> own i64 -> [i64]
+fn normalize_axes_sorted axes rank =
+    let k = axes.length
+    if k == 0 then []
+    else
+        let norm = new [i64](k, \i -> normalize_axis axes[i] rank)
+        let sorted = Array.sort (ref norm)
+        for i in 1i64 ..< k do
+            assert (sorted[i] != sorted[i - 1])
+        sorted
+
+private def axis_in_sorted :: ref [i64] -> own i64 -> bool
+fn axis_in_sorted sorted target =
+    let mut found = false
+    for i in 0i64 ..< sorted.length do
+        if sorted[i] == target then found = true
+    found
+
+// Multi-axis reduction kernel: gathers each reduced fiber in row-major order of `sorted_axes`
+// without transposing the whole tensor, then invokes `reducer` on that fiber.
+private def reduce_axes_core :: Copy<'a> => own bool -> own (ref ['a] -> 'b) -> ref [i64] -> own bool -> ref View<'a> -> Tensor<'b>
+fn reduce_axes_core allow_empty reducer raw_axes keepdims view =
+    let rank = view.shape.length
+    let red_axes = normalize_axes_sorted raw_axes rank
+    let red_rank = red_axes.length
+    let rem_rank = rank - red_rank
+    let mut rem_axes = new [i64](rem_rank, \_ -> 0)
+    let mut rp = 0
+    for d in 0i64 ..< rank do
+        if !(axis_in_sorted (ref red_axes) d) then
+            Array.write rp d (ref mut rem_axes)
+            rp = rp + 1
+    let red_shape = new [i64](red_rank, \i -> view.shape[red_axes[i]])
+    let rem_shape = new [i64](rem_rank, \i -> view.shape[rem_axes[i]])
+    let out_shape =
+        if keepdims then
+            new [i64](rank, \d -> if axis_in_sorted (ref red_axes) d then 1 else view.shape[d])
+        else
+            Array.copy (ref rem_shape)
+    let red_len = volume (ref red_shape)
+    if !allow_empty then assert (red_len > 0)
+    let out_len = volume (ref out_shape)
+    if out_len == 0 then Tensor { shape: out_shape, data: [] }
+    else
+        let rem_strides = dense_strides (ref rem_shape)
+        let red_strides = dense_strides (ref red_shape)
+        let v_strides = ref view.strides
+        let v_data = view.data
+        let v_offset = view.offset
+        let out_data = new ['b](out_len, \out_idx ->
+            let mut base_off = v_offset
+            for i in 0i64 ..< rem_rank do
+                let coord = (out_idx / rem_strides[i]) % rem_shape[i]
+                base_off = base_off + coord * v_strides[rem_axes[i]]
+            let fiber: ['a] =
+                if red_len == 0 then []
+                elif red_rank == 0 then [v_data[base_off]]
+                elif red_rank == 1 then
+                    let st = v_strides[red_axes[0]]
+                    new ['a](red_len, \k -> v_data[base_off + k * st])
+                else
+                    new ['a](red_len, \r_idx ->
+                        let mut off = base_off
+                        for j in 0i64 ..< red_rank do
+                            let rc = (r_idx / red_strides[j]) % red_shape[j]
+                            off = off + rc * v_strides[red_axes[j]]
+                        v_data[off])
+            reducer (ref fiber))
+        Tensor { shape: out_shape, data: out_data }
+
+private def reduce_axis_core :: Copy<'a> => own bool -> own (ref ['a] -> 'b) -> own i64 -> own bool -> ref View<'a> -> Tensor<'b>
+fn reduce_axis_core allow_empty reducer axis keepdims view =
+    let axes = [axis]
+    reduce_axes_core allow_empty reducer (ref axes) keepdims view
+
+private def reduce_full_slice :: Copy<'a> => own bool -> own (ref ['a] -> 'b) -> ref View<'a> -> 'b
+fn reduce_full_slice allow_empty reducer view =
+    let packed = to_tensor view
+    if !allow_empty then assert (packed.data.length > 0)
+    reducer (ref packed.data)
+
+// Applies `lane_fn` to every 1-D lane along `axis`, allowing the output extent along `axis` to be `new_dim`.
+private def apply_along_axis_1d :: Copy<'a> => own (ref ['a] -> ['b]) -> own i64 -> own i64 -> ref View<'a> -> Tensor<'b>
+fn apply_along_axis_1d lane_fn new_dim axis view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    assert (new_dim >= 0)
+    let mut out_shape = Array.copy (ref view.shape)
+    Array.write norm new_dim (ref mut out_shape)
+    let total_out = volume (ref out_shape)
+    if total_out == 0 then Tensor { shape: out_shape, data: [] }
+    else
+        let dim = view.shape[norm]
+        let out_strides = dense_strides (ref out_shape)
+        let axis_out_stride = out_strides[norm]
+        let outer_span = axis_out_stride * new_dim
+        let outer_count = total_out / outer_span
+        let rem_rank = rank - 1
+        let rem_axes = new [i64](rem_rank, \i -> if i < norm then i else i + 1)
+        let rem_shape = new [i64](rem_rank, \i -> view.shape[rem_axes[i]])
+        let rem_strides = dense_strides (ref rem_shape)
+        let sample = new ['a](dim, \k -> view.data[view.offset + k * view.strides[norm]])
+        let first_lane = lane_fn (ref sample)
+        assert (first_lane.length == new_dim)
+        let mut out = new ['b](total_out, \_ -> first_lane[0])
+        for o in 0i64 ..< outer_count do
+            for inner in 0i64 ..< axis_out_stride do
+                let lane_idx = o * axis_out_stride + inner
+                let mut base_in = view.offset
+                for r in 0i64 ..< rem_rank do
+                    let c = (lane_idx / rem_strides[r]) % rem_shape[r]
+                    base_in = base_in + c * view.strides[rem_axes[r]]
+                let lane_out =
+                    if lane_idx == 0 then Array.copy (ref first_lane)
+                    else
+                        let lane_in = new ['a](dim, \k -> view.data[base_in + k * view.strides[norm]])
+                        lane_fn (ref lane_in)
+                assert (lane_out.length == new_dim)
+                let base_out = o * outer_span + inner
+                for k in 0i64 ..< new_dim do
+                    Array.write (base_out + k * axis_out_stride) lane_out[k] (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+// ---- Slice reducers ----
+
+private def slice_sum :: Numeric<'a> => ref ['a] -> 'a
+fn slice_sum values =
+    let mut total = 0i64 as 'a
+    for x in values do total = total + x
+    total
+
+private def slice_sum_kahan :: Float<'a> => ref ['a] -> 'a
+fn slice_sum_kahan values = Array.sum_kahan values
+
+private def slice_prod :: Numeric<'a> => ref ['a] -> 'a
+fn slice_prod values =
+    let mut total = 1i64 as 'a
+    for x in values do total = total * x
+    total
+
+private def slice_mean :: Float<'a> => ref ['a] -> 'a
+fn slice_mean values =
+    let zero: 'a = 0i64 as 'a
+    if values.length == 0 then zero / zero
+    else slice_sum values / (values.length as 'a)
+
+private def slice_var :: Float<'a> => own i64 -> ref ['a] -> 'a
+fn slice_var ddof values =
+    let zero: 'a = 0i64 as 'a
+    let n = values.length
+    if n == 0 || n - ddof <= 0 then zero / zero
+    else
+        let mu = slice_sum values / (n as 'a)
+        let mut acc = zero
+        for x in values do
+            let d = x - mu
+            acc = acc + d * d
+        acc / ((n - ddof) as 'a)
+
+private def slice_min :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => ref ['a] -> 'a
+fn slice_min values =
+    assert (values.length > 0)
+    let mut best = values[0]
+    for i in 1i64 ..< values.length do
+        best = min_elem best values[i]
+    best
+
+private def slice_max :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => ref ['a] -> 'a
+fn slice_max values =
+    assert (values.length > 0)
+    let mut best = values[0]
+    for i in 1i64 ..< values.length do
+        best = max_elem best values[i]
+    best
+
+private def slice_argmin :: (Ord<'a>, Copy<'a>) => ref ['a] -> i64
+fn slice_argmin values =
+    assert (values.length > 0)
+    let mut best_idx = 0
+    let mut best_val = values[0]
+    if !(best_val == best_val) then 0
+    else
+        let mut nan_idx = -1
+        for i in 1i64 ..< values.length do
+            if nan_idx < 0 then
+                let x = values[i]
+                if !(x == x) then nan_idx = i
+                elif x < best_val then
+                    best_val = x
+                    best_idx = i
+        if nan_idx >= 0 then nan_idx else best_idx
+
+private def slice_argmax :: (Ord<'a>, Copy<'a>) => ref ['a] -> i64
+fn slice_argmax values =
+    assert (values.length > 0)
+    let mut best_idx = 0
+    let mut best_val = values[0]
+    if !(best_val == best_val) then 0
+    else
+        let mut nan_idx = -1
+        for i in 1i64 ..< values.length do
+            if nan_idx < 0 then
+                let x = values[i]
+                if !(x == x) then nan_idx = i
+                elif best_val < x then
+                    best_val = x
+                    best_idx = i
+        if nan_idx >= 0 then nan_idx else best_idx
+
+private def slice_all :: ref [bool] -> bool
+fn slice_all values =
+    let mut ok = true
+    for x in values do
+        if !x then ok = false
+    ok
+
+private def slice_any :: ref [bool] -> bool
+fn slice_any values =
+    let mut found = false
+    for x in values do
+        if x then found = true
+    found
+
+private def slice_count_nonzero :: Numeric<'a> => ref ['a] -> i64
+fn slice_count_nonzero values =
+    let zero: 'a = 0i64 as 'a
+    let mut cnt = 0
+    for x in values do
+        if !(x == zero) then cnt = cnt + 1
+    cnt
+
+private def slice_nansum :: Float<'a> => ref ['a] -> 'a
+fn slice_nansum values =
+    let mut total = 0i64 as 'a
+    for x in values do
+        if !(Math.is_nan x) then total = total + x
+    total
+
+private def slice_nanprod :: Float<'a> => ref ['a] -> 'a
+fn slice_nanprod values =
+    let mut total = 1i64 as 'a
+    for x in values do
+        if !(Math.is_nan x) then total = total * x
+    total
+
+private def slice_nanmean :: Float<'a> => ref ['a] -> 'a
+fn slice_nanmean values =
+    let zero: 'a = 0i64 as 'a
+    let mut total = zero
+    let mut cnt = 0
+    for x in values do
+        if !(Math.is_nan x) then
+            total = total + x
+            cnt = cnt + 1
+    if cnt == 0 then zero / zero else total / (cnt as 'a)
+
+private def slice_nanvar :: Float<'a> => own i64 -> ref ['a] -> 'a
+fn slice_nanvar ddof values =
+    let zero: 'a = 0i64 as 'a
+    let mut total = zero
+    let mut cnt = 0
+    for x in values do
+        if !(Math.is_nan x) then
+            total = total + x
+            cnt = cnt + 1
+    if cnt == 0 || cnt - ddof <= 0 then zero / zero
+    else
+        let mu = total / (cnt as 'a)
+        let mut acc = zero
+        for x in values do
+            if !(Math.is_nan x) then
+                let d = x - mu
+                acc = acc + d * d
+        acc / ((cnt - ddof) as 'a)
+
+private def slice_nanmin :: Float<'a> => ref ['a] -> 'a
+fn slice_nanmin values =
+    assert (values.length > 0)
+    let zero: 'a = 0i64 as 'a
+    let mut has_val = false
+    let mut best = zero / zero
+    for x in values do
+        if !(Math.is_nan x) then
+            if !has_val then
+                best = x
+                has_val = true
+            else
+                best = Math.min best x
+    best
+
+private def slice_nanmax :: Float<'a> => ref ['a] -> 'a
+fn slice_nanmax values =
+    assert (values.length > 0)
+    let zero: 'a = 0i64 as 'a
+    let mut has_val = false
+    let mut best = zero / zero
+    for x in values do
+        if !(Math.is_nan x) then
+            if !has_val then
+                best = x
+                has_val = true
+            else
+                best = Math.max best x
+    best
+
+private def slice_nanargmin :: Float<'a> => ref ['a] -> i64
+fn slice_nanargmin values =
+    assert (values.length > 0)
+    let mut best_idx = -1
+    let mut best_val = values[0]
+    for i in 0i64 ..< values.length do
+        let x = values[i]
+        if !(Math.is_nan x) then
+            if best_idx < 0 || x < best_val then
+                best_idx = i
+                best_val = x
+    assert (best_idx >= 0)
+    best_idx
+
+private def slice_nanargmax :: Float<'a> => ref ['a] -> i64
+fn slice_nanargmax values =
+    assert (values.length > 0)
+    let mut best_idx = -1
+    let mut best_val = values[0]
+    for i in 0i64 ..< values.length do
+        let x = values[i]
+        if !(Math.is_nan x) then
+            if best_idx < 0 || best_val < x then
+                best_idx = i
+                best_val = x
+    assert (best_idx >= 0)
+    best_idx
+
+// ---- §1 Public Reductions & NaN-ignoring Reductions ----
+
+/// Sums all elements of `view` (`0` when empty).
+///
+/// ```tsuzuri run=21
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// Tensor.sum (Tensor.view t)
+/// ```
+def sum :: Numeric<'a> => ref View<'a> -> 'a
+fn sum view = reduce_full_slice true slice_sum view
+
+/// Sums elements of `view` along `axis` (`keepdims = false`).
+///
+/// ```tsuzuri run=[5,%207,%209]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// Tensor.to_array (Tensor.sum_axis 0 (Tensor.view t))
+/// ```
+def sum_axis :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn sum_axis axis view = reduce_axis_core true slice_sum axis false view
+
+/// Sums elements of `view` along `opts.axis`, optionally retaining reduced axis extent `1`.
+///
+/// ```tsuzuri run=[1,%203]%20[5,%207,%209]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// let out = Tensor.sum_with (Tensor.AxisOptions { axis: 0, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def sum_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn sum_with opts view = reduce_axis_core true slice_sum opts.axis opts.keepdims view
+
+/// Sums elements of `view` over multiple axes (`opts.axes`).
+///
+/// ```tsuzuri run=[10,%2026]
+/// let t = Tensor.of_array [2, 2, 2] [1, 2, 3, 4, 5, 6, 7, 8]
+/// Tensor.to_array (Tensor.sum_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def sum_axes :: Numeric<'a> => own AxesOptions -> ref View<'a> -> Tensor<'a>
+fn sum_axes opts view = reduce_axes_core true slice_sum (ref opts.axes) opts.keepdims view
+
+/// Sums all elements using Kahan-Babuška-Neumaier compensated summation.
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [4] [1.0, 1e100, 1.0, -1e100]
+/// Tensor.sum_kahan (Tensor.view t)
+/// ```
+def sum_kahan :: Float<'a> => ref View<'a> -> 'a
+fn sum_kahan view = reduce_full_slice true slice_sum_kahan view
+
+/// Kahan-Babuška-Neumaier compensated sum along `axis`.
+///
+/// ```tsuzuri run=[2]
+/// let t = Tensor.of_array [1, 4] [1.0, 1e100, 1.0, -1e100]
+/// Tensor.to_array (Tensor.sum_kahan_axis 1 (Tensor.view t))
+/// ```
+def sum_kahan_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn sum_kahan_axis axis view = reduce_axis_core true slice_sum_kahan axis false view
+
+/// Kahan-Babuška-Neumaier compensated sum with `AxisOptions`.
+///
+/// ```tsuzuri run=[1,%201]
+/// let t = Tensor.of_array [1, 4] [1.0, 1e100, 1.0, -1e100]
+/// let out = Tensor.sum_kahan_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// Array.copy (Tensor.shape (Tensor.view out))
+/// ```
+def sum_kahan_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn sum_kahan_with opts view = reduce_axis_core true slice_sum_kahan opts.axis opts.keepdims view
+
+/// Multiplies all elements of `view` (`1` when empty).
+///
+/// ```tsuzuri run=24
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.prod (Tensor.view t)
+/// ```
+def prod :: Numeric<'a> => ref View<'a> -> 'a
+fn prod view = reduce_full_slice true slice_prod view
+
+/// Product of elements along `axis`.
+///
+/// ```tsuzuri run=[2,%2012]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.prod_axis 1 (Tensor.view t))
+/// ```
+def prod_axis :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn prod_axis axis view = reduce_axis_core true slice_prod axis false view
+
+/// Product of elements along `opts.axis` with optional `keepdims`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%2012]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let out = Tensor.prod_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def prod_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn prod_with opts view = reduce_axis_core true slice_prod opts.axis opts.keepdims view
+
+/// Product of elements over `opts.axes`.
+///
+/// ```tsuzuri run=[24]
+/// let t = Tensor.of_array [1, 2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.prod_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def prod_axes :: Numeric<'a> => own AxesOptions -> ref View<'a> -> Tensor<'a>
+fn prod_axes opts view = reduce_axes_core true slice_prod (ref opts.axes) opts.keepdims view
+
+/// Arithmetic mean of all elements (`NaN` when empty).
+///
+/// ```tsuzuri run=3.5
+/// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// Tensor.mean (Tensor.view t)
+/// ```
+def mean :: Float<'a> => ref View<'a> -> 'a
+fn mean view = reduce_full_slice true slice_mean view
+
+/// Arithmetic mean along `axis`.
+///
+/// ```tsuzuri run=[2,%205]
+/// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// Tensor.to_array (Tensor.mean_axis 1 (Tensor.view t))
+/// ```
+def mean_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn mean_axis axis view = reduce_axis_core true slice_mean axis false view
+
+/// Arithmetic mean with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%205]
+/// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// let out = Tensor.mean_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def mean_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn mean_with opts view = reduce_axis_core true slice_mean opts.axis opts.keepdims view
+
+/// Arithmetic mean over `opts.axes`.
+///
+/// ```tsuzuri run=[2.5,%206.5]
+/// let t = Tensor.of_array [2, 2, 2] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+/// Tensor.to_array (Tensor.mean_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def mean_axes :: Float<'a> => own AxesOptions -> ref View<'a> -> Tensor<'a>
+fn mean_axes opts view = reduce_axes_core true slice_mean (ref opts.axes) opts.keepdims view
+
+/// Weighted arithmetic mean of `view` with broadcastable `weights`; traps on incompatible shapes or zero total weight.
+///
+/// ```tsuzuri run=2.6
+/// let w = Tensor.of_array [3] [1.0, 2.0, 2.0]
+/// let x = Tensor.of_array [3] [1.0, 2.0, 4.0]
+/// Tensor.average (Tensor.view w) (Tensor.view x)
+/// ```
+def average :: Float<'a> => ref View<'a> -> ref View<'a> -> 'a
+fn average weights view =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let ones = full one (Array.copy (ref view.shape))
+    let w_bcast = mul_or_trap weights (ref (Tensor.view ones))
+    assert (w_bcast.shape == view.shape)
+    let w_sum = sum (ref (Tensor.view w_bcast))
+    assert (w_sum != zero)
+    let prod_t = mul_or_trap (ref (Tensor.view w_bcast)) view
+    sum (ref (Tensor.view prod_t)) / w_sum
+
+/// Weighted arithmetic mean along `axis` with 1-D axis weights or broadcastable `weights`.
+///
+/// ```tsuzuri run=[2.5,%205.5]
+/// let w = Tensor.of_array [3] [1.0, 1.0, 2.0]
+/// let x = Tensor.of_array [2, 3] [1.0, 2.0, 3.5, 4.0, 5.0, 6.5]
+/// Tensor.to_array (Tensor.average_axis 1 (Tensor.view w) (Tensor.view x))
+/// ```
+def average_axis :: Float<'a> => own i64 -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn average_axis axis weights view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let zero: 'a = 0i64 as 'a
+    if weights.shape.length == 1 && rank != 1 then
+        assert (weights.shape[0] == view.shape[norm])
+        let w_packed = to_tensor weights
+        let w_sum = slice_sum (ref w_packed.data)
+        assert (w_sum != zero)
+        let w_arr = ref w_packed.data
+        reduce_axis_core false (\line ->
+            let mut num = zero
+            for i in 0i64 ..< line.length do
+                num = num + line[i] * w_arr[i]
+            num / w_sum) norm false view
+    else
+        let one: 'a = 1i64 as 'a
+        let ones = full one (Array.copy (ref view.shape))
+        let w_bcast = mul_or_trap weights (ref (Tensor.view ones))
+        assert (w_bcast.shape == view.shape)
+        let w_sum_t = sum_axis norm (ref (Tensor.view w_bcast))
+        for i in 0i64 ..< w_sum_t.data.length do
+            assert (w_sum_t.data[i] != zero)
+        let weighted = mul_or_trap (ref (Tensor.view w_bcast)) view
+        let num_t = sum_axis norm (ref (Tensor.view weighted))
+        div_or_trap (ref (Tensor.view num_t)) (ref (Tensor.view w_sum_t))
+
+/// Population variance (`ddof = 0`) of all elements (`NaN` when empty).
+///
+/// ```tsuzuri run=1.25
+/// let t = Tensor.of_array [4] [1.0, 2.0, 3.0, 4.0]
+/// Tensor.var (Tensor.view t)
+/// ```
+def var :: Float<'a> => ref View<'a> -> 'a
+fn var view = reduce_full_slice true (\s -> slice_var 0 s) view
+
+/// Population variance (`ddof = 0`) along `axis`.
+///
+/// ```tsuzuri run=[0.25,%200.25]
+/// let t = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// Tensor.to_array (Tensor.var_axis 1 (Tensor.view t))
+/// ```
+def var_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn var_axis axis view = reduce_axis_core true (\s -> slice_var 0 s) axis false view
+
+/// Variance with explicit `VarianceOptions { axis, keepdims, ddof }` (`NaN` when `n - ddof <= 0`).
+///
+/// ```tsuzuri run=[0.5,%200.5]
+/// let t = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// let opts = Tensor.VarianceOptions { axis: Maybe.Some 1, keepdims: false, ddof: 1 }
+/// Tensor.to_array (Tensor.var_with opts (Tensor.view t))
+/// ```
+def var_with :: Float<'a> => own VarianceOptions -> ref View<'a> -> Tensor<'a>
+fn var_with opts view =
+    let d = opts.ddof
+    match opts.axis with
+    | Maybe.Some ax -> reduce_axis_core true (\s -> slice_var d s) ax opts.keepdims view
+    | Maybe.None ->
+        let val = reduce_full_slice true (\s -> slice_var d s) view
+        if opts.keepdims then Tensor { shape: new [i64](view.shape.length, \_ -> 1), data: [val] }
+        else Tensor { shape: [], data: [val] }
+
+/// Population standard deviation (`ddof = 0`) of all elements.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [2] [1.0, 3.0]
+/// Tensor.std (Tensor.view t)
+/// ```
+def std :: Float<'a> => ref View<'a> -> 'a
+fn std view = Math.sqrt (var view)
+
+/// Population standard deviation (`ddof = 0`) along `axis`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let t = Tensor.of_array [2, 2] [1.0, 3.0, 2.0, 6.0]
+/// Tensor.to_array (Tensor.std_axis 1 (Tensor.view t))
+/// ```
+def std_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn std_axis axis view =
+    let vt = var_axis axis view
+    map Math.sqrt (ref (Tensor.view vt))
+
+/// Standard deviation with `VarianceOptions`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [2] [0.0, 2.0]
+/// let opts = Tensor.VarianceOptions { axis: Maybe.Some 0, keepdims: true, ddof: 0 }
+/// Tensor.to_array (Tensor.std_with opts (Tensor.view t))
+/// ```
+def std_with :: Float<'a> => own VarianceOptions -> ref View<'a> -> Tensor<'a>
+fn std_with opts view =
+    let vt = var_with opts view
+    map Math.sqrt (ref (Tensor.view vt))
+
+/// Minimum element across `view`; traps when empty and propagates `NaN`.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// Tensor.min (Tensor.view t)
+/// ```
+def min :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> 'a
+fn min view = reduce_full_slice false slice_min view
+
+/// Minimum along `axis`; traps when the reduced axis is empty and propagates `NaN`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// Tensor.to_array (Tensor.min_axis 1 (Tensor.view t))
+/// ```
+def min_axis :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn min_axis axis view = reduce_axis_core false slice_min axis false view
+
+/// Minimum along `opts.axis` with optional `keepdims`.
+///
+/// ```tsuzuri run=[2,%201]%20[1,%202]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// let out = Tensor.min_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def min_with :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn min_with opts view = reduce_axis_core false slice_min opts.axis opts.keepdims view
+
+/// Minimum over `opts.axes`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [1, 2, 2] [4, 1, 3, 2]
+/// Tensor.to_array (Tensor.min_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def min_axes :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own AxesOptions -> ref View<'a> -> Tensor<'a>
+fn min_axes opts view = reduce_axes_core false slice_min (ref opts.axes) opts.keepdims view
+
+/// Maximum element across `view`; traps when empty and propagates `NaN`.
+///
+/// ```tsuzuri run=4
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// Tensor.max (Tensor.view t)
+/// ```
+def max :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> 'a
+fn max view = reduce_full_slice false slice_max view
+
+/// Maximum along `axis`; traps when the reduced axis is empty and propagates `NaN`.
+///
+/// ```tsuzuri run=[4,%203]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// Tensor.to_array (Tensor.max_axis 1 (Tensor.view t))
+/// ```
+def max_axis :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn max_axis axis view = reduce_axis_core false slice_max axis false view
+
+/// Maximum along `opts.axis` with optional `keepdims`.
+///
+/// ```tsuzuri run=[2,%201]%20[4,%203]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// let out = Tensor.max_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def max_with :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn max_with opts view = reduce_axis_core false slice_max opts.axis opts.keepdims view
+
+/// Maximum over `opts.axes`.
+///
+/// ```tsuzuri run=[4]
+/// let t = Tensor.of_array [1, 2, 2] [4, 1, 3, 2]
+/// Tensor.to_array (Tensor.max_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def max_axes :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => own AxesOptions -> ref View<'a> -> Tensor<'a>
+fn max_axes opts view = reduce_axes_core false slice_max (ref opts.axes) opts.keepdims view
+
+/// Row-major flat index of the minimum element (first occurrence on ties, or first `NaN` if present); traps when empty.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [2, 2] [4, 1, 1, 2]
+/// Tensor.argmin (Tensor.view t)
+/// ```
+def argmin :: (Ord<'a>, Copy<'a>) => ref View<'a> -> i64
+fn argmin view = reduce_full_slice false slice_argmin view
+
+/// Index of the minimum element along `axis`.
+///
+/// ```tsuzuri run=[1,%201]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// Tensor.to_array (Tensor.argmin_axis 1 (Tensor.view t))
+/// ```
+def argmin_axis :: (Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<i64>
+fn argmin_axis axis view = reduce_axis_core false slice_argmin axis false view
+
+/// Index of the minimum element along `opts.axis` with optional `keepdims`.
+///
+/// ```tsuzuri run=[2,%201]%20[1,%201]
+/// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
+/// let out = Tensor.argmin_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def argmin_with :: (Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<i64>
+fn argmin_with opts view = reduce_axis_core false slice_argmin opts.axis opts.keepdims view
+
+/// Row-major flat index of the maximum element (first occurrence on ties, or first `NaN` if present); traps when empty.
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [2, 2] [1, 3, 5, 5]
+/// Tensor.argmax (Tensor.view t)
+/// ```
+def argmax :: (Ord<'a>, Copy<'a>) => ref View<'a> -> i64
+fn argmax view = reduce_full_slice false slice_argmax view
+
+/// Index of the maximum element along `axis`.
+///
+/// ```tsuzuri run=[1,%200]
+/// let t = Tensor.of_array [2, 2] [1, 4, 5, 2]
+/// Tensor.to_array (Tensor.argmax_axis 1 (Tensor.view t))
+/// ```
+def argmax_axis :: (Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<i64>
+fn argmax_axis axis view = reduce_axis_core false slice_argmax axis false view
+
+/// Index of the maximum element along `opts.axis` with optional `keepdims`.
+///
+/// ```tsuzuri run=[2,%201]%20[1,%200]
+/// let t = Tensor.of_array [2, 2] [1, 4, 5, 2]
+/// let out = Tensor.argmax_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def argmax_with :: (Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<i64>
+fn argmax_with opts view = reduce_axis_core false slice_argmax opts.axis opts.keepdims view
+
+/// Peak-to-peak range (`max - min`) across `view`; traps when empty.
+///
+/// ```tsuzuri run=8
+/// let t = Tensor.of_array [4] [2, 10, 4, 7]
+/// Tensor.ptp (Tensor.view t)
+/// ```
+def ptp :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> 'a
+fn ptp view = reduce_full_slice false (\s -> slice_max s - slice_min s) view
+
+/// Peak-to-peak range (`max - min`) along `axis`.
+///
+/// ```tsuzuri run=[3,%204]
+/// let t = Tensor.of_array [2, 2] [1, 4, 8, 4]
+/// Tensor.to_array (Tensor.ptp_axis 1 (Tensor.view t))
+/// ```
+def ptp_axis :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn ptp_axis axis view = reduce_axis_core false (\s -> slice_max s - slice_min s) axis false view
+
+/// Peak-to-peak range (`max - min`) with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[3,%204]
+/// let t = Tensor.of_array [2, 2] [1, 4, 8, 4]
+/// let out = Tensor.ptp_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def ptp_with :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn ptp_with opts view = reduce_axis_core false (\s -> slice_max s - slice_min s) opts.axis opts.keepdims view
+
+/// Returns `true` when every element of `view` is `true` (`true` when empty).
+///
+/// ```tsuzuri run=true
+/// let t = Tensor.of_array [3] [true, true, true]
+/// Tensor.all (Tensor.view t)
+/// ```
+def all :: ref View<bool> -> bool
+fn all view = reduce_full_slice true slice_all view
+
+/// Logical `AND` reduction along `axis`.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2, 2] [true, true, true, false]
+/// Tensor.to_array (Tensor.all_axis 1 (Tensor.view t))
+/// ```
+def all_axis :: own i64 -> ref View<bool> -> Tensor<bool>
+fn all_axis axis view = reduce_axis_core true slice_all axis false view
+
+/// Logical `AND` reduction with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[true,%20false]
+/// let t = Tensor.of_array [2, 2] [true, true, true, false]
+/// let out = Tensor.all_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def all_with :: own AxisOptions -> ref View<bool> -> Tensor<bool>
+fn all_with opts view = reduce_axis_core true slice_all opts.axis opts.keepdims view
+
+/// Logical `AND` reduction over `opts.axes`.
+///
+/// ```tsuzuri run=[false]
+/// let t = Tensor.of_array [1, 2, 2] [true, true, true, false]
+/// Tensor.to_array (Tensor.all_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def all_axes :: own AxesOptions -> ref View<bool> -> Tensor<bool>
+fn all_axes opts view = reduce_axes_core true slice_all (ref opts.axes) opts.keepdims view
+
+/// Returns `true` when at least one element of `view` is `true` (`false` when empty).
+///
+/// ```tsuzuri run=true
+/// let t = Tensor.of_array [3] [false, true, false]
+/// Tensor.any (Tensor.view t)
+/// ```
+def any :: ref View<bool> -> bool
+fn any view = reduce_full_slice true slice_any view
+
+/// Logical `OR` reduction along `axis`.
+///
+/// ```tsuzuri run=[false,%20true]
+/// let t = Tensor.of_array [2, 2] [false, false, false, true]
+/// Tensor.to_array (Tensor.any_axis 1 (Tensor.view t))
+/// ```
+def any_axis :: own i64 -> ref View<bool> -> Tensor<bool>
+fn any_axis axis view = reduce_axis_core true slice_any axis false view
+
+/// Logical `OR` reduction with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[false,%20true]
+/// let t = Tensor.of_array [2, 2] [false, false, false, true]
+/// let out = Tensor.any_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def any_with :: own AxisOptions -> ref View<bool> -> Tensor<bool>
+fn any_with opts view = reduce_axis_core true slice_any opts.axis opts.keepdims view
+
+/// Logical `OR` reduction over `opts.axes`.
+///
+/// ```tsuzuri run=[true]
+/// let t = Tensor.of_array [1, 2, 2] [false, false, false, true]
+/// Tensor.to_array (Tensor.any_axes (Tensor.AxesOptions { axes: [1, 2], keepdims: false }) (Tensor.view t))
+/// ```
+def any_axes :: own AxesOptions -> ref View<bool> -> Tensor<bool>
+fn any_axes opts view = reduce_axes_core true slice_any (ref opts.axes) opts.keepdims view
+
+/// Counts non-zero elements in `view` (`NaN` counts as non-zero; `-0.0` counts as zero).
+///
+/// ```tsuzuri run=3
+/// let t = Tensor.of_array [5] [0, 2, 0, -5, 1]
+/// Tensor.count_nonzero (Tensor.view t)
+/// ```
+def count_nonzero :: Numeric<'a> => ref View<'a> -> i64
+fn count_nonzero view = reduce_full_slice true slice_count_nonzero view
+
+/// Counts non-zero elements along `axis`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let t = Tensor.of_array [2, 3] [0, 2, 0, -5, 0, 1]
+/// Tensor.to_array (Tensor.count_nonzero_axis 1 (Tensor.view t))
+/// ```
+def count_nonzero_axis :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<i64>
+fn count_nonzero_axis axis view = reduce_axis_core true slice_count_nonzero axis false view
+
+/// Counts non-zero elements with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[1,%202]
+/// let t = Tensor.of_array [2, 3] [0, 2, 0, -5, 0, 1]
+/// let out = Tensor.count_nonzero_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def count_nonzero_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<i64>
+fn count_nonzero_with opts view = reduce_axis_core true slice_count_nonzero opts.axis opts.keepdims view
+
+/// Sums all elements treating `NaN` as `0.0`.
+///
+/// ```tsuzuri run=5
+/// let t = Tensor.of_array [3] [2.0, 0.0 / 0.0, 3.0]
+/// Tensor.nansum (Tensor.view t)
+/// ```
+def nansum :: Float<'a> => ref View<'a> -> 'a
+fn nansum view = reduce_full_slice true slice_nansum view
+
+/// Sums along `axis` treating `NaN` as `0.0`.
+///
+/// ```tsuzuri run=[2,%207]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// Tensor.to_array (Tensor.nansum_axis 1 (Tensor.view t))
+/// ```
+def nansum_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nansum_axis axis view = reduce_axis_core true slice_nansum axis false view
+
+/// Sums with `AxisOptions` treating `NaN` as `0.0`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%207]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// let out = Tensor.nansum_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nansum_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nansum_with opts view = reduce_axis_core true slice_nansum opts.axis opts.keepdims view
+
+/// Product of all elements treating `NaN` as `1.0`.
+///
+/// ```tsuzuri run=6
+/// let t = Tensor.of_array [3] [2.0, 0.0 / 0.0, 3.0]
+/// Tensor.nanprod (Tensor.view t)
+/// ```
+def nanprod :: Float<'a> => ref View<'a> -> 'a
+fn nanprod view = reduce_full_slice true slice_nanprod view
+
+/// Product along `axis` treating `NaN` as `1.0`.
+///
+/// ```tsuzuri run=[2,%2012]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// Tensor.to_array (Tensor.nanprod_axis 1 (Tensor.view t))
+/// ```
+def nanprod_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanprod_axis axis view = reduce_axis_core true slice_nanprod axis false view
+
+/// Product with `AxisOptions` treating `NaN` as `1.0`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%2012]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// let out = Tensor.nanprod_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nanprod_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nanprod_with opts view = reduce_axis_core true slice_nanprod opts.axis opts.keepdims view
+
+/// Arithmetic mean ignoring `NaN` (`NaN` when empty or all `NaN`).
+///
+/// ```tsuzuri run=2.5
+/// let t = Tensor.of_array [3] [2.0, 0.0 / 0.0, 3.0]
+/// Tensor.nanmean (Tensor.view t)
+/// ```
+def nanmean :: Float<'a> => ref View<'a> -> 'a
+fn nanmean view = reduce_full_slice true slice_nanmean view
+
+/// Arithmetic mean along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%203.5]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// Tensor.to_array (Tensor.nanmean_axis 1 (Tensor.view t))
+/// ```
+def nanmean_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanmean_axis axis view = reduce_axis_core true slice_nanmean axis false view
+
+/// Arithmetic mean with `AxisOptions` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%203.5]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
+/// let out = Tensor.nanmean_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nanmean_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nanmean_with opts view = reduce_axis_core true slice_nanmean opts.axis opts.keepdims view
+
+/// Population variance (`ddof = 0`) ignoring `NaN`.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [3] [1.0, 0.0 / 0.0, 3.0]
+/// Tensor.nanvar (Tensor.view t)
+/// ```
+def nanvar :: Float<'a> => ref View<'a> -> 'a
+fn nanvar view = reduce_full_slice true (\s -> slice_nanvar 0 s) view
+
+/// Population variance (`ddof = 0`) along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[0,%201]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 1.0, 3.0]
+/// Tensor.to_array (Tensor.nanvar_axis 1 (Tensor.view t))
+/// ```
+def nanvar_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanvar_axis axis view = reduce_axis_core true (\s -> slice_nanvar 0 s) axis false view
+
+/// Variance ignoring `NaN` with `VarianceOptions`.
+///
+/// ```tsuzuri run=[2]
+/// let t = Tensor.of_array [3] [1.0, 0.0 / 0.0, 3.0]
+/// let opts = Tensor.VarianceOptions { axis: Maybe.Some 0, keepdims: true, ddof: 1 }
+/// Tensor.to_array (Tensor.nanvar_with opts (Tensor.view t))
+/// ```
+def nanvar_with :: Float<'a> => own VarianceOptions -> ref View<'a> -> Tensor<'a>
+fn nanvar_with opts view =
+    let d = opts.ddof
+    match opts.axis with
+    | Maybe.Some ax -> reduce_axis_core true (\s -> slice_nanvar d s) ax opts.keepdims view
+    | Maybe.None ->
+        let val = reduce_full_slice true (\s -> slice_nanvar d s) view
+        if opts.keepdims then Tensor { shape: new [i64](view.shape.length, \_ -> 1), data: [val] }
+        else Tensor { shape: [], data: [val] }
+
+/// Population standard deviation (`ddof = 0`) ignoring `NaN`.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [3] [1.0, 0.0 / 0.0, 3.0]
+/// Tensor.nanstd (Tensor.view t)
+/// ```
+def nanstd :: Float<'a> => ref View<'a> -> 'a
+fn nanstd view = Math.sqrt (nanvar view)
+
+/// Population standard deviation (`ddof = 0`) along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[0,%201]
+/// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 1.0, 3.0]
+/// Tensor.to_array (Tensor.nanstd_axis 1 (Tensor.view t))
+/// ```
+def nanstd_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanstd_axis axis view =
+    let vt = nanvar_axis axis view
+    map Math.sqrt (ref (Tensor.view vt))
+
+/// Standard deviation ignoring `NaN` with `VarianceOptions`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [3] [0.0, 0.0 / 0.0, 2.0]
+/// let opts = Tensor.VarianceOptions { axis: Maybe.Some 0, keepdims: true, ddof: 0 }
+/// Tensor.to_array (Tensor.nanstd_with opts (Tensor.view t))
+/// ```
+def nanstd_with :: Float<'a> => own VarianceOptions -> ref View<'a> -> Tensor<'a>
+fn nanstd_with opts view =
+    let vt = nanvar_with opts view
+    map Math.sqrt (ref (Tensor.view vt))
+
+/// Minimum element ignoring `NaN` (`NaN` if all elements are `NaN`; traps when empty).
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [3] [0.0 / 0.0, 5.0, 2.0]
+/// Tensor.nanmin (Tensor.view t)
+/// ```
+def nanmin :: Float<'a> => ref View<'a> -> 'a
+fn nanmin view = reduce_full_slice false slice_nanmin view
+
+/// Minimum along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[5,%202]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// Tensor.to_array (Tensor.nanmin_axis 1 (Tensor.view t))
+/// ```
+def nanmin_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanmin_axis axis view = reduce_axis_core false slice_nanmin axis false view
+
+/// Minimum with `AxisOptions` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%201]%20[5,%202]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// let out = Tensor.nanmin_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nanmin_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nanmin_with opts view = reduce_axis_core false slice_nanmin opts.axis opts.keepdims view
+
+/// Maximum element ignoring `NaN` (`NaN` if all elements are `NaN`; traps when empty).
+///
+/// ```tsuzuri run=5
+/// let t = Tensor.of_array [3] [0.0 / 0.0, 5.0, 2.0]
+/// Tensor.nanmax (Tensor.view t)
+/// ```
+def nanmax :: Float<'a> => ref View<'a> -> 'a
+fn nanmax view = reduce_full_slice false slice_nanmax view
+
+/// Maximum along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[5,%203]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// Tensor.to_array (Tensor.nanmax_axis 1 (Tensor.view t))
+/// ```
+def nanmax_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanmax_axis axis view = reduce_axis_core false slice_nanmax axis false view
+
+/// Maximum with `AxisOptions` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%201]%20[5,%203]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// let out = Tensor.nanmax_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nanmax_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nanmax_with opts view = reduce_axis_core false slice_nanmax opts.axis opts.keepdims view
+
+/// Flat index of the minimum non-`NaN` element; traps when empty or all `NaN`.
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [3] [0.0 / 0.0, 5.0, 2.0]
+/// Tensor.nanargmin (Tensor.view t)
+/// ```
+def nanargmin :: Float<'a> => ref View<'a> -> i64
+fn nanargmin view = reduce_full_slice false slice_nanargmin view
+
+/// Index of the minimum non-`NaN` element along `axis`; traps on empty or all-`NaN` slices.
+///
+/// ```tsuzuri run=[1,%201]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// Tensor.to_array (Tensor.nanargmin_axis 1 (Tensor.view t))
+/// ```
+def nanargmin_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<i64>
+fn nanargmin_axis axis view = reduce_axis_core false slice_nanargmin axis false view
+
+/// Flat index of the maximum non-`NaN` element; traps when empty or all `NaN`.
+///
+/// ```tsuzuri run=1
+/// let t = Tensor.of_array [3] [0.0 / 0.0, 5.0, 2.0]
+/// Tensor.nanargmax (Tensor.view t)
+/// ```
+def nanargmax :: Float<'a> => ref View<'a> -> i64
+fn nanargmax view = reduce_full_slice false slice_nanargmax view
+
+/// Index of the maximum non-`NaN` element along `axis`; traps on empty or all-`NaN` slices.
+///
+/// ```tsuzuri run=[1,%200]
+/// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
+/// Tensor.to_array (Tensor.nanargmax_axis 1 (Tensor.view t))
+/// ```
+def nanargmax_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<i64>
+fn nanargmax_axis axis view = reduce_axis_core false slice_nanargmax axis false view
+
+// ---- §2 Cumulative, Finite Differences, Numerical Integration, Convolve & Interp ----
+
+/// Cumulative sum along `axis`, preserving shape.
+///
+/// ```tsuzuri run=[1,%203,%206,%204,%209,%2015]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// Tensor.to_array (Tensor.cumsum 1 (Tensor.view t))
+/// ```
+def cumsum :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn cumsum axis view = accumulate (\acc x -> acc + x) axis view
+
+/// Cumulative sum of the flattened tensor as a 1-D tensor (`np.cumsum(a)`).
+///
+/// ```tsuzuri run=[1,%203,%206,%2010]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.cumsum_flat (Tensor.view t))
+/// ```
+def cumsum_flat :: Numeric<'a> => ref View<'a> -> Tensor<'a>
+fn cumsum_flat view =
+    let packed = to_tensor view
+    let n = packed.data.length
+    let flat = Tensor { shape: [n], data: packed.data }
+    accumulate (\acc x -> acc + x) 0 (ref (Tensor.view flat))
+
+/// Cumulative product along `axis`, preserving shape.
+///
+/// ```tsuzuri run=[1,%202,%206,%202,%206,%2024]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 2, 3, 4]
+/// Tensor.to_array (Tensor.cumprod 1 (Tensor.view t))
+/// ```
+def cumprod :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn cumprod axis view = accumulate (\acc x -> acc * x) axis view
+
+/// Cumulative product of the flattened tensor as a 1-D tensor (`np.cumprod(a)`).
+///
+/// ```tsuzuri run=[1,%202,%206,%2024]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.cumprod_flat (Tensor.view t))
+/// ```
+def cumprod_flat :: Numeric<'a> => ref View<'a> -> Tensor<'a>
+fn cumprod_flat view =
+    let packed = to_tensor view
+    let n = packed.data.length
+    let flat = Tensor { shape: [n], data: packed.data }
+    accumulate (\acc x -> acc * x) 0 (ref (Tensor.view flat))
+
+/// Cumulative sum along `axis` treating `NaN` as `0.0`.
+///
+/// ```tsuzuri run=[1,%201,%204]
+/// let t = Tensor.of_array [3] [1.0, 0.0 / 0.0, 3.0]
+/// Tensor.to_array (Tensor.nancumsum 0 (Tensor.view t))
+/// ```
+def nancumsum :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nancumsum axis view =
+    let zero: 'a = 0i64 as 'a
+    let cleaned = map (\x -> if Math.is_nan x then zero else x) view
+    accumulate (\acc x -> acc + x) axis (ref (Tensor.view cleaned))
+
+/// Cumulative product along `axis` treating `NaN` as `1.0`.
+///
+/// ```tsuzuri run=[2,%202,%206]
+/// let t = Tensor.of_array [3] [2.0, 0.0 / 0.0, 3.0]
+/// Tensor.to_array (Tensor.nancumprod 0 (Tensor.view t))
+/// ```
+def nancumprod :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nancumprod axis view =
+    let one: 'a = 1i64 as 'a
+    let cleaned = map (\x -> if Math.is_nan x then one else x) view
+    accumulate (\acc x -> acc * x) axis (ref (Tensor.view cleaned))
+
+/// First-order forward difference `x[i+1] - x[i]` along `axis` (`dim` becomes `max(0, dim - 1)`).
+///
+/// ```tsuzuri run=[1,%203,%202,%205]
+/// let t = Tensor.of_array [2, 3] [1, 2, 5, 10, 12, 17]
+/// Tensor.to_array (Tensor.diff 1 (Tensor.view t))
+/// ```
+def diff :: Numeric<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn diff axis view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    let new_dim = if dim > 1 then dim - 1 else 0
+    apply_along_axis_1d (\line -> new ['a](new_dim, \i -> line[i + 1] - line[i])) new_dim norm view
+
+/// `n`-th order forward difference along `axis`; traps when `n < 0`.
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.of_array [4] [1, 2, 5, 11]
+/// Tensor.to_array (Tensor.diff_n 2 0 (Tensor.view t))
+/// ```
+def diff_n :: Numeric<'a> => own i64 -> own i64 -> ref View<'a> -> Tensor<'a>
+fn diff_n n axis view =
+    assert (n >= 0)
+    let norm = normalize_axis axis view.shape.length
+    let mut cur = to_tensor view
+    for _ in 0i64 ..< n do
+        cur = diff norm (ref (Tensor.view cur))
+    cur
+
+/// Consecutive differences of the flattened tensor as a 1-D tensor (`np.ediff1d`).
+///
+/// ```tsuzuri run=[1,%202,%204]
+/// let t = Tensor.of_array [2, 2] [1, 2, 4, 8]
+/// Tensor.to_array (Tensor.ediff1d (Tensor.view t))
+/// ```
+def ediff1d :: Numeric<'a> => ref View<'a> -> Tensor<'a>
+fn ediff1d view =
+    let packed = to_tensor view
+    let n = packed.data.length
+    let out_n = if n > 1 then n - 1 else 0
+    let p_data = ref packed.data
+    Tensor { shape: [out_n], data: new ['a](out_n, \i -> p_data[i + 1] - p_data[i]) }
+
+/// Numerical gradient along `axis` with uniform sample spacing `spacing` (2nd-order central interior,
+/// 1st-order forward/backward boundaries; traps if axis extent `< 2` or `spacing == 0`).
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// let t = Tensor.of_array [3] [0.0, 1.0, 4.0]
+/// Tensor.to_array (Tensor.gradient 1.0 0 (Tensor.view t))
+/// ```
+def gradient :: Float<'a> => own 'a -> own i64 -> ref View<'a> -> Tensor<'a>
+fn gradient spacing axis view =
+    let zero: 'a = 0i64 as 'a
+    let two: 'a = 2i64 as 'a
+    assert (spacing != zero)
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    assert (dim >= 2)
+    let two_h = two * spacing
+    apply_along_axis_1d (\line ->
+        new ['a](dim, \i ->
+            if i == 0 then (line[1] - line[0]) / spacing
+            elif i == dim - 1 then (line[dim - 1] - line[dim - 2]) / spacing
+            else (line[i + 1] - line[i - 1]) / two_h)) dim norm view
+
+/// Numerical gradient along axis `0` with unit spacing `1.0`.
+///
+/// ```tsuzuri run=[1,%202.5,%204]
+/// let t = Tensor.of_array [3] [1.0, 2.0, 6.0]
+/// Tensor.to_array (Tensor.gradient_1d (Tensor.view t))
+/// ```
+def gradient_1d :: Float<'a> => ref View<'a> -> Tensor<'a>
+fn gradient_1d view = gradient (1i64 as 'a) 0 view
+
+/// Composite trapezoidal integration along `axis` with uniform step `dx` (`0.0` when axis extent `< 2`).
+///
+/// ```tsuzuri run=4
+/// let t = Tensor.of_array [3] [1.0, 2.0, 3.0]
+/// Tensor.sum (Tensor.view (Tensor.trapezoid 1.0 0 (Tensor.view t)))
+/// ```
+def trapezoid :: Float<'a> => own 'a -> own i64 -> ref View<'a> -> Tensor<'a>
+fn trapezoid dx axis view =
+    let zero: 'a = 0i64 as 'a
+    let half: 'a = (1i64 as 'a) / (2i64 as 'a)
+    let norm = normalize_axis axis view.shape.length
+    reduce_axis_core true (\line ->
+        if line.length < 2 then zero
+        else
+            let mut acc = zero
+            for i in 0i64 ..< (line.length - 1) do
+                acc = acc + half * (line[i] + line[i + 1])
+            acc * dx) norm false view
+
+/// Composite trapezoidal integration along `axis` over 1-D non-uniform sample coordinates `x`.
+///
+/// ```tsuzuri run=[4.5]
+/// let x = Tensor.of_array [3] [0.0, 1.0, 3.0]
+/// let y = Tensor.of_array [1, 3] [1.0, 2.0, 1.0]
+/// Tensor.to_array (Tensor.trapezoid_x 1 (Tensor.view x) (Tensor.view y))
+/// ```
+def trapezoid_x :: Float<'a> => own i64 -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn trapezoid_x axis x y =
+    assert (x.shape.length == 1)
+    let norm = normalize_axis axis y.shape.length
+    assert (x.shape[0] == y.shape[norm])
+    let zero: 'a = 0i64 as 'a
+    let half: 'a = (1i64 as 'a) / (2i64 as 'a)
+    let xp = to_tensor x
+    let xd = ref xp.data
+    reduce_axis_core true (\line ->
+        if line.length < 2 then zero
+        else
+            let mut acc = zero
+            for i in 0i64 ..< (line.length - 1) do
+                acc = acc + half * (xd[i + 1] - xd[i]) * (line[i] + line[i + 1])
+            acc) norm false y
+
+private def convolve_raw :: Numeric<'a> => own ConvolveMode -> ref ['a] -> ref ['a] -> Tensor<'a>
+fn convolve_raw mode a v =
+    let m = a.length
+    let n = v.length
+    assert (m > 0 && n > 0)
+    let full_len = m + n - 1
+    let zero: 'a = 0i64 as 'a
+    let full_arr = new ['a](full_len, \k ->
+        let i_lo = if k - (n - 1) > 0 then k - (n - 1) else 0
+        let i_hi = if m - 1 < k then m - 1 else k
+        let mut acc = zero
+        for i in i_lo ..= i_hi do
+            acc = acc + a[i] * v[k - i]
+        acc)
+    match mode with
+    | ConvolveMode.Full -> Tensor { shape: [full_len], data: full_arr }
+    | ConvolveMode.Same ->
+        let out_len = if m >= n then m else n
+        let min_mn = if m <= n then m else n
+        let start = (min_mn - 1) / 2
+        Tensor { shape: [out_len], data: Array.sub start out_len (ref full_arr) }
+    | ConvolveMode.Valid ->
+        let max_mn = if m >= n then m else n
+        let min_mn = if m <= n then m else n
+        let out_len = max_mn - min_mn + 1
+        let start = min_mn - 1
+        Tensor { shape: [out_len], data: Array.sub start out_len (ref full_arr) }
+
+/// Discrete linear 1-D convolution of non-empty 1-D tensors `left` and `right` (`Full`, `Same`, or `Valid`).
+///
+/// ```tsuzuri run=[1,%204,%207,%206]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let b = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.convolve Tensor.ConvolveMode.Full (Tensor.view a) (Tensor.view b))
+/// ```
+def convolve :: Numeric<'a> => own ConvolveMode -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn convolve mode left right =
+    assert (left.shape.length == 1 && right.shape.length == 1)
+    let lp = to_tensor left
+    let rp = to_tensor right
+    convolve_raw mode (ref lp.data) (ref rp.data)
+
+/// Discrete 1-D cross-correlation of non-empty 1-D tensors `left` and `right` (`np.correlate`).
+///
+/// ```tsuzuri run=[0.5,%202,%203.5,%203,%200]
+/// let a = Tensor.of_array [3] [1.0, 2.0, 3.0]
+/// let v = Tensor.of_array [3] [0.0, 1.0, 0.5]
+/// Tensor.to_array (Tensor.correlate Tensor.ConvolveMode.Full (Tensor.view a) (Tensor.view v))
+/// ```
+def correlate :: Numeric<'a> => own ConvolveMode -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn correlate mode left right =
+    assert (left.shape.length == 1 && right.shape.length == 1)
+    let lp = to_tensor left
+    let rp = to_tensor right
+    let rn = rp.data.length
+    assert (rn > 0)
+    let rev = new ['a](rn, \i -> rp.data[rn - 1 - i])
+    convolve_raw mode (ref lp.data) (ref rev)
+
+/// Piecewise-linear 1-D interpolation of N-D query coordinates `x` over monotonically increasing
+/// 1-D breakpoints `xp` and values `fp`, clamping outside `[xp[0], xp[n-1]]` to `fp[0]` / `fp[n-1]`.
+///
+/// ```tsuzuri run=[0,%201.5,%203,%203]
+/// let xp = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// let fp = Tensor.of_array [3] [0.0, 1.0, 3.0]
+/// let q = Tensor.of_array [4] [-1.0, 1.25, 2.0, 5.0]
+/// Tensor.to_array (Tensor.interp (Tensor.view xp) (Tensor.view fp) (Tensor.view q))
+/// ```
+def interp :: Float<'a> => ref View<'a> -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn interp xp fp x =
+    assert (xp.shape.length == 1 && fp.shape.length == 1)
+    let n = xp.shape[0]
+    assert (n > 0 && fp.shape[0] == n)
+    let xpp = to_tensor xp
+    let fpp = to_tensor fp
+    interp_extrap fpp.data[0] fpp.data[n - 1] (ref (Tensor.view xpp)) (ref (Tensor.view fpp)) x
+
+/// Piecewise-linear 1-D interpolation with explicit `left_val` (`x < xp[0]`) and `right_val` (`x > xp[n-1]`).
+///
+/// ```tsuzuri run=[-99,%201.5,%2099]
+/// let xp = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// let fp = Tensor.of_array [3] [0.0, 1.0, 3.0]
+/// let q = Tensor.of_array [3] [-0.5, 1.25, 2.5]
+/// Tensor.to_array (Tensor.interp_extrap (-99.0) 99.0 (Tensor.view xp) (Tensor.view fp) (Tensor.view q))
+/// ```
+def interp_extrap :: Float<'a> => own 'a -> own 'a -> ref View<'a> -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn interp_extrap left_val right_val xp fp x =
+    assert (xp.shape.length == 1 && fp.shape.length == 1)
+    let n = xp.shape[0]
+    assert (n > 0 && fp.shape[0] == n)
+    let xpp = to_tensor xp
+    let fpp = to_tensor fp
+    let xd = ref xpp.data
+    let fd = ref fpp.data
+    for i in 1i64 ..< n do
+        assert (!(Math.is_nan xd[i - 1]) && !(Math.is_nan xd[i]) && xd[i - 1] <= xd[i])
+    let zero: 'a = 0i64 as 'a
+    map (\qx ->
+        if Math.is_nan qx then zero / zero
+        elif qx < xd[0] then left_val
+        elif qx > xd[n - 1] then right_val
+        elif n == 1 || qx == xd[n - 1] then fd[n - 1]
+        else
+            let mut lo = 0
+            let mut hi = n - 1
+            while lo + 1 < hi do
+                let mid = lo + (hi - lo) / 2
+                if xd[mid] <= qx then lo = mid else hi = mid
+            let dx = xd[hi] - xd[lo]
+            if dx == zero then fd[lo]
+            else
+                let t = (qx - xd[lo]) / dx
+                fd[lo] + t * (fd[hi] - fd[lo])) x
+
+// ---- §3 Order Statistics, Quantiles, Histograms & Covariance ----
+
+private def eval_sorted_quantile :: Float<'a> => own QuantileMethod -> own 'a -> ref ['a] -> 'a
+fn eval_sorted_quantile method q sorted =
+    let n = sorted.length
+    assert (n > 0)
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let half: 'a = one / (2i64 as 'a)
+    assert (!(Math.is_nan q) && q >= zero && q <= one)
+    if Math.is_nan sorted[n - 1] then zero / zero
+    elif n == 1 then sorted[0]
+    else
+        let v = q * ((n - 1) as 'a)
+        let mut lo = 0
+        let mut hi = n - 1
+        while lo < hi do
+            let mid = lo + (hi - lo + 1) / 2
+            if (mid as 'a) <= v then lo = mid else hi = mid - 1
+        let frac = v - (lo as 'a)
+        let ceil_idx = if frac > zero && lo + 1 < n then lo + 1 else lo
+        match method with
+        | QuantileMethod.Linear ->
+            if ceil_idx == lo then sorted[lo]
+            else sorted[lo] + frac * (sorted[ceil_idx] - sorted[lo])
+        | QuantileMethod.Lower -> sorted[lo]
+        | QuantileMethod.Higher -> sorted[ceil_idx]
+        | QuantileMethod.Midpoint -> half * (sorted[lo] + sorted[ceil_idx])
+        | QuantileMethod.Nearest ->
+            if frac < half then sorted[lo]
+            elif frac > half then sorted[ceil_idx]
+            elif lo % 2 == 0 then sorted[lo]
+            else sorted[ceil_idx]
+
+private def slice_median :: Float<'a> => ref ['a] -> 'a
+fn slice_median values =
+    assert (values.length > 0)
+    let sorted = Array.sort_with total_cmp values
+    eval_sorted_quantile QuantileMethod.Linear ((1i64 as 'a) / (2i64 as 'a)) (ref sorted)
+
+private def filter_non_nan :: Float<'a> => ref ['a] -> ['a]
+fn filter_non_nan values =
+    let mut cnt = 0
+    for x in values do
+        if !(Math.is_nan x) then cnt = cnt + 1
+    if cnt == 0 then []
+    else
+        let zero: 'a = 0i64 as 'a
+        let mut out = new ['a](cnt, \_ -> zero)
+        let mut pos = 0
+        for x in values do
+            if !(Math.is_nan x) then
+                Array.write pos x (ref mut out)
+                pos = pos + 1
+        out
+
+private def slice_nanmedian :: Float<'a> => ref ['a] -> 'a
+fn slice_nanmedian values =
+    let clean = filter_non_nan values
+    let zero: 'a = 0i64 as 'a
+    if clean.length == 0 then zero / zero
+    else
+        let sorted = Array.sort_with total_cmp (ref clean)
+        eval_sorted_quantile QuantileMethod.Linear ((1i64 as 'a) / (2i64 as 'a)) (ref sorted)
+
+private def slice_quantile :: Float<'a> => own QuantileMethod -> own 'a -> ref ['a] -> 'a
+fn slice_quantile method q values =
+    assert (values.length > 0)
+    let sorted = Array.sort_with total_cmp values
+    eval_sorted_quantile method q (ref sorted)
+
+private def slice_nanquantile :: Float<'a> => own QuantileMethod -> own 'a -> ref ['a] -> 'a
+fn slice_nanquantile method q values =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    assert (!(Math.is_nan q) && q >= zero && q <= one)
+    let clean = filter_non_nan values
+    if clean.length == 0 then zero / zero
+    else
+        let sorted = Array.sort_with total_cmp (ref clean)
+        eval_sorted_quantile method q (ref sorted)
+
+/// Median of all elements (`NaN` propagated; traps when empty).
+///
+/// ```tsuzuri run=2.5
+/// let t = Tensor.of_array [4] [4.0, 1.0, 3.0, 2.0]
+/// Tensor.median (Tensor.view t)
+/// ```
+def median :: Float<'a> => ref View<'a> -> 'a
+fn median view = reduce_full_slice false slice_median view
+
+/// Median along `axis` (`NaN` propagated; traps when the reduced axis is empty).
+///
+/// ```tsuzuri run=[2,%205]
+/// let t = Tensor.of_array [2, 3] [3.0, 1.0, 2.0, 6.0, 4.0, 5.0]
+/// Tensor.to_array (Tensor.median_axis 1 (Tensor.view t))
+/// ```
+def median_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn median_axis axis view = reduce_axis_core false slice_median axis false view
+
+/// Median with `AxisOptions`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%205]
+/// let t = Tensor.of_array [2, 3] [3.0, 1.0, 2.0, 6.0, 4.0, 5.0]
+/// let out = Tensor.median_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def median_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn median_with opts view = reduce_axis_core false slice_median opts.axis opts.keepdims view
+
+/// Median ignoring `NaN` (`NaN` when empty or all `NaN`).
+///
+/// ```tsuzuri run=3
+/// let t = Tensor.of_array [4] [1.0, 0.0 / 0.0, 5.0, 3.0]
+/// Tensor.nanmedian (Tensor.view t)
+/// ```
+def nanmedian :: Float<'a> => ref View<'a> -> 'a
+fn nanmedian view = reduce_full_slice true slice_nanmedian view
+
+/// Median along `axis` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%204]
+/// let t = Tensor.of_array [2, 3] [2.0, 0.0 / 0.0, 2.0, 3.0, 5.0, 0.0 / 0.0]
+/// Tensor.to_array (Tensor.nanmedian_axis 1 (Tensor.view t))
+/// ```
+def nanmedian_axis :: Float<'a> => own i64 -> ref View<'a> -> Tensor<'a>
+fn nanmedian_axis axis view = reduce_axis_core true slice_nanmedian axis false view
+
+/// Median with `AxisOptions` ignoring `NaN`.
+///
+/// ```tsuzuri run=[2,%201]%20[2,%204]
+/// let t = Tensor.of_array [2, 3] [2.0, 0.0 / 0.0, 2.0, 3.0, 5.0, 0.0 / 0.0]
+/// let out = Tensor.nanmedian_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
+/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// ```
+def nanmedian_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
+fn nanmedian_with opts view = reduce_axis_core true slice_nanmedian opts.axis opts.keepdims view
+
+/// `q`-quantile (`0.0 <= q <= 1.0`) of all elements using `QuantileMethod.Linear`.
+///
+/// ```tsuzuri run=1.75
+/// let t = Tensor.of_array [4] [1.0, 2.0, 3.0, 4.0]
+/// Tensor.quantile 0.25 (Tensor.view t)
+/// ```
+def quantile :: Float<'a> => own 'a -> ref View<'a> -> 'a
+fn quantile q view = reduce_full_slice false (\s -> slice_quantile QuantileMethod.Linear q s) view
+
+/// `q`-quantile (`0.0 <= q <= 1.0`) with `QuantileOptions { method, axis, keepdims }`.
+///
+/// ```tsuzuri run=[2,%205]
+/// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// let opts = Tensor.QuantileOptions { method: Tensor.QuantileMethod.Nearest, axis: Maybe.Some 1, keepdims: false }
+/// Tensor.to_array (Tensor.quantile_with opts 0.5 (Tensor.view t))
+/// ```
+def quantile_with :: Float<'a> => own QuantileOptions -> own 'a -> ref View<'a> -> Tensor<'a>
+fn quantile_with opts q view =
+    let m = opts.method
+    match opts.axis with
+    | Maybe.Some ax -> reduce_axis_core false (\s -> slice_quantile m q s) ax opts.keepdims view
+    | Maybe.None ->
+        let val = reduce_full_slice false (\s -> slice_quantile m q s) view
+        if opts.keepdims then Tensor { shape: new [i64](view.shape.length, \_ -> 1), data: [val] }
+        else Tensor { shape: [], data: [val] }
+
+/// Evaluates multiple quantiles for 1-D `qs` (`0.0 <= q <= 1.0`) over flattened `view`.
+///
+/// ```tsuzuri run=[1,%202.5,%204]
+/// let qs = Tensor.of_array [3] [0.0, 0.5, 1.0]
+/// let t = Tensor.of_array [4] [4.0, 1.0, 3.0, 2.0]
+/// Tensor.to_array (Tensor.quantiles Tensor.QuantileMethod.Linear (Tensor.view qs) (Tensor.view t))
+/// ```
+def quantiles :: Float<'a> => own QuantileMethod -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn quantiles method qs view =
+    assert (qs.shape.length == 1)
+    let packed = to_tensor view
+    assert (packed.data.length > 0)
+    let sorted = Array.sort_with total_cmp (ref packed.data)
+    let q_packed = to_tensor qs
+    let m = q_packed.data.length
+    Tensor { shape: [m], data: new ['a](m, \i -> eval_sorted_quantile method q_packed.data[i] (ref sorted)) }
+
+/// `p`-th percentile (`0.0 <= p <= 100.0`) of all elements using `QuantileMethod.Linear`.
+///
+/// ```tsuzuri run=2.5
+/// let t = Tensor.of_array [4] [1.0, 2.0, 3.0, 4.0]
+/// Tensor.percentile 50.0 (Tensor.view t)
+/// ```
+def percentile :: Float<'a> => own 'a -> ref View<'a> -> 'a
+fn percentile p view =
+    let zero: 'a = 0i64 as 'a
+    let hundred: 'a = 100i64 as 'a
+    assert (!(Math.is_nan p) && p >= zero && p <= hundred)
+    quantile (p / hundred) view
+
+/// `p`-th percentile (`0.0 <= p <= 100.0`) with `QuantileOptions`.
+///
+/// ```tsuzuri run=[2,%205]
+/// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+/// let opts = Tensor.QuantileOptions { method: Tensor.QuantileMethod.Linear, axis: Maybe.Some 1, keepdims: false }
+/// Tensor.to_array (Tensor.percentile_with opts 50.0 (Tensor.view t))
+/// ```
+def percentile_with :: Float<'a> => own QuantileOptions -> own 'a -> ref View<'a> -> Tensor<'a>
+fn percentile_with opts p view =
+    let zero: 'a = 0i64 as 'a
+    let hundred: 'a = 100i64 as 'a
+    assert (!(Math.is_nan p) && p >= zero && p <= hundred)
+    quantile_with opts (p / hundred) view
+
+/// `q`-quantile (`0.0 <= q <= 1.0`) ignoring `NaN` (`NaN` when empty or all `NaN`).
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [4] [1.0, 0.0 / 0.0, 2.0, 3.0]
+/// Tensor.nanquantile 0.5 (Tensor.view t)
+/// ```
+def nanquantile :: Float<'a> => own 'a -> ref View<'a> -> 'a
+fn nanquantile q view = reduce_full_slice true (\s -> slice_nanquantile QuantileMethod.Linear q s) view
+
+/// `q`-quantile ignoring `NaN` with `QuantileOptions`.
+///
+/// ```tsuzuri run=[2,%204]
+/// let t = Tensor.of_array [2, 3] [1.0, 0.0 / 0.0, 3.0, 4.0, 4.0, 0.0 / 0.0]
+/// let opts = Tensor.QuantileOptions { method: Tensor.QuantileMethod.Linear, axis: Maybe.Some 1, keepdims: false }
+/// Tensor.to_array (Tensor.nanquantile_with opts 0.5 (Tensor.view t))
+/// ```
+def nanquantile_with :: Float<'a> => own QuantileOptions -> own 'a -> ref View<'a> -> Tensor<'a>
+fn nanquantile_with opts q view =
+    let m = opts.method
+    match opts.axis with
+    | Maybe.Some ax -> reduce_axis_core true (\s -> slice_nanquantile m q s) ax opts.keepdims view
+    | Maybe.None ->
+        let val = reduce_full_slice true (\s -> slice_nanquantile m q s) view
+        if opts.keepdims then Tensor { shape: new [i64](view.shape.length, \_ -> 1), data: [val] }
+        else Tensor { shape: [], data: [val] }
+
+/// `p`-th percentile (`0.0 <= p <= 100.0`) ignoring `NaN`.
+///
+/// ```tsuzuri run=2
+/// let t = Tensor.of_array [4] [1.0, 0.0 / 0.0, 2.0, 3.0]
+/// Tensor.nanpercentile 50.0 (Tensor.view t)
+/// ```
+def nanpercentile :: Float<'a> => own 'a -> ref View<'a> -> 'a
+fn nanpercentile p view =
+    let zero: 'a = 0i64 as 'a
+    let hundred: 'a = 100i64 as 'a
+    assert (!(Math.is_nan p) && p >= zero && p <= hundred)
+    nanquantile (p / hundred) view
+
+/// `p`-th percentile (`0.0 <= p <= 100.0`) ignoring `NaN` with `QuantileOptions`.
+///
+/// ```tsuzuri run=[2,%204]
+/// let t = Tensor.of_array [2, 3] [1.0, 0.0 / 0.0, 3.0, 4.0, 4.0, 0.0 / 0.0]
+/// let opts = Tensor.QuantileOptions { method: Tensor.QuantileMethod.Linear, axis: Maybe.Some 1, keepdims: false }
+/// Tensor.to_array (Tensor.nanpercentile_with opts 50.0 (Tensor.view t))
+/// ```
+def nanpercentile_with :: Float<'a> => own QuantileOptions -> own 'a -> ref View<'a> -> Tensor<'a>
+fn nanpercentile_with opts p view =
+    let zero: 'a = 0i64 as 'a
+    let hundred: 'a = 100i64 as 'a
+    assert (!(Math.is_nan p) && p >= zero && p <= hundred)
+    nanquantile_with opts (p / hundred) view
+
+private def uniform_bin_edges :: Float<'a> => own i64 -> ref ['a] -> ['a]
+fn uniform_bin_edges bins values =
+    assert (bins >= 1)
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let half: 'a = one / (2i64 as 'a)
+    let mut lo = zero
+    let mut hi = one
+    if values.length > 0 then
+        lo = values[0]
+        hi = values[0]
+        for x in values do
+            assert (!(Math.is_nan x) && !(Math.is_infinite x))
+            if x < lo then lo = x
+            if x > hi then hi = x
+        if lo == hi then
+            lo = lo - half
+            hi = hi + half
+    let span = hi - lo
+    new ['a](bins + 1, \i ->
+        if i == 0 then lo
+        elif i == bins then hi
+        else lo + span * (i as 'a) / (bins as 'a))
+
+private def locate_hist_bin :: Float<'a> => ref ['a] -> own 'a -> i64
+fn locate_hist_bin edges x =
+    let nb = edges.length - 1
+    if Math.is_nan x || x < edges[0] || x > edges[nb] then -1
+    elif x == edges[nb] then nb - 1
+    else
+        let mut lo = 0
+        let mut hi = nb
+        while lo + 1 < hi do
+            let mid = lo + (hi - lo) / 2
+            if edges[mid] <= x then lo = mid else hi = mid
+        lo
+
+private def check_monotonic_edges :: Float<'a> => ref ['a] -> unit
+fn check_monotonic_edges edges =
+    assert (edges.length >= 2)
+    for i in 0i64 ..< edges.length do
+        assert (!(Math.is_nan edges[i]))
+        if i > 0 then assert (edges[i - 1] <= edges[i])
+
+/// Computes a 1-D histogram with `bins` (`>= 1`) uniform bins over `[min, max]`, returning `(counts, edges)`.
+///
+/// ```tsuzuri run=[2,%201,%202]
+/// let t = Tensor.of_array [5] [0.0, 0.5, 1.5, 2.5, 3.0]
+/// let (counts, _) = Tensor.histogram 3 (Tensor.view t)
+/// Tensor.to_array counts
+/// ```
+def histogram :: Float<'a> => own i64 -> ref View<'a> -> (Tensor<i64> * Tensor<'a>)
+fn histogram bins view =
+    assert (bins >= 1)
+    let packed = to_tensor view
+    let edges_arr = uniform_bin_edges bins (ref packed.data)
+    let edges_t = Tensor { shape: [bins + 1], data: edges_arr }
+    let counts_t = histogram_edges (ref (Tensor.view edges_t)) (ref (Tensor.view packed))
+    (counts_t, edges_t)
+
+/// Computes 1-D histogram counts over explicit monotonically increasing `edges` (half-open `[e[i], e[i+1])`,
+/// closed `[e[n-2], e[n-1]]` on the final bin).
+///
+/// ```tsuzuri run=[2,%203]
+/// let edges = Tensor.of_array [3] [0.0, 2.0, 4.0]
+/// let t = Tensor.of_array [5] [0.0, 1.0, 2.0, 3.0, 4.0]
+/// Tensor.to_array (Tensor.histogram_edges (Tensor.view edges) (Tensor.view t))
+/// ```
+def histogram_edges :: Float<'a> => ref View<'a> -> ref View<'a> -> Tensor<i64>
+fn histogram_edges edges view =
+    assert (edges.shape.length == 1)
+    let ep = to_tensor edges
+    check_monotonic_edges (ref ep.data)
+    let nb = ep.data.length - 1
+    let vp = to_tensor view
+    let mut counts = new [i64](nb, \_ -> 0)
+    for x in ref vp.data do
+        let b = locate_hist_bin (ref ep.data) x
+        if b >= 0 then Array.write b (counts[b] + 1) (ref mut counts)
+    Tensor { shape: [nb], data: counts }
+
+/// Computes weighted 1-D histogram sums over monotonically increasing `edges`.
+///
+/// ```tsuzuri run=[1.5,%206]
+/// let edges = Tensor.of_array [3] [0.0, 2.0, 4.0]
+/// let w = Tensor.of_array [4] [0.5, 1.0, 2.0, 4.0]
+/// let t = Tensor.of_array [4] [0.0, 1.0, 2.0, 4.0]
+/// Tensor.to_array (Tensor.histogram_weighted (Tensor.view edges) (Tensor.view w) (Tensor.view t))
+/// ```
+def histogram_weighted :: Float<'a> => ref View<'a> -> ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn histogram_weighted edges weights view =
+    assert (edges.shape.length == 1 && weights.shape == view.shape)
+    let ep = to_tensor edges
+    check_monotonic_edges (ref ep.data)
+    let nb = ep.data.length - 1
+    let wp = to_tensor weights
+    let vp = to_tensor view
+    let zero: 'a = 0i64 as 'a
+    let mut sums = new ['a](nb, \_ -> zero)
+    for i in 0i64 ..< vp.data.length do
+        let b = locate_hist_bin (ref ep.data) vp.data[i]
+        if b >= 0 then Array.write b (sums[b] + wp.data[i]) (ref mut sums)
+    Tensor { shape: [nb], data: sums }
+
+/// Computes a 2-D joint histogram of equal-length 1-D samples `x` and `y` (`bins_x`, `bins_y` `>= 1`),
+/// returning `(counts_2d, edges_x, edges_y)`.
+///
+/// ```tsuzuri run=[1,%201,%200,%202]
+/// let x = Tensor.of_array [4] [0.1, 0.2, 1.8, 1.9]
+/// let y = Tensor.of_array [4] [0.1, 1.9, 1.8, 1.9]
+/// let (h, _, _) = Tensor.histogram2d 2 2 (Tensor.view x) (Tensor.view y)
+/// Tensor.to_array h
+/// ```
+def histogram2d :: Float<'a> => own i64 -> own i64 -> ref View<'a> -> ref View<'a> -> (Tensor<i64> * Tensor<'a> * Tensor<'a>)
+fn histogram2d bins_x bins_y x y =
+    assert (bins_x >= 1 && bins_y >= 1 && x.shape.length == 1 && y.shape.length == 1 && x.shape[0] == y.shape[0])
+    let xp = to_tensor x
+    let yp = to_tensor y
+    let ex = uniform_bin_edges bins_x (ref xp.data)
+    let ey = uniform_bin_edges bins_y (ref yp.data)
+    let mut counts = new [i64](bins_x * bins_y, \_ -> 0)
+    for i in 0i64 ..< xp.data.length do
+        let bx = locate_hist_bin (ref ex) xp.data[i]
+        let by = locate_hist_bin (ref ey) yp.data[i]
+        if bx >= 0 && by >= 0 then
+            let idx = bx * bins_y + by
+            Array.write idx (counts[idx] + 1) (ref mut counts)
+    (Tensor { shape: [bins_x, bins_y], data: counts }, Tensor { shape: [bins_x + 1], data: ex }, Tensor { shape: [bins_y + 1], data: ey })
+
+/// Computes an N-D joint histogram of 2-D `sample` (`[n_samples, n_dims]`) with per-dimension `bins`,
+/// returning `(counts_nd, edges_per_dim)`.
+///
+/// ```tsuzuri run=[1,%200,%200,%201]
+/// let s = Tensor.of_array [2, 2] [0.0, 0.0, 1.0, 1.0]
+/// let (h, _) = Tensor.histogramdd [2, 2] (Tensor.view s)
+/// Tensor.to_array h
+/// ```
+def histogramdd :: Float<'a> => ref [i64] -> ref View<'a> -> (Tensor<i64> * [Tensor<'a>])
+fn histogramdd bins sample =
+    assert (sample.shape.length == 2)
+    let n_samples = sample.shape[0]
+    let n_dims = sample.shape[1]
+    assert (bins.length == n_dims && n_dims >= 1)
+    let out_shape = Array.copy bins
+    for d in 0i64 ..< n_dims do
+        assert (bins[d] >= 1)
+    let sp = to_tensor sample
+    let sp_data = ref sp.data
+    let edges_list = new [Tensor<'a>](n_dims, \d ->
+        let col = new ['a](n_samples, \r -> sp_data[r * n_dims + d])
+        let ed = uniform_bin_edges bins[d] (ref col)
+        Tensor { shape: [bins[d] + 1], data: ed })
+    let total_bins = volume (ref out_shape)
+    let strides = dense_strides (ref out_shape)
+    let mut counts = new [i64](total_bins, \_ -> 0)
+    for r in 0i64 ..< n_samples do
+        let mut flat = 0
+        let mut inside = true
+        for d in 0i64 ..< n_dims do
+            if inside then
+                let b = locate_hist_bin (ref edges_list[d].data) sp_data[r * n_dims + d]
+                if b < 0 then inside = false
+                else flat = flat + b * strides[d]
+        if inside then Array.write flat (counts[flat] + 1) (ref mut counts)
+    (Tensor { shape: out_shape, data: counts }, edges_list)
+
+/// Counts occurrences of non-negative integers in 1-D `view`, padding to at least `minlength` (`>= 0`).
+///
+/// ```tsuzuri run=[1,%202,%200,%201,%200]
+/// let t = Tensor.of_array [4] [0, 1, 1, 3]
+/// Tensor.to_array (Tensor.bincount 5 (Tensor.view t))
+/// ```
+def bincount :: own i64 -> ref View<i64> -> Tensor<i64>
+fn bincount minlength view =
+    assert (minlength >= 0 && view.shape.length == 1)
+    let vp = to_tensor view
+    let mut max_v = -1
+    for v in ref vp.data do
+        assert (v >= 0)
+        if v > max_v then max_v = v
+    let needed = if max_v >= 0 then max_v + 1 else 0
+    let out_len = if minlength >= needed then minlength else needed
+    let mut counts = new [i64](out_len, \_ -> 0)
+    for v in ref vp.data do
+        Array.write v (counts[v] + 1) (ref mut counts)
+    Tensor { shape: [out_len], data: counts }
+
+/// Weighted occurrence sums of non-negative integers in 1-D `view`, padded to at least `minlength`.
+///
+/// ```tsuzuri run=[0.5,%203,%200,%202]
+/// let w = Tensor.of_array [4] [0.5, 1.0, 2.0, 2.0]
+/// let t = Tensor.of_array [4] [0, 1, 1, 3]
+/// Tensor.to_array (Tensor.bincount_weighted 0 (Tensor.view w) (Tensor.view t))
+/// ```
+def bincount_weighted :: Float<'a> => own i64 -> ref View<'a> -> ref View<i64> -> Tensor<'a>
+fn bincount_weighted minlength weights view =
+    assert (minlength >= 0 && view.shape.length == 1 && weights.shape == view.shape)
+    let vp = to_tensor view
+    let wp = to_tensor weights
+    let mut max_v = -1
+    for v in ref vp.data do
+        assert (v >= 0)
+        if v > max_v then max_v = v
+    let needed = if max_v >= 0 then max_v + 1 else 0
+    let out_len = if minlength >= needed then minlength else needed
+    let zero: 'a = 0i64 as 'a
+    let mut sums = new ['a](out_len, \_ -> zero)
+    for i in 0i64 ..< vp.data.length do
+        let v = vp.data[i]
+        Array.write v (sums[v] + wp.data[i]) (ref mut sums)
+    Tensor { shape: [out_len], data: sums }
+
+/// Assigns each element of `view` to a bin index (`0 ..= bins.length`) over monotonic 1-D `bins` (`np.digitize`).
+///
+/// ```tsuzuri run=[0,%201,%202,%203]
+/// let bins = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// let x = Tensor.of_array [4] [-0.5, 0.0, 1.5, 2.0]
+/// Tensor.to_array (Tensor.digitize false (Tensor.view bins) (Tensor.view x))
+/// ```
+def digitize :: (Ord<'a>, Copy<'a>) => own bool -> ref View<'a> -> ref View<'a> -> Tensor<i64>
+fn digitize right bins view =
+    assert (bins.shape.length == 1 && bins.shape[0] >= 1)
+    let bp = to_tensor bins
+    let bd = ref bp.data
+    let m = bd.length
+    let mut inc = true
+    let mut dec = true
+    for i in 0i64 ..< m do
+        assert (bd[i] == bd[i])
+        if i > 0 then
+            if bd[i] < bd[i - 1] then inc = false
+            if bd[i] > bd[i - 1] then dec = false
+    assert (inc || dec)
+    if inc then
+        let side = if right then SearchSide.Left else SearchSide.Right
+        searchsorted side (ref (Tensor.view bp)) view
+    else
+        let rev = Tensor { shape: [m], data: new ['a](m, \i -> bd[m - 1 - i]) }
+        let side = if right then SearchSide.Right else SearchSide.Left
+        let raw = searchsorted side (ref (Tensor.view rev)) view
+        map (\idx -> m - idx) (ref (Tensor.view raw))
+
+/// Sample covariance matrix (`rowvar = true`, `ddof = 1`) of a 1-D or 2-D tensor, always returning a 2-D `[p, p]` matrix.
+///
+/// ```tsuzuri run=[1,%20-1,%20-1,%201]
+/// let m = Tensor.of_array [2, 3] [0.0, 1.0, 2.0, 2.0, 1.0, 0.0]
+/// Tensor.to_array (Tensor.cov (Tensor.view m))
+/// ```
+def cov :: Float<'a> => ref View<'a> -> Tensor<'a>
+fn cov view = cov_with true 1 view
+
+/// Covariance matrix of a 1-D or 2-D tensor with explicit `rowvar` and `ddof`.
+///
+/// ```tsuzuri run=[1,%202,%202,%204]
+/// let m = Tensor.of_array [3, 2] [0.0, 0.0, 1.0, 2.0, 2.0, 4.0]
+/// Tensor.to_array (Tensor.cov_with false 1 (Tensor.view m))
+/// ```
+def cov_with :: Float<'a> => own bool -> own i64 -> ref View<'a> -> Tensor<'a>
+fn cov_with rowvar ddof view =
+    let rank = view.shape.length
+    assert (rank == 1 || rank == 2)
+    let packed = to_tensor view
+    let n_vars = if rank == 1 then 1 elif rowvar then view.shape[0] else view.shape[1]
+    let n_obs = if rank == 1 then view.shape[0] elif rowvar then view.shape[1] else view.shape[0]
+    let zero: 'a = 0i64 as 'a
+    if n_vars == 0 then Tensor { shape: [0, 0], data: [] }
+    elif n_obs == 0 || n_obs - ddof <= 0 then
+        let nan_v = zero / zero
+        Tensor { shape: [n_vars, n_vars], data: new ['a](n_vars * n_vars, \_ -> nan_v) }
+    else
+        let p_data = ref packed.data
+        let means = new ['a](n_vars, \v ->
+            let mut s = zero
+            for k in 0i64 ..< n_obs do
+                let val = if rank == 1 then p_data[k] elif rowvar then p_data[v * n_obs + k] else p_data[k * n_vars + v]
+                s = s + val
+            s / (n_obs as 'a))
+        let denom = (n_obs - ddof) as 'a
+        let mut out = new ['a](n_vars * n_vars, \_ -> zero)
+        for i in 0i64 ..< n_vars do
+            for j in i ..< n_vars do
+                let mut acc = zero
+                for k in 0i64 ..< n_obs do
+                    let xi = if rank == 1 then p_data[k] elif rowvar then p_data[i * n_obs + k] else p_data[k * n_vars + i]
+                    let xj = if rank == 1 then p_data[k] elif rowvar then p_data[j * n_obs + k] else p_data[k * n_vars + j]
+                    acc = acc + (xi - means[i]) * (xj - means[j])
+                let c = acc / denom
+                Array.write (i * n_vars + j) c (ref mut out)
+                Array.write (j * n_vars + i) c (ref mut out)
+        Tensor { shape: [n_vars, n_vars], data: out }
+
+/// Pearson correlation coefficient matrix (`rowvar = true`) of a 1-D or 2-D tensor.
+///
+/// ```tsuzuri run=[1,%20-1,%20-1,%201]
+/// let m = Tensor.of_array [2, 3] [0.0, 1.0, 2.0, 4.0, 2.0, 0.0]
+/// Tensor.to_array (Tensor.corrcoef (Tensor.view m))
+/// ```
+def corrcoef :: Float<'a> => ref View<'a> -> Tensor<'a>
+fn corrcoef view = corrcoef_with true view
+
+/// Pearson correlation coefficient matrix with explicit `rowvar` (`true`: rows are variables; `false`: columns are variables).
+///
+/// ```tsuzuri run=[1,%201,%201,%201]
+/// let m = Tensor.of_array [3, 2] [0.0, 1.0, 1.0, 3.0, 2.0, 5.0]
+/// Tensor.to_array (Tensor.corrcoef_with false (Tensor.view m))
+/// ```
+def corrcoef_with :: Float<'a> => own bool -> ref View<'a> -> Tensor<'a>
+fn corrcoef_with rowvar view =
+    let c = cov_with rowvar 1 view
+    let p = c.shape[0]
+    if p == 0 then c
+    else
+        let zero: 'a = 0i64 as 'a
+        let one: 'a = 1i64 as 'a
+        let neg_one: 'a = zero - one
+        let cd = ref c.data
+        let stds = new ['a](p, \i -> Math.sqrt cd[i * p + i])
+        let out = new ['a](p * p, \idx ->
+            let i = idx / p
+            let j = idx % p
+            let denom = stds[i] * stds[j]
+            if Math.is_nan denom || denom == zero then zero / zero
+            elif i == j then one
+            else
+                let r = cd[idx] / denom
+                if Math.is_nan r then r
+                elif r > one then one
+                elif r < neg_one then neg_one
+                else r)
+        Tensor { shape: [p, p], data: out }
+
+// ---- §4 Sorting, Selection, Binary Search & 1-D Set Operations ----
+
+private def stable_argsort_slice :: (Ord<'a>, Copy<'a>) => ref ['a] -> [i64]
+fn stable_argsort_slice values =
+    let idx = new [i64](values.length, \i -> i)
+    Array.sort_with (\i j ->
+        let c = total_cmp values[i] values[j]
+        if c != 0 then c
+        elif i < j then -1
+        elif i > j then 1
+        else 0) (ref idx)
+
+/// Stable ascending sort along `axis`, placing `NaN` values after `+Inf`.
+///
+/// ```tsuzuri run=[1,%202,%203,%204,%205,%206]
+/// let t = Tensor.of_array [2, 3] [3, 1, 2, 6, 4, 5]
+/// Tensor.to_array (Tensor.sort 1 (Tensor.view t))
+/// ```
+def sort :: (Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<'a>
+fn sort axis view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    apply_along_axis_1d (\line -> Array.sort_with total_cmp line) dim norm view
+
+/// Stable ascending sort of the flattened tensor as a 1-D tensor (`np.sort(a, axis=None)`).
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let t = Tensor.of_array [2, 2] [4, 2, 3, 1]
+/// Tensor.to_array (Tensor.sort_flat (Tensor.view t))
+/// ```
+def sort_flat :: (Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sort_flat view =
+    let packed = to_tensor view
+    let sorted = Array.sort_with total_cmp (ref packed.data)
+    Tensor { shape: [sorted.length], data: sorted }
+
+/// Stable index sort along `axis` (`NaN` indices placed at the end in original order).
+///
+/// ```tsuzuri run=[1,%202,%200,%201,%202,%200]
+/// let t = Tensor.of_array [2, 3] [30, 10, 20, 60, 40, 50]
+/// Tensor.to_array (Tensor.argsort 1 (Tensor.view t))
+/// ```
+def argsort :: (Ord<'a>, Copy<'a>) => own i64 -> ref View<'a> -> Tensor<i64>
+fn argsort axis view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    apply_along_axis_1d stable_argsort_slice dim norm view
+
+/// Stable index sort of the flattened tensor as a 1-D tensor (`np.argsort(a, axis=None)`).
+///
+/// ```tsuzuri run=[3,%201,%202,%200]
+/// let t = Tensor.of_array [2, 2] [40, 20, 30, 10]
+/// Tensor.to_array (Tensor.argsort_flat (Tensor.view t))
+/// ```
+def argsort_flat :: (Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<i64>
+fn argsort_flat view =
+    let packed = to_tensor view
+    let idx = stable_argsort_slice (ref packed.data)
+    Tensor { shape: [idx.length], data: idx }
+
+/// Indirect stable multi-key lexicographical sort of 2-D `keys` (`[num_keys, n]`), where the last row
+/// `keys[num_keys - 1]` is the primary key and `keys[0]` is the final tie-breaker (`np.lexsort`).
+///
+/// ```tsuzuri run=[2,%200,%203,%201]
+/// let keys = Tensor.of_array [2, 4] [2, 1, 1, 2, 10, 20, 10, 10]
+/// Tensor.to_array (Tensor.lexsort (Tensor.view keys))
+/// ```
+def lexsort :: (Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<i64>
+fn lexsort keys =
+    assert (keys.shape.length == 2)
+    let k_rows = keys.shape[0]
+    let n = keys.shape[1]
+    if n == 0 || k_rows == 0 then Tensor { shape: [n], data: new [i64](n, \i -> i) }
+    else
+        let kp = to_tensor keys
+        let kd = ref kp.data
+        let idx = new [i64](n, \i -> i)
+        let sorted = Array.sort_with (\i j ->
+            let mut row = k_rows - 1
+            let mut cmp = 0
+            while row >= 0 && cmp == 0 do
+                cmp = total_cmp kd[row * n + i] kd[row * n + j]
+                row = row - 1
+            if cmp != 0 then cmp
+            elif i < j then -1
+            elif i > j then 1
+            else 0) (ref idx)
+        Tensor { shape: [n], data: sorted }
+
+private def idx_pair_lt :: Ord<'a> => ref ['a] -> own i64 -> own i64 -> bool
+fn idx_pair_lt values i j =
+    let c = total_cmp values[i] values[j]
+    if c < 0 then true
+    elif c > 0 then false
+    else i < j
+
+private def swap_i64 :: own i64 -> own i64 -> ref mut [i64..] -> unit
+fn swap_i64 a b arr =
+    if a != b then
+        let va = arr[a]
+        let vb = arr[b]
+        Array.write a vb arr
+        Array.write b va arr
+
+// Iterative introselect: median-of-three quickselect on `(values[idx], idx)` with sort fallback after 48 splits.
+private def introselect_indices :: (Ord<'a>, Copy<'a>) => own i64 -> ref ['a] -> [i64]
+fn introselect_indices kth values =
+    let n = values.length
+    let norm_k = normalize_axis kth n
+    let mut idx = new [i64](n, \i -> i)
+    let mut lo = 0
+    let mut hi = n - 1
+    let mut steps = 0
+    while lo < hi do
+        steps = steps + 1
+        if steps > 48 then
+            let len = hi - lo + 1
+            let sub = Array.sub lo len (ref idx)
+            let sorted_sub = Array.sort_with (\i j -> if idx_pair_lt values i j then -1 elif i == j then 0 else 1) (ref sub)
+            for p in 0i64 ..< len do
+                Array.write (lo + p) sorted_sub[p] (ref mut idx)
+            lo = hi
+        else
+            let mid = lo + (hi - lo) / 2
+            if idx_pair_lt values idx[mid] idx[lo] then swap_i64 lo mid (ref mut idx)
+            if idx_pair_lt values idx[hi] idx[lo] then swap_i64 lo hi (ref mut idx)
+            if idx_pair_lt values idx[hi] idx[mid] then swap_i64 mid hi (ref mut idx)
+            swap_i64 mid hi (ref mut idx)
+            let pivot = idx[hi]
+            let mut store = lo
+            for j in lo ..< hi do
+                if idx_pair_lt values idx[j] pivot then
+                    swap_i64 store j (ref mut idx)
+                    store = store + 1
+            swap_i64 store hi (ref mut idx)
+            if store == norm_k then lo = hi
+            elif norm_k < store then hi = store - 1
+            else lo = store + 1
+    idx
+
+/// Partitions along `axis` around the `kth` smallest element (`O(n)` expected introselect; `NaN` placed last).
+///
+/// ```tsuzuri run=3
+/// let t = Tensor.of_array [5] [5, 1, 4, 2, 3]
+/// let p = Tensor.partition 2 0 (Tensor.view t)
+/// (Tensor.as_array p)[2]
+/// ```
+def partition :: (Ord<'a>, Copy<'a>) => own i64 -> own i64 -> ref View<'a> -> Tensor<'a>
+fn partition kth axis view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    let norm_k = normalize_axis kth dim
+    apply_along_axis_1d (\line ->
+        let idx = introselect_indices norm_k line
+        new ['a](dim, \i -> line[idx[i]])) dim norm view
+
+/// Indirect partition along `axis` returning indices whose `kth` slot selects the `kth` smallest element.
+///
+/// ```tsuzuri run=4
+/// let t = Tensor.of_array [5] [50, 10, 40, 20, 30]
+/// let idx = Tensor.argpartition 2 0 (Tensor.view t)
+/// (Tensor.as_array idx)[2]
+/// ```
+def argpartition :: (Ord<'a>, Copy<'a>) => own i64 -> own i64 -> ref View<'a> -> Tensor<i64>
+fn argpartition kth axis view =
+    let norm = normalize_axis axis view.shape.length
+    let dim = view.shape[norm]
+    let norm_k = normalize_axis kth dim
+    apply_along_axis_1d (\line -> introselect_indices norm_k line) dim norm view
+
+private def bsearch_sorted :: Ord<'a> => own SearchSide -> ref ['a] -> own 'a -> i64
+fn bsearch_sorted side sorted target =
+    let mut lo = 0
+    let mut hi = sorted.length
+    match side with
+    | SearchSide.Left ->
+        while lo < hi do
+            let mid = lo + (hi - lo) / 2
+            if total_cmp sorted[mid] target < 0 then lo = mid + 1 else hi = mid
+        lo
+    | SearchSide.Right ->
+        while lo < hi do
+            let mid = lo + (hi - lo) / 2
+            if total_cmp sorted[mid] target <= 0 then lo = mid + 1 else hi = mid
+        lo
+
+/// Binary-searches insertion indices in ascending 1-D `sorted` for every element of `values`, preserving `values.shape`.
+///
+/// ```tsuzuri run=[1,%202,%204]
+/// let s = Tensor.of_array [4] [10, 20, 20, 30]
+/// let v = Tensor.of_array [3] [20, 25, 40]
+/// Tensor.to_array (Tensor.searchsorted Tensor.SearchSide.Left (Tensor.view s) (Tensor.view v))
+/// ```
+def searchsorted :: (Ord<'a>, Copy<'a>) => own SearchSide -> ref View<'a> -> ref View<'a> -> Tensor<i64>
+fn searchsorted side sorted values =
+    assert (sorted.shape.length == 1)
+    let sp = to_tensor sorted
+    let sd = ref sp.data
+    map (\v -> bsearch_sorted side sd v) values
+
+/// Returns the sorted unique 1-D elements of flattened `view` (collapsing multiple `NaN`s into one trailing `NaN`).
+///
+/// ```tsuzuri run=[1,%202,%203]
+/// let t = Tensor.of_array [2, 3] [3, 1, 2, 1, 3, 2]
+/// Tensor.to_array (Tensor.unique (Tensor.view t))
+/// ```
+def unique :: (Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn unique view =
+    let packed = to_tensor view
+    let n = packed.data.length
+    if n == 0 then Tensor { shape: [0], data: [] }
+    else
+        let sorted = Array.sort_with total_cmp (ref packed.data)
+        let mut cnt = 1
+        for i in 1i64 ..< n do
+            if total_cmp sorted[i - 1] sorted[i] != 0 then cnt = cnt + 1
+        let mut out = new ['a](cnt, \_ -> sorted[0])
+        let mut pos = 1
+        for i in 1i64 ..< n do
+            if total_cmp sorted[i - 1] sorted[i] != 0 then
+                Array.write pos sorted[i] (ref mut out)
+                pos = pos + 1
+        Tensor { shape: [cnt], data: out }
+
+/// Returns sorted unique `values`, first-occurrence flat `indices`, reconstruction `inverse`, and `counts`.
+///
+/// ```tsuzuri run=[10,%2020]%20[1,%200]%20[1,%200,%201]%20[1,%202]
+/// let t = Tensor.of_array [3] [20, 10, 20]
+/// let u = Tensor.unique_full (Tensor.view t)
+/// $"{Tensor.as_array u.values} {Tensor.as_array u.indices} {Tensor.as_array u.inverse} {Tensor.as_array u.counts}"
+/// ```
+def unique_full :: (Ord<'a>, Copy<'a>) => ref View<'a> -> UniqueResult<'a>
+fn unique_full view =
+    let packed = to_tensor view
+    let pd = ref packed.data
+    let n = pd.length
+    if n == 0 then
+        UniqueResult {
+            values: Tensor { shape: [0], data: [] },
+            indices: Tensor { shape: [0], data: [] },
+            inverse: Tensor { shape: [0], data: [] },
+            counts: Tensor { shape: [0], data: [] }
+        }
+    else
+        let perm = stable_argsort_slice pd
+        let mut u_cnt = 1
+        for i in 1i64 ..< n do
+            if total_cmp pd[perm[i - 1]] pd[perm[i]] != 0 then u_cnt = u_cnt + 1
+        let mut vals = new ['a](u_cnt, \_ -> pd[perm[0]])
+        let mut first_idx = new [i64](u_cnt, \_ -> perm[0])
+        let mut counts = new [i64](u_cnt, \_ -> 0)
+        let mut inverse = new [i64](n, \_ -> 0)
+        let mut group = 0
+        Array.write perm[0] 0 (ref mut inverse)
+        Array.write 0 1 (ref mut counts)
+        for i in 1i64 ..< n do
+            let orig = perm[i]
+            if total_cmp pd[perm[i - 1]] pd[orig] != 0 then
+                group = group + 1
+                Array.write group pd[orig] (ref mut vals)
+                Array.write group orig (ref mut first_idx)
+            Array.write orig group (ref mut inverse)
+            Array.write group (counts[group] + 1) (ref mut counts)
+        UniqueResult {
+            values: Tensor { shape: [u_cnt], data: vals },
+            indices: Tensor { shape: [u_cnt], data: first_idx },
+            inverse: Tensor { shape: [n], data: inverse },
+            counts: Tensor { shape: [u_cnt], data: counts }
+        }
+
+/// Element-wise membership test: `true` where an element of `elements` appears in `test_elements`, preserving `elements.shape`.
+///
+/// ```tsuzuri run=[false,%20true,%20false,%20true]
+/// let test_set = Tensor.of_array [2] [2, 4]
+/// let elems = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// Tensor.to_array (Tensor.isin (Tensor.view test_set) (Tensor.view elems))
+/// ```
+def isin :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<bool>
+fn isin test_elements elements =
+    let u = unique test_elements
+    let ud = ref u.data
+    let m = ud.length
+    map (\v ->
+        let pos = bsearch_sorted SearchSide.Left ud v
+        pos < m && total_cmp ud[pos] v == 0) elements
+
+/// Sorted unique 1-D intersection of `left` and `right` (`np.intersect1d`).
+///
+/// ```tsuzuri run=[2,%203]
+/// let a = Tensor.of_array [4] [1, 3, 2, 3]
+/// let b = Tensor.of_array [3] [3, 4, 2]
+/// Tensor.to_array (Tensor.intersect1d (Tensor.view a) (Tensor.view b))
+/// ```
+def intersect1d :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn intersect1d left right =
+    let ua = unique left
+    let ub = unique right
+    let ad = ref ua.data
+    let bd = ref ub.data
+    let mut i = 0
+    let mut j = 0
+    let mut cnt = 0
+    while i < ad.length && j < bd.length do
+        let c = total_cmp ad[i] bd[j]
+        if c == 0 then
+            cnt = cnt + 1
+            i = i + 1
+            j = j + 1
+        elif c < 0 then i = i + 1
+        else j = j + 1
+    if cnt == 0 then Tensor { shape: [0], data: [] }
+    else
+        let mut out = new ['a](cnt, \_ -> ad[0])
+        i = 0
+        j = 0
+        let mut pos = 0
+        while i < ad.length && j < bd.length do
+            let c = total_cmp ad[i] bd[j]
+            if c == 0 then
+                Array.write pos ad[i] (ref mut out)
+                pos = pos + 1
+                i = i + 1
+                j = j + 1
+            elif c < 0 then i = i + 1
+            else j = j + 1
+        Tensor { shape: [cnt], data: out }
+
+/// Sorted unique 1-D union of `left` and `right` (`np.union1d`).
+///
+/// ```tsuzuri run=[1,%202,%203,%204]
+/// let a = Tensor.of_array [3] [3, 1, 2]
+/// let b = Tensor.of_array [3] [2, 4, 3]
+/// Tensor.to_array (Tensor.union1d (Tensor.view a) (Tensor.view b))
+/// ```
+def union1d :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn union1d left right =
+    let lp = to_tensor left
+    let rp = to_tensor right
+    let combined = Tensor { shape: [lp.data.length + rp.data.length], data: Array.append (ref lp.data) (ref rp.data) }
+    unique (ref (Tensor.view combined))
+
+/// Sorted unique 1-D set difference: elements in `left` that are not in `right` (`np.setdiff1d`).
+///
+/// ```tsuzuri run=[1,%204]
+/// let a = Tensor.of_array [4] [1, 2, 3, 4]
+/// let b = Tensor.of_array [2] [2, 3]
+/// Tensor.to_array (Tensor.setdiff1d (Tensor.view a) (Tensor.view b))
+/// ```
+def setdiff1d :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn setdiff1d left right =
+    let ua = unique left
+    let ub = unique right
+    let ad = ref ua.data
+    let bd = ref ub.data
+    let mut i = 0
+    let mut j = 0
+    let mut cnt = 0
+    while i < ad.length do
+        if j >= bd.length then
+            cnt = cnt + 1
+            i = i + 1
+        else
+            let c = total_cmp ad[i] bd[j]
+            if c < 0 then
+                cnt = cnt + 1
+                i = i + 1
+            elif c == 0 then
+                i = i + 1
+                j = j + 1
+            else
+                j = j + 1
+    if cnt == 0 then Tensor { shape: [0], data: [] }
+    else
+        let mut out = new ['a](cnt, \_ -> ad[0])
+        i = 0
+        j = 0
+        let mut pos = 0
+        while i < ad.length do
+            if j >= bd.length then
+                Array.write pos ad[i] (ref mut out)
+                pos = pos + 1
+                i = i + 1
+            else
+                let c = total_cmp ad[i] bd[j]
+                if c < 0 then
+                    Array.write pos ad[i] (ref mut out)
+                    pos = pos + 1
+                    i = i + 1
+                elif c == 0 then
+                    i = i + 1
+                    j = j + 1
+                else
+                    j = j + 1
+        Tensor { shape: [cnt], data: out }
+
+/// Sorted unique 1-D symmetric set difference: elements in exactly one of `left` or `right` (`np.setxor1d`).
+///
+/// ```tsuzuri run=[1,%204]
+/// let a = Tensor.of_array [3] [1, 2, 3]
+/// let b = Tensor.of_array [3] [2, 3, 4]
+/// Tensor.to_array (Tensor.setxor1d (Tensor.view a) (Tensor.view b))
+/// ```
+def setxor1d :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn setxor1d left right =
+    let ua = unique left
+    let ub = unique right
+    let ad = ref ua.data
+    let bd = ref ub.data
+    let mut i = 0
+    let mut j = 0
+    let mut cnt = 0
+    while i < ad.length || j < bd.length do
+        if i >= ad.length then
+            cnt = cnt + 1
+            j = j + 1
+        elif j >= bd.length then
+            cnt = cnt + 1
+            i = i + 1
+        else
+            let c = total_cmp ad[i] bd[j]
+            if c == 0 then
+                i = i + 1
+                j = j + 1
+            elif c < 0 then
+                cnt = cnt + 1
+                i = i + 1
+            else
+                cnt = cnt + 1
+                j = j + 1
+    if cnt == 0 then Tensor { shape: [0], data: [] }
+    else
+        let fallback = if ad.length > 0 then ad[0] else bd[0]
+        let mut out = new ['a](cnt, \_ -> fallback)
+        i = 0
+        j = 0
+        let mut pos = 0
+        while i < ad.length || j < bd.length do
+            if i >= ad.length then
+                Array.write pos bd[j] (ref mut out)
+                pos = pos + 1
+                j = j + 1
+            elif j >= bd.length then
+                Array.write pos ad[i] (ref mut out)
+                pos = pos + 1
+                i = i + 1
+            else
+                let c = total_cmp ad[i] bd[j]
+                if c == 0 then
+                    i = i + 1
+                    j = j + 1
+                elif c < 0 then
+                    Array.write pos ad[i] (ref mut out)
+                    pos = pos + 1
+                    i = i + 1
+                else
+                    Array.write pos bd[j] (ref mut out)
+                    pos = pos + 1
+                    j = j + 1
+        Tensor { shape: [cnt], data: out }
 
 // Same-type `Tensor<'a>` arithmetic operator instances (§4, NC03 D1-A borrowed operands)
 instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>> {

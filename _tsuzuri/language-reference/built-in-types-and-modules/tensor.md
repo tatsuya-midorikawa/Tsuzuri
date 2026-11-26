@@ -420,6 +420,52 @@ $"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
 [10, 10, 10, 10] [2, 4, 6] [10, 21, 32, 13, 24, 35]
 ```
 
+## 軸指定の縮約・統計・`NaN` 無視版
+
+単一軸のオプション `Tensor.AxisOptions { axis, keepdims }`、複数軸の `Tensor.AxesOptions { axes, keepdims }`、分散・標準偏差の `Tensor.VarianceOptions { axis, keepdims, ddof }` を使って、全体縮約・単一軸縮約（`*_axis`）・`keepdims` 付き縮約（`*_with`）・複数軸縮約（`*_axes`）を呼び分けられます。対象となる `View<'a>` は常に最後の引数です。
+
+| 分類 | 関数一覧 | 備考 |
+| --- | --- | --- |
+| 和・補償付き和・積 | `sum`・`sum_axis`・`sum_with`・`sum_axes`、`sum_kahan`・`sum_kahan_axis`・`sum_kahan_with`、`prod`・`prod_axis`・`prod_with`・`prod_axes` | 空軸では和は `0`、積は `1` |
+| 平均・重み付き平均・分散・標準偏差 | `mean`・`mean_axis`・`mean_with`・`mean_axes`、`average`・`average_axis`、`var`・`var_axis`・`var_with`、`std`・`std_axis`・`std_with` | 2 パス法。空軸または `n - ddof <= 0` では `NaN` |
+| 極値・位置・範囲 | `min`・`min_axis`・`min_with`・`min_axes`、`max`・`max_axis`・`max_with`・`max_axes`、`argmin`・`argmin_axis`・`argmin_with`、`argmax`・`argmax_axis`・`argmax_with`、`ptp`・`ptp_axis`・`ptp_with` | 空軸ではトラップ。`NaN` は伝播（`argmin` / `argmax` は最初の `NaN` 位置）、`±0.0` の符号を保持 |
+| 論理・非ゼロ件数 | `all`・`all_axis`・`all_with`・`all_axes`、`any`・`any_axis`・`any_with`・`any_axes`、`count_nonzero`・`count_nonzero_axis`・`count_nonzero_with` | 空軸では `all` が `true`、`any` が `false` |
+| `NaN` 無視版 | `nansum`・`nansum_axis`・`nansum_with`、`nanprod`・`nanprod_axis`・`nanprod_with`、`nanmean`・`nanmean_axis`・`nanmean_with`、`nanvar`・`nanvar_axis`・`nanvar_with`、`nanstd`・`nanstd_axis`・`nanstd_with`、`nanmin`・`nanmin_axis`・`nanmin_with`、`nanmax`・`nanmax_axis`・`nanmax_with`、`nanargmin`・`nanargmin_axis`、`nanargmax`・`nanargmax_axis` | 全要素 `NaN` のとき `nansum` は `0.0`、`nanprod` は `1.0`、`nanmean`/`nanvar`/`nanmin`/`nanmax` は `NaN`、`nanargmin`/`nanargmax` はトラップ |
+
+```tsuzuri edition=2028 run=%5B5%2C%207%2C%209%5D%20%5B2%2C%201%5D%202
+let m = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+let mv = Tensor.view (ref m)
+let s0 = Tensor.sum_axis 0 (ref mv)
+let sk = Tensor.sum_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (ref mv)
+let skv = Tensor.view (ref sk)
+let wnan = Tensor.of_array [3] [1.0, 0.0 / 0.0, 3.0]
+let wnv = Tensor.view (ref wnan)
+$"{Tensor.to_array s0} {Tensor.shape (ref skv)} {Tensor.nanmean (ref wnv)}"
+```
+
+## 累積・差分・数値微分・台形積分・1D 畳み込み・線形補間
+
+- 累積: `cumsum`・`cumsum_flat`・`cumprod`・`cumprod_flat`・`nancumsum`・`nancumprod`
+- 差分・数値微分・積分: `diff`・`diff_n`・`ediff1d`・`gradient`・`gradient_1d`（内部は 2 次中心差分、端点は 1 次片側差分）・`trapezoid`・`trapezoid_x`
+- 1D 信号処理・補間: `convolve`・`correlate`（`ConvolveMode.Full` / `Same` / `Valid`）・`interp`・`interp_extrap`
+
+## 分位点・ヒストグラム・共分散とソート・選択・1D 集合演算
+
+- 分位点 (`QuantileMethod`: `Linear` / `Lower` / `Higher` / `Midpoint` / `Nearest`、`QuantileOptions { method, axis, keepdims }`): `median`・`median_axis`・`median_with`・`nanmedian`・`nanmedian_axis`・`nanmedian_with`・`quantile`・`quantile_with`・`quantiles`・`percentile`・`percentile_with`・`nanquantile`・`nanquantile_with`・`nanpercentile`・`nanpercentile_with`
+- ヒストグラム・ビン集計: `histogram`・`histogram_edges`・`histogram_weighted`・`histogram2d`・`histogramdd`・`bincount`・`bincount_weighted`・`digitize`
+- 共分散・相関: `cov`・`cov_with`・`corrcoef`・`corrcoef_with`（常に 2D `[p, p]` 行列を返す）
+- ソート・選択・探索・集合演算: 安定ソート `sort`・`sort_flat`・`argsort`・`argsort_flat`・多重キー `lexsort`（最終行が主キー、`NaN` は末尾）、期待計算量 $O(n)$（最悪 $O(n \log n)$）の introselect による `partition`・`argpartition`、二分探索 `searchsorted`（`SearchSide.Left` / `Right`）、および 1D 集合演算 `unique`・`unique_full`（`UniqueResult`）・`isin`・`intersect1d`・`union1d`・`setdiff1d`・`setxor1d`
+
+```tsuzuri edition=2028 run=%5B1%2C%202%2C%203%5D%2025%20%5B2%5D
+let raw = Tensor.of_array [5] [3, 1, 2, 1, 3]
+let q_in = Tensor.of_array [4] [40.0, 10.0, 30.0, 20.0]
+let b = Tensor.of_array [3] [2, 4, 5]
+let rv = Tensor.view (ref raw)
+let qv = Tensor.view (ref q_in)
+let bv = Tensor.view (ref b)
+$"{Tensor.to_array (Tensor.unique (ref rv))} {Tensor.median (ref qv)} {Tensor.to_array (Tensor.intersect1d (ref rv) (ref bv))}"
+```
+
 ## 計算量
 
 | 操作 | 計算量 |
@@ -431,13 +477,16 @@ $"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
 | 添字 `t[i, j]`・`t[^0, 0]`・`t[[…]]`・`t[(i, j)]`・`m[i, j] = v`（要素の読み書き） | $O(\text{rank})$（1〜4 軸タプルは $O(1)$）、確保 0 回 |
 | 添字 `ref t[i, a..b, ..]`・`ref t[[Slice…]]`（窓） | $O(\text{rank})$、要素はコピーせず、結果の形とストライドの 2 配列を確保 |
 | 算術演算子 `v - w`・`2.0 * v`・`t + v`・`-v` | $O(\text{count})$、結果の `Tensor`（形とデータ配列）と `Tensor` 被演算子ごとの一時 `view`（2 配列）を確保。確保なしの再利用は `add_into`・`add_in_place` を使う |
-| `init`・`fold`・`map`・`to_tensor` | $O(\text{count})$ |
+| `init`・`fold`・`map`・`to_tensor`・縮約（`sum*`・`mean*`・`var*`・`min*`・`argmax*`・`nan*`）・`cumsum`・`diff`・`gradient`・`trapezoid` | $O(\text{count})$ |
+| `partition`・`argpartition`（長さ $n$ の軸スライスごと） | 期待 $O(n)$、最悪 $O(n \log n)$（中央値 3 点選び＋深さ上限ソート切り替えの introselect） |
+| `sort`・`argsort`・`median`・`quantile`・`unique*` | スライス長 $n$ に対して $O(n \log n)$ |
+| `searchsorted`・`interp`・`digitize` | テーブル長 $m$・問い合わせ要素数 $q$ に対して $O(q \log m)$ |
 
 軸は 64 本までなので、$O(\text{rank})$ は定数です。要素の読み出しは、連続でない窓でも、軸ごとのループで行います。要素のない窓（長さが 0 の軸を持つ窓）では、`fold` は他の軸がどれだけ長くても（`[4611686018427387904, 0]` のような形も作れます）何も走査せずに初期値を返します。最適化水準による違いもありません。
 
 ## できないこと
 
-- 軸指定の統計・ソート、`einsum`・線形代数・FFT の演算はまだ未実装です（[NC07〜NC09](../../../_features/README.md) で追加予定）。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
+- 線形代数・`einsum`・FFT の演算は `Tensor` 本体には含まれません。また、書き込み窓 `ref mut t[…]` と複合代入 `+=` 等（[NC20](../../../_features/NC20-compound-assignment-and-mutable-index-views.md)）も計画中です。ブールマスクどうしの論理積・論理和に `&`・`|` 演算子は使えないため、`Tensor.logical_and`・`Tensor.logical_or`・`Tensor.logical_not` を使います。マスクと範囲を 1 つの角括弧に混ぜることもできません（`E1003`）。
 - 窓の並列・SIMD・GPU のカーネルは未実装です。平らなバッファは `Tensor.as_array` で取り出せるので、[Parallel](./parallel.md) や [Gpu](./gpu.md) の API に渡せます。
 - 65 本以上の軸は作れません。`as_matrix_view` は負のストライドを持つ 2D 窓ではトラップするため、先に `to_tensor` 等で連続化してください。
 
@@ -449,6 +498,7 @@ $"{Tensor.to_array d} {Tensor.to_array y} {Tensor.to_array s}"
 
 ## 関連項目
 
+- [NumPy からの移行ガイド](./numpy-migration.md) — NumPy の関数・引数と `Tensor` API の対応表
 - [Slice](./slice.md) — 厳格なセレクタ `Slice.Sel` と丸める記述子 `Slice.Axis`
 - [Matrix](./matrix.md) — 2 次元の持ち主と、行列積
 - [MatrixView](./matrix-view.md) — 2 次元の窓と、書き込める窓

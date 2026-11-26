@@ -113,6 +113,7 @@
 - [Matrix](./built-in-types-and-modules/matrix.md)
 - [MatrixView](./built-in-types-and-modules/matrix-view.md)
 - [Tensor](./built-in-types-and-modules/tensor.md)
+- [NumPy からの移行ガイド](./built-in-types-and-modules/numpy-migration.md) — NumPy の配列・統計・ソート操作と `Tensor` API の対応
 - [Slice](./built-in-types-and-modules/slice.md) — `Tensor`・`Matrix`・`MatrixView` 向けのスライス記述子
 - [Complex](./built-in-types-and-modules/complex.md) — 複素数型 `Complex<'a>` と初等関数
 - [Rc と Arc](./built-in-types-and-modules/rc.md)
