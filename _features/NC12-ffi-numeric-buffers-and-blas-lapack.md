@@ -67,7 +67,7 @@
 ### 2. BLAS / LAPACK バックエンドの接続方針（D2）
 
 - **明示オプトインと能力検査**:
-  - 外部ライブラリ（Apple Accelerate / OpenBLAS / Intel MKL / BLIS）のリンクは明示的なパッケージ依存（例: 公式の薄い `blas` パッケージ）またはビルドフラグ（`-lopenblas` / `-framework Accelerate` 等）で選択する。
+  - 外部ライブラリ（Apple Accelerate / OpenBLAS / Intel MKL / BLIS）のリンクは明示的なパッケージ依存（例: 公式の薄い `blas` パッケージ）またはビルドフラグ（`-lopenblas` / `-framework Accelerate` 等）で選択する。macOS の framework を名前で渡す口は今はない（CLI にも manifest の `[native]` にも、`-framework` に当たる指定がない）。[M20](M20-macos-framework-link-inputs.md) が `--framework Accelerate`・`[native] frameworks` を足す。
   - 利用時に BLAS が利用不可な環境で明示的に BLAS 経路を呼んだ場合は、黙って純 Tsuzuri に落とさずエラーを返す。自動選択（`Auto`）経路を設ける場合のみ、能力検査の上で文書化されたフォールバック（純 Tsuzuri 経路）を許す（AGENTS.md の方針）。
   - 数値セマンティクス（FMA 縮約・スレッド数依存の丸め順序緩和）は純 Tsuzuri 決定論経路と異なるため、API 名で明確に分離する。
 

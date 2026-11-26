@@ -6,7 +6,7 @@
 | 優先度 | P2 |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | W21 |
-| 後続 | W25 |
+| 後続 | W25（弱い後続: [M02](M02-objc-typed-message-send.md)・[M03](M03-objc-classes-defined-in-tsuzuri.md) の Phase 2（D-67 の分岐 4）, [M07](M07-apple-sdk-bindgen-and-package.md), [M18](M18-intel-mac-and-universal2.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E05 と W21 の値渡しの除外の改訂）。D1・D2 が要承認、ほかは既定案 |
@@ -16,7 +16,7 @@
 
 ## 実装者向け早見
 
-- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
+- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。入れるかは [M18](M18-intel-mac-and-universal2.md)（D-67 の分岐 3）に従う。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
 - 最初に読む: 「現状」の再現（`PtInRect`）→ 仕様 2 の分類 → 「現状」の参照表 → W21 の仕様 3・4 と D4・D8。
 - 最初に書くテスト: `tests/c_layout_by_value.rs` の `windows_x64_passes_by_size` と `windows_arm64_passes_hfa_in_float_registers`（`build --emit llvm --target <triple>` の `declare` の行を、参照表から手で書いた期待と比べる）→ `tests/c_layout_by_value.mjs` の C のホスト。
 - 触ってはいけない: `@c_layout` の無い record の ABI（[E05](_completed/E05-host-abi-buffers.md)）、`ref R`（`const T *`）と `ref mut R`（`T *`）、`export def` の IR とヘッダー、WASM の出力、値渡しを使わないプログラムの IR・ヘッダー・診断（1 byte も変えない）。
@@ -161,7 +161,7 @@ record の大きさ `s` と整列は W21 の `record_layout`、葉（入れ子�
 ### 3. Phase 2 の分類（System V x86-64、AAPCS64）
 
 - AAPCS64（Linux、macOS）: Windows Arm64 と同じ形で、Linux だけ HFA の引数の配列に `alignstack(8)` を付ける（宣言と呼び出しの地点の両方）。macOS は付けない。
-- System V x86-64（Linux、Intel の macOS）: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
+- System V x86-64（Linux、Intel の macOS。Intel の macOS は今は target がなく、入れるかは [M18](M18-intel-mac-and-universal2.md) に従う）: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
 - 規則の正は参照の Clang の出力で、表にない形を足すときも手順 1 の参照表に行を足してから実装する。
 
 ### 4. target と診断

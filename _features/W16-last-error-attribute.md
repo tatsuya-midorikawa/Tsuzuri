@@ -119,7 +119,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" [ link_name ] "def" i
 ### 構文と符号化
 
 - `src/syntax.rs`: `LastErrorAttribute { target: Ident, span: Span }` と `Program::last_error: Vec<LastErrorAttribute>`（`trusted` と同じ脇のリスト）。
-- `src/parser.rs`: `Attributes` に `last_error: Option<Span>`、`attributes` の繰り返しに `last_error_attribute`。宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern` と `def` を確かめる。`signature` の次の宣言の属性の先読み（`name == "cpu" || name == "trusted"`）に `last_error` を足す。足さないと、本体のない extern の次の宣言の `@last_error` が制約行として読まれ、`ConstraintLineIndentation` になる。
+- `src/parser.rs`: `Attributes` に `last_error: Option<Span>`、`attributes` の繰り返しに `last_error_attribute`。宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern` と `def` を確かめる。`signature` の次の宣言の属性の先読み（`name == "cpu" || name == "trusted"`）に `last_error` を足す（[M22](M22-attribute-after-bodyless-extern-def.md) が先に入っていれば、先読みは属性の名前を見ないので足さなくてよい）。足さないと、本体のない extern の次の宣言の `@last_error` が制約行として読まれ、`ConstraintLineIndentation` になる。
 - `src/syntax_codec.rs`: 符号化の末尾（その時点の最後の脇のリストの後）に足し、`FRONTEND_FORMAT` を着手時の値から 1 上げる。`src/formatter.rs` の正規化（`trusted` と同じく位置を消す）、`src/api_diff.rs` の `Program` の分解（`last_error: _`。組の結果の型が API の差として出るので属性そのものは数えない）。
 
 ### 検査（`src/check.rs`）
@@ -226,7 +226,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" [ link_name ] "def" i
 
 ## 落とし穴
 
-- `signature` の先読みに `last_error` を足し忘れると、本体のない extern の直後の宣言に付けた `@last_error` が、前の宣言の制約行として読まれる。
+- `signature` の先読みに `last_error` を足し忘れると、本体のない extern の直後の宣言に付けた `@last_error` が、前の宣言の制約行として読まれる（同じ種類の不具合が `@c_layout`・`@literal` で起きている。[M22](M22-attribute-after-bodyless-extern-def.md)）。
 - 消去を引数の評価や Latin-1 の広げ（`tz.string.borrow_utf16` は確保する）より前に置かない。呼び出しの直前に置く。
 - 読み出しを `free_copies` や `read_host_result` の後に置かない（`free` と確保は `errno`・last error を変えうる）。
 - 消去と読み出しを括弧の外に置かない。`tzr_exitsyscall` は遅い経路で値を戻すが、それに頼ると括弧の順序を変えた後のチケットで黙って壊れる。

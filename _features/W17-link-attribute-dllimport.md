@@ -6,7 +6,7 @@
 | 優先度 | P2（Win32 の宣言のパッケージは `user32`・`gdi32`・`comctl32` を要るが、今は利用者が `-l` か `[native]` を自分で書くしかなく、git・registry のパッケージは `[native]` を持てない） |
 | 規模 | M（属性の構文と符号化、検査、`declare` の `dllimport`、5 か所のリンク行、`tsuzuri audit` の出力、パッケージの規則、テストと文書） |
 | 依存 | – |
-| 後続 | [W27](W27-win32-package-from-winmd.md)（win32metadata の `DllImport` の写し先と、公式の `win32` パッケージの配布） |
+| 後続 | [W27](W27-win32-package-from-winmd.md)（win32metadata の `DllImport` の写し先と、公式の `win32` パッケージの配布）, [M07](M07-apple-sdk-bindgen-and-package.md)（公式の `apple` パッケージのリンクの要求）（弱い後続: [M14](M14-tls-http-packages.md), [M20](M20-macos-framework-link-inputs.md)。M20 の Phase 2 が `@link(framework = "...")` に広げる） |
 | 状態 | todo |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E12 D6 の拡張、D-53）。決定事項 D1・D2 が要承認、D3〜D9 は既定案 |
@@ -119,7 +119,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" link_name "def" ident
 
 ### 構文と検査
 
-- `src/syntax.rs`: `LinkAttribute { target: Ident, library: String, span: Span, name_span: Span }` と `Program::links: Vec<LinkAttribute>`（`trusted` と同じ脇のリスト）。`src/parser.rs` の `attributes` に `link_attribute`、宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern`・`def`・明示の symbol を確かめる。`signature` の次の宣言の属性の先読み（`name == "cpu" || name == "trusted"`）に `link` を足す。
+- `src/syntax.rs`: `LinkAttribute { target: Ident, library: String, span: Span, name_span: Span }` と `Program::links: Vec<LinkAttribute>`（`trusted` と同じ脇のリスト）。`src/parser.rs` の `attributes` に `link_attribute`、宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern`・`def`・明示の symbol を確かめる。`signature` の次の宣言の属性の先読み（`name == "cpu" || name == "trusted"`）に `link` を足す（[M22](M22-attribute-after-bodyless-extern-def.md) が先に入っていれば、先読みは属性の名前を見ないので足さなくてよい）。
 - `src/syntax_codec.rs`: 符号化の末尾（その時点の最後の脇のリストの後）に足し、`FRONTEND_FORMAT` を着手時の値から 1 上げる。`src/formatter.rs` の正規化、`src/api_diff.rs` の `Program` の分解（`links: _`。ライブラリは API の型ではない）。
 - `src/check.rs`: `HostImport` に `library: Option<String>`。`@trusted` と同じく名前と位置で extern を探す。名前の検査は `driver::library_name_error` を呼ぶ（規則を 2 つにしない）。`CheckedModule` に `link_libraries: BTreeMap<String, BTreeSet<String>>`（symbol → 名前の集合）。
 
@@ -235,7 +235,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" link_name "def" ident
 
 ## 落とし穴
 
-- `signature` の先読みに `link` を足し忘れると、本体のない extern の直後の宣言の `@link` が前の宣言の制約行として読まれる。
+- `signature` の先読みに `link` を足し忘れると、本体のない extern の直後の宣言の `@link` が前の宣言の制約行として読まれる（同じ種類の不具合が `@c_layout`・`@literal` で起きている。[M22](M22-attribute-after-bodyless-extern-def.md)）。
 - `@link` の名前を `LinkInputs::libraries` に入れない。重複の誤り（`-l` との併用）とキャッシュの停止（E12 D7）を引き起こす。
 - `dllimport` を `host_call` の呼び出しごとに決めない。同じ symbol に `dllimport` の有無の違う 2 行ができ、`unique_declarations` が先の行だけを残す（どちらが残るかは文字列の順で決まる）。
 - `dllimport` を `@link` のない明示の symbol に広げない。静的ライブラリやホストの目的ファイルが定義する関数への `dllimport` の参照は、リンカーの警告（局所の定義の import）や失敗になりうる。
@@ -244,7 +244,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" link_name "def" ident
 
 ## 対象外
 
-- パスの `@link`、静的ライブラリの順序の指定、macOS の framework（`-framework`）。パスと順序は `[native]` を使う。
+- パスの `@link`、静的ライブラリの順序の指定、macOS の framework（`-framework`）。パスと順序は `[native]` を使う。framework は [M20](M20-macos-framework-link-inputs.md) が `--framework`・`[native] frameworks` として足し、その Phase 2 が W17 の出荷の後に `@link(framework = "...")` へ広げる（D-67。M20 の D6 で要承認）。
 - `--emit object`・`llvm`・`bitcode` の目的ファイルへのライブラリの要求の埋め込み（COFF の `/DEFAULTLIB`、ELF の `.deplibs`、Mach-O の `LC_LINKER_OPTION`。D6）。
 - `[native]` の規則の緩和（git・registry のパッケージのパスのリンク入力）。
 - 遅延読み込み（`/DELAYLOAD`）と `GetProcAddress` による実行時の解決。

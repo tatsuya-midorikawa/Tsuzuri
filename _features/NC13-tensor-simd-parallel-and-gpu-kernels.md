@@ -6,7 +6,7 @@
 | 優先度 | P2（外部 BLAS なし環境や WASM・GPU で実用的な数値計算性能を達成する） |
 | 規模 | XL（4 Phase に分割: Phase 1 x86-64 FMA & `f16` SIMD、Phase 2 テンソル SIMD & 軸並列カーネル、Phase 3 キャッシュタイリング GEMM、Phase 4 GPU 2D/リダクション/複数バッファ/行列積） |
 | 依存 | [NC02](NC02-tensor-core-views-and-broadcasting.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md), [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
-| 後続 | – |
+| 後続 | –（弱い後続: [M12](M12-gpu-presentation-to-window.md)。M12 の Phase 2（CAMetalLayer への提示）は、このチケットの D2（Metal）が決まってから着手する） |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 要承認（Phase 4 の GPU API 拡張・新規 GPU バックエンド検討。決定事項 D1・D2 が要承認、Phase 1〜3 の意味保存最適化は既定案） |
