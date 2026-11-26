@@ -44,7 +44,7 @@ pub(crate) const CODEGEN_UNITS_VARIABLE: &str = "TSUZURI_CODEGEN_UNITS";
 /// The most link inputs the command line and the manifest may give together.
 pub const MAX_LINK_INPUTS: usize = 256;
 
-/// Host objects, libraries and search directories linked into a native executable.
+/// Host objects, libraries, macOS frameworks, search directories and rpaths linked into a native executable.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LinkInputs {
     /// Object files and static libraries, linked in this order.
@@ -53,6 +53,20 @@ pub struct LinkInputs {
     pub libraries: Vec<String>,
     /// Directories the linker searches for `libraries`.
     pub search: Vec<PathBuf>,
+    /// macOS framework names for `-framework`, without `.framework` or paths (M20).
+    pub frameworks: Vec<String>,
+    /// Directories the linker searches for `frameworks` (`-F`, M20).
+    pub framework_search: Vec<PathBuf>,
+    /// Runtime library search paths (`-Wl,-rpath,PATH`, M20).
+    pub rpaths: Vec<String>,
+}
+
+/// Extra link inputs collected from `@link` attributes and bundled macOS SDK lookup (W17 / M20).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct LinkExtras<'a> {
+    pub system_libraries: &'a [String],
+    pub system_frameworks: &'a [String],
+    pub sdk: &'a [OsString],
 }
 
 /// Why `name` cannot follow `-l`, if it cannot.
@@ -74,9 +88,68 @@ pub fn library_name_error(name: &str) -> Option<String> {
     })
 }
 
+/// Why `name` cannot follow `--framework` (M20 Spec 3), if it cannot.
+pub fn framework_name_error(name: &str) -> Option<String> {
+    let valid = name
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'+' | b'.' | b'-'))
+        && !name.ends_with(".framework");
+    (!valid).then(|| {
+        format!(
+            "invalid framework name '{name}'; pass the name without a path or the '.framework' suffix, for example --framework AppKit"
+        )
+    })
+}
+
+/// Why `value` cannot follow `--rpath` (M20 Spec 4), if it cannot.
+pub fn rpath_error(value: &str) -> Option<String> {
+    let anchored = value.starts_with('/')
+        || value == "@executable_path"
+        || value.starts_with("@executable_path/")
+        || value == "@loader_path"
+        || value.starts_with("@loader_path/");
+    let valid = !value.is_empty()
+        && !value.contains(',')
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && anchored;
+    (!valid).then(|| {
+        format!(
+            "invalid rpath '{value}'; write an absolute path or a path that starts with @executable_path/ or @loader_path/, without commas"
+        )
+    })
+}
+
 impl LinkInputs {
     pub fn is_empty(&self) -> bool {
-        self.paths.is_empty() && self.libraries.is_empty() && self.search.is_empty()
+        self.paths.is_empty()
+            && self.libraries.is_empty()
+            && self.search.is_empty()
+            && self.frameworks.is_empty()
+            && self.framework_search.is_empty()
+            && self.rpaths.is_empty()
+    }
+
+    pub fn has_macos_inputs(&self) -> bool {
+        !self.frameworks.is_empty() || !self.framework_search.is_empty() || !self.rpaths.is_empty()
+    }
+
+    pub fn without_macos_inputs(mut self) -> Self {
+        self.frameworks.clear();
+        self.framework_search.clear();
+        self.rpaths.clear();
+        self
+    }
+
+    pub fn requires_build_message(&self) -> &'static str {
+        if self.has_macos_inputs() {
+            "link inputs require a native executable; remove --link, -l, -L, --framework, -F and --rpath or build the native target with --emit exe"
+        } else {
+            "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe"
+        }
     }
 
     /// These inputs followed by `later` ones: the manifest's, then the command line's.
@@ -84,12 +157,22 @@ impl LinkInputs {
         self.paths.extend(later.paths.iter().cloned());
         self.libraries.extend(later.libraries.iter().cloned());
         self.search.extend(later.search.iter().cloned());
+        self.frameworks.extend(later.frameworks.iter().cloned());
+        self.framework_search
+            .extend(later.framework_search.iter().cloned());
+        self.rpaths.extend(later.rpaths.iter().cloned());
         self
     }
 
-    /// The inputs as a whole: their number, repeats and library names. Does not touch the file system.
+    /// The inputs as a whole: their number, repeats, library/framework names and rpaths. Does not touch the file system.
     pub fn check_shape(&self) -> Result<(), Diagnostic> {
-        if self.paths.len() + self.libraries.len() + self.search.len() > MAX_LINK_INPUTS {
+        let total = self.paths.len()
+            + self.libraries.len()
+            + self.search.len()
+            + self.frameworks.len()
+            + self.framework_search.len()
+            + self.rpaths.len();
+        if total > MAX_LINK_INPUTS {
             return Err(driver_error_of(
                 DiagnosticKind::LinkInputLimit,
                 format!("too many link inputs; at most {MAX_LINK_INPUTS} are supported"),
@@ -98,6 +181,19 @@ impl LinkInputs {
         for name in &self.libraries {
             if let Some(message) = library_name_error(name) {
                 return Err(driver_error_of(DiagnosticKind::InvalidLibraryName, message));
+            }
+        }
+        for name in &self.frameworks {
+            if let Some(message) = framework_name_error(name) {
+                return Err(driver_error_of(
+                    DiagnosticKind::InvalidFrameworkName,
+                    message,
+                ));
+            }
+        }
+        for value in &self.rpaths {
+            if let Some(message) = rpath_error(value) {
+                return Err(driver_error_of(DiagnosticKind::InvalidRpath, message));
             }
         }
         let repeated = |seen: &mut BTreeSet<String>, input: String| {
@@ -122,6 +218,18 @@ impl LinkInputs {
         for name in &self.libraries {
             repeated(&mut seen, name.clone())?;
         }
+        let mut seen = BTreeSet::new();
+        for path in &self.framework_search {
+            repeated(&mut seen, path.display().to_string())?;
+        }
+        let mut seen = BTreeSet::new();
+        for name in &self.frameworks {
+            repeated(&mut seen, name.clone())?;
+        }
+        let mut seen = BTreeSet::new();
+        for value in &self.rpaths {
+            repeated(&mut seen, value.clone())?;
+        }
         Ok(())
     }
 
@@ -145,16 +253,41 @@ impl LinkInputs {
         for path in &self.search {
             check(path, true)?;
         }
+        for path in &self.framework_search {
+            check(path, true)?;
+        }
         Ok(())
     }
 
-    /// Adds the inputs to a clang link line: `-L` directories, then paths, then `-l` libraries.
-    fn add_to(&self, clang: &mut Command) {
+    /// Adds the inputs to a clang link line in M20 Spec 5 order:
+    /// `-L` -> `-F` -> bundled SDK `-F`/`-L` -> `-x none` paths -> `-l` -> `@link` `-l` ->
+    /// `-framework` -> `@link(framework = ...)` `-framework` -> `-Wl,-rpath,...`.
+    fn add_to(&self, clang: &mut Command, extras: LinkExtras<'_>) -> Result<(), Diagnostic> {
+        let total = self.paths.len()
+            + self.libraries.len()
+            + self.search.len()
+            + self.frameworks.len()
+            + self.framework_search.len()
+            + self.rpaths.len()
+            + extras.system_libraries.len()
+            + extras.system_frameworks.len();
+        if total > MAX_LINK_INPUTS {
+            return Err(driver_error_of(
+                DiagnosticKind::LinkInputLimit,
+                format!("too many link inputs; at most {MAX_LINK_INPUTS} are supported"),
+            ));
+        }
         for directory in &self.search {
             let mut option = OsString::from("-L");
             option.push(directory);
             clang.arg(option);
         }
+        for directory in &self.framework_search {
+            let mut option = OsString::from("-F");
+            option.push(directory);
+            clang.arg(option);
+        }
+        clang.args(extras.sdk);
         if !self.paths.is_empty() {
             // An earlier `-x ir` or `-x c` would otherwise apply to the host objects.
             clang.args(["-x", "none"]).args(&self.paths);
@@ -162,7 +295,180 @@ impl LinkInputs {
         for name in &self.libraries {
             clang.arg(format!("-l{name}"));
         }
+        for name in extras.system_libraries {
+            clang.arg(format!("-l{name}"));
+        }
+        for name in &self.frameworks {
+            clang.args(["-framework", name.as_str()]);
+        }
+        for name in extras.system_frameworks {
+            clang.args(["-framework", name.as_str()]);
+        }
+        for rpath in &self.rpaths {
+            clang.arg(format!("-Wl,-rpath,{rpath}"));
+        }
+        Ok(())
     }
+}
+
+/// W17: system libraries requested by `@link("name")` on extern symbols referenced in `ir`,
+/// sorted and excluding libraries already listed in `links.libraries`.
+pub fn system_libraries(module: &CheckedModule, ir: &str, links: &LinkInputs) -> Vec<String> {
+    if module.link_libraries.is_empty() {
+        return Vec::new();
+    }
+    let symbols = crate::runtime_cache::RuntimeSymbols::collect(ir);
+    system_libraries_from_symbols(module, &symbols, links)
+}
+
+pub(crate) fn system_libraries_from_symbols(
+    module: &CheckedModule,
+    symbols: &crate::runtime_cache::RuntimeSymbols,
+    links: &LinkInputs,
+) -> Vec<String> {
+    if module.link_libraries.is_empty() {
+        return Vec::new();
+    }
+    let mut found = BTreeSet::new();
+    for (symbol, libs) in &module.link_libraries {
+        if symbols.contains(symbol) {
+            for lib in libs {
+                if !links.libraries.iter().any(|existing| existing == lib) {
+                    found.insert(lib.clone());
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// M20 Phase 2: macOS frameworks requested by `@link(framework = "name")` on extern symbols referenced in `ir`,
+/// sorted and excluding frameworks already listed in `links.frameworks`.
+pub fn system_frameworks(module: &CheckedModule, ir: &str, links: &LinkInputs) -> Vec<String> {
+    if module.link_frameworks.is_empty() {
+        return Vec::new();
+    }
+    let symbols = crate::runtime_cache::RuntimeSymbols::collect(ir);
+    system_frameworks_from_symbols(module, &symbols, links)
+}
+
+pub(crate) fn system_frameworks_from_symbols(
+    module: &CheckedModule,
+    symbols: &crate::runtime_cache::RuntimeSymbols,
+    links: &LinkInputs,
+) -> Vec<String> {
+    if module.link_frameworks.is_empty() {
+        return Vec::new();
+    }
+    let mut found = BTreeSet::new();
+    for (symbol, fws) in &module.link_frameworks {
+        if symbols.contains(symbol) {
+            for fw in fws {
+                if !links.frameworks.iter().any(|existing| existing == fw) {
+                    found.insert(fw.clone());
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// Validates `@link(framework = ...)` target compatibility and resolves bundled macOS SDK `-F`/`-L` flags when needed (M20).
+pub(crate) fn prepare_link_extras(
+    platform: crate::target::Platform,
+    clang: &OsStr,
+    links: &LinkInputs,
+    system_frameworks: &[String],
+) -> Result<Vec<OsString>, Diagnostic> {
+    if !system_frameworks.is_empty() && !platform.mach_o() {
+        return Err(driver_error_of(
+            DiagnosticKind::LinkFrameworkTarget,
+            format!(
+                "'@link(framework = \"{}\")' requires a macOS target; build for aarch64-apple-darwin or on a Mac",
+                system_frameworks[0]
+            ),
+        ));
+    }
+    let first_framework = links
+        .frameworks
+        .iter()
+        .chain(system_frameworks.iter())
+        .min()
+        .map(String::as_str);
+    macos_sdk_link_args(platform, clang, first_framework)
+}
+
+pub(crate) fn macos_sdk_link_args(
+    platform: crate::target::Platform,
+    clang: &OsStr,
+    first_framework: Option<&str>,
+) -> Result<Vec<OsString>, Diagnostic> {
+    static SDK_PATH: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let Some(name) = first_framework else {
+        return Ok(Vec::new());
+    };
+    if !platform.mach_o() || !bundled_launcher(clang) {
+        return Ok(Vec::new());
+    }
+    // Only cache when using the default system `xcrun` without a custom `PATH` override in tests;
+    // querying `xcrun --show-sdk-path` via `query_xcrun_sdk` takes ~3ms on macOS, while caching when
+    // found avoids repeated spawns across multi-test runs.
+    if let Some(Some(sdk)) = SDK_PATH.get() {
+        return Ok(sdk_flags(sdk));
+    }
+    let flags = macos_sdk_link_args_with(platform, clang, OsStr::new("xcrun"), Some(name))?;
+    if let Some(sdk) = query_xcrun_sdk(OsStr::new("xcrun")) {
+        let _ = SDK_PATH.set(Some(sdk));
+    }
+    Ok(flags)
+}
+
+fn macos_sdk_link_args_with(
+    platform: crate::target::Platform,
+    clang: &OsStr,
+    xcrun: &OsStr,
+    first_framework: Option<&str>,
+) -> Result<Vec<OsString>, Diagnostic> {
+    let Some(name) = first_framework else {
+        return Ok(Vec::new());
+    };
+    if !platform.mach_o() || !bundled_launcher(clang) {
+        return Ok(Vec::new());
+    }
+    match query_xcrun_sdk(xcrun) {
+        Some(sdk) => Ok(sdk_flags(&sdk)),
+        None => Err(macos_sdk_error(name)),
+    }
+}
+
+fn query_xcrun_sdk(xcrun: &OsStr) -> Option<PathBuf> {
+    let output = Command::new(xcrun).arg("--show-sdk-path").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let sdk = PathBuf::from(text);
+    (sdk.join("System/Library/Frameworks").is_dir() && sdk.join("usr/lib").is_dir()).then_some(sdk)
+}
+
+fn sdk_flags(sdk: &Path) -> Vec<OsString> {
+    let mut fw = OsString::from("-F");
+    fw.push(sdk.join("System/Library/Frameworks"));
+    let mut lib = OsString::from("-L");
+    lib.push(sdk.join("usr/lib"));
+    vec![fw, lib]
+}
+
+fn macos_sdk_error(framework_name: &str) -> Diagnostic {
+    driver_error_of(
+        DiagnosticKind::MacosSdkNotFound,
+        format!(
+            "linking the macOS framework '{framework_name}' with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; install the Xcode Command Line Tools (xcode-select --install), or set TSUZURI_CLANG to Apple's clang"
+        ),
+    )
 }
 
 /// Refuses an output that would replace a link input.
@@ -449,6 +755,8 @@ pub struct BuildOptions {
     pub overflow_report: bool,
     /// `--subsystem` or `[windows] subsystem` (W09): the PE subsystem of a Windows executable.
     pub subsystem: Option<Subsystem>,
+    /// `[macos] min_version` (M17): minimum macOS version for Mach-O compilation and linking.
+    pub macos_min_version: Option<crate::target::MacosVersion>,
 }
 
 impl Default for BuildOptions {
@@ -480,6 +788,7 @@ impl Default for BuildOptions {
             triple: None,
             overflow_report: false,
             subsystem: None,
+            macos_min_version: None,
         }
     }
 }
@@ -840,6 +1149,7 @@ impl BuildOptions {
             triple,
             overflow_report: _,
             subsystem: _,
+            macos_min_version: _,
         } = self;
         if optimization != OptLevel::O0 {
             return Err(driver_error_of(
@@ -1170,6 +1480,16 @@ impl BuildOptions {
             && self.platform().windows()
         {
             self.subsystem = self.subsystem.or(windows.subsystem);
+        }
+        self
+    }
+
+    /// Fills `macos_min_version` from the root manifest's `[macos]` when building for a Mach-O target (M17).
+    pub fn with_manifest_macos(mut self, macos: &crate::package::MacosSettings) -> Self {
+        if self.target == Target::Native && self.platform().mach_o() {
+            self.macos_min_version = self
+                .macos_min_version
+                .or(macos.min_version.map(|(ver, _)| ver));
         }
         self
     }
@@ -1508,18 +1828,68 @@ fn native_compile_args(windows: bool, architecture: &str) -> &'static [&'static 
     }
 }
 
+/// Resolved macOS deployment version choice for one native build (M17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacosChoice {
+    None,
+    Explicit(crate::target::MacosVersion),
+    FromEnvironment(Option<crate::target::MacosVersion>),
+    Default,
+}
+
+pub fn effective_macos_version(
+    platform: Platform,
+    min_version: Option<crate::target::MacosVersion>,
+) -> Result<MacosChoice, Diagnostic> {
+    let env_val = env::var_os("MACOSX_DEPLOYMENT_TARGET");
+    effective_macos_version_with(platform, min_version, env_val.as_deref())
+}
+
+pub fn effective_macos_version_with(
+    platform: Platform,
+    min_version: Option<crate::target::MacosVersion>,
+    env_target: Option<&OsStr>,
+) -> Result<MacosChoice, Diagnostic> {
+    if !platform.mach_o() {
+        return Ok(MacosChoice::None);
+    }
+    if let Some(ver) = min_version {
+        return Ok(MacosChoice::Explicit(ver));
+    }
+    if let Some(raw) = env_target.filter(|v| !v.is_empty()) {
+        if platform.triple().is_some() {
+            let parsed = raw.to_str().and_then(crate::target::MacosVersion::parse);
+            let Some(ver) = parsed else {
+                return Err(driver_error_of(
+                    DiagnosticKind::InvalidMacosDeploymentTarget,
+                    format!(
+                        "MACOSX_DEPLOYMENT_TARGET='{}' must be a macOS version 12.0 or later for --target aarch64-apple-darwin",
+                        raw.to_string_lossy()
+                    ),
+                ));
+            };
+            return Ok(MacosChoice::FromEnvironment(Some(ver)));
+        }
+        return Ok(MacosChoice::FromEnvironment(None));
+    }
+    Ok(MacosChoice::Default)
+}
+
 /// The Clang arguments of every run that is for `platform`, and of the IR compile in them.
 /// Without a named target they are the arguments of the machine the compiler runs on; a named
 /// target also passes its Clang target, even when it is the host's own, so that the output does not
 /// depend on the defaults of the Clang that is found (the deployment target of an Apple SDK).
-fn compile_args(platform: Platform) -> Vec<OsString> {
+fn compile_args(platform: Platform, macos: MacosChoice) -> Vec<OsString> {
     let Some(triple) = platform.triple() else {
-        return native_compile_args(platform.windows(), platform.arch_name())
-            .iter()
-            .map(OsString::from)
-            .collect();
+        let mut arguments: Vec<OsString> =
+            native_compile_args(platform.windows(), platform.arch_name())
+                .iter()
+                .map(OsString::from)
+                .collect();
+        arguments.extend(target_args(platform, macos));
+        return arguments;
     };
-    let mut arguments = target_args(platform);
+    let mut arguments = target_args(platform, macos);
     arguments.extend(triple.clang_arguments().iter().map(OsString::from));
     // Clang rejects position-independent code for the Windows targets.
     if !platform.windows() {
@@ -1566,13 +1936,37 @@ fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
     arguments
 }
 
-/// Only the Clang target of a named platform: a link that is not a compile names its target too.
-fn target_args(platform: Platform) -> Vec<OsString> {
-    platform
-        .triple()
-        .map(|triple| format!("--target={}", triple.clang_target()).into())
-        .into_iter()
-        .collect()
+/// The Clang target or minimum macOS deployment flag of `platform`: a link that is not a compile passes it too.
+fn target_args(platform: Platform, macos: MacosChoice) -> Vec<OsString> {
+    if let Some(triple) = platform.triple() {
+        let target = if triple == Triple::Aarch64AppleDarwin {
+            let ver = match macos {
+                MacosChoice::Explicit(v) | MacosChoice::FromEnvironment(Some(v)) => v,
+                _ => crate::target::MacosVersion::DEFAULT,
+            };
+            ver.clang_triple()
+        } else {
+            triple.clang_target().to_owned()
+        };
+        return vec![format!("--target={target}").into()];
+    }
+    if platform.mach_o() {
+        match macos {
+            MacosChoice::Explicit(v) => vec![format!("-mmacosx-version-min={v}").into()],
+            MacosChoice::Default => {
+                vec![
+                    format!(
+                        "-mmacosx-version-min={}",
+                        crate::target::MacosVersion::DEFAULT
+                    )
+                    .into(),
+                ]
+            }
+            MacosChoice::FromEnvironment(_) | MacosChoice::None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    }
 }
 
 /// The environment variable that names the sysroot of a named target: its C headers and libraries.
@@ -1783,6 +2177,8 @@ pub struct Project {
     pub capabilities: Option<crate::capabilities::Policy>,
     /// The root package's `[windows]` section (W09).
     pub windows: crate::package::WindowsSettings,
+    /// The root package's `[macos]` section (M17).
+    pub macos: crate::package::MacosSettings,
 }
 
 #[derive(Debug)]
@@ -2853,6 +3249,9 @@ impl Project {
                 paths: resolve(&inputs.paths),
                 libraries: inputs.libraries.clone(),
                 search: resolve(&inputs.search),
+                frameworks: inputs.frameworks.clone(),
+                framework_search: resolve(&inputs.framework_search),
+                rpaths: inputs.rpaths.clone(),
             });
         }
         let capabilities = crate::capabilities::Policy::build(directory, &packages);
@@ -2860,6 +3259,9 @@ impl Project {
         let root_id = root_package.map(|package| package.id.clone());
         let windows = root_package
             .map(|package| package.manifest.windows.clone())
+            .unwrap_or_default();
+        let macos = root_package
+            .map(|package| package.manifest.macos.clone())
             .unwrap_or_default();
         // A lockfile belongs to the root manifest, which is there whenever the lockfile is.
         let root_edition = root_package.map_or(Edition::MANIFEST_DEFAULT, |package| {
@@ -2900,6 +3302,7 @@ impl Project {
             native,
             capabilities,
             windows,
+            macos,
         })
     }
 
@@ -3073,6 +3476,7 @@ impl Project {
             native: LinkInputs::default(),
             capabilities: None,
             windows: Default::default(),
+            macos: Default::default(),
         }
     }
 
@@ -3896,10 +4300,16 @@ fn build_complete(
         {
             return Err(driver_error_of(
                 DiagnosticKind::OptionRequiresBuild,
-                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+                links.requires_build_message(),
             ));
         }
         links.check_shape()?;
+        if links.has_macos_inputs() && !platform.mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them",
+            ));
+        }
         links.check_readable()?;
     }
     // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
@@ -4256,6 +4666,44 @@ fn build_complete(
         llvm::duplicate_declarations(&text)
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
+    let os_version_runtime = runtime_symbols.contains("tsuzuri_os_version");
+    let macos_choice = if options.target == Target::Native
+        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+        && !options.emit.is_kernel()
+        && !options.emit.is_bindings()
+    {
+        effective_macos_version(platform, options.macos_min_version)?
+    } else {
+        MacosChoice::None
+    };
+    let sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
+    let sys_frameworks = system_frameworks_from_symbols(module, &runtime_symbols, links);
+    let sdk_link_args = if options.target == Target::Native
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+    {
+        prepare_link_extras(
+            platform,
+            &tool("TSUZURI_CLANG", "clang"),
+            links,
+            &sys_frameworks,
+        )?
+    } else {
+        if !sys_frameworks.is_empty() && options.target == Target::Native && !platform.mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::LinkFrameworkTarget,
+                format!(
+                    "'@link(framework = \"{}\")' requires a macOS target; build for aarch64-apple-darwin or on a Mac",
+                    sys_frameworks[0]
+                ),
+            ));
+        }
+        Vec::new()
+    };
+    let link_extras = LinkExtras {
+        system_libraries: &sys_libraries,
+        system_frameworks: &sys_frameworks,
+        sdk: &sdk_link_args,
+    };
     // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols. A
     // native DataChannel waits on its scheduler too (TZ12).
     let tzroutine_symbols = runtime_symbols.prefix("tsuzuri_tz_");
@@ -4691,7 +5139,7 @@ fn build_complete(
                     .map(OsString::from),
                 );
             } else {
-                args.extend(compile_args(platform));
+                args.extend(compile_args(platform, macos_choice));
                 args.extend(no_sdk_args(platform));
                 if options.cpu == Cpu::Native {
                     args.extend(
@@ -4728,7 +5176,7 @@ fn build_complete(
         // through the link. A WebAssembly function without SIMD carries none: it inlines without them.
         if options.emit == Emit::Bitcode && (options.target == Target::Native || options.wasm_simd)
         {
-            text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
+            text = bitcode_ir(&text, options, platform, macos_choice, f16, &temporary.path)?;
         }
         // The merge of the C runtime hides every symbol that only the runtime defines, so the ones a host calls are
         // named to keep (PR08 D5).
@@ -4781,7 +5229,7 @@ fn build_complete(
                 if options.target.is_wasm() {
                     args.extend(wasm_target_args(&options));
                 } else {
-                    args.extend(compile_args(platform));
+                    args.extend(compile_args(platform, macos_choice));
                     if options.cpu == Cpu::Native {
                         args.extend(
                             native_ir_cpu_args(platform.arch_name(), f16)?
@@ -4916,7 +5364,7 @@ fn build_complete(
                 runtime.arg("-c");
             }
             runtime
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
             if (tzroutine_runtime || trap_runtime || net_runtime || gpu_runtime)
@@ -4932,6 +5380,9 @@ fn build_complete(
             }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
+            }
+            if os_version_runtime {
+                runtime.arg("-DTZ_OS_VERSION");
             }
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
@@ -5019,7 +5470,7 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c", "-O1"])
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
             let hint = cross_hint(
                 platform,
@@ -5050,7 +5501,7 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c", "-O1"])
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
             let hint = cross_hint(
                 platform,
@@ -5103,6 +5554,9 @@ fn build_complete(
                 if llvm::exit_code_entry(module) {
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
                 }
+            }
+            if os_version_runtime {
+                runtime.arg("-DTZ_OS_VERSION");
             }
             runtime.arg(options.optimization.flag());
             let hint = "the WASI host needs Clang with WebAssembly support";
@@ -5264,7 +5718,7 @@ fn build_complete(
         if options.target.is_wasm() {
             clang.args(wasm_target_args(&options));
         } else {
-            clang.args(compile_args(platform));
+            clang.args(compile_args(platform, macos_choice));
             if options.cpu == Cpu::Native {
                 clang.args(native_ir_cpu_args(platform.arch_name(), f16)?);
             }
@@ -5362,7 +5816,7 @@ fn build_complete(
             }
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
-            links.add_to(&mut clang);
+            links.add_to(&mut clang, link_extras)?;
         }
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
@@ -5411,7 +5865,9 @@ fn build_complete(
             link_shared(
                 symbols,
                 options,
+                macos_choice,
                 links,
+                link_extras,
                 (&object, native_runtime.then_some(runtime_object.as_path())),
                 (&artifact, output),
                 &temporary.path,
@@ -5435,7 +5891,7 @@ fn build_complete(
         } else if dwarf_sidecar.is_some() {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
-                .args(target_args(platform))
+                .args(target_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .args(final_link_args(platform)?)
                 .arg(&module_input)
@@ -5462,7 +5918,7 @@ fn build_complete(
             if backtrace_runtime {
                 linker.arg(&backtrace_object);
             }
-            links.add_to(&mut linker);
+            links.add_to(&mut linker, link_extras)?;
             linker.arg("-o").arg(&artifact);
             let linked = run_tool(
                 &mut linker,
@@ -5499,7 +5955,7 @@ fn build_complete(
         {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
-                .args(target_args(platform))
+                .args(target_args(platform, macos_choice))
                 .args(no_sdk_args(platform))
                 .args(link_args(platform))
                 .args(["-r", "-nostdlib"]);
@@ -5754,10 +6210,13 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
 
 /// Links the object of `--emit shared` (E13 Phase 2) into a shared library that exports only the
 /// public C ABI and resolves every symbol at link time, like an executable.
+#[allow(clippy::too_many_arguments)]
 fn link_shared(
     symbols: &[String],
     options: BuildOptions,
+    macos_choice: MacosChoice,
     links: &LinkInputs,
+    link_extras: LinkExtras<'_>,
     (object, runtime): (&Path, Option<&Path>),
     (artifact, output): (&Path, &Path),
     temporary: &Path,
@@ -5771,7 +6230,7 @@ fn link_shared(
     let platform = options.platform();
     let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
     linker
-        .args(target_args(platform))
+        .args(target_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(final_link_args(platform)?);
     if platform.mach_o() {
@@ -5815,7 +6274,7 @@ fn link_shared(
         }
     }
     linker.arg("-lm");
-    links.add_to(&mut linker);
+    links.add_to(&mut linker, link_extras)?;
     linker.arg("-o").arg(artifact);
     collect_message(
         messages,
@@ -6799,6 +7258,7 @@ fn bitcode_ir(
     ir: &str,
     options: BuildOptions,
     platform: Platform,
+    macos_choice: MacosChoice,
     f16: llvm::F16Path,
     directory: &Path,
 ) -> Result<String, Diagnostic> {
@@ -6812,7 +7272,7 @@ fn bitcode_ir(
         .map(OsString::from)
         .to_vec()
     } else {
-        let mut flags = compile_args(platform);
+        let mut flags = compile_args(platform, macos_choice);
         flags.extend(no_sdk_args(platform));
         flags
     };
@@ -8587,11 +9047,12 @@ mod tests {
             paths: vec![PathBuf::from("host.obj")],
             libraries: vec!["sqlite3".into()],
             search: vec![PathBuf::from("libs")],
+            ..Default::default()
         };
         for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
             let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
             clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
-            links.add_to(&mut clang);
+            links.add_to(&mut clang, LinkExtras::default()).unwrap();
             // A dry run shows the linker line without needing the Windows SDK; without Clang there is nothing to check.
             let Ok(output) = clang.output() else { return };
             let log = String::from_utf8_lossy(&output.stderr);
@@ -8602,6 +9063,270 @@ mod tests {
             assert!(log.contains("\"sqlite3.lib\""), "{target}: {log}");
             assert!(log.contains("host.obj"), "{target}: {log}");
         }
+    }
+
+    #[test]
+    fn link_attribute_libraries_reach_the_msvc_linker() {
+        let links = LinkInputs::default();
+        let sys = vec!["user32".to_owned()];
+        for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+            let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+            clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
+            links
+                .add_to(
+                    &mut clang,
+                    LinkExtras {
+                        system_libraries: &sys,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let Ok(output) = clang.output() else { return };
+            let log = String::from_utf8_lossy(&output.stderr);
+            if !log.contains("link.exe") && !log.contains("lld-link") {
+                return;
+            }
+            assert!(log.contains("\"user32.lib\""), "{target}: {log}");
+        }
+    }
+
+    #[test]
+    fn framework_names_follow_the_library_rule() {
+        for ok in ["AppKit", "_AppIntents_AppKit", "libxml2", "CoreServices"] {
+            assert_eq!(framework_name_error(ok), None, "{ok}");
+        }
+        for bad in [
+            "",
+            "AppKit.framework",
+            "../AppKit",
+            "/System/Library/Frameworks/AppKit.framework",
+            "-framework",
+            "App Kit",
+        ] {
+            assert!(framework_name_error(bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rpaths_are_anchored_and_comma_free() {
+        for ok in [
+            "@executable_path",
+            "@executable_path/../Frameworks",
+            "@loader_path",
+            "@loader_path/lib",
+            "/opt/lib",
+        ] {
+            assert_eq!(rpath_error(ok), None, "{ok}");
+        }
+        for bad in [
+            "",
+            "lib",
+            "./lib",
+            "@rpath/x",
+            "@executable_pathx",
+            "@loader_pathx",
+            "/a,b",
+            "/a\nb",
+        ] {
+            assert!(rpath_error(bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn link_inputs_count_frameworks_toward_the_limit() {
+        let mut links = LinkInputs::default();
+        for i in 0..100 {
+            links.libraries.push(format!("m{i}"));
+            links.frameworks.push(format!("F{i}"));
+        }
+        for i in 0..57 {
+            links.rpaths.push(format!("/opt/r{i}"));
+        }
+        let err = links.check_shape().unwrap_err();
+        assert_eq!(err.kind, Some(DiagnosticKind::LinkInputLimit.id()));
+
+        let dup = LinkInputs {
+            frameworks: vec!["AppKit".into(), "AppKit".into()],
+            ..Default::default()
+        };
+        let dup_err = dup.check_shape().unwrap_err();
+        assert_eq!(dup_err.kind, Some(DiagnosticKind::DuplicateLinkInput.id()));
+    }
+
+    #[test]
+    fn frameworks_follow_libraries_on_the_link_line() {
+        // When new fields are empty, the argument sequence is identical to pre-M20.
+        let legacy = LinkInputs {
+            paths: vec![PathBuf::from("a.o")],
+            libraries: vec!["m".into()],
+            search: vec![PathBuf::from("dir")],
+            ..Default::default()
+        };
+        let mut cmd_legacy = Command::new("clang");
+        legacy
+            .add_to(&mut cmd_legacy, LinkExtras::default())
+            .unwrap();
+        let args_legacy: Vec<String> = cmd_legacy
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args_legacy, vec!["-Ldir", "-x", "none", "a.o", "-lm"]);
+
+        // Full Spec 5 order: -L, -F, sdk, -x none paths, -l, @link -l, -framework, @link -framework, -Wl,-rpath.
+        let full = LinkInputs {
+            paths: vec![PathBuf::from("host.o")],
+            libraries: vec!["z".into()],
+            search: vec![PathBuf::from("ulib")],
+            frameworks: vec!["AppKit".into()],
+            framework_search: vec![PathBuf::from("ufw")],
+            rpaths: vec!["@executable_path/../Frameworks".into()],
+        };
+        let sys_libs = vec!["objc".to_owned()];
+        let sys_fws = vec!["Foundation".to_owned()];
+        let sdk = vec![
+            OsString::from("-F/sdk/System/Library/Frameworks"),
+            OsString::from("-L/sdk/usr/lib"),
+        ];
+        let mut cmd = Command::new("clang");
+        full.add_to(
+            &mut cmd,
+            LinkExtras {
+                system_libraries: &sys_libs,
+                system_frameworks: &sys_fws,
+                sdk: &sdk,
+            },
+        )
+        .unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "-Lulib",
+                "-Fufw",
+                "-F/sdk/System/Library/Frameworks",
+                "-L/sdk/usr/lib",
+                "-x",
+                "none",
+                "host.o",
+                "-lz",
+                "-lobjc",
+                "-framework",
+                "AppKit",
+                "-framework",
+                "Foundation",
+                "-Wl,-rpath,@executable_path/../Frameworks",
+            ]
+        );
+    }
+
+    #[test]
+    fn bundled_launcher_adds_the_sdk_for_frameworks() {
+        let macos = crate::target::Platform::new(Some(crate::target::Triple::Aarch64AppleDarwin));
+        let linux = crate::target::Platform::new(Some(crate::target::Triple::X86_64LinuxGnu));
+        let root = env::temp_dir().join(format!("tsuzuri-m20-sdk-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let sdk_dir = root.join("MacOSX.sdk");
+        fs::create_dir_all(sdk_dir.join("System/Library/Frameworks")).unwrap();
+        fs::create_dir_all(sdk_dir.join("usr/lib")).unwrap();
+
+        let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+        let ok_src = root.join("ok_xcrun.rs");
+        let ok_bin = root.join(if cfg!(windows) {
+            "ok_xcrun.exe"
+        } else {
+            "ok_xcrun"
+        });
+        fs::write(
+            &ok_src,
+            format!(
+                "fn main() {{ println!({:?}); }}\n",
+                sdk_dir.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        assert!(
+            Command::new(&rustc)
+                .arg(&ok_src)
+                .arg("-o")
+                .arg(&ok_bin)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        let fail_src = root.join("fail_xcrun.rs");
+        let fail_bin = root.join(if cfg!(windows) {
+            "fail_xcrun.exe"
+        } else {
+            "fail_xcrun"
+        });
+        fs::write(&fail_src, "fn main() { std::process::exit(1); }\n").unwrap();
+        assert!(
+            Command::new(&rustc)
+                .arg(&fail_src)
+                .arg("-o")
+                .arg(&fail_bin)
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        // Bundled `tsuzuri-clang` on Mach-O with a framework adds `-F` and `-L` from `xcrun`.
+        let flags = macos_sdk_link_args_with(
+            macos,
+            OsStr::new("/opt/toolchain/bin/tsuzuri-clang"),
+            ok_bin.as_os_str(),
+            Some("AppKit"),
+        )
+        .unwrap();
+        assert_eq!(flags.len(), 2);
+        // Apple/system `clang` adds nothing (it finds its own SDK).
+        assert!(
+            macos_sdk_link_args_with(
+                macos,
+                OsStr::new("clang"),
+                fail_bin.as_os_str(),
+                Some("AppKit"),
+            )
+            .unwrap()
+            .is_empty()
+        );
+        // Non-Mach-O target or build without frameworks adds nothing.
+        assert!(
+            macos_sdk_link_args_with(
+                linux,
+                OsStr::new("tsuzuri-clang"),
+                fail_bin.as_os_str(),
+                Some("AppKit"),
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            macos_sdk_link_args_with(
+                macos,
+                OsStr::new("tsuzuri-clang"),
+                fail_bin.as_os_str(),
+                None,
+            )
+            .unwrap()
+            .is_empty()
+        );
+        // Failing `xcrun` reports `macos_sdk_not_found`.
+        let err = macos_sdk_link_args_with(
+            macos,
+            OsStr::new("tsuzuri-clang"),
+            fail_bin.as_os_str(),
+            Some("AppKit"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "E2002");
+        assert_eq!(err.kind, Some(DiagnosticKind::MacosSdkNotFound.id()));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -8726,7 +9451,7 @@ mod tests {
     fn named_targets_choose_clang_arguments_and_output_names() {
         use Triple::*;
         let args = |triple| {
-            compile_args(Platform::new(Some(triple)))
+            compile_args(Platform::new(Some(triple)), MacosChoice::Default)
                 .iter()
                 .map(|argument| argument.to_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
@@ -8754,27 +9479,46 @@ mod tests {
             args(Aarch64WindowsGnu),
             ["--target=aarch64-w64-windows-gnu"]
         );
-        // Without a target the arguments are the machine's own, as they always were.
-        assert_eq!(
-            compile_args(Platform::HOST),
+        // Without a target the arguments are the machine's own, with default 12.0 on macOS (M17 D1).
+        let host_macos = if Platform::HOST.mach_o() {
+            MacosChoice::Default
+        } else {
+            MacosChoice::None
+        };
+        let mut expected_host: Vec<OsString> =
             native_compile_args(cfg!(windows), env::consts::ARCH)
                 .iter()
                 .map(OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert!(target_args(Platform::HOST).is_empty());
+                .collect();
+        if Platform::HOST.mach_o() {
+            expected_host.push("-mmacosx-version-min=12.0".into());
+        }
+        assert_eq!(compile_args(Platform::HOST, host_macos), expected_host);
+        if Platform::HOST.mach_o() {
+            assert_eq!(
+                target_args(Platform::HOST, host_macos),
+                [OsString::from("-mmacosx-version-min=12.0")]
+            );
+        } else {
+            assert!(target_args(Platform::HOST, host_macos).is_empty());
+        }
         assert!(link_args(Platform::HOST).is_empty());
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             // Every named run starts with its Clang target, and only a Windows target has no -fPIC.
             assert_eq!(
-                target_args(platform),
+                target_args(platform, MacosChoice::Default),
                 [OsString::from(format!(
                     "--target={}",
                     triple.clang_target()
                 ))]
             );
-            assert_eq!(args(triple)[0], target_args(platform)[0].to_str().unwrap());
+            assert_eq!(
+                args(triple)[0],
+                target_args(platform, MacosChoice::Default)[0]
+                    .to_str()
+                    .unwrap()
+            );
             assert_eq!(
                 args(triple).contains(&"-fPIC".to_owned()),
                 !platform.windows()

@@ -74,7 +74,9 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/RegexText.tt", include_str!("../std/RegexText.tt")),
     ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
+    ("std/ZUtf8String.tz", include_str!("../std/ZUtf8String.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
+    ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -164,7 +166,11 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Anchor",
     // W20: NUL-terminated UTF-16 strings for C / Win32 APIs.
     "ZString",
+    // M06: NUL-terminated UTF-8 strings for C / POSIX / Objective-C APIs.
+    "ZUtf8String",
     "Complex",
+    // NC08: portable linear algebra and tensor contractions.
+    "Linalg",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -230,6 +236,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ErrGroup.ErrGroup"
             | "Anchor.Anchor"
             | "ZString.ZString"
+            | "ZUtf8String.ZUtf8String"
     )
 }
 
@@ -477,10 +484,22 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         uses: &[],
     },
     OptIn {
+        module: "ZUtf8String",
+        names: &["ZUtf8String"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
         module: "Complex",
         names: &["Complex"],
         aliases: &[],
         uses: &[],
+    },
+    OptIn {
+        module: "Linalg",
+        names: &["Linalg"],
+        aliases: &[],
+        uses: &["Complex", "Tensor"],
     },
 ];
 
@@ -980,7 +999,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 78);
+        assert_eq!(RESERVED_MODULES.len(), 80);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

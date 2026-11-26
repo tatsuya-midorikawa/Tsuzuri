@@ -17,7 +17,7 @@
 
 - 範囲: `extern ... def` の前の属性 `@last_error`。宣言の結果は `R * i32u`（R は C の関数の結果）。呼び出しの直前に Windows は `SetLastError(0)`、POSIX は `errno = 0` にし、直後に `GetLastError()`／`errno` を読んで組の 2 番目にする。C の ABI は変えない。native だけ。
 - 共通契約の `(R, i32u)` は組の値の書き方で、型は `R * i32u` と書く（Tsuzuri のタプル型の構文。[Tuple](../_tsuzuri/language-reference/built-in-types-and-modules/tuple.md)）。
-- 最初に読む: ① 仕様 1〜3 ② `src/llvm_imports.rs` の `host_call` ③ `src/llvm.rs` の `with_blocking_externs` ④ `src/parser.rs` の `attributes` と `signature` の先読み。
+- 最初に読む: ① 仕様 1〜3 ② `src/llvm_imports.rs` の `host_call` ③ `src/llvm.rs` の `with_blocking_externs` ④ `src/parser.rs` の `attributes`。
 - 最初に書くテスト: `tests/last_error.rs` の `last_error_needs_the_pair_result` と `capture_sits_inside_the_blocking_bracket`。
 - 触ってはいけない: `@last_error` のない extern の IR（text pass の出力を含む）、extern の `declare` の形、`@trusted` の意味（印は生成コードを変えない）。
 - 完了の見分け方: Windows の native で次が終了コード 6（`ERROR_INVALID_HANDLE`）、POSIX で `extern "close" def close_fd :: i32 -> i32 * i32u` に `-1` を渡す版が 9（`EBADF`）になる。
@@ -54,7 +54,7 @@ Win32 の多くの関数は失敗を戻り値で知らせ、理由を `GetLastEr
 ## 現状（HEAD `fa40eede` で確認）
 
 - **構文**: `@last_error` はない。`@last_error` の行の後に `extern "GetCurrentProcessId" def pid :: unit -> (i32u, i32u)` を書くと、`1:1: error[E0002]: expected an expression; '@checked' is the only attribute of an expression` と、型の `(i32u, i32u)` に `E0002`（`expected ')' after the type`）が出る（開発版で確認）。組の型は `i32u * i32u` と書く（`unit * i32u` も型検査を通ることを確認）。`@trusted @last_error` を 1 行に書くと、今は `@last_error` を属性と読まないので `E1037`（`trusted_wrong_target`）になる。`@trusted` の置き場の検査は `attributes` が知っている属性をすべて読んだ後に行う（`program_all` の `let Attributes { cpu, effects, trusted } = self.attributes()?` の直後）ので、`attributes` に足せば 1 行の書き方も通る。
-- **属性の読み込み口**: `src/parser.rs` の `attributes` が `@cpu`・効果の属性・`@trusted` を任意の順に読む（D-53）。本体のない宣言（`extern ... def`）の後では、`signature` が次の宣言の属性を `matches!(name.as_str(), "cpu" | "trusted" | "count")` と効果の属性で見分け、それ以外の `@` を制約行として読む。属性は `Program` の脇のリスト（`cpu_attributes`・`effect_attributes`・`trusted`）に持ち、`src/syntax_codec.rs` はこの順に符号化する。
+- **属性の読み込み口**: `src/parser.rs` の `attributes` が `@cpu`・効果の属性・`@trusted` を任意の順に読む（D-53）。本体のない宣言（`extern ... def`）の後では、`signature` が `def` の列以下の `@` + 識別子を名前によらず次の宣言の属性として抜ける（M22）。属性は `Program` の脇のリスト（`cpu_attributes`・`effect_attributes`・`trusted`）に持ち、`src/syntax_codec.rs` はこの順に符号化する。
 - **呼び出しの生成**（`src/llvm_imports.rs` の `host_call`）: 引数を左から右に評価し、Latin-1 の文字列を UTF-16 の複写に広げてから `call` を出し、その後に `free_copies`（`@tz.free`）、out の結果の `read_host_result` の順。`declare` は `self.intrinsics`（宣言の行の文字列の `BTreeSet`）に入れる。
 - **tzroutine の括弧**（`src/llvm.rs` の `with_blocking_externs`）: spawn するネイティブのプログラムでは、生成の後の text pass が extern の symbol を直接呼ぶ行を 1 行ずつ `call void @tsuzuri_tz_blocking_enter()` と `_exit()` で挟み、宣言を末尾に足す。`tzroutine { let _ok = close_raw 0 }` の IR は `call void @tsuzuri_tz_blocking_enter()` / `%v2 = call i32 @CloseHandle(i64 %v1)` / `call void @tsuzuri_tz_blocking_exit()` になる（開発版で確認）。素朴に `host_call` が呼び出しの次の行で読むと、text pass が呼び出しと読み出しの間に `_exit` を入れる。
 - **ランタイム**: `tzr_exitsyscall` は sysmon が P を持ち去った遅い経路でだけ `errno` と `GetLastError` を退避して戻す。`tsuzuri_tz_preempt_check` も譲る前後で戻す（コメントは「後の呼び出しが C の呼び出しの値を読みうる」）。G は呼び出しの間その M に留まる（`tzr_acquirep` は同じ M で P を待つ）。
@@ -119,7 +119,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" [ link_name ] "def" i
 ### 構文と符号化
 
 - `src/syntax.rs`: `LastErrorAttribute { target: Ident, span: Span }` と `Program::last_error: Vec<LastErrorAttribute>`（`trusted` と同じ脇のリスト）。
-- `src/parser.rs`: `Attributes` に `last_error: Option<Span>`、`attributes` の繰り返しに `last_error_attribute`。宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern` と `def` を確かめる。`signature` の次の宣言の属性の先読み（`src/parser.rs` の `matches!(name.as_str(), "cpu" | "trusted" | "count")`）に `last_error` を足す（[M22](M22-attribute-after-bodyless-extern-def.md) が先に入っていれば、先読みは属性の名前を見ないので足さなくてよい）。足さないと、本体のない extern の次の宣言の `@last_error` が制約行として読まれ、`ConstraintLineIndentation` になる。
+- `src/parser.rs`: `Attributes` に `last_error: Option<Span>`、`attributes` の繰り返しに `last_error_attribute`。宣言の種類の判定（`TrustedWrongTarget` を出す所）で `extern` と `def` を確かめる。M22 の後は `signature` の先読みは属性の名前を見ないので、先読みに足す段はない。
 - `src/syntax_codec.rs`: 符号化の末尾（その時点の最後の脇のリストの後）に足し、`FRONTEND_FORMAT` を着手時の値から 1 上げる。`src/formatter.rs` の正規化（`trusted` と同じく位置を消す）、`src/api_diff.rs` の `Program` の分解（`last_error: _`。組の結果の型が API の差として出るので属性そのものは数えない）。
 
 ### 検査（`src/check.rs`）
@@ -226,7 +226,7 @@ declaration = [ doc ] { attribute } [ "private" ] "extern" [ link_name ] "def" i
 
 ## 落とし穴
 
-- `signature` の先読みに `last_error` を足し忘れると、本体のない extern の直後の宣言に付けた `@last_error` が、前の宣言の制約行として読まれる（同じ種類の不具合が `@c_layout`・`@literal` で起きている。[M22](M22-attribute-after-bodyless-extern-def.md)）。
+- M22 の後は `signature` の先読みは `@` + 識別子で抜けるので、`last_error` を先読みの名前一覧に足す手順は不要である。
 - 消去を引数の評価や Latin-1 の広げ（`tz.string.borrow_utf16` は確保する）より前に置かない。呼び出しの直前に置く。
 - 読み出しを `free_copies` や `read_host_result` の後に置かない（`free` と確保は `errno`・last error を変えうる）。
 - 消去と読み出しを括弧の外に置かない。`tzr_exitsyscall` は遅い経路で値を戻すが、それに頼ると括弧の順序を変えた後のチケットで黙って壊れる。

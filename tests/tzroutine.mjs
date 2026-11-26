@@ -832,6 +832,43 @@ $"{sum} {trapped}"
   assert.match(scopedWasm.stderr, /"code":"E2000"/);
   runs++;
 
+  // M08: on macOS, `main` runs on the process main thread (`pthread_main_np() == 1`), whereas
+  // `Routine.with_locked_thread` inside a spawned tzroutine pins to a worker M (`pthread_main_np() == 0`).
+  if (process.platform === "darwin") {
+    const mainThread = project(`@trusted
+extern "pthread_main_np" def pthread_main_np :: unit -> i32
+
+def main :: unit -> i32 = \\() ->
+    do! IO.writeln $"main: pthread_main_np={pthread_main_np ()}"
+    let in_main_locked = Routine.with_locked_thread (\\() -> pthread_main_np ())
+    do! IO.writeln $"main inside Routine.with_locked_thread: pthread_main_np={in_main_locked}"
+    let done: Channel<i32> = Channel.make 1
+    let out = Channel.share done
+    tzroutine {
+        let plain = pthread_main_np ()
+        let locked = Routine.with_locked_thread (\\() -> pthread_main_np ())
+        do! IO.writeln $"tzroutine: pthread_main_np={plain} with_locked_thread={locked}"
+        Channel.send out locked
+    }
+    match Channel.recv done with
+    | Maybe.Some v -> v
+    | Maybe.None -> 9i32
+`);
+    const expectedMainThread = [
+      "main: pthread_main_np=1",
+      "main inside Routine.with_locked_thread: pthread_main_np=1",
+      "tzroutine: pthread_main_np=0 with_locked_thread=0",
+      "",
+    ].join("\n");
+    for (const optimization of ["-O0", "-O3"]) {
+      for (const procs of ["1", "4"]) {
+        const res = cli(["run", mainThread, optimization], true, { TSUZURI_MAXPROCS: procs });
+        assert.equal(lines(res.stdout), expectedMainThread, `main_thread ${optimization} P${procs}`);
+        runs++;
+      }
+    }
+  }
+
   // WebAssembly waits for JSPI (TZ09); the error is E2000 before any build.
   const exported = project("export def f :: i64 -> i64\nfn f n =\n    tzroutine { () }\n    n\n");
   const wasm = cli(["build", exported, "--target", "wasm32", "-o", join(temporary, "out.wasm"), "--json"], false);

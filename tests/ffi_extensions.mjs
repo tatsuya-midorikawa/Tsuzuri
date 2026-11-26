@@ -316,6 +316,31 @@ try {
   writeFileSync(join(chained, "lib1", "lib2", "Util.tz"), "export def one :: i64\nfn one = 1\n");
   writeFileSync(join(chained, "Main.tz"), "1\n");
   rejected(["check", chained], "E2000");
+
+  // W17: `@link("w17")` links `libw17.a` with `-L` alone, including from a path dependency without `native = true`.
+  const w17C = join(root, "w17.c");
+  const w17Obj = join(root, "w17.o");
+  const w17LibDir = join(root, "w17-lib");
+  mkdirSync(w17LibDir);
+  writeFileSync(w17C, "#include <stdint.h>\nint64_t w17_answer(void) { return 42; }\n");
+  execute(clang, ["-O2", "-c", w17C, "-o", w17Obj]);
+  execute(ar, ["rcs", join(w17LibDir, "libw17.a"), w17Obj]);
+  const w17App = join(root, "w17-app");
+  mkdirSync(join(w17App, "dep"), { recursive: true });
+  writeFileSync(join(w17App, "Tsuzuri.toml"), '[package]\nname = "w17-app"\nversion = "0.1.0"\n\n[dependencies]\ndep = { path = "dep" }\n');
+  writeFileSync(join(w17App, "dep", "Tsuzuri.toml"), '[package]\nname = "dep"\nversion = "0.1.0"\n');
+  writeFileSync(join(w17App, "dep", "Api.tz"), '@trusted @link("w17")\nextern "w17_answer" def answer :: unit -> i64\ndef get :: unit -> i64 = \\() -> answer ()\n');
+  writeFileSync(join(w17App, "Main.tz"), "export def run :: i64 -> i64 = \\x -> Dep::Api.get () + x\nDep::Api.get ()\n");
+  const w17Bin = join(root, "w17-bin");
+  execute(compiler, ["build", w17App, "-L", w17LibDir, "-o", w17Bin]);
+  assert.equal(execute(w17Bin, []).stdout.trim(), "42");
+  rejected(["build", w17App, "--target", "wasm32", "-o", join(root, "w17.wasm")], "E2000");
+  // Without `@link("w17")`, linking fails with E2002.
+  const w17NoLink = join(root, "w17-nolink");
+  mkdirSync(w17NoLink);
+  writeFileSync(join(w17NoLink, "Main.tz"), '@trusted\nextern "w17_answer" def answer :: unit -> i64\nanswer ()\n');
+  rejected(["build", w17NoLink, "-L", w17LibDir, "-o", join(root, "w17-fail")], "E2002");
+
   console.log("ffi extensions: run passed");
 
   const expectedImports = [

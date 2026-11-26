@@ -5,7 +5,7 @@
 | ID | M15 |
 | 優先度 | P2（配布の土台。今は `.app`・`Info.plist`・`.dSYM` を手で組み、署名をやり直し、実行ファイルのパスは `extern` で引くしかない） |
 | 規模 | L |
-| 依存 | ([M17](M17-macos-min-version-and-weak-import.md)), ([M20](M20-macos-framework-link-inputs.md))（M17 は `LSMinimumSystemVersion`、M20 は `embed` した dylib の rpath） |
+| 依存 | ([M17](_completed/M17-macos-min-version-and-weak-import.md)), ([M20](_completed/M20-macos-framework-link-inputs.md))（M17 は `LSMinimumSystemVersion`、M20 は `embed` した dylib の rpath） |
 | 後続 | [M16](M16-macos-signing-notarization-hardening.md)（弱い後続: [M12](M12-gpu-presentation-to-window.md), [M13](M13-desktop-os-services-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 1（.app・Info.plist・アイコン・資源・.dSYM を作る支援がない。実行ファイルのパスを得る std の API もない）」に当たる。HEAD `804b7970` で確認） |
@@ -55,8 +55,8 @@ Finder から起動すると作業ディレクトリは `/` になる。資源�
 
 - `node scripts/repo-kb.mjs brief M15` を読む。
 - 承認が記録されるまで、該当する段に着手しない。手順 3（`[macos]` のキー）は D3、手順 4〜6（`--emit app`）は D1、手順 7（`Env.executable_path`）は D4 の承認が要る。手順 1・2（調査と plist の読み書き）は承認なしで進めてよい。
-- [M17](M17-macos-min-version-and-weak-import.md) が done なら、その `MacosSettings`・`Project::macos`・`invalid_macos_setting` にキーを足す。done でなければ、M17 の仕様 1 と同じ名前で `[macos]` の節を作る（後に入るチケットがキーを足す）。確認: `grep -nE "^\| (M17|M20) " _features/README.md`。
-- [M20](M20-macos-framework-link-inputs.md) が done でなくても着手してよい。`embed` の dylib を rpath で読ませる E2E の段（テスト計画の E7）だけを、M20 の後に足す。
+- [M17](_completed/M17-macos-min-version-and-weak-import.md) が done なら、その `MacosSettings`・`Project::macos`・`invalid_macos_setting` にキーを足す。done でなければ、M17 の仕様 1 と同じ名前で `[macos]` の節を作る（後に入るチケットがキーを足す）。確認: `grep -nE "^\| (M17|M20) " _features/README.md`。
+- [M20](_completed/M20-macos-framework-link-inputs.md) が done でなくても着手してよい。`embed` の dylib を rpath で読ませる E2E の段（テスト計画の E7）だけを、M20 の後に足す。
 - macOS の挙動を変えるので、PR に `ci:full` を付ける。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1`（native と `--target wasm32`）と診断、`tests/packages.rs` の manifest の誤りの文を `target/scratch/m15/base/` に保存する。D13 の確かめのために、`Env.current_dir` だけを使うプログラム（仕様 7 の `Main.tz` から `executable` を作る行と出す行を除いたもの）の `--emit object` と実行ファイル（native の `-O0`・`-O3`）と、`--target wasm32 --wasm-host wasi` の `.wasm` も同じ所に保存する。
 
@@ -275,7 +275,7 @@ $ install_name_tool -add_rpath @executable_path/../Frameworks App.app/Contents/M
 error: …/install_name_tool: changing install names or rpaths can't be redone for: App.app/Contents/MacOS/App (for architecture arm64) because larger updated load commands do not fit (the program must be relinked, and you may need to use -headerpad or -headerpad_max_install_names)
 ```
 
-rpath はリンクのときにしか足せない。それは [M20](M20-macos-framework-link-inputs.md) の `--rpath` の範囲である。
+rpath はリンクのときにしか足せない。それは [M20](_completed/M20-macos-framework-link-inputs.md) の `--rpath` の範囲である。
 
 ### 再現 7: `plutil` の正準形
 
@@ -295,7 +295,7 @@ $ otool -l hello12 | grep -A4 LC_BUILD_VERSION | grep minos        # --target aa
     minos 12.0
 ```
 
-既定の版は、D-67 の分岐 6 で 12.0 に固定すると決めた（2026-11-26）。実装は [M17](M17-macos-min-version-and-weak-import.md) の D1 で、M17 が入るまではビルド機の版のままである。
+既定の版は、D-67 の分岐 6 で 12.0 に固定すると決めた（2026-11-26）。実装は [M17](_completed/M17-macos-min-version-and-weak-import.md) の D1 で、M17 が入るまではビルド機の版のままである。
 
 ## 変えてはいけない意味
 
@@ -499,7 +499,7 @@ def main :: unit -> i32 = \() ->
 | `src/llvm.rs`・`src/polymorph.rs`・`src/pinned_rules.rs`・`src/capabilities.rs` | `Builtin::OsArgs` を並べる一覧に足す（`src/llvm.rs:8510・8816`、`src/polymorph.rs:4436`、`src/pinned_rules.rs:133`。漏れは `rg -n 'Builtin::OsArgs' src` で確かめる）。`primitive` に `"Os.__executable_path" => Env`、`every_private_builtin_is_classified` の 31 を 1 増やす（M17 の `Os.__os_version` も増やす） |
 | `src/driver.rs` | `runtime_symbols.contains("tsuzuri_os_executable_path")` のときだけ、native のランタイムのコンパイル（`trap_runtime` の `-DTZ_TRAP_BOUNDARY` の隣、4915-4923 行）と WASI のランタイムのコンパイル（`-DTZ_WASI_START` の隣、5089-5094 行）に `-DTZ_OS_EXECUTABLE_PATH` を足す |
 | `src/test_runner.rs` | `native_runtime_sources`（656 行）と `compile_native_runner`（1053-1059 行）でも、IR が `tsuzuri_os_executable_path` を宣言するときだけ `os.c` のコンパイルに `-DTZ_OS_EXECUTABLE_PATH` を足す |
-| `tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt`・`tests/fixtures/effects_sweep/Main.tz` | ホストに届く名前の一覧に `Os.__executable_path`、`Env.tz` の 3 を 4、合計 44 を 45、std-table に `Env.executable_path: env`（88 を 89）。公開の std の関数はどれもコーパスに実体が要る（`tests/effects_alloc_conservative.rs` の F.4）ので、sweep の fixture に `Env.executable_path ()` を足す。[M17](M17-macos-min-version-and-weak-import.md) の `Env.os_version` と同じ数を直すので、後に入るほうが足す |
+| `tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt`・`tests/fixtures/effects_sweep/Main.tz` | ホストに届く名前の一覧に `Os.__executable_path`、`Env.tz` の 3 を 4、合計 44 を 45、std-table に `Env.executable_path: env`（88 を 89）。公開の std の関数はどれもコーパスに実体が要る（`tests/effects_alloc_conservative.rs` の F.4）ので、sweep の fixture に `Env.executable_path ()` を足す。[M17](_completed/M17-macos-min-version-and-weak-import.md) の `Env.os_version` と同じ数を直すので、後に入るほうが足す |
 | `std/Env.tz` | `private def executable_file` と `def executable_path`（`current_dir` と同じ形で、`Os.__read 2i32` の代わりに `Os.__executable_path ()` を呼ぶ。`///` の例を付ける） |
 
 ### 組み立ての流れ（`build_app`）
@@ -530,8 +530,8 @@ def main :: unit -> i32 = \() ->
 
 ## 前提とする他チケットのインターフェース
 
-- [M17](M17-macos-min-version-and-weak-import.md)（弱い依存）: `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`、kind `invalid_macos_setting`。M15 は `LSMinimumSystemVersion` を実行ファイルの `minos` から作るので、M17 の関数を呼ばない。M17 の後は、`[macos] min_version` の値が `minos` を通って `Info.plist` に届くことをテストで確かめる。
-- [M20](M20-macos-framework-link-inputs.md)（弱い依存）: `--rpath`・`[native] rpath`。`embed` した `@rpath` の dylib を読ませるには、`--rpath @executable_path/../Frameworks` が要る（再現 6）。M15 はリンク行を変えない。
+- [M17](_completed/M17-macos-min-version-and-weak-import.md)（弱い依存）: `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`、kind `invalid_macos_setting`。M15 は `LSMinimumSystemVersion` を実行ファイルの `minos` から作るので、M17 の関数を呼ばない。M17 の後は、`[macos] min_version` の値が `minos` を通って `Info.plist` に届くことをテストで確かめる。
+- [M20](_completed/M20-macos-framework-link-inputs.md)（弱い依存）: `--rpath`・`[native] rpath`。`embed` した `@rpath` の dylib を読ませるには、`--rpath @executable_path/../Frameworks` が要る（再現 6）。M15 はリンク行を変えない。
 - [W09](_completed/W09-windows-gui-subsystem.md): ルートの節だけを読む規則と `with_manifest_windows` の形。
 
 ## 他チケットへ提供するインターフェース
@@ -541,7 +541,7 @@ def main :: unit -> i32 = \() ->
 - `MacosSettings` の bundle のキー。M16 は同じ節に `sign_identity`・`entitlements`・`hardened_runtime`・`timestamp` を足す。
 - bundle の形（`Contents/Frameworks`・`Contents/Resources`）。[M12](M12-gpu-presentation-to-window.md) の Phase 1 が bundle の中の GPU ランタイムを探す場所、[M13](M13-desktop-os-services-package.md) が通知に使う `bundle_id` と資源の場所。
 - `Env.executable_path`。M13 の資源の探索、bundle を使わないアプリの設定ファイルの探索。
-- ランタイムに OS の操作を足す形（独立した入口、std だけが呼ぶ内部の組み込み、到達したときだけの `-D`。D13）。[M17](M17-macos-min-version-and-weak-import.md) の `Env.os_version`（`tsuzuri_os_version`・`Os.__os_version`・`-DTZ_OS_VERSION`）が同じ形を使う。
+- ランタイムに OS の操作を足す形（独立した入口、std だけが呼ぶ内部の組み込み、到達したときだけの `-D`。D13）。[M17](_completed/M17-macos-min-version-and-weak-import.md) の `Env.os_version`（`tsuzuri_os_version`・`Os.__os_version`・`-DTZ_OS_VERSION`）が同じ形を使う。
 
 ## 実装手順
 

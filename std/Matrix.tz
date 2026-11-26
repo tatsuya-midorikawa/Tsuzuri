@@ -90,17 +90,18 @@ fn row index matrix =
 def as_array :: ref Matrix<'a> -> ref ['a]
 fn as_array matrix = ref matrix.data
 
-/// Consumes the matrix and returns its row-major buffer. The current compiler copies the elements
-/// when the element type is `Copy`.
+/// Consumes the matrix and returns its row-major buffer without copying elements.
 ///
 /// ```tsuzuri run=[0,%201,%201,%202]
 /// Matrix.to_array (Matrix.init 2 2 (\row col -> row + col))
 /// ```
 def to_array :: own Matrix<'a> -> ['a]
-fn to_array matrix = matrix.data
+fn to_array matrix =
+    match matrix with
+    | Matrix { rows: _, cols: _, data: data } -> data
 
-/// Consumes the matrix and returns it with one element replaced; traps when the row or the column is
-/// out of range. The current compiler copies the buffer when the element type is `Copy`.
+/// Consumes the matrix and returns it with one element replaced in place; traps when the row or
+/// the column is out of range.
 ///
 /// ```tsuzuri run=[1,%209,%203,%204]
 /// let m = Matrix.set 0 1 9 (Matrix.of_array 2 2 [1, 2, 3, 4])
@@ -108,9 +109,11 @@ fn to_array matrix = matrix.data
 /// ```
 def set :: own i64 -> own i64 -> own 'a -> own Matrix<'a> -> Matrix<'a>
 fn set row col value matrix =
-    assert (row >= 0 && row < matrix.rows && col >= 0 && col < matrix.cols)
-    let index = row * matrix.cols + col
-    Matrix { rows: matrix.rows, cols: matrix.cols, data: Array.__set index value matrix.data }
+    match matrix with
+    | Matrix { rows: rows, cols: cols, data: data } ->
+        assert (row >= 0 && row < rows && col >= 0 && col < cols)
+        let index = row * cols + col
+        Matrix { rows: rows, cols: cols, data: Array.__set index value data }
 
 /// Applies `transform` to every element in row-major order.
 ///

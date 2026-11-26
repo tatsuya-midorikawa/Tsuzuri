@@ -7,7 +7,7 @@
 | 規模 | M（Phase 1・2。Phase 2 は W17 の出荷の後の 2 つ目の PR） |
 | 依存 | ([W17](W17-link-attribute-dllimport.md)), ([M22](M22-attribute-after-bodyless-extern-def.md))（Phase 2 の `@link(framework = …)` は W17 の後） |
 | 後続 | [M07](M07-apple-sdk-bindgen-and-package.md), [M14](M14-tls-http-packages.md)（弱い後続: [M01](M01-objc-class-types.md), [M15](M15-macos-app-bundle.md)） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「M07・M15 の前提（-framework・-F・rpath を渡す口がない。W17:247 は対象外で、NC12:70 は存在しない -framework を前提にしていて食い違う。同梱の zig は SDK がないとリンクできない）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の登録の一覧のうち D-55（CLI の `--framework`・`-F`・`--rpath`、`[native] frameworks`・`framework_search`・`rpath`、Phase 2 の `@link(framework = "...")`）と、W17 の対象外（W17:247-248）の改訂。決定事項 D1・D3・D4・D5・D6 が要承認、ほかは既定案。承認が記録されるまで、該当する Phase に着手しない |
 | 改善する劣位 | C・Swift（clang の `-framework`・`-F`・`-Wl,-rpath`）・Rust（`#[link(name = "AppKit", kind = "framework")]`、`cargo:rustc-link-lib=framework=AppKit`）比: macOS の framework を名前でリンクできない。SDK の `.tbd` を `--link` に絶対パスで渡す回避策（文書にない）に頼り、manifest では SDK へのシンボリックリンクが要る。git・registry のパッケージは framework を要求できない。同梱の zig ではどれもリンクに失敗する |

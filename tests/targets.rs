@@ -460,6 +460,25 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
         (wasm.wasm, wasm.zig.as_deref(), wasm.llvm.as_str()),
         (true, Some("wasm32-freestanding"), "wasm32-unknown-unknown")
     );
+    // M17: versioned macOS triples and `-mmacosx-version-min` / `MACOSX_DEPLOYMENT_TARGET` resolution.
+    let v13 = shim::resolve(Some("arm64-apple-macosx13.0.0"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (v13.zig.as_deref(), v13.llvm.as_str()),
+        (Some("aarch64-macos.13.0"), "arm64-apple-macosx13.0.0")
+    );
+    let min_arg =
+        shim::resolve_with_macos(None, Some("13.2"), Some("14.0"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (min_arg.zig.as_deref(), min_arg.llvm.as_str()),
+        (Some("aarch64-macos.13.2"), "aarch64-apple-macosx13.2.0")
+    );
+    let from_env =
+        shim::resolve_with_macos(None, None, Some("14.1.2"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (from_env.zig.as_deref(), from_env.llvm.as_str()),
+        (Some("aarch64-macos.14.1.2"), "aarch64-apple-macosx14.1.2")
+    );
+    assert!(shim::resolve_with_macos(None, Some("11.0"), None, "macos", "aarch64").is_err());
 }
 
 #[test]
@@ -913,5 +932,56 @@ fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
     assert_eq!(build(second, "/b"), 6);
     assert_eq!(build(second, "/b"), 6);
     assert_eq!(build(first, "/a"), 6);
+    fs::remove_dir_all(setup.root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn manifest_macos_frameworks_appear_only_on_mach_o_links() {
+    use fake_toolchain::{setup, text};
+    let setup = setup("m20-manifest", "def main :: unit -> i32 = \\() -> 0i32\n");
+    fs::write(
+        setup.root.join("Tsuzuri.toml"),
+        "[package]\nname = \"fwapp\"\nversion = \"0.1.0\"\n[native]\nframeworks = [\"AppKit\"]\nrpath = [\"@executable_path/../Frameworks\"]\n",
+    )
+    .unwrap();
+
+    // Linux target silently ignores manifest `[native] frameworks` and `rpath`.
+    let linux_out = setup
+        .command(&[
+            "build",
+            "--no-cache",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-o",
+            setup.root.join("linux-bin").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(linux_out.status.success(), "{}", text(&linux_out).1);
+    let linux_log = setup.log();
+    assert!(!linux_log.contains("-framework"), "{linux_log}");
+    assert!(!linux_log.contains("-rpath"), "{linux_log}");
+
+    // macOS target emits `-framework AppKit` and `-Wl,-rpath,...`.
+    fs::remove_file(&setup.log).unwrap();
+    let mac_out = setup
+        .command(&[
+            "build",
+            "--no-cache",
+            "--target",
+            "aarch64-apple-darwin",
+            "-o",
+            setup.root.join("mac-bin").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(mac_out.status.success(), "{}", text(&mac_out).1);
+    let mac_log = setup.log();
+    assert!(mac_log.contains("-framework AppKit"), "{mac_log}");
+    assert!(
+        mac_log.contains("-Wl,-rpath,@executable_path/../Frameworks"),
+        "{mac_log}"
+    );
     fs::remove_dir_all(setup.root).unwrap();
 }

@@ -360,3 +360,27 @@ fn an_alias_does_not_name_a_module() {
         ])
     );
 }
+
+#[test]
+fn an_alias_after_a_bodyless_builder_signature() {
+    let tc_after_sig = "\
+def Return :: own 'a -> 'a
+@alias ident
+fn Return value = value
+
+def Bind :: own 'a -> ('a -> 'b) -> 'b
+fn Bind value next = next value
+";
+    let tc_after_fn = "\
+def Return :: own 'a -> 'a
+fn Return value = value
+@alias ident
+
+def Bind :: own 'a -> ('a -> 'b) -> 'b
+fn Bind value next = next value
+";
+    let main = "export def one :: i64 -> i64\nfn one n = ident { let! x = n; return x - 3 }\n";
+    let from_after_sig = ir(&[("Main.tz", main), ("Ident.tc", tc_after_sig)]);
+    let from_after_fn = ir(&[("Main.tz", main), ("Ident.tc", tc_after_fn)]);
+    assert_eq!(from_after_sig, from_after_fn);
+}

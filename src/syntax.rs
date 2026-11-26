@@ -324,6 +324,10 @@ pub struct Program {
     pub extern_counts: Vec<CountAttribute>,
     /// The `@c_layout` attributes of this module's record declarations (W21).
     pub c_layouts: Vec<CLayoutAttribute>,
+    /// The `@link("name")` / `@link(framework = "name")` attributes of this module's extern declarations (W17 / M20).
+    pub links: Vec<LinkAttribute>,
+    /// The `@weak` attributes of this module's extern declarations (M17).
+    pub weaks: Vec<WeakAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -519,6 +523,30 @@ pub struct CLayout {
 pub struct CLayoutAttribute {
     pub target: Ident,
     pub pack: Option<u8>,
+    pub span: Span,
+}
+
+/// Kind of `@link` input: a system library (`@link("name")`) or a macOS framework (`@link(framework = "name")`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkKind {
+    Library,
+    Framework,
+}
+
+/// `@link("name")` or `@link(framework = "name")` before an `extern` declaration with a link name (W17 / M20).
+#[derive(Clone, Debug)]
+pub struct LinkAttribute {
+    pub target: Ident,
+    pub kind: LinkKind,
+    pub library: String,
+    pub span: Span,
+    pub name_span: Span,
+}
+
+/// `@weak` before an `extern` declaration with a link name (M17).
+#[derive(Clone, Debug)]
+pub struct WeakAttribute {
+    pub target: Ident,
     pub span: Span,
 }
 
@@ -746,6 +774,22 @@ impl ViewDirection {
     }
 }
 
+/// How an `extern "sym" view def` or `extern "sym" address def` accesses a C data symbol (M06).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DataAccess {
+    Read,
+    Address,
+}
+
+impl DataAccess {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Address => "address",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub doc: Option<Documentation>,
@@ -761,8 +805,10 @@ pub struct SignatureDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub link: Option<Box<LinkName>>,
-    /// Declared as `extern view def` (W24).
+    /// Declared as `extern view def` (W24) or `extern "sym" view def` (M06).
     pub view: bool,
+    /// Declared as a C data symbol (`extern "sym" view def` or `extern "sym" address def`, M06).
+    pub data: Option<DataAccess>,
 }
 
 /// The strings of `extern "symbol" def` or `extern "module" "symbol" def`.
@@ -773,6 +819,61 @@ pub struct LinkName {
     pub symbol: String,
     /// The span of the string that holds the symbol.
     pub span: Span,
+}
+
+impl LinkName {
+    fn quote_str(text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + 2);
+        out.push('"');
+        for ch in text.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\0' => out.push_str("\\0"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// Renders `"symbol"` or `"module" "symbol"` in Tsuzuri string-literal syntax.
+    pub fn quoted(&self) -> String {
+        if let Some((module, _)) = &self.module {
+            format!(
+                "{} {}",
+                Self::quote_str(module),
+                Self::quote_str(&self.symbol)
+            )
+        } else {
+            Self::quote_str(&self.symbol)
+        }
+    }
+}
+
+impl SignatureDecl {
+    /// Header prefix for `docgen` and `api-diff`, preserving explicit link symbols on data declarations.
+    pub fn extern_header_prefix(&self) -> std::borrow::Cow<'static, str> {
+        match (self.data, self.link.as_deref(), self.view) {
+            (Some(DataAccess::Address), Some(link), _) => {
+                std::borrow::Cow::Owned(format!("extern {} address def", link.quoted()))
+            }
+            (Some(DataAccess::Address), None, _) => {
+                std::borrow::Cow::Borrowed("extern address def")
+            }
+            (Some(DataAccess::Read), Some(link), _) => {
+                std::borrow::Cow::Owned(format!("extern {} view def", link.quoted()))
+            }
+            (Some(DataAccess::Read), None, _) | (None, _, true) => {
+                std::borrow::Cow::Borrowed("extern view def")
+            }
+            (None, _, false) => std::borrow::Cow::Borrowed("extern def"),
+        }
+    }
 }
 
 /// What an `extern type` declaration says about its values (E12 D3, W18, W19).

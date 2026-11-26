@@ -37,6 +37,15 @@ struct Attributes {
     trusted: Option<TrustedMark>,
     counts: Vec<CountMark>,
     c_layout: Option<CLayoutMark>,
+    link: Option<LinkMark>,
+    weak: Option<Span>,
+}
+
+struct LinkMark {
+    kind: LinkKind,
+    library: String,
+    span: Span,
+    name_span: Span,
 }
 
 struct CountMark {
@@ -627,6 +636,8 @@ impl Parser<'_> {
             trusted: Vec::new(),
             extern_counts: Vec::new(),
             c_layouts: Vec::new(),
+            links: Vec::new(),
+            weaks: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -693,6 +704,8 @@ impl Parser<'_> {
                     trusted,
                     counts,
                     c_layout,
+                    link,
+                    weak,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -703,6 +716,24 @@ impl Parser<'_> {
                         DiagnosticKind::MisplacedCLayoutAttribute,
                         "'@c_layout' applies to a record declaration",
                         mark.span,
+                    ));
+                }
+                if let Some(mark) = &link
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedLinkAttribute,
+                        "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                        mark.span,
+                    ));
+                }
+                if let Some(weak_span) = weak
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedWeakAttribute,
+                        "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                        weak_span,
                     ));
                 }
                 if let Some(mark) = &trusted
@@ -808,6 +839,20 @@ impl Parser<'_> {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
                     ExternDeclaration::Type(declaration) => {
+                        if let Some(mark) = &link {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedLinkAttribute,
+                                "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                                mark.span,
+                            ));
+                        }
+                        if let Some(weak_span) = weak {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedWeakAttribute,
+                                "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                                weak_span,
+                            ));
+                        }
                         if let Some(count) = counts.first() {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::MisplacedCountAttribute,
@@ -832,7 +877,38 @@ impl Parser<'_> {
                         program.extern_types.push(declaration)
                     }
                     ExternDeclaration::Function(signature) => {
-                        if signature.view {
+                        if let Some(_access) = signature.data {
+                            if let Some(count) = counts.first() {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedCountAttribute,
+                                    "'@count' applies to an 'extern' function declaration, not a data symbol",
+                                    count.span,
+                                ));
+                            }
+                            if let Some(mark) = &trusted
+                                && let Some(first) = mark.first
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::TrustedViewProperty,
+                                    "'@trusted' on a data symbol takes no properties; the compiler knows its effects",
+                                    first,
+                                ));
+                            }
+                        } else if signature.view {
+                            if let Some(mark) = &link {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLinkAttribute,
+                                    "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                                    mark.span,
+                                ));
+                            }
+                            if let Some(weak_span) = weak {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedWeakAttribute,
+                                    "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                                    weak_span,
+                                ));
+                            }
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedCountAttribute,
@@ -850,10 +926,25 @@ impl Parser<'_> {
                                 ));
                             }
                         }
+                        if let Some(mark) = &trusted
+                            && let Some(weak_span) = weak
+                            && let Some(no_trap_bit) = crate::syntax::trusted_property_bit("no_trap")
+                            && mark.properties & no_trap_bit != 0
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::TrustedNoTrapWeak,
+                                "'@trusted no_trap' contradicts '@weak': a call of a missing weak symbol traps",
+                                weak_span,
+                            ));
+                        }
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
                                 target: signature.name.clone(),
-                                properties: if signature.view { 0 } else { mark.properties },
+                                properties: if signature.view || signature.data.is_some() {
+                                    0
+                                } else {
+                                    mark.properties
+                                },
                                 span: mark.span,
                             });
                         }
@@ -863,6 +954,21 @@ impl Parser<'_> {
                                 position: count.position,
                                 length: count.length,
                                 span: count.span,
+                            });
+                        }
+                        if let Some(mark) = link {
+                            program.links.push(LinkAttribute {
+                                target: signature.name.clone(),
+                                kind: mark.kind,
+                                library: mark.library,
+                                span: mark.span,
+                                name_span: mark.name_span,
+                            });
+                        }
+                        if let Some(weak_span) = weak {
+                            program.weaks.push(WeakAttribute {
+                                target: signature.name.clone(),
+                                span: weak_span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1507,6 +1613,24 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.c_layout = Some(c_layout);
+            } else if let Some(link) = self.link_attribute()? {
+                if attributes.link.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LinkRepeated,
+                        "'@link' appears twice on one declaration; an extern function comes from one library",
+                        link.span,
+                    ));
+                }
+                attributes.link = Some(link);
+            } else if let Some(weak_span) = self.weak_attribute()? {
+                if attributes.weak.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedWeakAttribute,
+                        "'@weak' applies once to an extern function with a link name, an extern class, or a data symbol",
+                        weak_span,
+                    ));
+                }
+                attributes.weak = Some(weak_span);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1618,6 +1742,89 @@ impl Parser<'_> {
             None
         };
         Ok(Some(CLayoutMark { pack, span, at }))
+    }
+
+    /// `@link("name")` before an `extern` declaration with a link name (W17).
+    fn link_attribute(&mut self) -> Result<Option<LinkMark>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "link"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        let syntax_err = |span: Span| {
+            Diagnostic::of(
+                DiagnosticKind::LinkAttributeSyntax,
+                "'@link' takes a library name or 'framework = \"name\"' in parentheses, for example @link(\"user32\") or @link(framework = \"AppKit\")",
+                span,
+            )
+        };
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(syntax_err(span));
+        }
+        span = span.through(self.take().span);
+        let kind = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "framework")
+        {
+            span = span.through(self.take().span);
+            if !self.at(&TokenKind::Equal) {
+                return Err(syntax_err(span.through(self.current().span)));
+            }
+            span = span.through(self.take().span);
+            LinkKind::Framework
+        } else {
+            LinkKind::Library
+        };
+        let name_span = self.current().span;
+        let library = match &self.current().kind {
+            TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16_lossy(units),
+            TokenKind::String(StringLiteral::Utf8(text)) => text.clone(),
+            _ => return Err(syntax_err(span.through(name_span))),
+        };
+        span = span.through(self.take().span);
+        if !self.at(&TokenKind::RightParen) {
+            return Err(syntax_err(span.through(self.current().span)));
+        }
+        span = span.through(self.take().span);
+        Ok(Some(LinkMark {
+            kind,
+            library,
+            span,
+            name_span,
+        }))
+    }
+
+    fn weak_attribute(&mut self) -> Result<Option<Span>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "weak"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        if self.at(&TokenKind::LeftParen) {
+            span = span.through(self.take().span);
+            while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::End) {
+                span = span.through(self.take().span);
+            }
+            if self.at(&TokenKind::RightParen) {
+                span = span.through(self.take().span);
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::WeakAttributeSyntax,
+                "'@weak' takes no arguments",
+                span,
+            ));
+        }
+        Ok(Some(span))
     }
 
     /// `@count(position, length)` before an `extern` function declaration (W13).
@@ -2452,15 +2659,14 @@ impl Parser<'_> {
         let constraint_column = self.column(self.current().span);
         while self.at(&TokenKind::At) {
             // The attribute of the next declaration, at its column, after a signature without a body
-            // (and after its constraint lines, which are indented further).
+            // (and after its constraint lines, which are indented further): an identifier after '@',
+            // since a constraint line names a type variable (M22).
             if self.newline_before_current()
                 && self.column(self.current().span) <= column
-                && (self.effect_attribute_ahead().is_some()
-                    || matches!(
-                        self.tokens.get(self.position + 1).map(|token| &token.kind),
-                        Some(TokenKind::Ident(name))
-                            if matches!(name.as_str(), "cpu" | "trusted" | "count")
-                    ))
+                && matches!(
+                    self.tokens.get(self.position + 1).map(|token| &token.kind),
+                    Some(TokenKind::Ident(_))
+                )
             {
                 break;
             }
@@ -2547,6 +2753,7 @@ impl Parser<'_> {
             constraints,
             link: None,
             view: false,
+            data: None,
         })
     }
 
@@ -5247,21 +5454,32 @@ impl Parser<'_> {
                 self.current().span,
             ));
         }
-        let view = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "view") {
+        let (view, mut data) = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "view")
+        {
             self.take();
-            if let Some(link) = &link {
-                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+            self.expect(&TokenKind::Def, "'def' after 'extern view'")?;
+            (true, None)
+        } else if matches!(&self.current().kind, TokenKind::Ident(word) if word == "address") {
+            let word_span = self.take().span;
+            let Some(link) = &link else {
                 return Err(Diagnostic::of(
-                    DiagnosticKind::ExternViewLinkName,
-                    "an extern view copies memory and links no symbol; remove the string",
-                    first,
+                    DiagnosticKind::DataSymbolNeedsLinkName,
+                    "'address' takes the address of a C data symbol; write extern \"symbol\" address def",
+                    word_span,
+                ));
+            };
+            if let Some((_, mod_span)) = &link.module {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DataSymbolModuleName,
+                    "a data symbol has one link name, its C symbol; remove the module string",
+                    *mod_span,
                 ));
             }
-            self.expect(&TokenKind::Def, "'def' after 'extern view'")?;
-            true
+            self.expect(&TokenKind::Def, "'def' after 'extern \"...\" address'")?;
+            (false, Some(DataAccess::Address))
         } else {
             self.expect(&TokenKind::Def, "'def' after extern")?;
-            false
+            (false, None)
         };
         let name = self.ident()?;
         if taken(&name.text) {
@@ -5276,10 +5494,39 @@ impl Parser<'_> {
         let signature = self.signature(name, false, column, false);
         self.extern_signature = outer;
         let mut signature = signature?;
+        if view && let Some(link) = &link {
+            let takes_unit = matches!(
+                signature.parameters.as_slice(),
+                [TypeExpr {
+                    kind: TypeExprKind::Named(word),
+                    ..
+                }] if word == "unit"
+            );
+            if !takes_unit {
+                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternViewLinkName,
+                    format!(
+                        "an extern view that takes an address links no symbol; remove the string, or declare 'unit -> T' to read the data symbol '{}'",
+                        link.symbol
+                    ),
+                    first,
+                ));
+            }
+            if let Some((_, mod_span)) = &link.module {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DataSymbolModuleName,
+                    "a data symbol has one link name, its C symbol; remove the module string",
+                    *mod_span,
+                ));
+            }
+            data = Some(DataAccess::Read);
+        }
         signature.doc = doc;
         signature.visibility = visibility;
         signature.link = link;
         signature.view = view;
+        signature.data = data;
         Ok(ExternDeclaration::Function(signature))
     }
 

@@ -174,7 +174,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | PM07 | [複製の除去とバッファ再利用の一般化](_completed/PM07-copy-elision.md)（Phase 2 は [A17](../_features/_completed/A17-last-use-move.md)） | P1 | M | PX01, (A15) | done |
 | PM08 | [成果物サイズの最小化](_completed/PM08-binary-size.md) | P2 | M | PB01 | done |
 | PM09 | [スタック使用量の削減と末尾呼び出しの保証](_completed/PM09-stack-and-tail-calls.md) | P3 | L | PX01 | done |
-| PM10 | [std の所有を移す関数の要素の複製の除去と、借用の根になる局所の最後の使用での移動（A17 の X1 の精密化）](PM10-std-consume-copies.md) | P1 | M | A17, PM07 | todo |
+| PM10 | [std の所有を移す関数の要素の複製の除去と、借用の根になる局所の最後の使用での移動（A17 の X1 の精密化）](_completed/PM10-std-consume-copies.md) | P1 | M | A17, PM07 | done（Phase 1–2: `Tensor`/`Matrix` の所有移行 9 関数の Copy 要素複製除去と `LastUses` X1 の loan 生存期間精密化） |
 
 ### PB. ビルド速度
 

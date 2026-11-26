@@ -30,6 +30,8 @@ pub struct TestOptions {
     /// A23: report the integer arithmetic of the tests that wraps; `None` (the default) does not.
     /// `tsuzuri test` reports it and fails the tests that wrap, unless `--allow-overflow`.
     pub overflow: Option<OverflowTests>,
+    /// M17: `[macos] min_version` from the root manifest, if set.
+    pub macos_min_version: Option<crate::target::MacosVersion>,
 }
 
 /// The integer overflow report of a test run (A23).
@@ -57,6 +59,7 @@ impl Default for TestOptions {
             allocator: llvm::Allocator::System,
             trap_sources: Vec::new(),
             overflow: None,
+            macos_min_version: None,
         }
     }
 }
@@ -135,10 +138,16 @@ fn run_with_timeout(
         if options.target.is_wasm() {
             return Err(driver_error_of(
                 DiagnosticKind::OptionRequiresBuild,
-                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+                links.requires_build_message(),
             ));
         }
         links.check_shape()?;
+        if links.has_macos_inputs() && !options.platform().mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them",
+            ));
+        }
         links.check_readable()?;
     }
     if !options.target.is_wasm()
@@ -491,6 +500,21 @@ pub fn build_debug_runner(
     if pdb.is_some() {
         text = llvm::with_codeview(text);
     }
+    let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
+    let sdk_link_args = crate::driver::prepare_link_extras(
+        platform,
+        &tool("TSUZURI_CLANG", "clang"),
+        links,
+        &sys_frameworks,
+    )?;
+    let link_extras = crate::driver::LinkExtras {
+        system_libraries: &sys_libraries,
+        system_frameworks: &sys_frameworks,
+        sdk: &sdk_link_args,
+    };
+    let os_version_runtime = text.contains("declare i64 @tsuzuri_os_version(");
+    let macos_choice = crate::driver::effective_macos_version(platform, options.macos_min_version)?;
     let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
     let object = temporary.path.join("tests.o");
@@ -510,7 +534,7 @@ pub fn build_debug_runner(
         compile
             .args(["-x", "ir", "-Wno-override-module", "-g", "-c"])
             .arg(&optimization)
-            .args(compile_args(platform))
+            .args(compile_args(platform, macos_choice))
             .args(no_sdk_args(platform))
             .arg(&ir)
             .arg("-o")
@@ -527,7 +551,7 @@ pub fn build_debug_runner(
     // program's (and on Windows write the PDB).
     let mut link = Command::new(tool("TSUZURI_CLANG", "clang"));
     link.args(["-g", &optimization])
-        .args(compile_args(platform))
+        .args(compile_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(link_args(platform));
     let has_os = sources.iter().any(|(name, _)| *name == "os.c");
@@ -540,8 +564,11 @@ pub fn build_debug_runner(
         let mut compile = Command::new(tool("TSUZURI_CLANG", "clang"));
         compile
             .args(["-x", "c", "-std=c11", "-c", &optimization])
-            .args(compile_args(platform))
+            .args(compile_args(platform, macos_choice))
             .args(sdk_args(platform)?);
+        if name == "os.c" && os_version_runtime {
+            compile.arg("-DTZ_OS_VERSION");
+        }
         if !platform.windows() {
             compile.arg("-pthread");
         }
@@ -570,7 +597,7 @@ pub fn build_debug_runner(
             link.arg("-lbcrypt");
         }
     }
-    links.add_to(&mut link);
+    links.add_to(&mut link, link_extras)?;
     let staged_pdb = temporary.path.join("tests.pdb");
     if let Some(pdb) = &pdb {
         link.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
@@ -785,6 +812,7 @@ fn build_runner(
                 optimization: options.optimization,
                 platform: options.platform(),
                 backend: options.backend,
+                macos_min_version: options.macos_min_version,
             },
             links,
             directory,
@@ -962,6 +990,7 @@ struct NativeRunner<'a> {
     platform: Platform,
     /// Who turns the IR into an object: Clang, or the fast backend (PB05).
     backend: Backend,
+    macos_min_version: Option<crate::target::MacosVersion>,
 }
 
 /// Compiles the runner IR `text` with its C entry, the runtimes the IR declares, and the host
@@ -978,6 +1007,19 @@ fn compile_native_runner(
     if platform.windows() {
         text = llvm::windows_abi(text, module, true);
     }
+    let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
+    let sdk_link_args = crate::driver::prepare_link_extras(
+        platform,
+        &tool("TSUZURI_CLANG", "clang"),
+        links,
+        &sys_frameworks,
+    )?;
+    let link_extras = crate::driver::LinkExtras {
+        system_libraries: &sys_libraries,
+        system_frameworks: &sys_frameworks,
+        sdk: &sdk_link_args,
+    };
     // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c,
     // which a native DataChannel waits on too (TZ12).
     let tzroutine_runtime = text.contains("@tsuzuri_tz_") || text.contains("@tsuzuri_channel_");
@@ -1022,7 +1064,7 @@ fn compile_native_runner(
     if fast {
         crate::driver::translate_fast(&text, platform, &object)?;
     } else {
-        fs::write(&ir, text).map_err(|error| io_error(&format!("write {kind} IR"), &ir, error))?;
+        fs::write(&ir, &text).map_err(|error| io_error(&format!("write {kind} IR"), &ir, error))?;
     }
     let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
     if fast {
@@ -1034,19 +1076,20 @@ fn compile_native_runner(
             .arg(format!("-O{}", runner.optimization))
             .arg(&ir);
     }
+    let os_version_runtime = text.contains("declare i64 @tsuzuri_os_version(");
+    let macos_choice = crate::driver::effective_macos_version(platform, runner.macos_min_version)?;
     let main = directory.join("main.c");
     clang
-        .args(compile_args(platform))
+        .args(compile_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(link_args(platform));
     fs::write(&main, runner.entry)
         .map_err(|error| io_error(&format!("write {kind} entry"), &main, error))?;
-    clang
-        .args(["-x", "c", "-std=c11"])
-        .args(runner.defines)
-        .arg(&main)
-        .arg("-o")
-        .arg(&artifact);
+    clang.args(["-x", "c", "-std=c11"]).args(runner.defines);
+    if os_version_runtime {
+        clang.arg("-DTZ_OS_VERSION");
+    }
+    clang.arg(&main).arg("-o").arg(&artifact);
     if !platform.windows() {
         clang.arg("-lm");
     }
@@ -1091,7 +1134,7 @@ fn compile_native_runner(
     if os_runtime && platform.windows() {
         clang.arg("-lbcrypt");
     }
-    links.add_to(&mut clang);
+    links.add_to(&mut clang, link_extras)?;
     collect_message(
         messages,
         run_tool(&mut clang, &cross_hint(platform, runner.tools_hint))?,
@@ -1137,6 +1180,7 @@ pub struct BenchOptions {
     /// A named native target (`--target TRIPLE`) that this machine runs; a benchmark measures the
     /// machine it runs on, so no runner serves a foreign one.
     pub triple: Option<Triple>,
+    pub macos_min_version: Option<crate::target::MacosVersion>,
 }
 
 impl Default for BenchOptions {
@@ -1149,6 +1193,7 @@ impl Default for BenchOptions {
             samples: DEFAULT_BENCH_SAMPLES,
             allocs: false,
             triple: None,
+            macos_min_version: None,
         }
     }
 }
@@ -1291,6 +1336,7 @@ pub fn run_benches_linked(
             optimization: options.optimization,
             platform,
             backend: Backend::Llvm,
+            macos_min_version: options.macos_min_version,
         },
         links,
         &temporary.path,
@@ -1337,6 +1383,7 @@ pub fn run_benches_linked(
                 optimization: options.optimization,
                 platform,
                 backend: Backend::Llvm,
+                macos_min_version: options.macos_min_version,
             },
             links,
             &temporary.path,
@@ -1806,6 +1853,7 @@ mod tests {
                 optimization: 0,
                 platform: Platform::HOST,
                 backend: Backend::Llvm,
+                macos_min_version: None,
             },
             &LinkInputs::default(),
             &temporary.path,

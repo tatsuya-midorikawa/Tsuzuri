@@ -5,7 +5,7 @@
 | ID | NC12 |
 | 優先度 | P2（大規模行列積・分解でネイティブ最高速を得るための外部数値ライブラリ接続基盤） |
 | 規模 | L（`abi.rs` の数値バッファ拡張＋`Linalg.*_blas` の明示オプトイン接続） |
-| 依存 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md), [NC01](_completed/NC01-complex-and-extended-math.md), [NC08](NC08-linalg-core-and-einsum.md) |
+| 依存 | [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md), [NC01](_completed/NC01-complex-and-extended-math.md), [NC08](_completed/NC08-linalg-core-and-einsum.md) |
 | 後続 | [NC14](NC14-python-buffer-protocol-and-dlpack-bindings.md) |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -31,7 +31,7 @@
 
 ### 着手条件
 
-- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](_completed/NC01-complex-and-extended-math.md)（`Complex`）、[NC08](NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
+- [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T..]` と `@count`）、[NC01](_completed/NC01-complex-and-extended-math.md)（`Complex`）、[NC08](_completed/NC08-linalg-core-and-einsum.md)（`Linalg`）が done。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -67,7 +67,7 @@
 ### 2. BLAS / LAPACK バックエンドの接続方針（D2）
 
 - **明示オプトインと能力検査**:
-  - 外部ライブラリ（Apple Accelerate / OpenBLAS / Intel MKL / BLIS）のリンクは明示的なパッケージ依存（例: 公式の薄い `blas` パッケージ）またはビルドフラグ（`-lopenblas` / `-framework Accelerate` 等）で選択する。macOS の framework を名前で渡す口は今はない（CLI にも manifest の `[native]` にも、`-framework` に当たる指定がない）。[M20](M20-macos-framework-link-inputs.md) が `--framework Accelerate`・`[native] frameworks` を足す。
+  - 外部ライブラリ（Apple Accelerate / OpenBLAS / Intel MKL / BLIS）のリンクは明示的なパッケージ依存（例: 公式の薄い `blas` パッケージでの `@link(framework = "Accelerate")` / `@link("openblas")`）またはビルドフラグ（`-l openblas` / `--framework Accelerate` / `[native] frameworks` 等）で選択する。
   - 利用時に BLAS が利用不可な環境で明示的に BLAS 経路を呼んだ場合は、黙って純 Tsuzuri に落とさずエラーを返す。自動選択（`Auto`）経路を設ける場合のみ、能力検査の上で文書化されたフォールバック（純 Tsuzuri 経路）を許す（AGENTS.md の方針）。
   - 数値セマンティクス（FMA 縮約・スレッド数依存の丸め順序緩和）は純 Tsuzuri 決定論経路と異なるため、API 名で明確に分離する。
 
@@ -80,7 +80,7 @@
 
 - [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `abi::extern_parameter`, `ref mut [T..]`, `@count`, `abi_native_only`。
 - [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<'a>`。
-- [NC08](NC08-linalg-core-and-einsum.md): `Linalg` の基準実装（精度照合用）。
+- [NC08](_completed/NC08-linalg-core-and-einsum.md): `Linalg` の基準実装（精度照合用）。
 
 ## 他チケットへ提供するインターフェース
 

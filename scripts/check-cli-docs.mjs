@@ -123,6 +123,7 @@ export const STD_PAGES = {
     IO: 'stdlib/sys/io.md',
     Int: 'stdlib/numeric/int.md',
     Json: 'stdlib/encoding/json.md',
+    Linalg: 'stdlib/numeric/linalg.md',
     List: 'stdlib/collections/list.md',
     Map: 'stdlib/collections/map.md',
     Math: 'stdlib/numeric/math.md',
@@ -168,6 +169,7 @@ export const STD_PAGES = {
     Vec: 'stdlib/collections/vec.md',
     WaitGroup: 'stdlib/sync/waitgroup.md',
     ZString: 'stdlib/text/zstring.md',
+    ZUtf8String: 'stdlib/text/zutf8string.md',
 };
 export const stdPage = (module) => STD_PAGES[module] ?? `stdlib/${module.toLowerCase()}.md`;
 /** The public std functions that their module's reference page does not mention; `readPage` returns null for no page. */

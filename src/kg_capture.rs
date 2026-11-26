@@ -394,6 +394,8 @@ fn declare_module(
         trusted: _,
         extern_counts: _,
         c_layouts: _,
+        links: _,
+        weaks: _,
         noncanonical: _,
         aliases: _,
         declaration_starts: _,

@@ -5151,8 +5151,9 @@ impl Classes {
                     Diagnostic::of(
                         DiagnosticKind::TaskRequiresSend,
                         format!(
-                            "values that move to another tzroutine or thread must be Send; {} holds a thread-bound extern handle ('extern type local'), which must stay on the OS thread that received it; use it there, or do the work inside 'Routine.with_locked_thread'",
-                            constraint.ty.display(types)
+                            "values that move to another tzroutine or thread must be Send; {} holds a thread-bound extern handle ('extern type local'), which must stay on the OS thread that received it; use it there, or do the work inside 'Routine.with_locked_thread'; {}",
+                            constraint.ty.display(types),
+                            crate::check::pinned_rules::MAIN_THREAD_ADVICE
                         ),
                         constraint.span,
                     )
@@ -5992,6 +5993,7 @@ impl Checker<'_> {
             builtin,
             Builtin::OsRead
                 | Builtin::OsArgs
+                | Builtin::OsVersion
                 | Builtin::OsWrite
                 | Builtin::OsRandom
                 | Builtin::OsClock
@@ -7657,6 +7659,9 @@ pub(super) fn specialize(
         noncanonical: module.noncanonical,
         generic_declarations,
         extern_abis: module.extern_abis,
+        link_libraries: module.link_libraries,
+        link_frameworks: module.link_frameworks,
+        weak_symbols: module.weak_symbols,
     })
 }
 

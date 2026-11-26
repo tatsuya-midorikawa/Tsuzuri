@@ -5,7 +5,7 @@
 | ID | M09 |
 | 優先度 | P2（回避策はある: `dlsym` で `_dispatch_main_q` を引いて `dispatch_async_f` を呼ぶ。型の保護はなく、ABI の知識に頼る） |
 | 規模 | L（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | ([M01](M01-objc-class-types.md)), ([M08](M08-macos-main-thread-docs-and-e1013.md))（M01 は Phase 2 の `extern class main` の段だけ） |
+| 依存 | ([M01](M01-objc-class-types.md)), ([M08](_completed/M08-macos-main-thread-docs-and-e1013.md))（M01 は Phase 2 の `extern class main` の段だけ） |
 | 後続 | [M14](M14-tls-http-packages.md)（弱い後続: [M03](M03-objc-classes-defined-in-tsuzuri.md), [M04](M04-objc-blocks.md), [M07](M07-apple-sdk-bindgen-and-package.md), [M13](M13-desktop-os-services-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 3（メインスレッドへ戻す API がなく、メインスレッド専用を型で強制できない。run loop と tzroutine の待ち、terminate: の exit、GCD のスレッドからの Anchor の WrongThread、Time.after_func がワーカーで発火）」に当たる。HEAD `804b7970` で確認） |
@@ -36,7 +36,7 @@ Phase 1 は戻す API を足す。M08 が文書に置いた「計画は M09」�
 ### 着手条件
 
 - 人間が求めない限り Phase 1 だけを実装する（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない。
-- Phase 1: D1（D-55 の `MainThread`）が承認済み。[M08](M08-macos-main-thread-docs-and-e1013.md) が done であることが望ましい（M08 の注記を置き換える。M08 が後なら、M08 が文書に API の説明を書く）。確認: `grep -nE '^\| M0[89] ' _features/README.md`。
+- Phase 1: D1（D-55 の `MainThread`）が承認済み。[M08](_completed/M08-macos-main-thread-docs-and-e1013.md) が done であることが望ましい（M08 の注記を置き換える。M08 が後なら、M08 が文書に API の説明を書く）。確認: `grep -nE '^\| M0[89] ' _features/README.md`。
 - Phase 2: D11・D12 が承認済み。`extern class main` の段は [M01](M01-objc-class-types.md) が done のときだけ。Phase 3: D16 が承認済み（M14 の着手より前に決める）。
 - 共通: `node scripts/repo-kb.mjs brief M09`。P2 なので、着手前にその時点のコードと台帳でこのチケットをレビューする（GUIDE §0 の 2）。macOS（arm64）の開発機。ベースライン（`tests/fixtures/*`・`examples/*` の `--emit llvm`（native と `--target wasm32`）・`--emit header`・`check --json`）を `target/scratch/m09/before/` に保存する。
 
@@ -401,7 +401,7 @@ void tsuzuri_mainthread_boundary_done(void);
 
 ## 前提とする他チケットのインターフェース
 
-- [M08](M08-macos-main-thread-docs-and-e1013.md): 2 つのページの 2 段落と「メインスレッドへ戻す API は今はない（計画は M09）」の注記（Phase 1 が置き換える）、定数 `MAIN_THREAD_ADVICE`（Phase 2 の文の言い回しをそろえる）。
+- [M08](_completed/M08-macos-main-thread-docs-and-e1013.md): 2 つのページの 2 段落と「メインスレッドへ戻す API は今はない（計画は M09）」の注記（Phase 1 が置き換える）、定数 `MAIN_THREAD_ADVICE`（Phase 2 の文の言い回しをそろえる）。
 - [M01](M01-objc-class-types.md)（Phase 2 の `extern class main` の段だけ）: `extern class` の修飾の読み取りとクラスの性質の表現。名前が違えば M01 に合わせる。
 - W19・W12・TZ05 の既存の仕組み（「現状」7）。
 

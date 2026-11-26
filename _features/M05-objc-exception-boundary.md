@@ -61,7 +61,7 @@ D-67 の分岐 1（X′）で AppKit を Tsuzuri から直接呼ぶと、例外�
 - **S2** 境界を使わないプログラムの IR・object・header・診断・既定の `.wasm` が、保存したベースラインと 1 byte でも違う。
 - **S3** `-O3` で境界の `invoke` が `call` に変わる、または landingpad が消え、境界の関数の中の局所的な手段（呼び出し先の `declare` に `nounwind` を付けない、など）では防げない。
 - **S4** M02 の送信の下げ方（引数の下げ方と呼び出しの後の後始末）を、`call` と `invoke` で共有できず、複製したくなった。
-- **S5** Apple の ld か同梱の zig（lld）のどちらかで、境界の関数の LSDA と compact unwind が正しく作られず、例外が受からない。同梱の zig は、[M20](M20-macos-framework-link-inputs.md) が SDK の `-F`・`-L` を足すまで `-l objc` を探せず `E2002` になる（M01 の「現状」）。M20 が入っていなければ zig の確認は飛ばし、理由を PR に書く（M20 は依存ではない）。
+- **S5** Apple の ld か同梱の zig（lld）のどちらかで、境界の関数の LSDA と compact unwind が正しく作られず、例外が受からない。同梱の zig は、[M20](_completed/M20-macos-framework-link-inputs.md) が SDK の `-F`・`-L` を足すまで `-l objc` を探せず `E2002` になる（M01 の「現状」）。M20 が入っていなければ zig の確認は飛ばし、理由を PR に書く（M20 は依存ではない）。
 - **S6** GUIDE-LITE §9 の共通の条件。
 
 ## 現状（HEAD `804b7970` で確認）

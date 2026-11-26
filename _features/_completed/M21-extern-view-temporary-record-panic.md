@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「調査中に見つけたコンパイラの不具合 B1（自分で再現済み）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 不要（`check` が受理するプログラムを正しく下げる修正。新しい名前・診断・ABI を足さない）。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)（承認の要らない M21 はすぐに進めてよい） |
 | 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`（`BorrowOperand` の引数を `operand_borrow` で一時の領域に置き、呼び出しの後に `release_operands` で解放する）、`src/llvm_parallel.rs` の `parallel_scope`（同じ 2 つを 1 つの引数に使う）、完了した [W01](_completed/W01-callback-extern-temporary-string.md)（`host_call` の経路の同じ種類の修正）と [A27](_completed/A27-call-argument-reference-hint.md) の 5 番（`parallel_expression` の同じ種類の修正） |

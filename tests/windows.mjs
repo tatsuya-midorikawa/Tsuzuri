@@ -888,6 +888,26 @@ if (isMain) {
   }
   console.log("Windows MSVC: W24 extern view HeapAlloc round-trip & null trap passed");
 
+  // W17: `@link("gdi32")` links GdiFlush without `-l gdi32` and emits `declare dllimport`.
+  const w17WinDir = join(directory, "win-w17-link");
+  mkdirSync(w17WinDir);
+  writeFileSync(join(w17WinDir, "Main.tz"), [
+    '@trusted @link("gdi32")',
+    'extern "GdiFlush" def gdi_flush :: unit -> bool',
+    "def main :: unit -> i32 = \\() ->",
+    "    if gdi_flush () then 7i32 else 8i32",
+    "",
+  ].join("\n"));
+  const w17Ir = join(directory, "win-w17.ll");
+  cli(["build", w17WinDir, "--no-cache", "--emit", "llvm", "-o", w17Ir]);
+  assert.match(readFileSync(w17Ir, "utf8"), /declare dllimport i32 @GdiFlush\(\)/);
+  for (const optimization of ["-O0", "-O3"]) {
+    const w17Exe = join(directory, `win-w17${optimization}.exe`);
+    cli(["build", w17WinDir, "--no-cache", optimization, "-o", w17Exe]);
+    assert.equal(execute(w17Exe, [], false).status, 7, `W17 @link("gdi32") ${optimization}`);
+  }
+  console.log("Windows MSVC: W17 @link(\"gdi32\") and dllimport passed");
+
   runGuiStage(compiler, clang, directory);
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");
     }

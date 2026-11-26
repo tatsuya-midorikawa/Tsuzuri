@@ -487,8 +487,8 @@ record SaveOptions { title: Maybe<string>, message: Maybe<string>, directory: Ma
 
 - [M07](M07-apple-sdk-bindgen-and-package.md)（Phase 2）: 公式の `apple` パッケージ（`namespace = "Apple"`、framework ごとのモジュール、核の一覧 `api.txt`、macOS のランナーの CI、`git diff --exit-code` の生成の検査）。生成器の `--api` の書式（D10）、名前の規則（D2）、スレッドの性質の写し方（D3）、availability の `@weak`（D5）、生成物の `@trusted`（D6）。
 - [M01](M01-objc-class-types.md)・[M02](M02-objc-typed-message-send.md)（M07 を通して）: `extern class` の所有（+1 の値、drop で `objc_release`、`ref C` の +0、`Maybe<C>` の nil）、`ObjC.downcast`、メンバーの送信と buffer の引数（ポインターと長さの 2 つ。M02 の D10）、`ObjC.literal`。
-- [M06](M06-extern-data-symbols-and-zutf8string.md)（M07 を通して）: Phase 1 の `view def` で `NSPasteboardTypeString` を読む。
-- [M20](M20-macos-framework-link-inputs.md)（M07 を通して）: Phase 2 の `@link(framework = "...")`（git のパッケージから AppKit・Foundation・UniformTypeIdentifiers・UserNotifications をリンクする）。
+- [M06](_completed/M06-extern-data-symbols-and-zutf8string.md)（M07 を通して）: Phase 1 の `view def` で `NSPasteboardTypeString` を読む。
+- [M20](_completed/M20-macos-framework-link-inputs.md)（M07 を通して）: Phase 2 の `@link(framework = "...")`（git のパッケージから AppKit・Foundation・UniformTypeIdentifiers・UserNotifications をリンクする）。
 - [M09](M09-main-thread-dispatch-and-handles.md)（弱い）: Phase 1 の `MainThread.is_current`（スレッドの検査）と `MainThread.post`（Phase 2 の完了の結果）。Phase 2 の `extern class main`（M07 がパネルに付ける）。
 - [M04](M04-objc-blocks.md)（Phase 2）: `ObjC.Block<F>`・`ObjC.block`（`(bool -> Maybe<ref NSError> -> unit)` の完了ハンドラー）。M13 が Block を使うのは Phase 2 の通知の完了ハンドラーだけで、ファイルダイアログの `beginWithCompletionHandler:` は対象外（Phase 1 は `runModal` だけ）。M04 の「他チケットへ提供するインターフェース」も同じ形で書いてある。
 - [M15](M15-macos-app-bundle.md)（Phase 2）: `tsuzuri build --emit app` と `[macos] bundle_id`（通知の検査を bundle の中で走らせる）。

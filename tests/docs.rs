@@ -183,3 +183,23 @@ fn docs_hide_setup_lines_and_show_outputs() {
     let expected = "# Counter\n\n## `add_one`\n\n```tsuzuri\ndef add_one :: i64 -> i64\n```\n\nAdds one to `n`.\n\n```tsuzuri\nCounter.add_one 2\n```\n\nOutput:\n\n```text\n3\n```\n\nA hidden line sets up a value that the reader does not see.\n\n```tsuzuri\nCounter.add_one base\n```\n\nOutput:\n\n```text\n11\n```\n\n```tsuzuri\nCounter.add_one \"two\"\n```\n\nCompile error: `E1003`.\n\n";
     assert_eq!(docgen::render_module("Counter", &program), expected);
 }
+
+#[test]
+fn docgen_renders_data_symbol_link_names_and_keeps_ordinary_externs() {
+    let source = "extern type copy H\n\
+        /// Global value.\n@trusted\nextern \"g_counter\" view def read_counter :: unit -> i64\n\
+        /// Global address.\n@trusted\nextern \"g_queue\" address def main_queue :: unit -> H\n\
+        /// Memory view.\nextern view def read_i64 :: i64 -> i64\n\
+        /// Host fn.\nextern \"c_fn\" def call_fn :: i64 -> i64\n";
+    let program = parser::parse(source).unwrap();
+    let page = docgen::render_module("Main", &program);
+    for expected in [
+        "extern \"g_counter\" view def read_counter :: unit -> i64",
+        "extern \"g_queue\" address def main_queue :: unit -> H",
+        "extern view def read_i64 :: i64 -> i64",
+        "extern def call_fn :: i64 -> i64",
+    ] {
+        assert!(page.contains(expected), "missing `{expected}` in:\n{page}");
+        parser::parse(expected).unwrap();
+    }
+}

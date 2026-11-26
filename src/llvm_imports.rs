@@ -8,8 +8,8 @@ pub(super) fn header(module: &CheckedModule) -> String {
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
-        // An explicit symbol belongs to the host; an extern view links no symbol.
-        if import.explicit || import.view.is_some() {
+        // An explicit symbol belongs to the host; an extern view or data symbol links no generated prototype.
+        if import.explicit || import.lowers_inline() {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
@@ -28,7 +28,142 @@ pub(super) fn header(module: &CheckedModule) -> String {
     output
 }
 
+pub(super) fn extern_declare(
+    module: &CheckedModule,
+    wasm: bool,
+    wasm_module: &str,
+    wasm_name: &str,
+    symbol: &str,
+    output: &str,
+    types: &[String],
+) -> String {
+    let linkage = if !wasm && module.weak_symbols.contains(symbol) {
+        "extern_weak "
+    } else if !wasm
+        && crate::target::current_platform().windows()
+        && module.link_libraries.contains_key(symbol)
+    {
+        "dllimport "
+    } else {
+        ""
+    };
+    let attributes = if wasm {
+        format!(" \"wasm-import-module\"=\"{wasm_module}\" \"wasm-import-name\"=\"{wasm_name}\"")
+    } else {
+        String::new()
+    };
+    format!(
+        "declare {linkage}{output} @{symbol}({}){attributes}",
+        types.join(", ")
+    )
+}
+
 impl FunctionEmitter<'_, '_> {
+    /// M06: lowers `extern "sym" view def` (`load` from `@sym`) and `extern "sym" address def` (`@sym`).
+    pub(super) fn data_symbol(
+        &mut self,
+        data: &crate::check::DataSymbol,
+        arguments: &[TypedExpr],
+        result: &Type,
+        decl_span: Span,
+    ) -> String {
+        if let Some(arg) = arguments.first() {
+            let _ = self.expression(arg);
+        }
+        self.globals
+            .data_symbols
+            .entry(data.symbol.clone())
+            .or_insert(decl_span);
+        let global = format!("@{}", data.symbol);
+        if self.module.weak_symbols.contains(&data.symbol) {
+            return match data.access {
+                crate::syntax::DataAccess::Address => self.nullable_from_c(result, &global),
+                crate::syntax::DataAccess::Read => {
+                    let payload = crate::abi::std_maybe_payload(result, &self.module.types())
+                        .expect("validated weak data symbol Maybe<T>")
+                        .clone();
+                    let Type::Union(id, _) = result else {
+                        unreachable!()
+                    };
+                    let some_case = self.module.unions[*id]
+                        .cases
+                        .iter()
+                        .position(|(name, p)| name == "Some" && p.is_some())
+                        .expect("std::Maybe has Some");
+                    let present = self.value(format!("icmp ne ptr {global}, null"));
+                    let ok_block = self.label();
+                    let miss_block = self.label();
+                    let done_block = self.label();
+                    self.branch(&present, &ok_block, &miss_block);
+
+                    self.begin(&miss_block);
+                    let none_val = self.nullary_value(result, "None");
+                    let from_miss = self.block.clone();
+                    self.jump(&done_block);
+
+                    self.begin(&ok_block);
+                    let ok_val = match &payload {
+                        Type::Handle(..) => {
+                            let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                            self.nullable_from_c(result, &raw)
+                        }
+                        Type::Integer(bits, _) => {
+                            let align = usize::from(*bits) / 8;
+                            let v =
+                                self.value(format!("load i{bits}, ptr {global}, align {align}"));
+                            let pty = self.ty(&payload);
+                            self.construct_value(result, some_case, Some((v, pty)))
+                        }
+                        Type::Binary(32) => {
+                            let v = self.value(format!("load float, ptr {global}, align 4"));
+                            self.construct_value(result, some_case, Some((v, "float".into())))
+                        }
+                        Type::Binary(64) => {
+                            let v = self.value(format!("load double, ptr {global}, align 8"));
+                            self.construct_value(result, some_case, Some((v, "double".into())))
+                        }
+                        Type::Record(..) => {
+                            let v = self.read_host_record(&payload, &global);
+                            let pty = self.ty(&payload);
+                            self.construct_value(result, some_case, Some((v, pty)))
+                        }
+                        _ => unreachable!("validated weak data symbol read payload"),
+                    };
+                    let from_ok = self.block.clone();
+                    self.jump(&done_block);
+
+                    self.begin(&done_block);
+                    let llvm = self.ty(result);
+                    self.value(format!(
+                        "phi {llvm} [ {none_val}, %{from_miss} ], [ {ok_val}, %{from_ok} ]"
+                    ))
+                }
+            };
+        }
+        match data.access {
+            crate::syntax::DataAccess::Address => global,
+            crate::syntax::DataAccess::Read => match result {
+                Type::Integer(bits, _) => {
+                    let align = usize::from(*bits) / 8;
+                    self.value(format!("load i{bits}, ptr {global}, align {align}"))
+                }
+                Type::Binary(32) => self.value(format!("load float, ptr {global}, align 4")),
+                Type::Binary(64) => self.value(format!("load double, ptr {global}, align 8")),
+                Type::Handle(..) => {
+                    let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                    let valid = self.value(format!("icmp ne ptr {raw}, null"));
+                    self.guard(&valid, TrapKind::NullHandle);
+                    raw
+                }
+                Type::Record(..) => self.read_host_record(result, &global),
+                _ => {
+                    let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                    self.nullable_from_c(result, &raw)
+                }
+            },
+        }
+    }
+
     /// W24: lowers `extern view def` inline at the call site: validates non-null and C alignment
     /// via `host_pointer` (trapping at the call site with `BoundsCheck`), then reads or writes
     /// the record field-by-field using the C struct layout.
@@ -48,7 +183,13 @@ impl FunctionEmitter<'_, '_> {
             }
             crate::syntax::ViewDirection::Write => {
                 let address = self.expression(&arguments[0]);
-                let source_ref = self.expression(&arguments[1]);
+                // M21: a borrowed temporary lives in a slot until the record is written, as in `host_call`.
+                let mut operands = Vec::new();
+                let source_ref = if let TypedExprKind::BorrowOperand(operand) = &arguments[1].kind {
+                    self.operand_borrow(&arguments[1], operand, &mut operands)
+                } else {
+                    self.expression(&arguments[1])
+                };
                 let Type::Reference(record_ty, false) = &arguments[1].ty else {
                     unreachable!("validated extern view write parameter")
                 };
@@ -57,6 +198,7 @@ impl FunctionEmitter<'_, '_> {
                 self.host_pointer(&ptr, &size.to_string(), align, false);
                 let value = self.value(format!("load {}, ptr {source_ref}", self.ty(record_ty)));
                 self.write_host_record(record_ty, &value, &ptr);
+                self.release_operands(operands);
                 "0".into()
             }
         }
@@ -134,6 +276,7 @@ impl FunctionEmitter<'_, '_> {
                     nullable,
                     crate::abi::Nullable::BorrowedRecord(_)
                         | crate::abi::Nullable::BorrowedZString(_)
+                        | crate::abi::Nullable::BorrowedZUtf8String(_)
                 ) {
                     deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
                     values.push(String::new());
@@ -144,7 +287,7 @@ impl FunctionEmitter<'_, '_> {
                 continue;
             }
             if let Type::Reference(inner, false) = &argument.ty
-                && crate::abi::zstring(inner, &self.module.types())
+                && crate::abi::any_zstring(inner, &self.module.types())
             {
                 let rec = self.value(format!("load {}, ptr {value}", self.ty(inner)));
                 let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));
@@ -359,19 +502,34 @@ impl FunctionEmitter<'_, '_> {
                 convert_ptr_result = true;
             }
         }
-        let attributes = if self.globals.wasm {
-            format!(
-                " \"wasm-import-module\"=\"{}\" \"wasm-import-name\"=\"{}\"",
-                import.wasm_module, import.wasm_name
-            )
-        } else {
-            String::new()
-        };
-        self.intrinsics.insert(format!(
-            "declare {output} @{}({}){attributes}",
-            import.native_symbol,
-            types.join(", ")
+        self.intrinsics.insert(extern_declare(
+            self.module,
+            self.globals.wasm,
+            &import.wasm_module,
+            &import.wasm_name,
+            &import.native_symbol,
+            &output,
+            &types,
         ));
+        if !self.globals.wasm
+            && import.explicit
+            && self.module.weak_symbols.contains(&import.native_symbol)
+        {
+            let sym = &import.native_symbol;
+            let present = self.value(format!("icmp ne ptr @{sym}, null"));
+            let ok_block = self.label();
+            let miss_block = self.label();
+            self.branch(&present, &ok_block, &miss_block);
+            self.begin(&miss_block);
+            self.globals.weak_checked_symbols.insert(sym.clone());
+            self.instruction(format!(
+                "call void @tz.weak.missing(ptr @tz.weak.name.{sym}, i64 {})",
+                sym.len()
+            ));
+            self.emit_trap(TrapKind::Assert);
+            self.instruction("unreachable");
+            self.begin(&ok_block);
+        }
         let call = format!(
             "call {output} @{}({})",
             import.native_symbol,

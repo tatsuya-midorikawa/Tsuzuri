@@ -1470,6 +1470,8 @@ fn add_items(
         trusted: _,
         extern_counts,
         c_layouts,
+        links: _,
+        weaks: _,
         noncanonical: _,
         aliases,
         declaration_starts: _,
@@ -1601,13 +1603,14 @@ fn add_items(
             |signature| signature.parameters.iter().collect(),
         );
         let result = signature.map_or(&declaration.result, |signature| &signature.result);
-        let kind_label = if declaration.view {
-            "extern view def"
-        } else {
-            "extern def"
+        let kind_label = match (declaration.data, declaration.view) {
+            (Some(DataAccess::Address), _) => "extern address def",
+            (Some(DataAccess::Read), _) | (_, true) => "extern view def",
+            (None, false) => "extern def",
         };
+        let header_prefix = declaration.extern_header_prefix();
         let header = function_text(
-            kind_label,
+            &header_prefix,
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,

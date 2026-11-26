@@ -159,6 +159,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "Os.__handle",
         "Os.__close",
         "Os.__args",
+        "Os.__os_version",
         "Os.__random",
         "Os.__clock",
         "Os.__sleep",
@@ -219,7 +220,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
             ("Bench.tz", 4),
             ("Debug.tz", 1),
             ("Dir.tz", 3),
-            ("Env.tz", 3),
+            ("Env.tz", 4),
             ("File.tz", 6),
             ("Gpu.tz", 9),
             ("IO.tc", 2),
@@ -235,7 +236,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "a std file reaches the host in a new place; update appendix A of E15, the table of \
          src/capabilities.rs and tests/fixtures/capabilities/std-table.txt"
     );
-    assert_eq!(found.values().sum::<usize>(), 44);
+    assert_eq!(found.values().sum::<usize>(), 45);
 }
 
 /// The projects of the corpus: every fixture and example with a `Main.tz`.
@@ -294,7 +295,7 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 fn std_table_file_lists_the_88_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 88);
+    assert_eq!(lines.len(), 89);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {
@@ -772,6 +773,55 @@ fn a_dependency_key_after_native_must_be_capabilities() {
         stderr
             .contains("only the path, native, and capabilities keys are supported in a dependency"),
         "{stderr}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn audit_reports_link_attribute_without_changing_unannotated_externs() {
+    let root = scratch("w17-link-audit");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"w17audit\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        &root,
+        "Main.tz",
+        "@trusted @link(\"gdi32\")\nextern \"GdiFlush\" def gdi_flush :: unit -> bool\n@trusted @link(framework = \"AppKit\")\nextern \"NSApplicationLoad\" def app_load :: unit -> unit\n@trusted\nextern \"abs\" def c_abs :: i32 -> i32\ndef main :: unit -> i32 = \\() -> { app_load (); if gdi_flush () then c_abs (-7i32) else 0i32 }\n",
+    );
+    let text_out = tsuzuri(&["audit", "."], &root);
+    assert!(text_out.status.success());
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    assert!(
+        text.contains("    gdi_flush -> \"GdiFlush\"  Main.tz:2:23  trusted  link gdi32\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "    app_load -> \"NSApplicationLoad\"  Main.tz:4:32  trusted  link framework AppKit\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("    c_abs -> \"abs\"  Main.tz:6:18  trusted\n"),
+        "{text}"
+    );
+
+    let json_out = tsuzuri(&["audit", ".", "--json"], &root);
+    assert!(json_out.status.success());
+    let json = String::from_utf8_lossy(&json_out.stdout);
+    assert!(
+        json.contains("\"name\":\"gdi_flush\",\"symbol\":\"GdiFlush\",\"path\":\"Main.tz\",\"line\":2,\"column\":23,\"trusted\":true,\"properties\":[],\"used\":1,\"link\":\"gdi32\"}"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"name\":\"app_load\",\"symbol\":\"NSApplicationLoad\",\"path\":\"Main.tz\",\"line\":4,\"column\":32,\"trusted\":true,\"properties\":[],\"used\":1,\"framework\":\"AppKit\"}"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"name\":\"c_abs\",\"symbol\":\"abs\",\"path\":\"Main.tz\",\"line\":6,\"column\":18,\"trusted\":true,\"properties\":[],\"used\":1}"),
+        "{json}"
     );
     let _ = std::fs::remove_dir_all(root);
 }

@@ -2,7 +2,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::check::{
-    CheckedFunction, CheckedModule, PatternStep, Type, TypedExpr, TypedExprKind, TypedMatchArm,
+    CheckedFunction, CheckedModule, FunctionRef, PatternStep, Type, TypeContext, TypedExpr,
+    TypedExprKind, TypedMatchArm,
 };
 use crate::diagnostic::Span;
 use crate::syntax::BinaryOp;
@@ -31,6 +32,8 @@ impl LastUses {
         let mut analysis = Analysis {
             module,
             excluded: BTreeSet::new(),
+            b3_roots: BTreeMap::new(),
+            call_borrowed_roots: BTreeMap::new(),
             loops: Vec::new(),
             recording: true,
             reads: BTreeMap::new(),
@@ -45,58 +48,8 @@ impl LastUses {
                     .map(|local| local.id),
             );
         }
-        let mut pending = vec![(&function.body, 0)];
-        while let Some((expression, depth)) = pending.pop() {
-            if !analysis.spend(depth) {
-                return Self::default();
-            }
-            use TypedExprKind::*;
-            match &expression.kind {
-                Borrow(value, _) | BorrowOperand(value) | Slice { value, .. } => {
-                    if let Some(id) = root(value) {
-                        analysis.excluded.insert(id);
-                    }
-                }
-                ForEach {
-                    owner,
-                    local,
-                    source,
-                    ..
-                } => {
-                    analysis.excluded.extend([owner.id, local.id]);
-                    if let Some(id) = root(source) {
-                        analysis.excluded.insert(id);
-                    }
-                }
-                ForRange { local, .. } => {
-                    analysis.excluded.insert(local.id);
-                }
-                Match { local, arms, .. } => {
-                    analysis.excluded.insert(local.id);
-                    for arm in arms {
-                        for alternative in &arm.alternatives {
-                            analysis
-                                .excluded
-                                .extend(alternative.bindings.iter().map(|(b, _)| b.id));
-                            for step in &alternative.steps {
-                                if let PatternStep::Bind(local, _) = step {
-                                    analysis.excluded.insert(local.id);
-                                }
-                            }
-                        }
-                    }
-                }
-                Lambda { captures, .. } => {
-                    analysis
-                        .excluded
-                        .extend(captures.iter().map(|local| local.id));
-                }
-                _ => {}
-            }
-            let _ = expression.try_for_each_child(&mut |child| {
-                pending.push((child, depth + 1));
-                Ok(())
-            });
+        if !analysis.classify_borrows(function) {
+            return Self::default();
         }
         analysis.visit(&function.body, &mut Live::new(), 0);
         if analysis.exhausted {
@@ -142,6 +95,108 @@ fn root(mut expression: &TypedExpr) -> Option<usize> {
     }
 }
 
+fn expr_addr(expression: &TypedExpr) -> usize {
+    std::ptr::from_ref(expression).addr()
+}
+
+fn has_open_type(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let mut seen = BTreeSet::new();
+    fn walk<'a>(ty: &'a Type, types: &TypeContext<'a>, seen: &mut BTreeSet<usize>) -> bool {
+        match ty {
+            Type::Error
+            | Type::Variable(_)
+            | Type::Infer(_)
+            | Type::Partial(_)
+            | Type::Application(..) => true,
+            Type::Array(inner)
+            | Type::ArrayView(inner)
+            | Type::List(inner)
+            | Type::Vec(inner)
+            | Type::Shared(inner, _)
+            | Type::Once(inner)
+            | Type::FnPtr(inner)
+            | Type::Reference(inner, _) => walk(inner, types, seen),
+            Type::FixedArray(element, length) => {
+                walk(element, types, seen) || walk(length, types, seen)
+            }
+            Type::Tuple(elements) => elements.iter().any(|t| walk(t, types, seen)),
+            Type::Function(parameters, result) => {
+                parameters.iter().any(|t| walk(t, types, seen)) || walk(result, types, seen)
+            }
+            Type::Record(id, arguments) => {
+                arguments.iter().any(|t| walk(t, types, seen))
+                    || (arguments.is_empty()
+                        && seen.insert(*id)
+                        && types.records[*id]
+                            .fields
+                            .iter()
+                            .any(|(_, ft)| walk(ft, types, seen)))
+            }
+            Type::Union(id, arguments) => {
+                arguments.iter().any(|t| walk(t, types, seen))
+                    || (arguments.is_empty()
+                        && seen.insert(usize::MAX - *id)
+                        && types.unions[*id]
+                            .cases
+                            .iter()
+                            .filter_map(|(_, payload)| payload.as_ref())
+                            .any(|pt| walk(pt, types, seen)))
+            }
+            _ => false,
+        }
+    }
+    walk(ty, types, &mut seen)
+}
+
+/// PM10 B1: whether a call result of concrete `ty` may hold a loan.
+fn result_holds_loan(ty: &Type, types: &TypeContext<'_>) -> bool {
+    has_open_type(ty, types) || crate::ownership::type_holds_loan(ty, types)
+}
+
+/// PM10 B1: whether a value of concrete `ty` reaches any place where a borrow could be stored:
+/// (i) `ref mut` to a loan-holding type (`without_views` turns `[T..]` into `[T]`),
+/// (ii) a function value, `dyn` value, or `Owned.Function`, or
+/// (iii) a mutable cell whose contents may hold a loan (`Type::is_mutable_cell`).
+fn can_store_loan(ty: &Type, types: &TypeContext<'_>) -> bool {
+    if has_open_type(ty, types) {
+        return true;
+    }
+    let plain = crate::ownership::without_views(ty);
+    types.reaches(&plain, |part| {
+        matches!(part, Type::Function(..) | Type::Dyn(_))
+            || part.is_owned_function(types)
+            || part.is_mutable_cell(types)
+            || matches!(
+                part,
+                Type::Reference(target, true) if crate::ownership::type_holds_loan(target, types)
+            )
+    })
+}
+
+fn is_direct_non_extern_callee(callee: &TypedExpr, module: &CheckedModule) -> bool {
+    match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(_)) | TypedExprKind::Method(..) => true,
+        TypedExprKind::Function(FunctionRef::User(id)) | TypedExprKind::GenericFunction(id, _) => {
+            !matches!(module.functions[*id].body.kind, TypedExprKind::HostCall(..))
+        }
+        _ => false,
+    }
+}
+
+fn is_immut_param_callee(callee: &TypedExpr, immut_params: &BTreeSet<usize>) -> bool {
+    let mut expr = callee;
+    if let TypedExprKind::BorrowOperand(inner) = &expr.kind {
+        expr = inner;
+    }
+    match &expr.kind {
+        TypedExprKind::Local(id) => immut_params.contains(id),
+        TypedExprKind::Dereference(inner) => {
+            matches!(&inner.kind, TypedExprKind::Local(id) if immut_params.contains(id))
+        }
+        _ => false,
+    }
+}
+
 struct LoopContext {
     exit: Live,
     head: Live,
@@ -150,6 +205,8 @@ struct LoopContext {
 struct Analysis<'a> {
     module: &'a CheckedModule,
     excluded: Live,
+    b3_roots: BTreeMap<usize, Live>,
+    call_borrowed_roots: BTreeMap<usize, Live>,
     loops: Vec<LoopContext>,
     recording: bool,
     reads: BTreeMap<ReadKey, bool>,
@@ -165,6 +222,330 @@ impl Analysis<'_> {
             return false;
         }
         self.budget -= 1;
+        true
+    }
+
+    fn mark_live(&self, live: &mut Live, id: usize) {
+        live.insert(id);
+        if let Some(roots) = self.b3_roots.get(&id) {
+            live.extend(roots);
+        }
+    }
+
+    /// Unwraps a chain of `Borrow` / `BorrowOperand` / `Slice` nodes (including the intermediate
+    /// `Dereference` inserted by `Checker::reborrow_operand` when coercing `ref mut data` or
+    /// `ref mut out[0..]` to `ref mut [T..]`) to its underlying place `root`, returning the root
+    /// local and the addresses of every borrow/slice node in the chain.
+    fn borrow_chain(&self, mut expression: &TypedExpr) -> Option<(usize, Vec<usize>)> {
+        let mut chain = Vec::new();
+        loop {
+            match &expression.kind {
+                TypedExprKind::BorrowOperand(value) if self.lent_union_match(value) => break,
+                TypedExprKind::Borrow(value, _)
+                | TypedExprKind::BorrowOperand(value)
+                | TypedExprKind::Slice { value, .. } => {
+                    chain.push(expr_addr(expression));
+                    expression = value;
+                }
+                TypedExprKind::Dereference(inner)
+                    if !chain.is_empty()
+                        && matches!(
+                            inner.kind,
+                            TypedExprKind::Borrow(..)
+                                | TypedExprKind::BorrowOperand(_)
+                                | TypedExprKind::Slice { .. }
+                        ) =>
+                {
+                    expression = inner;
+                }
+                _ => break,
+            }
+        }
+        if chain.is_empty() {
+            return None;
+        }
+        root(expression).map(|id| (id, chain))
+    }
+
+    fn count_local(&mut self, expression: &TypedExpr, target: usize, depth: usize) -> usize {
+        let mut count = 0;
+        let mut pending = vec![(expression, depth)];
+        while let Some((expr, d)) = pending.pop() {
+            if !self.spend(d) {
+                return usize::MAX;
+            }
+            if matches!(expr.kind, TypedExprKind::Local(id) if id == target) {
+                count += 1;
+            }
+            let _ = expr.try_for_each_child(&mut |child| {
+                pending.push((child, d + 1));
+                Ok(())
+            });
+        }
+        count
+    }
+
+    /// PM10 Phase 2: classifies every borrow in `function.body` under rules B1–B4 (within budget B5).
+    fn classify_borrows(&mut self, function: &CheckedFunction) -> bool {
+        let types = self.module.types();
+        let immut_params: BTreeSet<usize> = if function.capture_count == 0 {
+            function.parameters[function.capture_count..]
+                .iter()
+                .filter(|p| !p.mutable)
+                .map(|p| p.id)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let own_loan_params: BTreeSet<usize> = function
+            .parameters
+            .iter()
+            .filter(|p| result_holds_loan(&p.ty, &types))
+            .map(|p| p.id)
+            .collect();
+
+        let mut assigned = BTreeSet::new();
+        let mut total_uses: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut all_borrows: Vec<(&TypedExpr, usize)> = Vec::new();
+        let mut calls: Vec<(&TypedExpr, usize)> = Vec::new();
+        let mut b3_bindings: Vec<(usize, &Type, &TypedExpr, usize)> = Vec::new();
+
+        let mut pending = vec![(&function.body, 0usize)];
+        while let Some((expression, depth)) = pending.pop() {
+            if !self.spend(depth) {
+                return false;
+            }
+            use TypedExprKind::*;
+            match &expression.kind {
+                Local(id) => {
+                    *total_uses.entry(*id).or_default() += 1;
+                }
+                Assign(place, _) => {
+                    if let Some(id) = root(place) {
+                        assigned.insert(id);
+                    }
+                }
+                Borrow(..) | BorrowOperand(_) | Slice { .. } => {
+                    if let Some((id, _)) = self.borrow_chain(expression) {
+                        all_borrows.push((expression, id));
+                    }
+                }
+                Call(..) => {
+                    calls.push((expression, depth));
+                }
+                Block { bindings, .. } => {
+                    for (local, init) in bindings {
+                        if matches!(init.kind, Call(..)) {
+                            b3_bindings.push((local.id, &local.ty, init, depth + 1));
+                        }
+                    }
+                }
+                ForEach {
+                    owner,
+                    local,
+                    source,
+                    ..
+                } => {
+                    self.excluded.extend([owner.id, local.id]);
+                    if let Some(id) = root(source) {
+                        self.excluded.insert(id);
+                    }
+                }
+                ForRange { local, .. } => {
+                    self.excluded.insert(local.id);
+                }
+                Match { local, arms, .. } => {
+                    self.excluded.insert(local.id);
+                    for arm in arms {
+                        for alternative in &arm.alternatives {
+                            self.excluded
+                                .extend(alternative.bindings.iter().map(|(b, _)| b.id));
+                            for step in &alternative.steps {
+                                if let PatternStep::Bind(local, _) = step {
+                                    self.excluded.insert(local.id);
+                                }
+                            }
+                        }
+                    }
+                }
+                Lambda { captures, .. } => {
+                    self.excluded.extend(captures.iter().map(|local| local.id));
+                }
+                _ => {}
+            }
+            let _ = expression.try_for_each_child(&mut |child| {
+                pending.push((child, depth + 1));
+                Ok(())
+            });
+        }
+
+        // B1: direct borrow arguments of calls whose result holds no loan and whose other arguments
+        // and callee cannot store a loan.
+        let mut approved_borrows = BTreeSet::new();
+        let mut b1_sole_uses: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut call_b1_args: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+
+        for &(call_expr, depth) in &calls {
+            let TypedExprKind::Call(callee, arguments) = &call_expr.kind else {
+                continue;
+            };
+            if result_holds_loan(&call_expr.ty, &types) {
+                continue;
+            }
+            let direct_ok = is_direct_non_extern_callee(callee, self.module);
+            let param_ok = !direct_ok && is_immut_param_callee(callee, &immut_params);
+            if !direct_ok && !param_ok {
+                continue;
+            }
+            let can_store: Vec<bool> = arguments
+                .iter()
+                .map(|arg| can_store_loan(&arg.ty, &types))
+                .collect();
+            let store_count = can_store.iter().filter(|&&s| s).count();
+            for (idx, arg) in arguments.iter().enumerate() {
+                let Some((r_id, chain)) = self.borrow_chain(arg) else {
+                    continue;
+                };
+                if param_ok && own_loan_params.contains(&r_id) {
+                    continue;
+                }
+                let others_can_store = store_count > usize::from(can_store[idx]);
+                if others_can_store {
+                    continue;
+                }
+                approved_borrows.extend(chain);
+                call_b1_args
+                    .entry(expr_addr(call_expr))
+                    .or_default()
+                    .push(r_id);
+                let occ = self.count_local(arg, r_id, depth + 1);
+                if self.exhausted {
+                    return false;
+                }
+                if occ == 1 {
+                    *b1_sole_uses.entry(r_id).or_default() += 1;
+                }
+            }
+        }
+
+        // B3: `let L = call(...)` where `call` returns a loan-carrying value, has no other
+        // loan-storing argument/callee, `L` is never reassigned and has no user `Drop`, and every
+        // occurrence of `L` in the function is a sole-root borrow in a B1 (or outer B3) call.
+        // Walk in reverse order so inner/later window bindings validate before outer/earlier ones.
+        for &(local_id, local_ty, init_expr, depth) in b3_bindings.iter().rev() {
+            if assigned.contains(&local_id) || has_open_type(local_ty, &types) {
+                continue;
+            }
+            let plain_local = crate::ownership::without_views(local_ty);
+            if types.reaches(&plain_local, |part| part.has_user_drop(&types)) {
+                continue;
+            }
+            let uses = total_uses.get(&local_id).copied().unwrap_or(0);
+            let approved = b1_sole_uses.get(&local_id).copied().unwrap_or(0);
+            if uses != approved {
+                continue;
+            }
+            let TypedExprKind::Call(callee, arguments) = &init_expr.kind else {
+                continue;
+            };
+            if !result_holds_loan(&init_expr.ty, &types) {
+                continue;
+            }
+            let direct_ok = is_direct_non_extern_callee(callee, self.module);
+            let param_ok = !direct_ok && is_immut_param_callee(callee, &immut_params);
+            if !direct_ok && !param_ok {
+                continue;
+            }
+            // If `L` is used in any `param_ok` B1 call, ensure none of the roots borrowed here
+            // come from `own_loan_params`.
+            let can_store: Vec<bool> = arguments
+                .iter()
+                .map(|arg| can_store_loan(&arg.ty, &types))
+                .collect();
+            let store_count = can_store.iter().filter(|&&s| s).count();
+            let mut candidate_args: Vec<(&TypedExpr, usize, Vec<usize>)> = Vec::new();
+            let mut all_borrow_args_ok = true;
+            for (idx, arg) in arguments.iter().enumerate() {
+                if let Some((r_id, chain)) = self.borrow_chain(arg) {
+                    if own_loan_params.contains(&r_id) || store_count > usize::from(can_store[idx])
+                    {
+                        all_borrow_args_ok = false;
+                        break;
+                    }
+                    candidate_args.push((arg, r_id, chain));
+                } else if can_store[idx] {
+                    all_borrow_args_ok = false;
+                    break;
+                }
+            }
+            if !all_borrow_args_ok || candidate_args.is_empty() {
+                continue;
+            }
+            let mut roots_set = Live::new();
+            for (arg, r_id, chain) in &candidate_args {
+                approved_borrows.extend(chain.iter().copied());
+                roots_set.insert(*r_id);
+                let occ = self.count_local(arg, *r_id, depth + 1);
+                if self.exhausted {
+                    return false;
+                }
+                if occ == 1 {
+                    *b1_sole_uses.entry(*r_id).or_default() += 1;
+                }
+            }
+            call_b1_args
+                .entry(expr_addr(init_expr))
+                .or_default()
+                .extend(roots_set.iter().copied());
+            self.b3_roots.insert(local_id, roots_set);
+        }
+
+        // Transitively close `b3_roots` (for chained windows `L2` borrowing `L1` borrowing `data`).
+        let b3_keys: Vec<usize> = self.b3_roots.keys().copied().collect();
+        loop {
+            let mut changed = false;
+            for &k in &b3_keys {
+                let current: Vec<usize> = self.b3_roots[&k].iter().copied().collect();
+                let mut extra = Live::new();
+                for r in current {
+                    if let Some(sub) = self.b3_roots.get(&r) {
+                        extra.extend(sub);
+                    }
+                }
+                let entry = self.b3_roots.get_mut(&k).unwrap();
+                let before = entry.len();
+                entry.extend(extra);
+                if entry.len() != before {
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // B4: any borrow expression not approved by B1 or B3 excludes its root (and transitive B3
+        // backing roots) across the whole function.
+        for (borrow_expr, r_id) in all_borrows {
+            if !approved_borrows.contains(&expr_addr(borrow_expr)) {
+                self.excluded.insert(r_id);
+                if let Some(backing) = self.b3_roots.get(&r_id) {
+                    self.excluded.extend(backing);
+                }
+            }
+        }
+
+        // B2: record the roots (and transitive B3 backing roots) live at each call execution point.
+        for (call_addr, raw_roots) in call_b1_args {
+            let mut expanded = Live::new();
+            for r_id in raw_roots {
+                expanded.insert(r_id);
+                if let Some(backing) = self.b3_roots.get(&r_id) {
+                    expanded.extend(backing);
+                }
+            }
+            self.call_borrowed_roots.insert(call_addr, expanded);
+        }
         true
     }
 
@@ -197,7 +578,7 @@ impl Analysis<'_> {
             match expression.kind {
                 TypedExprKind::Local(id) => {
                     self.record(expression, id, false);
-                    live.insert(id);
+                    self.mark_live(live, id);
                 }
                 TypedExprKind::Break | TypedExprKind::Continue => {
                     if let Some(context) = self.loops.last() {
@@ -243,7 +624,7 @@ impl Analysis<'_> {
             | Construct { payload: None, .. } => {}
             Local(id) => {
                 self.record(expression, *id, !live.contains(id));
-                live.insert(*id);
+                self.mark_live(live, *id);
             }
             Unary(_, value)
             | Cast(value)
@@ -285,6 +666,9 @@ impl Analysis<'_> {
                 self.visit(a, live, depth + 1);
             }
             Call(callee, arguments) => {
+                if let Some(roots) = self.call_borrowed_roots.get(&expr_addr(expression)) {
+                    live.extend(roots);
+                }
                 for argument in arguments.iter().rev() {
                     self.visit(argument, live, depth + 1);
                 }
@@ -382,7 +766,7 @@ impl Analysis<'_> {
                 }
                 // Matching reads the place but does not take the whole value.
                 if let Local(id) = value.kind {
-                    live.insert(id);
+                    self.mark_live(live, id);
                 } else {
                     self.visit(value, live, depth + 1);
                 }

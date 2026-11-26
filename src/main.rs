@@ -272,8 +272,11 @@ Build options:
   --link PATH            Link a host object or static library into a native executable
   -l NAME                Link a system library by name, such as -l sqlite3
   -L DIR                 Search DIR for system libraries
-                         These three repeat and apply to build, run, and test of native
-                         executables; Tsuzuri.toml [native] link/libraries/search come first
+  --framework NAME       Link a macOS framework by name, such as --framework AppKit
+  -F DIR                 Search DIR for macOS frameworks
+  --rpath PATH           Add a macOS runtime search path (LC_RPATH)
+                         These repeat and apply to build, run, and test of native
+                         executables; Tsuzuri.toml [native] settings come first
   --json                 Emit machine-readable diagnostics on stderr
     --no-cache             Disable cache reads and writes: artifacts and parsed sources for
                            build/run/script, artifacts for repl
@@ -1307,6 +1310,42 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                     );
                     continue;
                 }
+                Some("--framework") => {
+                    links.frameworks.push(
+                        next_value(arguments, &mut position, "--framework")?
+                            .to_str()
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "framework names must be UTF-8",
+                                )
+                            })?
+                            .to_owned(),
+                    );
+                    continue;
+                }
+                Some("-F") => {
+                    links.framework_search.push(PathBuf::from(next_value(
+                        arguments,
+                        &mut position,
+                        "-F",
+                    )?));
+                    continue;
+                }
+                Some("--rpath") => {
+                    links.rpaths.push(
+                        next_value(arguments, &mut position, "--rpath")?
+                            .to_str()
+                            .ok_or_else(|| {
+                                command_line_error(
+                                    DiagnosticKind::OptionInvalidValue,
+                                    "rpaths must be UTF-8",
+                                )
+                            })?
+                            .to_owned(),
+                    );
+                    continue;
+                }
                 Some(value) if value.starts_with('-') => {
                     return Err(command_line_error(
                         DiagnosticKind::UnknownOption,
@@ -1417,9 +1456,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             ));
         }
         if !links.is_empty() {
-            return Err(conflict(
-                "--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml",
-            ));
+            return Err(conflict(if links.has_macos_inputs() {
+                "--doc does not use --link, -l, -L, --framework, -F, or --rpath; list native inputs in Tsuzuri.toml"
+            } else {
+                "--doc does not use --link, -l, or -L; list native inputs in Tsuzuri.toml"
+            }));
         }
         if affected.is_some() {
             return Err(conflict("--doc cannot be combined with --affected"));
@@ -1806,6 +1847,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         triple,
         overflow_report,
         subsystem,
+        macos_min_version: None,
     };
     // These checks report `E2000` diagnostics without a position, as the command line does.
     options.validate()?;
@@ -1833,7 +1875,13 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     if !links.is_empty() && !links_apply(action, &options) {
         return Err(command_line_error(
             DiagnosticKind::OptionRequiresBuild,
-            "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+            links.requires_build_message(),
+        ));
+    }
+    if links.has_macos_inputs() && !options.platform().mach_o() {
+        return Err(command_line_error(
+            DiagnosticKind::OptionUnsupportedPlatform,
+            "--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them",
         ));
     }
     Ok(Arguments {
@@ -2209,6 +2257,7 @@ fn run_test_action(
             fail: !arguments.allow_overflow,
             sources: project.overflow_sources(),
         }),
+        macos_min_version: arguments.options.macos_min_version,
     };
     if let Some(base) = &arguments.affected {
         match select_affected(arguments, project, base, affected_base) {
@@ -2632,6 +2681,7 @@ fn run_bench_action(
             .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
         allocs: arguments.bench_allocs,
         triple: arguments.options.triple,
+        macos_min_version: arguments.options.macos_min_version,
     };
     if options
         .indices
@@ -3915,7 +3965,7 @@ fn repl_command(arguments: &[OsString]) -> ExitCode {
 
 const SCRIPT_FILE: &str =
     "script needs a source file: tsuzuri script [options] FILE [arguments...]";
-const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --edition, --link, -l, and -L before the file";
+const SCRIPT_OPTIONS: &str = "script accepts -O0 to -O3, --cpu, --no-cache, --json, --deny-warnings, --warn, --contracts, --edition, --link, -l, -L, --framework, -F, and --rpath before the file";
 
 /// Splits `tsuzuri script [options] FILE [arguments...]` into the arguments of
 /// `tsuzuri run [options] -- FILE` and the program's arguments: everything after FILE,
@@ -3935,8 +3985,8 @@ fn script_arguments(arguments: &[OsString]) -> Result<(Vec<OsString>, Vec<OsStri
                 continue;
             }
             Some(
-                option
-                @ ("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts" | "--edition"),
+                option @ ("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--framework" | "-F"
+                | "--rpath" | "--contracts" | "--edition"),
             ) => {
                 run.push(argument.clone());
                 run.push(
@@ -3978,7 +4028,10 @@ fn script_json(arguments: &[OsString]) -> bool {
     while let Some(argument) = rest.next() {
         match argument.to_str() {
             Some("--json") => return true,
-            Some("--cpu" | "--warn" | "--link" | "-l" | "-L" | "--contracts" | "--edition") => {
+            Some(
+                "--cpu" | "--warn" | "--link" | "-l" | "-L" | "--framework" | "-F" | "--rpath"
+                | "--contracts" | "--edition",
+            ) => {
                 rest.next();
             }
             Some(option) if option.starts_with('-') && option != "--" => {}
@@ -4216,7 +4269,10 @@ fn cli(
         };
     }
     let mut arguments = arguments;
-    arguments.options = arguments.options.with_manifest_wasm(project.wasm);
+    arguments.options = arguments
+        .options
+        .with_manifest_wasm(project.wasm)
+        .with_manifest_macos(&project.macos);
     if windows_apply(arguments.action) {
         arguments.options = arguments.options.with_manifest_windows(&project.windows);
     }
@@ -4304,9 +4360,15 @@ fn cli(
     {
         return EXIT_FAILURE;
     }
-    // The manifest's [native] inputs come first and apply only where the command line's would.
+    // The manifest's [native] inputs come first and apply only where the command line's would;
+    // macOS framework/rpath keys in Tsuzuri.toml are dropped on non-Mach-O targets (M20 D7).
     let links = if links_apply(arguments.action, &arguments.options) {
-        project.native.clone().followed_by(&arguments.links)
+        let manifest_native = if arguments.options.platform().mach_o() {
+            project.native.clone()
+        } else {
+            project.native.clone().without_macos_inputs()
+        };
+        manifest_native.followed_by(&arguments.links)
     } else {
         driver::LinkInputs::default()
     };
@@ -7790,6 +7852,69 @@ mod tests {
         // Without link inputs every one of these stays valid.
         assert!(parse(&["build", "Main.tz", "--target", "wasm32"]).is_ok());
         assert!(parse(&["build", "Main.tz", "--emit", "object"]).is_ok());
+
+        // M20: `--framework`, `-F`, and `--rpath` parse for macOS targets, widen the requires-build message
+        // when used with wasm/check/object, and report `option_unsupported_platform` on non-macOS native targets.
+        let macos = parse(&[
+            "build",
+            "Main.tz",
+            "--target",
+            "aarch64-apple-darwin",
+            "--framework",
+            "AppKit",
+            "--framework",
+            "Metal",
+            "-F",
+            "vendor/Frameworks",
+            "--rpath",
+            "@executable_path/../Frameworks",
+        ])
+        .unwrap();
+        assert_eq!(macos.links.frameworks, ["AppKit", "Metal"]);
+        assert_eq!(
+            macos.links.framework_search,
+            [PathBuf::from("vendor/Frameworks")]
+        );
+        assert_eq!(macos.links.rpaths, ["@executable_path/../Frameworks"]);
+
+        assert_eq!(
+            parse(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "wasm32",
+                "--framework",
+                "AppKit"
+            ])
+            .unwrap_err(),
+            "link inputs require a native executable; remove --link, -l, -L, --framework, -F and --rpath or build the native target with --emit exe"
+        );
+        assert_eq!(
+            parse(&["check", "Main.tz", "--rpath", "/opt/lib"]).unwrap_err(),
+            "link inputs require a native executable; remove --link, -l, -L, --framework, -F and --rpath or build the native target with --emit exe"
+        );
+        assert_eq!(
+            parse(&["test", "--doc", "Main.tz", "--framework", "AppKit"]).unwrap_err(),
+            "--doc does not use --link, -l, -L, --framework, -F, or --rpath; list native inputs in Tsuzuri.toml"
+        );
+        assert_eq!(
+            parse(&[
+                "build",
+                "Main.tz",
+                "--target",
+                "x86_64-unknown-linux-gnu",
+                "--framework",
+                "AppKit"
+            ])
+            .unwrap_err(),
+            "--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them"
+        );
+        for opt in ["--framework", "-F", "--rpath"] {
+            assert_eq!(
+                parse(&["build", "Main.tz", opt]).unwrap_err(),
+                format!("{opt} needs a value")
+            );
+        }
     }
 
     #[test]

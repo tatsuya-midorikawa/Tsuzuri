@@ -22,14 +22,14 @@ pub(super) fn has_handle_parameter(function: &CheckedFunction) -> bool {
 
 fn host_function(function: &CheckedFunction) -> bool {
     function.exported
-        || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
+        || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if !import.lowers_inline())
 }
 
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     let types = module.types();
     module.functions.iter().any(|function| {
         extended(function)
-            || (matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_none())
+            || (matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if !import.lowers_inline())
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
@@ -153,7 +153,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
             viewed.as_ref()
         };
         if let Type::Record(id, arguments) = ty
-            && !crate::abi::zstring(ty, &module.types())
+            && !crate::abi::any_zstring(ty, &module.types())
         {
             // The convention variants of a record are one type (A29).
             let ty = &codegen_identity(ty);
@@ -171,7 +171,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
     for function in module.functions.iter().filter(|function| {
         host_function(function)
             || (include_views
-                && matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()))
+                && matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.lowers_inline()))
     }) {
         for ty in function
             .signature
@@ -305,6 +305,9 @@ fn c_layout_c_field(ty: &Type, name: &str, module: &CheckedModule) -> String {
         Type::Reference(inner, false) if crate::abi::zstring(inner, &types) => {
             format!("const uint16_t *{name}")
         }
+        Type::Reference(inner, false) if crate::abi::zutf8string(inner, &types) => {
+            format!("const char *{name}")
+        }
         Type::FnPtr(inner) => {
             let Type::Function(inputs, output) = inner.as_ref() else {
                 unreachable!("validated FnPtr")
@@ -326,7 +329,7 @@ fn c_layout_c_field(ty: &Type, name: &str, module: &CheckedModule) -> String {
 
 pub(super) fn type_definitions(module: &CheckedModule) -> String {
     let has_views = module.functions.iter().any(
-        |f| matches!(&f.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some()),
+        |f| matches!(&f.body.kind, TypedExprKind::HostCall(import, _) if import.lowers_inline()),
     );
     if !uses_host_abi(module) && !has_views {
         return String::new();
@@ -620,6 +623,12 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
             && crate::abi::zstring(inner, &types)
         {
             parameters.push(format!("const uint16_t *arg{index}"));
+            continue;
+        }
+        if let Type::Reference(inner, false) = ty
+            && crate::abi::zutf8string(inner, &types)
+        {
+            parameters.push(format!("const char *arg{index}"));
             continue;
         }
         let inner = if let Type::Reference(inner, false) = ty {
@@ -1136,7 +1145,8 @@ impl FunctionEmitter<'_, '_> {
                     self.value(format!("select i1 {is_null}, ptr {null_slot}, ptr {value}"));
                 self.value(format!("load ptr, ptr {safe_slot}"))
             }
-            crate::abi::Nullable::BorrowedZString(zstr) => {
+            crate::abi::Nullable::BorrowedZString(zstr)
+            | crate::abi::Nullable::BorrowedZUtf8String(zstr) => {
                 let nonnull = self.value(format!("icmp ne ptr {value}, null"));
                 let from_none = self.block.clone();
                 let some_block = self.label();
@@ -1152,6 +1162,9 @@ impl FunctionEmitter<'_, '_> {
                 self.value(format!(
                     "phi ptr [ null, %{from_none} ], [ {data}, %{from_some} ]"
                 ))
+            }
+            crate::abi::Nullable::OwnedZUtf8String(_) => {
+                unreachable!("Maybe<ZUtf8String> is only an extern result")
             }
             crate::abi::Nullable::BorrowedRecord(record) => {
                 let slot = self.host_result_slot(record);
@@ -1209,8 +1222,82 @@ impl FunctionEmitter<'_, '_> {
                 let is_null = self.value(format!("icmp eq ptr {pointer}, null"));
                 self.value(format!("select i1 {is_null}, ptr null, ptr {slot}"))
             }
-            crate::abi::Nullable::BorrowedRecord(_) | crate::abi::Nullable::BorrowedZString(_) => {
-                unreachable!("Maybe<ref R> and Maybe<ref ZString> are only extern input parameters")
+            crate::abi::Nullable::OwnedZUtf8String(zutf8_ty) => {
+                let Type::Union(id, _) = ty else {
+                    unreachable!()
+                };
+                let some_case = self.module.unions[*id]
+                    .cases
+                    .iter()
+                    .position(|(name, payload)| name == "Some" && payload.is_some())
+                    .expect("std::Maybe has Some");
+                let is_nonnull = self.value(format!("icmp ne ptr {pointer}, null"));
+                let none_block = self.label();
+                let scan_entry = self.label();
+                let scan_loop = self.label();
+                let scan_step = self.label();
+                let copy_block = self.label();
+                let done_block = self.label();
+                self.branch(&is_nonnull, &scan_entry, &none_block);
+
+                self.begin(&none_block);
+                let none_val = self.nullary_value(ty, "None");
+                let from_none = self.block.clone();
+                self.jump(&done_block);
+
+                self.begin(&scan_entry);
+                let entry_pred = self.block.clone();
+                self.jump(&scan_loop);
+
+                self.begin(&scan_loop);
+                let idx_next = self.fresh();
+                let idx = self.value(format!(
+                    "phi i64 [ 0, %{entry_pred} ], [ {idx_next}, %{scan_step} ]"
+                ));
+                let ch_ptr = self.value(format!("getelementptr i8, ptr {pointer}, i64 {idx}"));
+                let ch = self.value(format!("load i8, ptr {ch_ptr}, align 1"));
+                let not_nul = self.value(format!("icmp ne i8 {ch}, 0"));
+                self.branch(&not_nul, &scan_step, &copy_block);
+
+                self.begin(&scan_step);
+                self.instruction(format!("{idx_next} = add i64 {idx}, 1"));
+                self.jump(&scan_loop);
+
+                self.begin(&copy_block);
+                self.validate_host_utf8(pointer, &idx);
+                let cap = self.value(format!("add i64 {idx}, 1"));
+                let buf = self.value(format!("call ptr @tz.alloc(i64 {cap})"));
+                self.intrinsics.insert(
+                    "declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly, ptr noalias readonly, i64, i1 immarg)"
+                        .into(),
+                );
+                self.instruction(format!(
+                    "call void @llvm.memcpy.p0.p0.i64(ptr {buf}, ptr {pointer}, i64 {cap}, i1 false)"
+                ));
+                let arr = self.value(format!(
+                    "insertvalue %tz.array zeroinitializer, ptr {buf}, 0"
+                ));
+                let arr = self.value(format!("insertvalue %tz.array {arr}, i64 {cap}, 1"));
+                let rec_llvm = self.ty(zutf8_ty);
+                let rec_val = self.value(format!(
+                    "insertvalue {rec_llvm} zeroinitializer, %tz.array {arr}, 0"
+                ));
+                let some_val = self.construct_value(ty, some_case, Some((rec_val, rec_llvm)));
+                let from_some = self.block.clone();
+                self.jump(&done_block);
+
+                self.begin(&done_block);
+                let llvm = self.ty(ty);
+                self.value(format!(
+                    "phi {llvm} [ {none_val}, %{from_none} ], [ {some_val}, %{from_some} ]"
+                ))
+            }
+            crate::abi::Nullable::BorrowedRecord(_)
+            | crate::abi::Nullable::BorrowedZString(_)
+            | crate::abi::Nullable::BorrowedZUtf8String(_) => {
+                unreachable!(
+                    "Maybe<ref R>, Maybe<ref ZString>, and Maybe<ref ZUtf8String> are only extern input parameters"
+                )
             }
         }
     }
@@ -1388,7 +1475,7 @@ impl FunctionEmitter<'_, '_> {
                         "store ptr {extracted}, ptr {slot}, align {leaf_align}"
                     ));
                 } else if let Type::Reference(inner, false) = field
-                    && crate::abi::zstring(inner, &self.module.types())
+                    && crate::abi::any_zstring(inner, &self.module.types())
                 {
                     let rec = self.value(format!("load {}, ptr {extracted}", self.ty(inner)));
                     let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));

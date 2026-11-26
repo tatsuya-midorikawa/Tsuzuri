@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -61,7 +61,39 @@ try {
       assert.match(res.stderr, new RegExp(`index out of bounds at .*Main\\.tz:${line}:`), `${mode} ${opt}: ${res.stderr}`);
     }
   }
-  console.log("Extern view: Phase 1+2 C host round-trip, padding preservation, and null/alignment call-site traps at -O0 and -O3 passed");
+
+  // M21: temporary record values passed to `extern view` writes at -O0 and -O3.
+  const tempDir = join(root, "temp_write");
+  mkdirSync(tempDir);
+  writeFileSync(join(tempDir, "Main.tz"), [
+    "@c_layout",
+    "record P { x: i32, y: i32 }",
+    "@trusted",
+    'extern "calloc" def c_calloc :: i64u -> i64u -> i64',
+    "@trusted",
+    "extern view def read_p :: i64 -> P",
+    "@trusted",
+    "extern view def write_p :: i64 -> ref P -> unit",
+    "def shifted :: i32 -> P = \\n -> P { x: n, y: n + 1i32 }",
+    "def main :: unit -> i32 = \\() ->",
+    "    let base = c_calloc 4 8",
+    "    let c = true",
+    "    write_p base (ref (P { x: 1i32, y: 2i32 }))",
+    "    write_p (base + 8) (shifted 10i32)",
+    "    write_p (base + 16) (ref (if c then P { x: 30i32, y: 40i32 } else P { x: 0i32, y: 0i32 }))",
+    "    let a = read_p base",
+    "    let b = read_p (base + 8)",
+    "    let d = read_p (base + 16)",
+    "    a.x + a.y + b.x + b.y + d.x + d.y",
+    "",
+  ].join("\n"));
+  for (const opt of ["-O0", "-O3"]) {
+    const tempExe = join(root, `temp_write${opt}${windows ? ".exe" : ""}`);
+    run(compiler, ["build", tempDir, "--no-cache", opt, "-o", tempExe]);
+    const res = run(tempExe, [], false);
+    assert.equal(res.status, 94, `${opt} temporary write expected exit 94, got ${res.status}\n${res.stdout}\n${res.stderr}`);
+  }
+  console.log("Extern view: Phase 1+2 C host round-trip, temporary record writes, padding preservation, and null/alignment call-site traps at -O0 and -O3 passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

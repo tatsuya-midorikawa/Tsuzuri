@@ -1063,6 +1063,39 @@ fn git_packages_reject_path_dependencies() {
         "E2000",
         "git and registry packages cannot declare [native] link settings; move them to the application manifest",
     );
+
+    // A git package cannot declare [native] frameworks either.
+    let manifest = format!("{GEOMETRY}[native]\nframeworks = [\"AppKit\"]\n");
+    let sha256 = offline_project(
+        &scratch,
+        url,
+        &[("Tsuzuri.toml", &manifest), ("Point.tz", POINT)],
+    );
+    scratch.write(
+        "app/Tsuzuri.lock",
+        &lock_text(&[("geometry-core", url, REV, &sha256)]),
+    );
+    assert_error(
+        &scratch.tsuzuri(&["check", scratch.path("app").to_str().unwrap()]),
+        "E2000",
+        "git and registry packages cannot declare [native] link settings; move them to the application manifest",
+    );
+
+    // W17 / M20: a git package MAY declare `@link("m")` and `@link(framework = "AppKit")` on explicit externs.
+    let point_with_link = format!(
+        "{POINT}\n@trusted @link(\"m\")\nextern \"cos\" def c_cos :: f64 -> f64\n@trusted @link(framework = \"AppKit\")\nextern \"NSApplicationLoad\" def app_load :: unit -> unit\n"
+    );
+    let sha256 = offline_project(
+        &scratch,
+        url,
+        &[("Tsuzuri.toml", GEOMETRY), ("Point.tz", &point_with_link)],
+    );
+    scratch.write(
+        "app/Tsuzuri.lock",
+        &lock_text(&[("geometry-core", url, REV, &sha256)]),
+    );
+    let ok = scratch.tsuzuri(&["check", scratch.path("app").to_str().unwrap()]);
+    assert!(ok.status.success(), "{}", stderr(&ok));
 }
 
 /// `geometry-core` and `other` repositories as in `tests/modules.rs`, and an app
@@ -1711,7 +1744,7 @@ fn manifest_accepts_registry_dependencies_and_index() {
         ),
         (
             "[registry]\nindex = \"https://e.org/a.git\"\n[registry]",
-            "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+            "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities], [windows] and [macos], each once",
         ),
     ] {
         let error = parse_manifest(&format!("{GEOMETRY}{text}\n"), 3).unwrap_err();

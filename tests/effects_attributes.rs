@@ -328,3 +328,128 @@ fn file_writes_and_opens_allocate_and_may_wait() {
         assert!(error.message.contains("'Main.save'"), "{}", error.message);
     }
 }
+
+#[test]
+fn attributes_after_a_bodyless_signature_start_the_next_declaration() {
+    let ext = "@trusted\nextern \"abs\" def c_abs :: i32 -> i32\n";
+    let body_def = "def g :: i32 -> i32 = \\x -> x\n";
+    let main_abs = "def main :: unit -> i32 = \\() -> c_abs (0i32 - 5i32)\n";
+
+    // Accepted forms after a bodyless signature (b1..b5, b7, plus @c_layout feeding extern view).
+    accepts(&format!(
+        "{ext}@c_layout\nrecord P {{ x: i32, y: i32 }}\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@c_layout(pack = 1)\nrecord P {{ x: i32, y: i32 }}\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@c_layout\nrecord Q {{ tag: i8, x: i32 }}\n@trusted\nextern view def read_q :: i64 -> Q\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@literal def K :: i64 = 3\ndef main :: unit -> i32 = \\() -> c_abs (0i32 - 5i32) + (K as i32)\n"
+    ));
+    accepts(&format!(
+        "{ext}\n@c_layout\nrecord P {{ x: i32, y: i32 }}\n{main_abs}"
+    ));
+    accepts(
+        "def id :: i32 -> i32\n@c_layout\nrecord P { x: i32, y: i32 }\nfn id x = x\ndef main :: unit -> i32 = \\() -> id 0i32\n",
+    );
+    accepts(&format!("{ext}@checked (c_abs (0i32 - 5i32) + 1i32)\n"));
+
+    // Previously accepted forms stay accepted (a1..a5, c2).
+    accepts(&format!(
+        "{ext}@trusted\nextern \"labs\" def c_labs :: i64 -> i64\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@no_alloc\ndef f :: i32 -> i32 = \\x -> x\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@count(1, none)\n@trusted\nextern \"memset\" def c_memset :: ref mut [i32u] -> i32 -> i64u -> i64\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}@cpu [\"avx2\"]\ndef f :: i32 -> i32 = \\x -> x\n{main_abs}"
+    ));
+    accepts(&format!(
+        "{ext}/// A point.\n@c_layout\nrecord P {{ x: i32, y: i32 }}\n{main_abs}"
+    ));
+    accepts(
+        "def id :: 'a -> 'a\n    @'a : Eq\nfn id x = x\ndef main :: unit -> i32 = \\() -> id 0i32\n",
+    );
+
+    // Constraint indentation and indented '@ident' diagnostics are unchanged (c1, c3).
+    rejects(
+        "def id :: 'a -> 'a\n@'a : Eq\nfn id x = x\ndef main :: unit -> i32 = \\() -> id 0i32\n",
+        "E0002",
+        "constraint_line_indentation",
+    );
+    rejects(
+        &format!("{ext}    @trusted\nextern \"labs\" def c_labs :: i64 -> i64\n{main_abs}"),
+        "E0002",
+        "expected_token",
+    );
+
+    // Rejected '@ident' at declaration column matches the diagnostic after a bodied def (b8..b11 vs r8..r11).
+    for (tail, code, kind) in [
+        (
+            format!("@foo\n{MAIN}"),
+            "E0002",
+            "expected_expression_after_attribute",
+        ),
+        (
+            format!("@requires true\n{MAIN}"),
+            "E1033",
+            "contract_misplaced",
+        ),
+        (
+            format!("@alias foo\n{MAIN}"),
+            "E1018",
+            "alias_outside_builder_file",
+        ),
+        (
+            format!("@c_layout\ndef f :: i32 -> i32 = \\x -> x\n{MAIN}"),
+            "E0002",
+            "misplaced_c_layout_attribute",
+        ),
+    ] {
+        let s1 = format!("{ext}{tail}");
+        let s2 = format!("{body_def}{tail}");
+        let after_bodyless = tsuzuri::analyze_modules(&[("Main.tz", &s1)]).expect_err(&s1);
+        let after_bodied = tsuzuri::analyze_modules(&[("Main.tz", &s2)]).expect_err(&s2);
+        assert_eq!(
+            after_bodyless.code, code,
+            "{s1}\n{}",
+            after_bodyless.message
+        );
+        assert_eq!(
+            after_bodyless.kind,
+            Some(kind),
+            "{s1}\n{}",
+            after_bodyless.message
+        );
+        assert_eq!(after_bodied.code, code, "{s2}\n{}", after_bodied.message);
+        assert_eq!(
+            after_bodied.kind,
+            Some(kind),
+            "{s2}\n{}",
+            after_bodied.message
+        );
+        assert_eq!(after_bodyless.message, after_bodied.message);
+    }
+
+    // Class body method signature (k1 vs k2).
+    let k1 = rejects(
+        &format!(
+            "class Sized<'a> {{\n    def size :: 'a -> i64\n    @trusted\n    def other :: 'a -> i64\n}}\n{MAIN}"
+        ),
+        "E0002",
+        "expected_token",
+    );
+    let k2 = rejects(
+        &format!(
+            "class Sized<'a> {{\n    def size :: 'a -> i64\n    @c_layout\n    def other :: 'a -> i64\n}}\n{MAIN}"
+        ),
+        "E0002",
+        "expected_token",
+    );
+    assert_eq!(k1.message, k2.message);
+}

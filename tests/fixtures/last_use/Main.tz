@@ -143,3 +143,59 @@ export def guard_reads_subject :: own i64 -> i64 = \n ->
     | Maybe.Some xs when accepts_subject m -> xs[0] + xs[2]
     | Maybe.Some xs -> xs[1]
     | Maybe.None -> 0
+
+record View { r } { data: ref { r } [i64] }
+record Slot { q r } { dst: ref mut { q } View { r } }
+
+def pair_sum :: ref [i64] -> own [i64] -> i64 = \r ys -> r[0] + ys[0]
+def stash { q r } :: ref { r } [i64] -> own Slot { q r } -> unit = \src slot -> deref slot.dst = View { data: src }
+def lend { q r } :: ref { r } [i64] -> own Slot { q r } -> View { r } = \src slot -> { deref slot.dst = View { data: src }; View { data: src } }
+def put_view { r } :: ref { r } [i64] -> ref mut [View { r }..] -> unit = \src views -> Array.write 0 (View { data: src }) views
+
+export def borrow_call_move :: own i64 -> i64 = \n ->
+    let xs = new [i64](4, \i -> i + n)
+    let len = Array.length (ref xs)
+    let ys = Array.__set 0 77 xs
+    ys[0] + ys[1] * 10 + len * 100
+
+export def slice_write_move :: own i64 -> i64 = \n ->
+    let mut out = new [i64](4, \i -> i + n)
+    Array.write 0 55 (ref mut out[0..])
+    out[0] + out[2] * 10
+
+export def borrow_then_consume :: own i64 -> i64 = \n ->
+    let xs = new [i64](4, \i -> i + n)
+    pair_sum (ref xs) (Array.__set 0 9 xs)
+
+export def window_borrow_move :: own i64 -> i64 = \n ->
+    let t = Tensor.init [4] (\i -> i + n)
+    let u = Tensor.update (\w -> Tensor.write [1] 42 w) t
+    let a = Tensor.to_array u
+    a[0] + a[1] * 10 + a[3] * 100
+
+export def stash_owned_record :: own i64 -> i64 = \n ->
+    let fallback = [0, 0, 0, 0]
+    let xs = new [i64](4, \i -> i + n)
+    let mut v = View { data: ref fallback }
+    let slot = Slot { dst: ref mut v }
+    stash (ref xs) slot
+    let ys = Array.__set 0 9 xs
+    v.data[0] * 100 + ys[0]
+
+export def lend_owned_record :: own i64 -> i64 = \n ->
+    let fallback = [0, 0, 0, 0]
+    let xs = new [i64](4, \i -> i + n)
+    let mut v = View { data: ref fallback }
+    let slot = Slot { dst: ref mut v }
+    let l = lend (ref xs) slot
+    let len = Array.length l.data
+    let ys = Array.__set 0 9 xs
+    v.data[0] * 100 + ys[0] + len * 10
+
+export def stash_slice :: own i64 -> i64 = \n ->
+    let fallback = [0, 0, 0, 0]
+    let xs = new [i64](4, \i -> i + n)
+    let mut views = [View { data: ref fallback }]
+    put_view (ref xs) (ref mut views[0..])
+    let ys = Array.__set 0 9 xs
+    views[0].data[0] * 100 + ys[0]

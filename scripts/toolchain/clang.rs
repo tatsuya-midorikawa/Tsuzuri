@@ -29,12 +29,53 @@ const NATIVE_TARGETS: [(&str, &str); 9] = [
     ("x86_64-pc-windows-msvc", "x86_64-windows-gnu"),
 ];
 
+fn parse_macos_version(text: &str) -> Option<(u16, u16, u16)> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut parts = text.split('.');
+    let part = |s: &str| -> Option<u16> {
+        (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| s.parse().ok())?
+    };
+    let major = part(parts.next()?)?;
+    let minor = match parts.next() {
+        Some(s) => part(s)?,
+        None => 0,
+    };
+    let patch = match parts.next() {
+        Some(s) => part(s)?,
+        None => 0,
+    };
+    if parts.next().is_some() || major < 12 {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn zig_macos_version((major, minor, patch): (u16, u16, u16)) -> String {
+    if patch == 0 {
+        format!("{major}.{minor}")
+    } else {
+        format!("{major}.{minor}.{patch}")
+    }
+}
+
 /// Maps the `--target=` value of a run, if it has one, and the machine the launcher runs on.
 ///
 /// Without a value the machine decides: macOS 12 or later, musl Linux, and MinGW Windows. The MSVC
 /// targets name the MSVC runtime, which Zig does not have: only a Windows launcher accepts them,
 /// and it links MinGW for them, as it always has for the target the compiler passes there.
 pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, String> {
+    resolve_with_macos(target, None, None, os, arch)
+}
+
+pub fn resolve_with_macos(
+    target: Option<&str>,
+    mmacosx_min: Option<&str>,
+    deployment_env: Option<&str>,
+    os: &str,
+    arch: &str,
+) -> Result<Request, String> {
     if os == "macos" && arch != "aarch64" {
         return Err("the macOS toolchain requires ARM64".to_owned());
     }
@@ -50,6 +91,21 @@ pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, St
                 .is_some_and(|system| system.starts_with("darwin") || system.starts_with("macos"))
             {
                 return Err("the macOS toolchain supports only ARM64 targets".to_owned());
+            }
+            if let Some(version_str) = value
+                .strip_prefix("arm64-apple-macosx")
+                .or_else(|| value.strip_prefix("aarch64-apple-macosx"))
+            {
+                let Some(version) = parse_macos_version(version_str) else {
+                    return Err(format!(
+                        "invalid macOS target version '{version_str}' in '{value}'; expected 12.0 or later"
+                    ));
+                };
+                return Ok(Request {
+                    wasm: false,
+                    zig: Some(format!("aarch64-macos.{}", zig_macos_version(version))),
+                    llvm: value.to_owned(),
+                });
             }
             let windows_msvc = value.ends_with("-pc-windows-msvc");
             let architecture = value.split('-').next().unwrap_or_default();
@@ -79,9 +135,22 @@ pub fn resolve(target: Option<&str>, os: &str, arch: &str) -> Result<Request, St
                 _ => return Err("the bundled native toolchain requires x64 or ARM64".to_owned()),
             };
             let (zig_system, llvm_system) = match os {
-                "macos" => ("macos.12.0", "apple-macosx12.0.0"),
-                "linux" => ("linux-musl", "unknown-linux-musl"),
-                "windows" => ("windows-gnu", "w64-windows-gnu"),
+                "macos" => {
+                    let chosen = mmacosx_min
+                        .or_else(|| deployment_env.filter(|s| !s.is_empty()))
+                        .unwrap_or("12.0");
+                    let Some(ver) = parse_macos_version(chosen) else {
+                        return Err(format!(
+                            "invalid macOS minimum version '{chosen}'; expected 12.0 or later"
+                        ));
+                    };
+                    (
+                        format!("macos.{}", zig_macos_version(ver)),
+                        format!("apple-macosx{}.{}.{}", ver.0, ver.1, ver.2),
+                    )
+                }
+                "linux" => ("linux-musl".to_owned(), "unknown-linux-musl".to_owned()),
+                "windows" => ("windows-gnu".to_owned(), "w64-windows-gnu".to_owned()),
                 _ => return Err("unsupported Tsuzuri toolchain operating system".to_owned()),
             };
             Ok(Request {
@@ -123,11 +192,25 @@ fn main() -> ExitCode {
                 .is_some_and(|text| text.starts_with("--target="))
         })
         .map(|position| arguments.remove(position));
-    let request = match resolve(
+    let mmacosx_min = arguments
+        .iter()
+        .position(|argument| {
+            argument
+                .to_str()
+                .is_some_and(|text| text.starts_with("-mmacosx-version-min="))
+        })
+        .map(|position| arguments.remove(position));
+    let env_deployment = env::var("MACOSX_DEPLOYMENT_TARGET").ok();
+    let request = match resolve_with_macos(
         requested
             .as_ref()
             .and_then(|argument| argument.to_str())
             .and_then(|text| text.strip_prefix("--target=")),
+        mmacosx_min
+            .as_ref()
+            .and_then(|argument| argument.to_str())
+            .and_then(|text| text.strip_prefix("-mmacosx-version-min=")),
+        env_deployment.as_deref(),
         env::consts::OS,
         env::consts::ARCH,
     ) {

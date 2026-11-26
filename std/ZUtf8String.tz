@@ -1,0 +1,61 @@
+/// A NUL-terminated UTF-8 string without interior U+0000 bytes (`M06`).
+/// A shared borrow `ref ZUtf8String` lowers to a single `const char *` pointer at the native C ABI.
+record ZUtf8String { bytes: [i8u] }
+
+/// Why `ZUtf8String.of` rejected a `utf8string`: the byte offset of the first U+0000.
+union Error = InteriorNul of i64 deriving (Eq)
+
+instance Display<Error> {
+    fn display error =
+        match error with
+        | InteriorNul index -> $"U+0000 at byte {index} cannot be in a NUL-terminated string"
+}
+
+private def first_nul :: ref utf8string -> Maybe<i64>
+fn first_nul text =
+    let n = text.length
+    let mut index = 0
+    let mut at = -1
+    while index < n && at < 0 do
+        if text[index] == 0i8u then
+            at = index
+        else
+            index = index + 1
+    if at >= 0 then Maybe.Some at else Maybe.None
+
+/// Copies `text` into a NUL-terminated UTF-8 `ZUtf8String`, or returns `Error (InteriorNul i)` at the
+/// first U+0000 byte.
+///
+/// @complexity O(n)
+///
+/// ```tsuzuri run=Tsuzuri%203
+/// let ok = match ZUtf8String.of u8"Tsuzuri" with
+///     | Result.Ok z -> ZUtf8String.to_utf8string (ref z)
+///     | Result.Error _ -> u8"?"
+/// let bad = match ZUtf8String.of u8"abc\0d" with
+///     | Result.Ok _ -> -1
+///     | Result.Error (ZUtf8String.InteriorNul i) -> i
+/// $"{ok} {bad}"
+/// ```
+def of :: ref utf8string -> Result<ZUtf8String, Error>
+fn of text =
+    match first_nul text with
+    | Maybe.Some index -> Result.Error (InteriorNul index)
+    | Maybe.None ->
+        let n = text.length
+        let bytes = new [i8u](n + 1, \index -> if index < n then text[index] else 0i8u)
+        Result.Ok (ZUtf8String { bytes: bytes })
+
+/// Copies the UTF-8 bytes of `zutf8string` before its trailing NUL into an owned `utf8string`.
+///
+/// @complexity O(n)
+///
+/// ```tsuzuri run=hello
+/// ZUtf8String.to_utf8string (ZUtf8String.literal "hello")
+/// ```
+def to_utf8string :: ref ZUtf8String -> utf8string
+fn to_utf8string zutf8string =
+    let count = Int.max 0 (zutf8string.bytes.length - 1)
+    match Utf8String.from_bytes (Array.truncate count (ref zutf8string.bytes)) with
+    | Maybe.Some text -> text
+    | Maybe.None -> u8""

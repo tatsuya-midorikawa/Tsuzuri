@@ -40,7 +40,11 @@ export async function bundleRuntime(destination, { clang = null, native = true }
   await mkdir(work, { recursive: true });
   const runtime = name => readFile(path.join(repository, 'src/runtime', name), 'utf8');
   const architecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-  const nativeArgs = process.platform === 'win32' ? [`--target=${architecture}-pc-windows-msvc`] : ['-fPIC'];
+  const nativeArgs = process.platform === 'win32'
+    ? [`--target=${architecture}-pc-windows-msvc`]
+    : process.platform === 'darwin' && !process.env.MACOSX_DEPLOYMENT_TARGET
+      ? ['-fPIC', '-mmacosx-version-min=12.0']
+      : ['-fPIC'];
   const sections = ['-ffunction-sections', '-fdata-sections'];
   const objects = [];
   async function compile(unit, source, args, id, extension) {

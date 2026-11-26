@@ -12,7 +12,7 @@ const depth = Number(process.argv[5] ?? 4);
 assert.ok([count, first, depth].every(Number.isSafeInteger) && count > 0 && depth > 0);
 const directory = resolve(`target/last-use-fuzz-${process.pid}`);
 const inputs = [0, 1, 2, 5, 9];
-const coverage = Object.fromEntries(["update", "derived", "branch", "for", "while", "closure", "borrow", "match_temp", "match_last", "match_kept", "match_tuple", "match_guard", "match_overlap"].map(k => [k, 0]));
+const coverage = Object.fromEntries(["update", "derived", "branch", "for", "while", "closure", "borrow", "borrow_call", "borrow_bound", "borrow_then_return", "match_temp", "match_last", "match_kept", "match_tuple", "match_guard", "match_overlap"].map(k => [k, 0]));
 function random(seed) {
   let x = seed >>> 0;
   return n => {
@@ -57,6 +57,11 @@ function generate(seed) {
   statements.push({ tag: "borrow", name: "r", array: "a2", shape: "borrow" });
   statements.push({ tag: "let", name: "e", value: set("a2", lit(2), lit(77)) });
   terms.push(get("r", lit(2)), get("e", lit(2)));
+  statements.push({ tag: "borrow_call", array: "a0", index: below(4), value: below(30) + 5, shape: "borrow_call" });
+  statements.push({ tag: "borrow_bound", name: "rb", array: "a3", index: below(4), value: below(25) + 10, shape: "borrow_bound" });
+  terms.push(variable("rb"));
+  statements.push({ tag: "borrow_then_return", name: "br", offset: below(9) + 1, value: below(20) + 3, shape: "borrow_then_return" });
+  terms.push(variable("br"));
   statements.push({ tag: "let", name: "j", value: lit(0), mutable: true });
   statements.push({ tag: "while", condition: bin("<", variable("j"), variable("n")), body: [
     { tag: "assign", name: "j", value: bin("+", variable("j"), lit(1)) },
@@ -97,6 +102,9 @@ function render(statements, indent = "    ") {
       case "jump": return line(`if ${expression(s.condition)} then ${s.kind} else ()`);
       case "closure": return line(`let ${s.name} = \\k -> ${s.array}[k % 4] + ${s.extra}`);
       case "borrow": return line(`let ${s.name} = ref ${s.array}`);
+      case "borrow_call": return line(`t = t + Array.length (ref ${s.array})\n`) + line(`Array.write ${s.index} ${s.value} (ref mut ${s.array}[0..])`);
+      case "borrow_bound": return line(`let r_${s.name} = ref ${s.array}\n`) + line(`let u_${s.name} = Array.__set ${s.index} ${s.value} ${s.array}\n`) + line(`let ${s.name} = r_${s.name}[${s.index}] + u_${s.name}[${s.index}]`);
+      case "borrow_then_return": return line(`let ${s.name} = (write_ret ${s.offset} ${s.value})[0] + (len_ret (new [i64](4, \\i -> i + ${s.offset})))[1]`);
       case "match": {
         const payload = `new [i64](4, \\i -> i + ${s.offset})`;
         const match = value => `match ${value} with\n${indent}    | Maybe.Some xs -> xs[${s.index}]\n${indent}    | Maybe.None -> 0`;
@@ -141,6 +149,21 @@ function execute(statements, env) {
       case "array": env[s.name] = Array.from({ length: 4 }, (_, i) => i + s.offset); break;
       case "let": case "assign": env[s.name] = evaluate(s.value, env); break;
       case "borrow": env[s.name] = env[s.array]; break;
+      case "borrow_call":
+        env.t += env[s.array].length;
+        env[s.array] = clone(env[s.array]);
+        env[s.array][s.index] = s.value;
+        break;
+      case "borrow_bound": {
+        const snap = clone(env[s.array]);
+        const upd = clone(env[s.array]);
+        upd[s.index] = s.value;
+        env[s.name] = snap[s.index] + upd[s.index];
+        break;
+      }
+      case "borrow_then_return":
+        env[s.name] = s.value + (1 + s.offset);
+        break;
       case "closure": {
         const snapshot = clone(env[s.array]);
         env[s.name] = k => snapshot[k % 4] + s.extra;
@@ -169,7 +192,7 @@ function execute(statements, env) {
   }
 }
 function source(tree) {
-  return `def maybe :: i64 -> Maybe<[i64]> = \\v -> Maybe.Some (new [i64](4, \\i -> i + v))\n\ndef run :: i64 -> i64 = \\n ->\n${render(tree.statements)}\n    ${expression(tree.result)}\n\ndef main :: unit -> i32 = \\() ->\n${inputs.map(n => `    do! IO.writeln (to_string (run ${n}i64))`).join("\n")}\n    0\n`;
+  return `def maybe :: i64 -> Maybe<[i64]> = \\v -> Maybe.Some (new [i64](4, \\i -> i + v))\ndef write_ret :: own i64 -> own i64 -> [i64] = \\off val -> { let mut out = new [i64](4, \\i -> i + off); Array.write 0 val (ref mut out[0..]); out }\ndef len_ret :: own [i64] -> [i64] = \\xs -> { let _n = Array.length (ref xs); xs }\n\ndef run :: i64 -> i64 = \\n ->\n${render(tree.statements)}\n    ${expression(tree.result)}\n\ndef main :: unit -> i32 = \\() ->\n${inputs.map(n => `    do! IO.writeln (to_string (run ${n}i64))`).join("\n")}\n    0\n`;
 }
 mkdirSync(directory, { recursive: true });
 try {

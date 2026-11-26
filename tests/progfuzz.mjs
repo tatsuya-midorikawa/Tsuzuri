@@ -593,9 +593,8 @@ function render(n, ctx) {
     case "array": return `[${n.items.map(r).join(", ")}]`;
     case "newarray": return `(new [${showTy(n.ty.of)}](${n.len}, \\${n.i} -> ${r(n.body)}))`;
     case "index": {
-      // The index is bound outside the brackets: a range `for` inside `xs[...]` is a parse error (known bug KB1).
       const ix = `ix${ctx.n++}`;
-      return `({ let ${ix}: ${showTy(n.a.ty)} = ${r(n.a)}; let ${ix}j: i64u = ((${r(n.e)}) as i64u); ${ix}[(${ix}j % ((${ix}.length) as i64u)) as i64] })`;
+      return `({ let ${ix}: ${showTy(n.a.ty)} = ${r(n.a)}; ${ix}[(((${r(n.e)}) as i64u) % ((${ix}.length) as i64u)) as i64] })`;
     }
     case "len": {
       const ix = `ix${ctx.n++}`;
@@ -1640,13 +1639,7 @@ const OWNED_MUTANTS = ["owned-pop-ignored", "owned-clone-aliased"];
 
 // Known compiler bugs the generator works around. Each probe must still fail; when one is fixed this test
 // says so, and the workaround and the entry are to be deleted.
-const KNOWN_BUGS = [
-  {
-    id: "KB1",
-    source: "def f :: [i64] -> i64\nfn f xs = xs[({ let mut a: i64 = 0i64; for i in 0i64 ..= 1i64 do { a = (a + i); () }; a })]\n\ndef main :: unit -> i32 = \\() ->\n    do! IO.writeln (to_string (f [10i64, 20i64, 30i64]))\n    0\n",
-    error: "error[E0002]: expected 'do' after the enumerable expression",
-  },
-];
+const KNOWN_BUGS = [];
 
 // Three seeds of the random numbers, worked out with a second implementation (Python integers masked to 64 bits).
 const KNOWN_RANDOM = [

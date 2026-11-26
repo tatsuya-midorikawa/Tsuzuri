@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | ([M01](M01-objc-class-types.md)), ([NS07](NS07-extern-addr-nonnull-view.md))（M01 は ObjC の型の値を読む段、NS07 は `address` の結果に `ExternAddr` を許す段） |
 | 後続 | [M07](M07-apple-sdk-bindgen-and-package.md)（弱い後続: [M17](M17-macos-min-version-and-weak-import.md)） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1・M04・M09 の前提（`NSDefaultRunLoopMode`・`_dispatch_main_q`・`_NSConcreteGlobalBlock`・NSString の定数は `dlsym` と extern view でしか読めない。`const char*` には明示の NUL と `@count(n, none)` が要る）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 要承認: D-55（`extern "sym"` の後の文脈キーワード `address`、`extern "sym" view def` の受理、Phase 2 の std のモジュール `ZUtf8String`（`RESERVED_MODULES` と `stdlib::OPT_IN`））。決定事項 D1（綴り。D-55）・D2（名前）・D3（結果の `const char *`）が要承認、ほかは既定案。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1 とは独立で、どの案でも実装するチケットである（分岐 1 は X′ で承認済み（2026-11-26）） |
 | 改善する劣位 | C・Objective-C・Swift 比: C の大域データシンボル（`NSDefaultRunLoopMode`・`kCFAllocatorDefault`・`kCFCoreFoundationVersionNumber`・`_dispatch_main_q`）を宣言できず、`dlsym` と extern view を重ねるしかない。NUL 終端の UTF-8（`const char *`）の型がなく、`objc_getClass`・`sel_registerName`・`getenv` に明示の `\0` と `@count(n, none)` を手で書く |

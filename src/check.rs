@@ -1676,6 +1676,8 @@ pub enum Builtin {
     OsRead,
     /// `Os.__args :: unit -> (i64 * [ubyte])`: the NUL-terminated command-line arguments after the program name.
     OsArgs,
+    /// `Os.__os_version :: unit -> (i64 * [ubyte])` (M17): the host operating-system version string.
+    OsVersion,
     /// `Os.__write :: i32 -> ref utf8string -> ref [ubyte] -> i64`: writes a file, or creates or removes a file or directory.
     OsWrite,
     /// `Os.__random :: i64 -> (i64 * [ubyte])`: operating-system random bytes.
@@ -1749,6 +1751,8 @@ pub enum Builtin {
     AnchorRelease,
     /// W20: `ZString.literal :: string -> ref ZString`, rewritten to a borrow of static UTF-16+NUL data.
     ZStringLiteral,
+    /// M06: `ZUtf8String.literal :: string -> ref ZUtf8String`, rewritten to a borrow of static UTF-8+NUL data.
+    ZUtf8StringLiteral,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2344,6 +2348,7 @@ impl Builtin {
         Self::IOWrite,
         Self::OsRead,
         Self::OsArgs,
+        Self::OsVersion,
         Self::OsWrite,
         Self::OsRandom,
         Self::OsClock,
@@ -2381,6 +2386,7 @@ impl Builtin {
         Self::AnchorUpdate,
         Self::AnchorRelease,
         Self::ZStringLiteral,
+        Self::ZUtf8StringLiteral,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2729,6 +2735,7 @@ impl Builtin {
             Self::IOWrite => "IO.__write",
             Self::OsRead => "Os.__read",
             Self::OsArgs => "Os.__args",
+            Self::OsVersion => "Os.__os_version",
             Self::OsWrite => "Os.__write",
             Self::OsRandom => "Os.__random",
             Self::OsClock => "Os.__clock",
@@ -2766,6 +2773,7 @@ impl Builtin {
             Self::AnchorUpdate => "Anchor.update",
             Self::AnchorRelease => "Anchor.__release",
             Self::ZStringLiteral => "ZString.literal",
+            Self::ZUtf8StringLiteral => "ZUtf8String.literal",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3053,7 +3061,7 @@ impl Builtin {
                 Concrete(Type::Integer(32, true)),
                 Vec::new(),
             ),
-            Self::OsRead | Self::OsArgs | Self::OsRandom => {
+            Self::OsRead | Self::OsArgs | Self::OsVersion | Self::OsRandom => {
                 let owned = || {
                     BuiltinType::Tuple(vec![
                         Concrete(Type::I64),
@@ -3065,7 +3073,7 @@ impl Builtin {
                         Concrete(Type::Integer(32, true)),
                         Reference(Box::new(Concrete(Type::Utf8String)), false),
                     ],
-                    Self::OsArgs => vec![Concrete(Type::Unit)],
+                    Self::OsArgs | Self::OsVersion => vec![Concrete(Type::Unit)],
                     _ => vec![Concrete(Type::I64)],
                 };
                 (parameters, owned(), Vec::new())
@@ -3554,6 +3562,18 @@ impl Builtin {
                     Box::new(BuiltinType::Std {
                         module: "ZString",
                         name: "ZString",
+                        args: Vec::new(),
+                    }),
+                    false,
+                ),
+                Vec::new(),
+            ),
+            Self::ZUtf8StringLiteral => (
+                vec![Concrete(Type::String)],
+                Reference(
+                    Box::new(BuiltinType::Std {
+                        module: "ZUtf8String",
+                        name: "ZUtf8String",
                         args: Vec::new(),
                     }),
                     false,
@@ -5097,6 +5117,12 @@ pub struct CheckedModule {
     /// W14: canonical C signatures for explicit extern symbols declared with mixed `ptr`/`i64`
     /// positions; empty when every symbol's declarations share one LLVM signature.
     pub extern_abis: BTreeMap<String, crate::abi::CSignature>,
+    /// W17: explicit extern symbols annotated with `@link("name")` -> system library names.
+    pub link_libraries: BTreeMap<String, BTreeSet<String>>,
+    /// M20: explicit extern symbols annotated with `@link(framework = "name")` -> macOS framework names.
+    pub link_frameworks: BTreeMap<String, BTreeSet<String>>,
+    /// M17: explicit extern symbols (functions and data symbols) annotated with `@weak`.
+    pub weak_symbols: BTreeSet<String>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5474,6 +5500,14 @@ impl Local {
     }
 }
 
+/// M06: C global data symbol declaration metadata on `HostImport`.
+#[derive(Clone, Debug)]
+pub struct DataSymbol {
+    pub name: String,
+    pub symbol: String,
+    pub access: crate::syntax::DataAccess,
+}
+
 #[derive(Clone, Debug)]
 pub struct HostImport {
     pub native_symbol: String,
@@ -5486,8 +5520,16 @@ pub struct HostImport {
     pub callbacks: bool,
     /// W13: `(parameter_index, CountLength)` sorted by parameter index from `@count(pos, len)`.
     pub counts: Vec<(usize, crate::syntax::CountLength)>,
-    /// W24: `Some(Read | Write)` when declared as `extern view def`.
+    /// W24: `Some(Read | Write)` when declared as an address-taking `extern view def`.
     pub view: Option<crate::syntax::ViewDirection>,
+    /// M06: `Some(...)` when declared as `extern "sym" view def` or `extern "sym" address def`.
+    pub data: Option<DataSymbol>,
+    /// W17: system library name from `@link("name")`.
+    pub library: Option<String>,
+    /// M20: macOS framework name from `@link(framework = "name")`.
+    pub framework: Option<String>,
+    /// M17: whether this declaration carries `@weak`.
+    pub weak: bool,
 }
 
 impl HostImport {
@@ -5495,6 +5537,22 @@ impl HostImport {
         self.counts
             .iter()
             .find_map(|(pos, len)| (*pos == index).then_some(*len))
+    }
+
+    /// Whether calls lower inline at each call site without a standalone function body or C prototype.
+    pub fn lowers_inline(&self) -> bool {
+        self.view.is_some() || self.data.is_some()
+    }
+
+    /// Explicit C symbol name for `@link` resolution (function `native_symbol` when explicit, or `data.symbol`).
+    pub fn explicit_c_symbol(&self) -> Option<&str> {
+        if let Some(data) = &self.data {
+            Some(&data.symbol)
+        } else if self.explicit {
+            Some(&self.native_symbol)
+        } else {
+            None
+        }
     }
 }
 
@@ -8753,13 +8811,41 @@ fn check_modules_collect(
     let mut external_functions = BTreeMap::new();
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
     let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
+    let mut link_libraries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut link_frameworks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut weak_symbols: BTreeSet<String> = BTreeSet::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
             for ty in external.parameters.iter().chain([&external.result]) {
                 regions::reject_local(ty)?;
             }
-            let import = if external.view {
+            let mut import = if let Some(access) = external.data {
+                let link = external
+                    .link
+                    .as_ref()
+                    .expect("data symbol parsed with link name");
+                if let Some(error) = crate::abi::link_name_error(link) {
+                    return Err(error);
+                }
+                HostImport {
+                    native_symbol: String::new(),
+                    wasm_module: String::new(),
+                    wasm_name: String::new(),
+                    explicit: false,
+                    callbacks: false,
+                    counts: Vec::new(),
+                    view: None,
+                    data: Some(DataSymbol {
+                        name: external.name.text.clone(),
+                        symbol: link.symbol.clone(),
+                        access,
+                    }),
+                    library: None,
+                    framework: None,
+                    weak: false,
+                }
+            } else if external.view {
                 HostImport {
                     native_symbol: String::new(),
                     wasm_module: String::new(),
@@ -8768,6 +8854,10 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: Some(crate::syntax::ViewDirection::Read),
+                    data: None,
+                    library: None,
+                    framework: None,
+                    weak: false,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8784,6 +8874,10 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: None,
+                    data: None,
+                    library: None,
+                    framework: None,
+                    weak: false,
                 }
             } else {
                 let native_symbol = format!(
@@ -8802,6 +8896,10 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: None,
+                    data: None,
+                    library: None,
+                    framework: None,
+                    weak: false,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8810,6 +8908,68 @@ fn check_modules_collect(
                     "extern declarations cannot have constraints or named regions",
                     external.name.span,
                 ));
+            }
+            if let Some(weak_attr) = module.program.weaks.iter().find(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            }) {
+                let Some(sym) = import.explicit_c_symbol().map(str::to_owned) else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::WeakNeedsSymbol,
+                        "'@weak' needs an explicit symbol; write extern \"symbol\" def, because the generated tsuzuri_host_ symbols belong to the host",
+                        weak_attr.span,
+                    ));
+                };
+                weak_symbols.insert(sym);
+                import.weak = true;
+            }
+            if let Some(link_attr) = module.program.links.iter().find(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            }) {
+                let Some(sym) = import.explicit_c_symbol().map(str::to_owned) else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LinkNeedsSymbol,
+                        "'@link' needs an explicit symbol; write extern \"symbol\" def, because the generated tsuzuri_host_ symbols belong to the host",
+                        link_attr.span,
+                    ));
+                };
+                match link_attr.kind {
+                    crate::syntax::LinkKind::Library => {
+                        if crate::driver::library_name_error(&link_attr.library).is_some() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::LinkInvalidName,
+                                format!(
+                                    "invalid library name '{}' in '@link'; write the name without a path, the 'lib' prefix or an extension, for example @link(\"user32\")",
+                                    link_attr.library
+                                ),
+                                link_attr.name_span,
+                            ));
+                        }
+                        link_libraries
+                            .entry(sym)
+                            .or_default()
+                            .insert(link_attr.library.clone());
+                        import.library = Some(link_attr.library.clone());
+                    }
+                    crate::syntax::LinkKind::Framework => {
+                        if crate::driver::framework_name_error(&link_attr.library).is_some() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::LinkInvalidName,
+                                format!(
+                                    "invalid framework name '{}' in '@link'; write the name without a path or the '.framework' suffix, for example @link(framework = \"AppKit\")",
+                                    link_attr.library
+                                ),
+                                link_attr.name_span,
+                            ));
+                        }
+                        link_frameworks
+                            .entry(sym)
+                            .or_default()
+                            .insert(link_attr.library.clone());
+                        import.framework = Some(link_attr.library.clone());
+                    }
+                }
             }
             // E15: the `@trusted` mark of this declaration. An extern type may share the name, so
             // the mark is matched by the position of the declared name.
@@ -9399,6 +9559,8 @@ fn check_modules_collect(
             Span,
         ),
     > = BTreeMap::new();
+    // M06: first read type (if any) and first span per C data symbol.
+    let mut data_symbols: BTreeMap<String, (Option<(Type, Span)>, Span)> = BTreeMap::new();
     regions::validate_modules(modules, &names, types)?;
     let mut classes = Classes::collect(modules, &names, &types, diagnostics)?;
     classes.instances(
@@ -9680,7 +9842,127 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if external_functions[&id].view.is_some() {
+                if let Some(data) = external_functions[&id].data.clone() {
+                    if let Some((_, _, _, _, first_fn_span)) = explicit_symbols.get(&data.symbol) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ConflictingExternDeclaration,
+                            format!(
+                                "extern symbol '{}' is declared as a data symbol here but as a function in the first declaration",
+                                data.symbol
+                            ),
+                            function.name.span,
+                        )
+                        .related(
+                            RelatedRole::FirstDefinedHere,
+                            "first defined here",
+                            *first_fn_span,
+                        ));
+                    }
+                    let is_weak = external_functions[&id].weak;
+                    match data.access {
+                        crate::syntax::DataAccess::Read => {
+                            let read_ty = if is_weak {
+                                let Some(payload) =
+                                    crate::abi::std_maybe_payload(&signature.result, &types)
+                                else {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::WeakDataSymbolResult,
+                                        format!(
+                                            "'@weak' data symbol '{}' must return 'Maybe<T>' because the symbol may be absent at run time",
+                                            function.name.text
+                                        ),
+                                        function.name.span,
+                                    ));
+                                };
+                                payload
+                            } else {
+                                &signature.result
+                            };
+                            if signature.parameters != [Type::Unit]
+                                || (is_weak
+                                    && crate::abi::std_maybe_payload(read_ty, &types).is_some())
+                                || !crate::abi::data_symbol_read_type(
+                                    read_ty,
+                                    &types,
+                                    &function.name.text,
+                                )
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::DataSymbolSignature,
+                                    format!(
+                                        "data symbol '{}' reads '{}', which is not a C scalar, a copy extern type, Maybe of one, or a view record; for a C bool read i8u",
+                                        function.name.text,
+                                        read_ty.display(&types)
+                                    ),
+                                    function.name.span,
+                                ));
+                            }
+                            let c_var_ty = if is_weak {
+                                read_ty.clone()
+                            } else {
+                                signature.result.clone()
+                            };
+                            let entry = data_symbols
+                                .entry(data.symbol.clone())
+                                .or_insert_with(|| (None, function.name.span));
+                            if let Some((first_ty, first_read_span)) = &entry.0 {
+                                if *first_ty != c_var_ty {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::ConflictingExternDeclaration,
+                                        format!(
+                                            "data symbol '{}' is read as '{}' here but '{}' in the first declaration",
+                                            data.symbol,
+                                            c_var_ty.display(&types),
+                                            first_ty.display(&types)
+                                        ),
+                                        function.name.span,
+                                    )
+                                    .related(
+                                        RelatedRole::FirstDefinedHere,
+                                        "first defined here",
+                                        *first_read_span,
+                                    ));
+                                }
+                            } else {
+                                entry.0 = Some((c_var_ty, function.name.span));
+                            }
+                        }
+                        crate::syntax::DataAccess::Address => {
+                            let addr_ty = if is_weak {
+                                let Some(payload) =
+                                    crate::abi::std_maybe_payload(&signature.result, &types)
+                                else {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::WeakDataSymbolResult,
+                                        format!(
+                                            "'@weak' data symbol '{}' must return 'Maybe<H>' because the symbol may be absent at run time",
+                                            function.name.text
+                                        ),
+                                        function.name.span,
+                                    ));
+                                };
+                                payload
+                            } else {
+                                &signature.result
+                            };
+                            if signature.parameters != [Type::Unit]
+                                || !crate::abi::data_symbol_address_type(addr_ty)
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::DataSymbolSignature,
+                                    format!(
+                                        "data symbol '{}' takes the address of a C variable and must have signature 'unit -> H' where H is a copy extern type",
+                                        function.name.text
+                                    ),
+                                    function.name.span,
+                                ));
+                            }
+                            data_symbols
+                                .entry(data.symbol.clone())
+                                .or_insert_with(|| (None, function.name.span));
+                        }
+                    }
+                } else if external_functions[&id].view.is_some() {
                     let (direction, target_record) = match (
                         signature.parameters.as_slice(),
                         &signature.result,
@@ -9861,6 +10143,22 @@ fn check_modules_collect(
                     }
                     let import = &external_functions[&id];
                     if import.explicit {
+                        if let Some((_, first_data_span)) = data_symbols.get(&import.native_symbol)
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ConflictingExternDeclaration,
+                                format!(
+                                    "extern symbol '{}' is declared as a function here but as a data symbol in the first declaration",
+                                    import.native_symbol
+                                ),
+                                function.name.span,
+                            )
+                            .related(
+                                RelatedRole::FirstDefinedHere,
+                                "first defined here",
+                                *first_data_span,
+                            ));
+                        }
                         let declared = crate::abi::c_signature(
                             &signature.parameters,
                             &signature.result,
@@ -10521,6 +10819,13 @@ fn check_modules_collect(
     if zstring_record_id.is_some() {
         validate_zstring_literals(&functions)?;
     }
+    let zutf8string_record_id = names
+        .records
+        .get("ZUtf8String.ZUtf8String")
+        .map(|info| info.id);
+    if zutf8string_record_id.is_some() {
+        validate_zutf8string_literals(&functions)?;
+    }
     let const_uses =
         constants::const_def_uses(&functions, &names.constants, &names.const_functions);
     let mut statics = constants::fold(
@@ -10531,6 +10836,9 @@ fn check_modules_collect(
     )?;
     if let Some(zstring_id) = zstring_record_id {
         lower_zstring_literals(&mut functions, zstring_id, &mut statics, &types)?;
+    }
+    if let Some(zutf8string_id) = zutf8string_record_id {
+        lower_zutf8string_literals(&mut functions, zutf8string_id, &mut statics, &types)?;
     }
     let mut references =
         recursion::check(&functions, &function_declarations, &classes, &names, &types)?;
@@ -10596,6 +10904,9 @@ fn check_modules_collect(
         noncanonical,
         generic_declarations: Vec::new(),
         extern_abis,
+        link_libraries,
+        link_frameworks,
+        weak_symbols,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -10925,9 +11236,149 @@ fn lower_zstring_literals(
     Ok(())
 }
 
+/// M06 Phase 2: validates every `ZUtf8String.literal` occurrence before constant folding, rejecting
+/// dynamic strings, interpolations, function values, unpaired UTF-16 surrogates, and interior U+0000.
+fn validate_zutf8string_literals(functions: &[CheckedFunction]) -> Result<(), Diagnostic> {
+    let is_zutf8_lit = |expr: &TypedExpr| {
+        matches!(
+            &expr.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ZUtf8StringLiteral
+        )
+    };
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && is_zutf8_lit(callee)
+            {
+                let [argument] = arguments.as_slice() else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::Zutf8stringLiteralArgument,
+                        "'ZUtf8String.literal' must be called directly with one string literal argument",
+                        expr.span,
+                    ));
+                };
+                let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::Zutf8stringLiteralArgument,
+                        "'ZUtf8String.literal' requires a plain string literal without interpolation; use 'ZUtf8String.of' for dynamic UTF-8 strings",
+                        argument.span,
+                    ));
+                };
+                let Ok(text) = String::from_utf16(units) else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::Zutf8stringLiteralArgument,
+                        "ZUtf8String.literal needs text that is valid UTF-8; the literal has an unpaired surrogate",
+                        argument.span,
+                    ));
+                };
+                if text.as_bytes().contains(&0) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::Zutf8stringLiteralInteriorNul,
+                        "string literal passed to 'ZUtf8String.literal' contains U+0000, which cannot appear inside a NUL-terminated string",
+                        argument.span,
+                    ));
+                }
+                continue;
+            }
+            if is_zutf8_lit(expr) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::Zutf8stringLiteralArgument,
+                    "'ZUtf8String.literal' must be called directly with a string literal argument and cannot be used as a function value",
+                    expr.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// M06 Phase 2: rewrites validated `ZUtf8String.literal "..."` calls into `Borrow(Static(id), false)`
+/// backed by deduplicated UTF-8+NUL static byte arrays.
+fn lower_zutf8string_literals(
+    functions: &mut [CheckedFunction],
+    zutf8string_record_id: usize,
+    statics: &mut BTreeMap<usize, StaticData>,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    fn rewrite(
+        expr: &mut TypedExpr,
+        zutf8string_record_id: usize,
+        statics: &mut BTreeMap<usize, StaticData>,
+        dedup: &mut BTreeMap<Vec<u8>, usize>,
+        next_id: &mut usize,
+        total_bytes: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        if let TypedExprKind::Call(callee, arguments) = &expr.kind
+            && matches!(
+                &callee.kind,
+                TypedExprKind::Function(FunctionRef::Builtin(instance))
+                    if instance.builtin == Builtin::ZUtf8StringLiteral
+            )
+            && let [argument] = arguments.as_slice()
+            && let TypedExprKind::String(StringLiteral::Utf16(units)) = &argument.kind
+        {
+            let text = String::from_utf16(units).expect("validated UTF-8 literal");
+            let mut with_nul = Vec::with_capacity(text.len() + 1);
+            with_nul.extend_from_slice(text.as_bytes());
+            with_nul.push(0);
+            let id = constants::intern_zutf8string(
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+                zutf8string_record_id,
+                with_nul,
+                expr.span,
+            )?;
+            let zutf8_ty = Type::Record(zutf8string_record_id, Box::default());
+            let static_expr = TypedExpr {
+                kind: TypedExprKind::Static(id),
+                ty: zutf8_ty.clone(),
+                span: expr.span,
+            };
+            expr.kind = TypedExprKind::Borrow(Box::new(static_expr), false);
+            expr.ty = Type::Reference(Box::new(zutf8_ty), false);
+            return Ok(());
+        }
+        expr.try_for_each_child_mut(&mut |child| {
+            rewrite(
+                child,
+                zutf8string_record_id,
+                statics,
+                dedup,
+                next_id,
+                total_bytes,
+            )
+        })
+    }
+
+    let mut next_id = functions
+        .len()
+        .max(statics.keys().next_back().map_or(0, |last| last + 1));
+    let mut total_bytes = constants::total_static_bytes(statics, types);
+    let mut dedup: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    for function in functions.iter_mut() {
+        rewrite(
+            &mut function.body,
+            zutf8string_record_id,
+            statics,
+            &mut dedup,
+            &mut next_id,
+            &mut total_bytes,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
     let is_callback_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.callbacks);
-    let is_view_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some());
+    let is_view_extern = |id: usize| matches!(&module.functions[id].body.kind, TypedExprKind::HostCall(import, _) if import.lowers_inline());
     let callback_extern = |expression: &TypedExpr| match &expression.kind {
         TypedExprKind::Function(FunctionRef::User(id)) if is_callback_extern(*id) => Some(*id),
         _ => None,
@@ -10954,12 +11405,23 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
         )
     };
     let view_direct_only = |id: usize, span: Span| {
+        let is_data = matches!(
+            &module.functions[id].body.kind,
+            TypedExprKind::HostCall(import, _) if import.data.is_some()
+        );
         Diagnostic::of(
             DiagnosticKind::ExternViewCallForm,
-            format!(
-                "extern view '{}' must be called directly with all its arguments",
-                module.functions[id].name
-            ),
+            if is_data {
+                format!(
+                    "data symbol '{}' must be called directly with '()'",
+                    module.functions[id].name
+                )
+            } else {
+                format!(
+                    "extern view '{}' must be called directly with all its arguments",
+                    module.functions[id].name
+                )
+            },
             span,
         )
     };
@@ -11217,6 +11679,9 @@ fn recovery_module(
         noncanonical: Vec::new(),
         generic_declarations: Vec::new(),
         extern_abis: BTreeMap::new(),
+        link_libraries: BTreeMap::new(),
+        link_frameworks: BTreeMap::new(),
+        weak_symbols: BTreeSet::new(),
     }
 }
 
@@ -12792,11 +13257,13 @@ fn validate_c_layout_records(
                         ));
                     }
                 }
-                Type::Reference(inner, false) if crate::abi::zstring(inner, types) => {}
+                Type::Reference(inner, false) if crate::abi::any_zstring(inner, types) => {}
                 _ if matches!(
                     crate::abi::nullable(field_ty, types),
                     Some(
-                        crate::abi::Nullable::Handle(_) | crate::abi::Nullable::BorrowedZString(_)
+                        crate::abi::Nullable::Handle(_)
+                            | crate::abi::Nullable::BorrowedZString(_)
+                            | crate::abi::Nullable::BorrowedZUtf8String(_)
                     )
                 ) => {}
                 _ => {

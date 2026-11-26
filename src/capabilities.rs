@@ -393,11 +393,18 @@ pub struct ExternUse {
     pub name: String,
     pub symbol: String,
     pub view: Option<crate::syntax::ViewDirection>,
+    pub data: Option<crate::syntax::DataAccess>,
     pub package: Option<PackageId>,
     /// The name of the declaration.
     pub span: Span,
     /// `None` without `@trusted`; else the bits of its properties (`syntax::TRUSTED_PROPERTIES`).
     pub trusted: Option<u8>,
+    /// W17: library from `@link("name")`, if any.
+    pub link: Option<String>,
+    /// M20: framework from `@link(framework = "name")`, if any.
+    pub framework: Option<String>,
+    /// M17: whether `@weak` is written on this declaration.
+    pub weak: bool,
     /// The references from functions that are not extern, by source and start, without repeats.
     pub uses: Vec<Span>,
 }
@@ -443,7 +450,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
             _ => return None,
         },
         "Os.__open" | "Os.__handle" | "Os.__close" => Fs,
-        "Os.__args" => Env,
+        "Os.__args" | "Os.__os_version" => Env,
         "Os.__random" => Random,
         "Os.__clock"
         | "Os.__sleep"
@@ -915,11 +922,18 @@ pub fn analyze_with_limits(
         extern_uses.push(ExternUse {
             function: id,
             name: function.name.clone(),
-            symbol: import.native_symbol.clone(),
+            symbol: import
+                .data
+                .as_ref()
+                .map_or_else(|| import.native_symbol.clone(), |data| data.symbol.clone()),
             view: import.view,
+            data: import.data.as_ref().map(|data| data.access),
             package: source_of(id).and_then(|source| source.package.clone()),
             span: function.span,
             trusted: function.origin.trusted,
+            link: import.library.clone(),
+            framework: import.framework.clone(),
+            weak: import.weak,
             uses,
         });
     }
@@ -1147,10 +1161,14 @@ pub struct ExternReport {
     pub name: String,
     pub symbol: String,
     pub view: Option<crate::syntax::ViewDirection>,
+    pub data: Option<crate::syntax::DataAccess>,
     pub path: String,
     pub line: usize,
     pub column: usize,
     pub trusted: Option<u8>,
+    pub link: Option<String>,
+    pub framework: Option<String>,
+    pub weak: bool,
     pub used: usize,
 }
 
@@ -1292,10 +1310,14 @@ impl Report {
                     name: extern_use.name.clone(),
                     symbol: extern_use.symbol.clone(),
                     view: extern_use.view,
+                    data: extern_use.data,
                     path,
                     line,
                     column,
                     trusted: extern_use.trusted,
+                    link: extern_use.link.clone(),
+                    framework: extern_use.framework.clone(),
+                    weak: extern_use.weak,
                     used: extern_use.uses.len(),
                 }
             })
@@ -1427,12 +1449,21 @@ impl Report {
                             .collect::<Vec<_>>()
                             .join(" "),
                     };
-                    let target = match extern_report.view {
-                        Some(dir) => format!("view {}", dir.as_str()),
-                        None => format!("\"{}\"", extern_report.symbol),
+                    let target = match (extern_report.data, extern_report.view) {
+                        (Some(access), _) => {
+                            format!("\"{}\" data {}", extern_report.symbol, access.as_str())
+                        }
+                        (None, Some(dir)) => format!("view {}", dir.as_str()),
+                        (None, None) => format!("\"{}\"", extern_report.symbol),
                     };
+                    let link_suffix = match (&extern_report.link, &extern_report.framework) {
+                        (Some(lib), _) => format!("  link {lib}"),
+                        (None, Some(fw)) => format!("  link framework {fw}"),
+                        (None, None) => String::new(),
+                    };
+                    let weak_suffix = if extern_report.weak { "  weak" } else { "" };
                     out.push_str(&format!(
-                        "    {} -> {target}  {}:{}:{}  {trust}\n",
+                        "    {} -> {target}  {}:{}:{}  {trust}{link_suffix}{weak_suffix}\n",
                         extern_report.name,
                         extern_report.path,
                         extern_report.line,
@@ -1538,12 +1569,27 @@ impl Report {
             ));
         }
         for extern_report in &self.externs {
-            let symbol_and_view = match extern_report.view {
-                Some(dir) => format!("null,\"view\":{}", json_string(dir.as_str())),
-                None => json_string(&extern_report.symbol),
+            let symbol_and_view = match (extern_report.data, extern_report.view) {
+                (Some(access), _) => format!(
+                    "{},\"data\":{}",
+                    json_string(&extern_report.symbol),
+                    json_string(access.as_str())
+                ),
+                (None, Some(dir)) => format!("null,\"view\":{}", json_string(dir.as_str())),
+                (None, None) => json_string(&extern_report.symbol),
+            };
+            let link_json = match (&extern_report.link, &extern_report.framework) {
+                (Some(lib), _) => format!(",\"link\":{}", json_string(lib)),
+                (None, Some(fw)) => format!(",\"framework\":{}", json_string(fw)),
+                (None, None) => String::new(),
+            };
+            let weak_json = if extern_report.weak {
+                ",\"weak\":true"
+            } else {
+                ""
             };
             out.push_str(&format!(
-                "{{\"type\":\"extern\",\"package\":{},\"name\":{},\"symbol\":{symbol_and_view},\"path\":{},\"line\":{},\"column\":{},\"trusted\":{},\"properties\":{},\"used\":{}}}\n",
+                "{{\"type\":\"extern\",\"package\":{},\"name\":{},\"symbol\":{symbol_and_view},\"path\":{},\"line\":{},\"column\":{},\"trusted\":{},\"properties\":{},\"used\":{}{link_json}{weak_json}}}\n",
                 json_string(&extern_report.package),
                 json_string(&extern_report.name),
                 json_string(&extern_report.path),
@@ -1666,8 +1712,8 @@ mod tests {
         // Appendix A.2: 31 builtins reach the host (4 of them the timers of TZ05, 2 the deadlines
         // of TZ07; TZ13 removed the 3 of Async and the 5 of Net's async operations); the rest
         // touch only the CPU and memory.
-        assert_eq!(world, 31);
-        assert_eq!(private.len(), 31 + PRIVATE_WITHOUT_CAPABILITY.len());
+        assert_eq!(world, 32);
+        assert_eq!(private.len(), 32 + PRIVATE_WITHOUT_CAPABILITY.len());
         // The multiplexed builtins follow their file.
         assert_eq!(primitive("Os.__read", "Env"), Some(Capability::Env));
         assert_eq!(primitive("Os.__read", "Dir"), Some(Capability::Fs));

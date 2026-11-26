@@ -185,3 +185,109 @@ export def copy_pt :: i64 -> i64 -> i32 = \\src dst ->
     .unwrap_err();
     assert_eq!(wasm_err.kind, Some(DiagnosticKind::AbiNativeOnly.id()));
 }
+
+#[test]
+fn temporary_records_reach_extern_view_writes() {
+    let header = "\
+@c_layout
+record P { x: i32, y: i32 }
+
+@trusted
+extern view def write_p :: i64 -> ref P -> unit
+
+def make :: i32 -> P = \\n -> P { x: n, y: n + 1i32 }
+";
+    let options = EmitOptions {
+        entry: Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: Allocator::System,
+        f16: F16Path::Soft,
+    };
+    let emit_ed = |edition: Edition, extra_top: &str, body: &str| -> String {
+        let source = format!(
+            "{header}{extra_top}\nexport def f :: i64 -> i32 = \\_a ->\n{body}\n    0i32\n"
+        );
+        let module = analyze_with_edition(&source, edition).expect(&source);
+        let ir = llvm::emit_with_options(&module, options).expect(&source);
+        let ir2 = llvm::emit_with_options(&module, options).expect(&source);
+        assert_eq!(ir, ir2, "deterministic IR for:\n{source}");
+        ir
+    };
+    let emit = |extra_top: &str, body: &str| emit_ed(Edition::LATEST, extra_top, body);
+
+    for edition in [Edition::E2026, Edition::E2027, Edition::LATEST] {
+        let _ = emit_ed(edition, "", "    write_p 16 (ref (P { x: 1i32, y: 2i32 }))");
+    }
+
+    let t1 = emit("", "    write_p 16 (ref (P { x: 1i32, y: 2i32 }))");
+    let _t2 = emit("", "    write_p 16 (P { x: 1i32, y: 2i32 })");
+    let _t3 = emit("", "    write_p 16 (ref (make 3i32))");
+    let _t4 = emit(
+        "",
+        "    let p = P { x: 1i32, y: 2i32 }\n    write_p 16 (ref { p with x = 5i32 })",
+    );
+    let _t5 = emit(
+        "",
+        "    let c = true\n    write_p 16 (ref (if c then P { x: 1i32, y: 2i32 } else P { x: 3i32, y: 4i32 }))",
+    );
+    let t6 = emit(
+        "",
+        "    let p = P { x: 1i32, y: 2i32 }\n    write_p 16 (ref p)",
+    );
+    let t7 = emit(
+        "const ORIGIN: P = P { x: 0i32, y: 0i32 }\n",
+        "    write_p 16 (ref ORIGIN)",
+    );
+
+    let t1_lines: Vec<&str> = t1.lines().collect();
+    let t6_lines: Vec<&str> = t6.lines().collect();
+    assert_eq!(
+        t1_lines.len(),
+        t6_lines.len() + 1,
+        "t1 vs t6 line count:\n--- t1 ---\n{t1}\n--- t6 ---\n{t6}"
+    );
+    let mut diff_index = None;
+    let mut i1 = 0;
+    let mut i6 = 0;
+    while i1 < t1_lines.len() && i6 < t6_lines.len() {
+        if t1_lines[i1] == t6_lines[i6] {
+            i1 += 1;
+            i6 += 1;
+        } else {
+            assert!(
+                diff_index.is_none(),
+                "more than one line differs between t1 and t6:\n--- t1 ---\n{t1}\n--- t6 ---\n{t6}"
+            );
+            diff_index = Some(i1);
+            i1 += 1;
+        }
+    }
+    let extra_line = t1_lines[diff_index.unwrap_or(t1_lines.len() - 1)].trim();
+    assert!(
+        extra_line.starts_with("store %tz.record.Main.P zeroinitializer, ptr "),
+        "unexpected cleanup line: {extra_line}\n--- t1 ---\n{t1}"
+    );
+    assert!(
+        !t7.lines().any(|line| line
+            .trim()
+            .starts_with("store %tz.record.Main.P zeroinitializer, ptr ")),
+        "folded constant write must not emit temporary operand cleanup:\n{t7}"
+    );
+
+    let t1_source = format!(
+        "{header}\nexport def f :: i64 -> i32 = \\_a ->\n    write_p 16 (ref (P {{ x: 1i32, y: 2i32 }}))\n    0i32\n"
+    );
+    let t1_module = analyze(&t1_source).unwrap();
+    let wasm_err = llvm::emit_with_options(
+        &t1_module,
+        EmitOptions {
+            wasm: true,
+            ..options
+        },
+    )
+    .unwrap_err();
+    assert_eq!(wasm_err.kind, Some(DiagnosticKind::AbiNativeOnly.id()));
+}

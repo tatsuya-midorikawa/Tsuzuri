@@ -32,7 +32,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Debug", 2),
     ("Dir", 4),
     ("Domain", 1),
-    ("Env", 3),
+    ("Env", 4),
     ("ErrGroup", 8),
     ("Exception", 0),
     ("File", 14),
@@ -44,6 +44,7 @@ const FLOORS: &[(&str, usize)] = &[
     // E17 merged `write_line` and its alias `writeln` into `writeln`: 14 public functions became 13.
     ("IO", 13),
     ("Json", 28),
+    ("Linalg", 44),
     ("List", 126),
     ("Map", 16),
     ("Math", 1),
@@ -86,6 +87,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Vec", 68),
     ("WaitGroup", 1),
     ("ZString", 2),
+    ("ZUtf8String", 2),
 ];
 
 /// Public functions that need no example, with the reason.
