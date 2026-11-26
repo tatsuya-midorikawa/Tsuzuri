@@ -821,6 +821,61 @@ pub struct LinkName {
     pub span: Span,
 }
 
+impl LinkName {
+    fn quote_str(text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + 2);
+        out.push('"');
+        for ch in text.chars() {
+            match ch {
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\0' => out.push_str("\\0"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    /// Renders `"symbol"` or `"module" "symbol"` in Tsuzuri string-literal syntax.
+    pub fn quoted(&self) -> String {
+        if let Some((module, _)) = &self.module {
+            format!(
+                "{} {}",
+                Self::quote_str(module),
+                Self::quote_str(&self.symbol)
+            )
+        } else {
+            Self::quote_str(&self.symbol)
+        }
+    }
+}
+
+impl SignatureDecl {
+    /// Header prefix for `docgen` and `api-diff`, preserving explicit link symbols on data declarations.
+    pub fn extern_header_prefix(&self) -> std::borrow::Cow<'static, str> {
+        match (self.data, self.link.as_deref(), self.view) {
+            (Some(DataAccess::Address), Some(link), _) => {
+                std::borrow::Cow::Owned(format!("extern {} address def", link.quoted()))
+            }
+            (Some(DataAccess::Address), None, _) => {
+                std::borrow::Cow::Borrowed("extern address def")
+            }
+            (Some(DataAccess::Read), Some(link), _) => {
+                std::borrow::Cow::Owned(format!("extern {} view def", link.quoted()))
+            }
+            (Some(DataAccess::Read), None, _) | (None, _, true) => {
+                std::borrow::Cow::Borrowed("extern view def")
+            }
+            (None, _, false) => std::borrow::Cow::Borrowed("extern def"),
+        }
+    }
+}
+
 /// What an `extern type` declaration says about its values (E12 D3, W18, W19).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HandleKind {

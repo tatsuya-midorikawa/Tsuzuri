@@ -414,12 +414,9 @@ fn render_declarations(program: &Program) -> String {
         if declaration.visibility == Visibility::Private {
             continue;
         }
+        let prefix = declaration.extern_header_prefix();
         let code = signature(
-            match (declaration.data, declaration.view) {
-                (Some(DataAccess::Address), _) => "extern address def",
-                (Some(DataAccess::Read), _) | (_, true) => "extern view def",
-                (None, false) => "extern def",
-            },
+            &prefix,
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,

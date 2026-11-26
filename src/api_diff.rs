@@ -1608,8 +1608,9 @@ fn add_items(
             (Some(DataAccess::Read), _) | (_, true) => "extern view def",
             (None, false) => "extern def",
         };
+        let header_prefix = declaration.extern_header_prefix();
         let header = function_text(
-            kind_label,
+            &header_prefix,
             &declaration.name.text,
             &declaration.regions,
             &declaration.constraints,
