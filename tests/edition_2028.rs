@@ -369,5 +369,16 @@ fn manifest_less_sources_note_the_meaning_change() {
         .expect_err("saturated W1013 must not drop E0004");
     assert_eq!(err.code, "E0004", "{err:?}");
 
+    // Saturating MAX_FINDINGS with 131,072 rejected findings stays linear-time (no O(N^2) rescan)
+    let mut all_rejected = String::with_capacity(660_000);
+    for _ in 0..131_072 {
+        all_rejected.push_str("86uy;");
+    }
+    all_rejected.push_str("0\n");
+    let err2 =
+        tsuzuri::parser::parse_with_source(&all_rejected, 0, tsuzuri::syntax::Edition::E2028)
+            .expect_err("saturated rejected findings must report E0004 quickly");
+    assert_eq!(err2.code, "E0004", "{err2:?}");
+
     let _ = std::fs::remove_dir_all(&root);
 }

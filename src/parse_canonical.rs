@@ -12,13 +12,18 @@ impl Parser<'_> {
         }
         if self.noncanonical.len() < crate::canonical::MAX_FINDINGS {
             self.noncanonical.push(finding);
-        } else if rejected
-            && let Some(slot) = self
-                .noncanonical
-                .iter_mut()
-                .find(|existing| !existing.kind.rejected_in(self.edition))
-        {
-            *slot = finding;
+            return;
+        }
+        if !rejected {
+            return;
+        }
+        while self.noncanonical_replace < self.noncanonical.len() {
+            let idx = self.noncanonical_replace;
+            self.noncanonical_replace += 1;
+            if !self.noncanonical[idx].kind.rejected_in(self.edition) {
+                self.noncanonical[idx] = finding;
+                return;
+            }
         }
     }
 

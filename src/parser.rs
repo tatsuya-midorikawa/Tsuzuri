@@ -278,6 +278,8 @@ struct Parser<'a> {
     edition: Edition,
     /// The noncanonical spellings found so far, in parse order (A22).
     noncanonical: Vec<Noncanonical>,
+    /// Next slot in `noncanonical` to inspect when replacing a warning with a rejected finding.
+    noncanonical_replace: usize,
     /// The unconsumed suffix of a compound type closer; lexer tokens stay shared.
     type_remainder: Option<Token>,
     position: usize,
@@ -361,6 +363,7 @@ impl<'a> Parser<'a> {
             tokens,
             edition,
             noncanonical: Vec::new(),
+            noncanonical_replace: 0,
             type_remainder: None,
             position: 0,
             previous_end: 0,
@@ -411,6 +414,7 @@ impl<'a> Parser<'a> {
             tokens: self.tokens,
             edition: self.edition,
             noncanonical: Vec::new(),
+            noncanonical_replace: 0,
             type_remainder: self.type_remainder.clone(),
             position: self.position,
             previous_end: self.previous_end,
