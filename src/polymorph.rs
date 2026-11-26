@@ -447,6 +447,12 @@ fn mismatch(expected: String, found: String, span: Span) -> Diagnostic {
     .expected_found(expected, found)
 }
 
+pub(super) struct InferenceWatermark {
+    solutions_len: usize,
+    outer_trial: Option<Vec<usize>>,
+    was_quiet: bool,
+}
+
 impl Inference {
     /// An inference whose mismatches have no message (PB08 O3).
     fn quiet() -> Self {
@@ -734,6 +740,42 @@ impl Inference {
         accepted
     }
 
+    pub(super) fn set_quiet(&mut self, quiet: bool) {
+        self.quiet = quiet;
+    }
+
+    pub(super) fn begin_watermark(&mut self) -> InferenceWatermark {
+        InferenceWatermark {
+            solutions_len: self.solutions.len(),
+            outer_trial: self.trial.replace(Vec::new()),
+            was_quiet: self.quiet,
+        }
+    }
+
+    pub(super) fn commit_watermark(&mut self, mark: InferenceWatermark) {
+        let solved = std::mem::replace(&mut self.trial, mark.outer_trial).unwrap_or_default();
+        if let Some(outer) = &mut self.trial {
+            for id in solved {
+                if id < mark.solutions_len {
+                    outer.push(id);
+                }
+            }
+        }
+        self.quiet = mark.was_quiet;
+    }
+
+    pub(super) fn rollback_watermark(&mut self, mark: InferenceWatermark) {
+        let solved = std::mem::replace(&mut self.trial, mark.outer_trial).unwrap_or_default();
+        for id in solved {
+            if id < mark.solutions_len {
+                self.solutions[id] = None;
+            }
+        }
+        self.solutions.truncate(mark.solutions_len);
+        self.defaults.retain(|&id, _| id < mark.solutions_len);
+        self.quiet = mark.was_quiet;
+    }
+
     /// The open variables that occur in `ty` once its solved variables are followed (A32).
     pub(super) fn open_variables(&self, ty: &Type) -> BTreeSet<usize> {
         let found = std::cell::RefCell::new(BTreeSet::new());
@@ -878,6 +920,13 @@ pub(super) struct Classes {
     /// `IndexMut<Self, Key, Value>`), keyed uniquely by `(Self, Key)`.
     index_instances: Vec<IndexInstanceTemplate>,
     index_mut_instances: Vec<IndexInstanceTemplate>,
+    /// NC19: unified arithmetic operator table (`Add`..`Pow` and `Neg`), holding both multi-type
+    /// operator extension instances (`Extension`) and non-intrinsic 1-argument instances (`SameType`).
+    operator_instances: Vec<OperatorInstanceTemplate>,
+    operator_heads: BTreeMap<(usize, Option<HeadKey>, Option<HeadKey>), Vec<usize>>,
+    oei_classes: BTreeSet<usize>,
+    oei_lr_heads: BTreeMap<usize, BTreeSet<HeadKey>>,
+    oei_lro_heads: BTreeMap<usize, BTreeSet<HeadKey>>,
     /// The instances by class and the outermost constructor of their head (`head_constructor`), in
     /// declaration order (PB08 O3(b)). A head that has no such constructor (a variable, an
     /// application, a reference, a function...) or that holds an erroneous type, which unifies
@@ -893,14 +942,45 @@ pub(super) struct IndexInstanceTemplate {
     self_ty: Type,
     key_ty: Type,
     output_ty: Type,
+    /// A37: whether the declared `Output` carries loans (borrows its base container).
+    borrows_base: bool,
     /// Variable order of the generated instance `FunctionDecl` (`polymorph::variables(&sig)`).
     variables: Vec<String>,
     constraints: Vec<Constraint>,
     function: usize,
     span: Span,
+    origin: ModuleOrigin,
 }
 
 pub(super) struct ResolvedIndex {
+    pub(super) function: usize,
+    pub(super) type_args: Vec<Type>,
+    pub(super) output_ty: Type,
+    pub(super) borrows_base: bool,
+    pub(super) constraints: Vec<Constraint>,
+    pub(super) call_signature: Type,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OperatorTarget {
+    Extension { function: usize },
+    SameType,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct OperatorInstanceTemplate {
+    pub(super) class: usize,
+    pub(super) left: Type,
+    pub(super) right: Option<Type>,
+    pub(super) output: Type,
+    pub(super) variables: Vec<String>,
+    pub(super) constraints: Vec<Constraint>,
+    pub(super) target: OperatorTarget,
+    pub(super) span: Span,
+    pub(super) origin: ModuleOrigin,
+}
+
+pub(super) struct ResolvedOperator {
     pub(super) function: usize,
     pub(super) type_args: Vec<Type>,
     pub(super) output_ty: Type,
@@ -916,6 +996,7 @@ struct InstanceTemplate {
     constraints: Vec<Constraint>,
     methods: Vec<(usize, Vec<Type>)>,
     span: Span,
+    origin: ModuleOrigin,
     derived: bool,
 }
 
@@ -1038,6 +1119,21 @@ impl Classes {
             .and_then(|method| method.signature.as_ref().ok())
     }
 
+    pub(super) fn index_method(&self, function: usize) -> Option<crate::check::IndexMethodKind> {
+        self.index_instances
+            .iter()
+            .find(|inst| inst.function == function)
+            .map(|inst| crate::check::IndexMethodKind::Read {
+                borrows_base: inst.borrows_base,
+            })
+            .or_else(|| {
+                self.index_mut_instances
+                    .iter()
+                    .any(|inst| inst.function == function)
+                    .then_some(crate::check::IndexMethodKind::Write)
+            })
+    }
+
     pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
         let mut views: Vec<InstanceView<'_>> = self
             .instances
@@ -1080,6 +1176,24 @@ impl Classes {
                 });
             }
         }
+        for instance in &self.operator_instances {
+            let OperatorTarget::Extension { function } = instance.target else {
+                continue;
+            };
+            let method_name = self.declarations[instance.class].methods[0].name.as_str();
+            let extra_args = match &instance.right {
+                Some(right) => vec![right, &instance.output],
+                None => vec![&instance.output],
+            };
+            views.push(InstanceView {
+                class: instance.class,
+                head: &instance.left,
+                extra_args,
+                derived: false,
+                span: instance.span,
+                methods: vec![(function, method_name)],
+            });
+        }
         views
     }
 
@@ -1103,6 +1217,11 @@ impl Classes {
             instances: Vec::new(),
             index_instances: Vec::new(),
             index_mut_instances: Vec::new(),
+            operator_instances: Vec::new(),
+            operator_heads: BTreeMap::new(),
+            oei_classes: BTreeSet::new(),
+            oei_lr_heads: BTreeMap::new(),
+            oei_lro_heads: BTreeMap::new(),
             lookup: BTreeMap::new(),
             function_reads: BTreeMap::new(),
             anonymous: names.anonymous_unions.iter().copied().collect(),
@@ -2154,6 +2273,20 @@ impl Classes {
                             functions,
                         );
                     }
+                    if class.builtin
+                        && borrowed_arithmetic_class(&class.name)
+                        && !instance.extra_args.is_empty()
+                    {
+                        return self.register_operator_instance(
+                            id,
+                            module,
+                            instance,
+                            names,
+                            types,
+                            functions,
+                            &mut overlap_pairs,
+                        );
+                    }
                     let ty = higher_kinds::resolve_constructor(
                         &instance.ty,
                         class.arity,
@@ -2220,6 +2353,17 @@ impl Classes {
                     if class.builtin && class.name == "Format" {
                         validate_format_instance(&ty, types, instance.class.span)?;
                     }
+                    let current_origin = names.origin(module);
+                    if class.builtin {
+                        validate_orphan_instance(
+                            &class.name,
+                            std::slice::from_ref(&ty),
+                            types,
+                            names,
+                            current_origin,
+                            instance.class.span,
+                        )?;
+                    }
                     let key = head_constructor(&ty);
                     let candidates: Vec<usize> = if key.is_some() {
                         [key, None]
@@ -2257,14 +2401,15 @@ impl Classes {
                             .unify(&left, &right, types, instance.class.span)
                             .is_ok()
                         {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::OverlappingInstance,
-                                format!(
-                                    "overlapping instance for {}<{}>",
-                                    class.name,
-                                    ty.display(types)
-                                ),
+                            return Err(overlapping_instance_diagnostic(
+                                &class.name,
+                                std::slice::from_ref(&previous.head),
+                                previous.origin,
+                                previous.span,
+                                std::slice::from_ref(&ty),
+                                current_origin,
                                 instance.class.span,
+                                types,
                             ));
                         }
                     }
@@ -2369,7 +2514,39 @@ impl Classes {
                                 .collect(),
                         ));
                     }
+                    let is_borrowed_arith =
+                        class.builtin && borrowed_arithmetic_class(&class.name) && !is_derived;
+                    let is_neg = class.builtin && class.name == "Neg";
+                    if is_borrowed_arith {
+                        let right_opt = (!is_neg).then(|| ty.clone());
+                        self.check_operator_table_overlap(
+                            id,
+                            &class.name,
+                            &ty,
+                            right_opt.as_ref(),
+                            &type_parameters,
+                            current_origin,
+                            instance.class.span,
+                            types,
+                            true,
+                            &mut overlap_pairs,
+                        )?;
+                    }
                     let lookup = key.filter(|_| !ty.contains_error());
+                    if is_borrowed_arith {
+                        let right_opt = (!is_neg).then(|| ty.clone());
+                        self.insert_operator_template(OperatorInstanceTemplate {
+                            class: id,
+                            left: ty.clone(),
+                            right: right_opt,
+                            output: ty.clone(),
+                            variables: type_parameters.clone(),
+                            constraints: context.clone(),
+                            target: OperatorTarget::SameType,
+                            span: instance.class.span,
+                            origin: current_origin,
+                        });
+                    }
                     self.instances.push(InstanceTemplate {
                         class: id,
                         head: ty,
@@ -2377,6 +2554,7 @@ impl Classes {
                         constraints: context,
                         methods: implementations,
                         span: instance.class.span,
+                        origin: current_origin,
                         derived: is_derived,
                     });
                     heads
@@ -2574,6 +2752,16 @@ impl Classes {
             ));
         }
 
+        let current_origin = names.origin(module);
+        validate_orphan_instance(
+            class_name,
+            &[self_ty.clone(), key_ty.clone(), output_ty.clone()],
+            types,
+            names,
+            current_origin,
+            instance.class.span,
+        )?;
+
         let existing = if mutable {
             &self.index_mut_instances
         } else {
@@ -2602,14 +2790,15 @@ impl Classes {
                     .unify(&k1, &k2, types, instance.class.span)
                     .is_ok()
             {
-                return Err(Diagnostic::of(
-                    DiagnosticKind::OverlappingInstance,
-                    format!(
-                        "overlapping instance for {class_name}<{}, {}>",
-                        self_ty.display(types),
-                        key_ty.display(types)
-                    ),
+                return Err(overlapping_instance_diagnostic(
+                    class_name,
+                    &[previous.self_ty.clone(), previous.key_ty.clone()],
+                    previous.origin,
+                    previous.span,
+                    &[self_ty, key_ty],
+                    current_origin,
                     instance.class.span,
+                    types,
                 ));
             }
         }
@@ -2667,14 +2856,17 @@ impl Classes {
         let sig_vars = variables(&sig_for_vars.as_type());
         functions.push((module.into(), fn_decl));
 
+        let borrows_base = !mutable && output_ty.carries_loans(types);
         let template = IndexInstanceTemplate {
             self_ty,
             key_ty,
             output_ty,
+            borrows_base,
             variables: sig_vars,
             constraints: context,
             function: function_id,
             span: instance.class.span,
+            origin: current_origin,
         };
         if mutable {
             self.index_mut_instances.push(template);
@@ -2684,14 +2876,909 @@ impl Classes {
         Ok(())
     }
 
+    pub(super) fn is_named_non_builtin_type(ty: &Type, names: &Names) -> bool {
+        match ty {
+            Type::Record(..) | Type::Handle(..) => true,
+            Type::Union(id, _) => !names.is_anonymous_union(*id),
+            _ => false,
+        }
+    }
+
+    fn insert_operator_template(&mut self, template: OperatorInstanceTemplate) {
+        let idx = self.operator_instances.len();
+        let class = template.class;
+        let l_head = head_constructor(&template.left).filter(|_| !template.left.contains_error());
+        let r_head = template
+            .right
+            .as_ref()
+            .and_then(|r| head_constructor(r).filter(|_| !r.contains_error()));
+        if matches!(template.target, OperatorTarget::Extension { .. }) {
+            self.oei_classes.insert(class);
+            if let Some(h) = l_head {
+                self.oei_lr_heads.entry(class).or_default().insert(h);
+                self.oei_lro_heads.entry(class).or_default().insert(h);
+            }
+            if let Some(h) = r_head {
+                self.oei_lr_heads.entry(class).or_default().insert(h);
+                self.oei_lro_heads.entry(class).or_default().insert(h);
+            }
+            if let Some(h) =
+                head_constructor(&template.output).filter(|_| !template.output.contains_error())
+            {
+                self.oei_lro_heads.entry(class).or_default().insert(h);
+            }
+        }
+        self.operator_heads
+            .entry((class, l_head, r_head))
+            .or_default()
+            .push(idx);
+        self.operator_instances.push(template);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_operator_table_overlap(
+        &self,
+        class_id: usize,
+        class_name: &str,
+        left: &Type,
+        right: Option<&Type>,
+        vars: &[String],
+        current_origin: ModuleOrigin,
+        current_span: Span,
+        types: &TypeContext<'_>,
+        extensions_only: bool,
+        overlap_pairs: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        let l_head = head_constructor(left);
+        let r_head = right.and_then(head_constructor);
+        let mut candidate_indices = Vec::new();
+        for (&(cid, lh, rh), indices) in &self.operator_heads {
+            if cid != class_id {
+                continue;
+            }
+            let l_ok = l_head.is_none() || lh.is_none() || l_head == lh;
+            let r_ok = match right {
+                Some(_) => r_head.is_none() || rh.is_none() || r_head == rh,
+                None => rh.is_none(),
+            };
+            if l_ok && r_ok {
+                candidate_indices.extend(indices.iter().copied());
+            }
+        }
+        candidate_indices.sort_unstable();
+        candidate_indices.dedup();
+
+        for idx in candidate_indices {
+            let prev = &self.operator_instances[idx];
+            if extensions_only && prev.target == OperatorTarget::SameType {
+                continue;
+            }
+            if prev.right.is_some() != right.is_some() {
+                continue;
+            }
+            *overlap_pairs += 1;
+            if *overlap_pairs > 1024 {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceOverlapLimit,
+                    "instance overlap checking exceeds 1024 pairs",
+                    current_span,
+                ));
+            }
+            let mut inf = Inference::quiet();
+            let subs1: BTreeMap<String, Type> = prev
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inf.fresh()))
+                .collect();
+            let subs2: BTreeMap<String, Type> =
+                vars.iter().map(|v| (v.clone(), inf.fresh())).collect();
+            let l1 = substitute(&prev.left, &subs1);
+            let l2 = substitute(left, &subs2);
+            let overlaps = match (&prev.right, right) {
+                (Some(pr), Some(cr)) => {
+                    let r1 = substitute(pr, &subs1);
+                    let r2 = substitute(cr, &subs2);
+                    inf.unify(&l1, &l2, types, current_span).is_ok()
+                        && inf.unify(&r1, &r2, types, current_span).is_ok()
+                }
+                (None, None) => inf.unify(&l1, &l2, types, current_span).is_ok(),
+                _ => false,
+            };
+            if overlaps {
+                let prev_args: Vec<Type> = match &prev.right {
+                    Some(pr) => vec![prev.left.clone(), pr.clone()],
+                    None => vec![prev.left.clone()],
+                };
+                let curr_args: Vec<Type> = match right {
+                    Some(cr) => vec![left.clone(), cr.clone()],
+                    None => vec![left.clone()],
+                };
+                return Err(overlapping_instance_diagnostic(
+                    class_name,
+                    &prev_args,
+                    prev.origin,
+                    prev.span,
+                    &curr_args,
+                    current_origin,
+                    current_span,
+                    types,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_operator_instance(
+        &mut self,
+        class_id: usize,
+        module: &str,
+        instance: &InstanceDecl,
+        names: &Names,
+        types: &TypeContext<'_>,
+        functions: &mut Vec<(String, FunctionDecl)>,
+        overlap_pairs: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        let class_name = self.declarations[class_id].name.clone();
+        let method_name = self.declarations[class_id].methods[0].name.clone();
+        let is_neg = class_name == "Neg";
+        let left = resolve_type(&instance.ty, module, names)?;
+        bounded_type(&left, instance.ty.span)?;
+
+        let (right, output, output_span) = if is_neg {
+            let out = resolve_type(&instance.extra_args[0], module, names)?;
+            bounded_type(&out, instance.extra_args[0].span)?;
+            (None, out, instance.extra_args[0].span)
+        } else {
+            let r = resolve_type(&instance.extra_args[0], module, names)?;
+            bounded_type(&r, instance.extra_args[0].span)?;
+            let out = resolve_type(&instance.extra_args[1], module, names)?;
+            bounded_type(&out, instance.extra_args[1].span)?;
+            (Some(r), out, instance.extra_args[1].span)
+        };
+
+        for part in std::iter::once(&left).chain(right.iter()) {
+            if let Type::Union(union, _) = part
+                && names.is_anonymous_union(*union)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AnonymousUnionInstance,
+                    format!(
+                        "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                        part.display_with(names)
+                    ),
+                    instance.class.span,
+                ));
+            }
+        }
+
+        // NC19 §2: head rule, same-type rule, and coverage rule (`operator_instance_form`, E1016).
+        if let Some(ref r) = right {
+            if !Self::is_named_non_builtin_type(&left, names)
+                && !Self::is_named_non_builtin_type(r, names)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    "an operator instance with three type arguments needs a record, union or extern type on one side",
+                    instance.class.span,
+                ));
+            }
+            if &left == r && r == &output {
+                let shown = left.display_with(names);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    format!(
+                        "{class_name}<{shown}, {shown}, {shown}> is a same-type instance; write instance {class_name}<{shown}>"
+                    ),
+                    instance.class.span,
+                )
+                .with_help(format!("write 'instance {class_name}<{shown}>'")));
+            }
+            if let Type::Variable(v) = &left
+                && !variables(r).contains(v)
+            {
+                let r_shown = r.display_with(names);
+                let o_shown = output.display_with(names);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    format!(
+                        "the type variable '{v} on the left must also appear in the right type {r_shown}; write a concrete type such as {class_name}<i64, {r_shown}, {o_shown}>"
+                    ),
+                    instance.class.span,
+                ));
+            }
+            if let Type::Variable(v) = r
+                && !variables(&left).contains(v)
+            {
+                let l_shown = left.display_with(names);
+                let o_shown = output.display_with(names);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    format!(
+                        "the type variable '{v} on the right must also appear in the left type {l_shown}; write a concrete type such as {class_name}<{l_shown}, i64, {o_shown}>"
+                    ),
+                    instance.class.span,
+                ));
+            }
+        } else {
+            if !Self::is_named_non_builtin_type(&left, names) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    "an operator instance with two type arguments needs a record, union or extern type as its operand",
+                    instance.class.span,
+                ));
+            }
+            if left == output {
+                let shown = left.display_with(names);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::OperatorInstanceForm,
+                    format!(
+                        "{class_name}<{shown}, {shown}> is a same-type instance; write instance {class_name}<{shown}>"
+                    ),
+                    instance.class.span,
+                )
+                .with_help(format!("write 'instance {class_name}<{shown}>'")));
+            }
+        }
+
+        let mut head_vars = variables(&left);
+        if let Some(ref r) = right {
+            for v in variables(r) {
+                if !head_vars.contains(&v) {
+                    head_vars.push(v);
+                }
+            }
+        }
+        if variables(&output).iter().any(|v| !head_vars.contains(v)) {
+            let msg = if right.is_some() {
+                format!(
+                    "{class_name} output type may only mention type variables from its left and right types"
+                )
+            } else {
+                format!(
+                    "{class_name} output type may only mention type variables from its operand type"
+                )
+            };
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                msg,
+                output_span,
+            ));
+        }
+        let context = self.resolve_constraints(&instance.constraints, module, names)?;
+        if context.iter().any(|constraint| {
+            variables(&constraint.ty)
+                .iter()
+                .any(|variable| !head_vars.contains(variable))
+        }) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                "instance context mentions a type variable absent from its head",
+                instance.class.span,
+            ));
+        }
+
+        let current_origin = names.origin(module);
+        let header: Vec<Type> = match &right {
+            Some(r) => vec![left.clone(), r.clone(), output.clone()],
+            None => vec![left.clone(), output.clone()],
+        };
+        validate_orphan_instance(
+            &class_name,
+            &header,
+            types,
+            names,
+            current_origin,
+            instance.class.span,
+        )?;
+
+        self.check_operator_table_overlap(
+            class_id,
+            &class_name,
+            &left,
+            right.as_ref(),
+            &head_vars,
+            current_origin,
+            instance.class.span,
+            types,
+            false,
+            overlap_pairs,
+        )?;
+
+        let mut method_def = None;
+        for definition in &instance.methods {
+            if definition.name.text != method_name {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceUnknownMethod,
+                    format!("unknown method '{}' for {class_name}", definition.name.text),
+                    definition.name.span,
+                ));
+            }
+            if method_def.replace(definition).is_some() {
+                return Err(duplicate(&definition.name));
+            }
+        }
+        let Some(definition) = method_def else {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceMissingMethod,
+                format!("missing method '{class_name}.{method_name}'"),
+                instance.class.span,
+            ));
+        };
+
+        let function_id = functions.len();
+        let fn_decl = operator_instance_function(
+            &left,
+            right.as_ref(),
+            &output,
+            definition,
+            format!("$instance.{function_id}.{method_name}"),
+            instance.constraints.clone(),
+            types,
+        )?;
+        let sig_for_vars = Signature {
+            parameters: match &right {
+                Some(r) => vec![
+                    Type::Reference(Box::new(left.clone()), false),
+                    Type::Reference(Box::new(r.clone()), false),
+                ],
+                None => vec![Type::Reference(Box::new(left.clone()), false)],
+            },
+            result: output.clone(),
+        };
+        let sig_vars = variables(&sig_for_vars.as_type());
+        functions.push((module.into(), fn_decl));
+
+        self.insert_operator_template(OperatorInstanceTemplate {
+            class: class_id,
+            left,
+            right,
+            output,
+            variables: sig_vars,
+            constraints: context,
+            target: OperatorTarget::Extension {
+                function: function_id,
+            },
+            span: instance.class.span,
+            origin: current_origin,
+        });
+        Ok(())
+    }
+
+    pub(super) fn has_oei(&self, class_id: usize) -> bool {
+        self.oei_classes.contains(&class_id)
+    }
+
+    pub(super) fn head_in_oei_lr(&self, class_id: usize, ty: &Type) -> bool {
+        let Some(h) = head_constructor(ty) else {
+            return false;
+        };
+        self.oei_lr_heads
+            .get(&class_id)
+            .is_some_and(|set| set.contains(&h))
+    }
+
+    pub(super) fn head_in_oei_lro(&self, class_id: usize, ty: &Type) -> bool {
+        let Some(h) = head_constructor(ty) else {
+            return false;
+        };
+        self.oei_lro_heads
+            .get(&class_id)
+            .is_some_and(|set| set.contains(&h))
+    }
+
+    pub(super) fn has_same_type_operator_head(
+        &self,
+        class_id: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        if matches!(ty, Type::Infer(_) | Type::Variable(_)) {
+            return true;
+        }
+        if self.intrinsic(class_id, ty, types) || self.structural(class_id, ty) {
+            return true;
+        }
+        let mut inf = Inference::quiet();
+        let mut infer_vars = BTreeMap::new();
+        let open_ty = map_type(ty, &mut |part| match part {
+            Type::Infer(id) => infer_vars.entry(*id).or_insert_with(|| inf.fresh()).clone(),
+            _ => part.clone(),
+        });
+        self.instances.iter().any(|inst| {
+            if inst.class != class_id {
+                return false;
+            }
+            let subs: BTreeMap<String, Type> = inst
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inf.fresh()))
+                .collect();
+            let head = substitute(&inst.head, &subs);
+            inf.unifies(&open_ty, &head, types, |_| true)
+        })
+    }
+
+    fn candidate_indices_for_operator(
+        &self,
+        class_id: usize,
+        left: &Type,
+        right: Option<&Type>,
+    ) -> Vec<usize> {
+        let l_head = head_constructor(left);
+        let r_head = right.and_then(head_constructor);
+        let mut indices = Vec::new();
+        let l_keys: &[Option<HeadKey>] = match l_head {
+            Some(h) => &[Some(h), None],
+            None => &[None],
+        };
+        match right {
+            Some(_) => {
+                let r_keys: &[Option<HeadKey>] = match r_head {
+                    Some(h) => &[Some(h), None],
+                    None => &[None],
+                };
+                for &lh in l_keys {
+                    for &rh in r_keys {
+                        if let Some(bucket) = self.operator_heads.get(&(class_id, lh, rh)) {
+                            indices.extend(bucket.iter().copied());
+                        }
+                    }
+                }
+            }
+            None => {
+                for &lh in l_keys {
+                    if let Some(bucket) = self.operator_heads.get(&(class_id, lh, None)) {
+                        indices.extend(bucket.iter().copied());
+                    }
+                }
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    fn format_operator_candidate(&self, cand: &OperatorInstanceTemplate, names: &Names) -> String {
+        let cname = &self.declarations[cand.class].name;
+        match (&cand.target, &cand.right) {
+            (OperatorTarget::SameType, _) => {
+                format!("{cname}<{}>", cand.left.display_with(names))
+            }
+            (OperatorTarget::Extension { .. }, Some(r)) => format!(
+                "{cname}<{}, {}, {}>",
+                cand.left.display_with(names),
+                r.display_with(names),
+                cand.output.display_with(names)
+            ),
+            (OperatorTarget::Extension { .. }, None) => format!(
+                "{cname}<{}, {}>",
+                cand.left.display_with(names),
+                cand.output.display_with(names)
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn operator_literal_hint(
+        &self,
+        class_id: usize,
+        op_symbol: &str,
+        other_ty: &Type,
+        lit_is_left: bool,
+        lit_is_float: bool,
+        lit_int: Option<(u128, bool)>,
+        lit_text: &str,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        names: &Names,
+        span: Span,
+    ) -> Result<Option<Type>, Diagnostic> {
+        if !self.has_oei(class_id) {
+            return Ok(None);
+        }
+        let other_resolved = inference.resolve(other_ty);
+        if !Self::is_named_non_builtin_type(&other_resolved, names) {
+            return Ok(None);
+        }
+        let other_head = head_constructor(&other_resolved);
+        let mut indices = Vec::new();
+        for (&(cid, lh, rh), bucket) in &self.operator_heads {
+            if cid != class_id {
+                continue;
+            }
+            let matches_other = if lit_is_left {
+                rh.is_none() || rh == other_head
+            } else {
+                lh.is_none() || lh == other_head
+            };
+            if matches_other {
+                indices.extend(bucket.iter().copied());
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+
+        let is_std_bigint = |ty: &Type| -> bool {
+            matches!(
+                ty,
+                Type::Record(id, _)
+                    if types.records[*id].origin == ModuleOrigin::Std
+                        && types.records[*id].name == "BigInt.BigInt"
+            )
+        };
+        let literal_accepts = |cand_lit: &Type, trial: &Inference| -> bool {
+            if let Type::Infer(_) = cand_lit {
+                return before_constraints.iter().all(|(class, before, _)| {
+                    if trial.resolve(before) != *cand_lit {
+                        return true;
+                    }
+                    let cname = self.declarations[*class].name.as_str();
+                    if lit_is_float {
+                        !matches!(cname, "Integer" | "SignedInteger" | "UnsignedInteger")
+                    } else if matches!(lit_int, Some((_, true))) {
+                        cname != "UnsignedInteger"
+                    } else {
+                        true
+                    }
+                });
+            }
+            if matches!(cand_lit, Type::Variable(_)) {
+                return true;
+            }
+            if lit_is_float {
+                return cand_lit.is_float();
+            }
+            if cand_lit.is_float() || is_std_bigint(cand_lit) {
+                return true;
+            }
+            if let Type::Integer(bits, signed) = cand_lit {
+                if let Some((val, neg)) = lit_int {
+                    if neg && !signed {
+                        return false;
+                    }
+                    let max = if *signed {
+                        (1u128 << (bits - 1)) - u128::from(!neg)
+                    } else if *bits == 128 {
+                        u128::MAX
+                    } else {
+                        (1u128 << bits) - 1
+                    };
+                    return val <= max;
+                }
+                return true;
+            }
+            false
+        };
+
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut matched: Vec<(usize, Type)> = Vec::new();
+        for idx in indices {
+            let cand = &self.operator_instances[idx];
+            let Some(ref cand_r) = cand.right else {
+                continue;
+            };
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let cl = substitute(&cand.left, &subs);
+            let cr = substitute(cand_r, &subs);
+            let (cand_other, cand_lit_side) = if lit_is_left { (cr, cl) } else { (cl, cr) };
+            let mut resolved_lit = None;
+            // Put `cand_other` first so fresh candidate variables bind to live inference variables
+            // in `other_resolved` rather than vice-versa before `unifies` rolls back.
+            let ok = inference.unifies(&cand_other, &other_resolved, types, |trial| {
+                let lit_ty = trial.resolve(&cand_lit_side);
+                if !literal_accepts(&lit_ty, trial) {
+                    return false;
+                }
+                let constraints_ok = before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
+                    }
+                    if matches!(bound, Type::Infer(_) | Type::Variable(_)) {
+                        return true;
+                    }
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return self.has_direct_candidate(*class, &bound, types);
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                });
+                if constraints_ok {
+                    resolved_lit = Some(lit_ty);
+                }
+                constraints_ok
+            });
+            if ok && let Some(lit_ty) = resolved_lit {
+                matched.push((idx, lit_ty));
+            }
+        }
+        inference.quiet = was_quiet;
+
+        match matched.len() {
+            0 => Ok(None),
+            1 => Ok(Some(matched.pop().unwrap().1)),
+            _ => {
+                let listed: Vec<String> = matched
+                    .iter()
+                    .map(|(idx, _)| {
+                        self.format_operator_candidate(&self.operator_instances[*idx], names)
+                    })
+                    .collect();
+                let expr_desc = if lit_is_left {
+                    format!(
+                        "{lit_text} {op_symbol} {}",
+                        other_resolved.display_with(names)
+                    )
+                } else {
+                    format!(
+                        "{} {op_symbol} {lit_text}",
+                        other_resolved.display_with(names)
+                    )
+                };
+                let sample_suffix = matched
+                    .iter()
+                    .find_map(|(_, t)| match t {
+                        Type::Integer(64, true) => Some(format!("{lit_text}i64")),
+                        Type::Integer(32, true) => Some(format!("{lit_text}i32")),
+                        Type::Binary(64) => Some(format!("{lit_text}f64")),
+                        Type::Binary(32) => Some(format!("{lit_text}f32")),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| format!("{lit_text}i64"));
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::AmbiguousInstanceCandidates,
+                    format!(
+                        "ambiguous operator instance for {expr_desc}: {} both apply; give the literal a suffix such as {sample_suffix}",
+                        listed.join(" and ")
+                    ),
+                    span,
+                );
+                for (idx, _) in &matched {
+                    let cand = &self.operator_instances[*idx];
+                    diag = diag.related(
+                        crate::diagnostic::RelatedRole::DeclaredHere,
+                        format!("candidate {}", self.format_operator_candidate(cand, names)),
+                        cand.span,
+                    );
+                }
+                Err(diag)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_operator(
+        &self,
+        class_id: usize,
+        op_symbol: &str,
+        left: &Type,
+        right: Option<&Type>,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        names: &Names,
+        span: Span,
+    ) -> Result<Option<ResolvedOperator>, Diagnostic> {
+        if !self.has_oei(class_id) {
+            return Ok(None);
+        }
+        let left_resolved = inference.resolve(left);
+        let right_resolved = right.map(|r| inference.resolve(r));
+        if matches!(left_resolved, Type::Infer(_))
+            && matches!(right_resolved, None | Some(Type::Infer(_)))
+        {
+            return Ok(None);
+        }
+
+        let indices =
+            self.candidate_indices_for_operator(class_id, &left_resolved, right_resolved.as_ref());
+        if indices.is_empty() {
+            return Ok(None);
+        }
+
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let actual_key = match &right_resolved {
+            Some(r) => Type::Tuple(vec![left_resolved.clone(), r.clone()]),
+            None => left_resolved.clone(),
+        };
+
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut candidates = Vec::new();
+        for idx in indices {
+            let cand = &self.operator_instances[idx];
+            if cand.right.is_some() != right_resolved.is_some() {
+                continue;
+            }
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let cand_key = match &cand.right {
+                Some(cr) => Type::Tuple(vec![substitute(&cand.left, &subs), substitute(cr, &subs)]),
+                None => substitute(&cand.left, &subs),
+            };
+            let accepted = inference.unifies(&actual_key, &cand_key, types, |trial| {
+                before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
+                    }
+                    if matches!(bound, Type::Infer(_) | Type::Variable(_)) {
+                        return true;
+                    }
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return self.has_direct_candidate(*class, &bound, types);
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                })
+            });
+            if accepted {
+                candidates.push(idx);
+            }
+        }
+        inference.quiet = was_quiet;
+
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            let listed: Vec<String> = candidates
+                .iter()
+                .map(|&idx| self.format_operator_candidate(&self.operator_instances[idx], names))
+                .collect();
+            let expr_desc = match &right_resolved {
+                Some(r) => format!(
+                    "{} {op_symbol} {}",
+                    left_resolved.display_with(names),
+                    r.display_with(names)
+                ),
+                None => format!("{op_symbol}{}", left_resolved.display_with(names)),
+            };
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::AmbiguousInstanceCandidates,
+                format!(
+                    "ambiguous operator instance for {expr_desc}: {} apply; annotate the operand types",
+                    listed.join(", ")
+                ),
+                span,
+            );
+            for &idx in &candidates {
+                let cand = &self.operator_instances[idx];
+                diag = diag.related(
+                    crate::diagnostic::RelatedRole::DeclaredHere,
+                    format!("candidate {}", self.format_operator_candidate(cand, names)),
+                    cand.span,
+                );
+            }
+            return Err(diag);
+        }
+
+        let chosen = &self.operator_instances[candidates[0]];
+        let OperatorTarget::Extension { function } = chosen.target else {
+            return Ok(None);
+        };
+        let subs: BTreeMap<String, Type> = chosen
+            .variables
+            .iter()
+            .map(|v| (v.clone(), inference.fresh()))
+            .collect();
+        let cand_l = substitute(&chosen.left, &subs);
+        inference.unify(&left_resolved, &cand_l, types, span)?;
+        let mut call_params = vec![Type::Reference(Box::new(inference.resolve(&cand_l)), false)];
+        if let (Some(actual_r), Some(cand_r_raw)) = (&right_resolved, &chosen.right) {
+            let cand_r = substitute(cand_r_raw, &subs);
+            inference.unify(actual_r, &cand_r, types, span)?;
+            call_params.push(Type::Reference(Box::new(inference.resolve(&cand_r)), false));
+        }
+        let output_ty = inference.resolve(&substitute(&chosen.output, &subs));
+        let type_args = chosen
+            .variables
+            .iter()
+            .map(|name| inference.resolve(&subs[name]))
+            .collect();
+        let constraints = chosen
+            .constraints
+            .iter()
+            .map(|constraint| Constraint {
+                class: constraint.class,
+                ty: inference.resolve(&substitute(&constraint.ty, &subs)),
+                span,
+            })
+            .collect();
+        let call_signature = Type::function(call_params, output_ty.clone());
+        Ok(Some(ResolvedOperator {
+            function,
+            type_args,
+            output_ty,
+            constraints,
+            call_signature,
+        }))
+    }
+
+    pub(super) fn matching_oei_headers_for_help(
+        &self,
+        class_id: usize,
+        left: &Type,
+        right: &Type,
+        names: &Names,
+    ) -> Vec<String> {
+        let lh = head_constructor(left);
+        let rh = head_constructor(right);
+        if lh.is_none() && rh.is_none() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for inst in &self.operator_instances {
+            if inst.class != class_id || !matches!(inst.target, OperatorTarget::Extension { .. }) {
+                continue;
+            }
+            let ilh = head_constructor(&inst.left);
+            let irh = inst.right.as_ref().and_then(head_constructor);
+            if (lh.is_some() && lh == ilh) || (rh.is_some() && rh == irh) {
+                out.push(self.format_operator_candidate(inst, names));
+                if out.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     pub(super) fn has_index_instances(
         &self,
         self_ty: &Type,
         mutable: bool,
-        inference: &Inference,
+        inference: &mut Inference,
         types: &TypeContext<'_>,
     ) -> bool {
-        if is_unknown(self_ty) {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
             return false;
         }
         let list = if mutable {
@@ -2699,16 +3786,201 @@ impl Classes {
         } else {
             &self.index_instances
         };
-        list.iter().any(|cand| {
-            let mut inf = inference.clone();
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), inf.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
             let head = substitute(&cand.self_ty, &subs);
-            inf.unify(self_ty, &head, types, cand.span).is_ok()
-        })
+            inference.unifies(&self_resolved, &head, types, |_| true)
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key
+    /// unifies with an `arity`-tuple of non-selector element types (`selector_unions` excludes
+    /// `Slice.Axis`, `Slice.Sel`, and `Slice.Pos`).
+    pub(super) fn has_element_tuple_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        arity: usize,
+        selector_unions: &[usize],
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) || arity < 2 {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let probe_elems: Vec<Type> = (0..arity).map(|_| inference.fresh()).collect();
+        let actual_pair = Type::Tuple(vec![self_resolved, Type::Tuple(probe_elems)]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let cand_pair = Type::Tuple(vec![substitute(&cand.self_ty, &subs), cand_key.clone()]);
+            inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                let Type::Tuple(items) = trial.resolve(&cand_key) else {
+                    return false;
+                };
+                items.len() == arity
+                    && !items.iter().any(
+                        |item| matches!(item, Type::Union(uid, _) if selector_unions.contains(uid)),
+                    )
+            })
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key
+    /// unifies with `[T]` for a non-selector element type `T`.
+    pub(super) fn has_element_array_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        selector_unions: &[usize],
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let elem = inference.fresh();
+        let actual_pair = Type::Tuple(vec![self_resolved, Type::Array(Box::new(elem))]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let cand_pair = Type::Tuple(vec![substitute(&cand.self_ty, &subs), cand_key.clone()]);
+            inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                let Type::Array(item) = trial.resolve(&cand_key) else {
+                    return false;
+                };
+                !matches!(item.as_ref(), Type::Union(uid, _) if selector_unions.contains(uid))
+            })
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: whether `self_ty` has an `Index` (or `IndexMut` if `mutable`) candidate whose key,
+    /// once `self_ty` unifies with the candidate head, is already non-variable and unifies with
+    /// `probe_key` (used for `[Slice.Sel]`, `Slice.Pos` tuples, and `[Slice.Pos]`).
+    pub(super) fn has_exact_index_key(
+        &self,
+        self_ty: &Type,
+        mutable: bool,
+        probe_key: &Type,
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return false;
+        }
+        let list = if mutable {
+            &self.index_mut_instances
+        } else {
+            &self.index_instances
+        };
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = list.iter().any(|cand| {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_self = substitute(&cand.self_ty, &subs);
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut key_concrete = false;
+            if !inference.unifies(&self_resolved, &cand_self, types, |trial| {
+                key_concrete = !is_unknown(&trial.resolve(&cand_key));
+                true
+            }) || !key_concrete
+            {
+                return false;
+            }
+            let actual_pair = Type::Tuple(vec![self_resolved.clone(), probe_key.clone()]);
+            let cand_pair = Type::Tuple(vec![cand_self, cand_key]);
+            inference.unifies(&actual_pair, &cand_pair, types, |_| true)
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
+    /// NC18: smallest `m >= min_arity.max(1)` for which `self_ty` has an `Index` candidate whose
+    /// key (after unifying `self_ty`) is `Slice.Sel` (`m == 1`) or an `m`-tuple of `Slice.Sel`.
+    pub(super) fn min_sel_tuple_arity(
+        &self,
+        self_ty: &Type,
+        min_arity: usize,
+        sel_ty: &Type,
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> Option<usize> {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return None;
+        }
+        let need = min_arity.max(1);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut best: Option<usize> = None;
+        for cand in &self.index_instances {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_self = substitute(&cand.self_ty, &subs);
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut found_arity: Option<usize> = None;
+            if inference.unifies(&self_resolved, &cand_self, types, |trial| {
+                let resolved_key = trial.resolve(&cand_key);
+                if &resolved_key == sel_ty && need <= 1 {
+                    found_arity = Some(1);
+                } else if let Type::Tuple(items) = &resolved_key
+                    && items.len() >= need
+                    && items.iter().all(|item| item == sel_ty)
+                {
+                    found_arity = Some(items.len());
+                }
+                true
+            }) && let Some(arity) = found_arity
+            {
+                best = Some(best.map_or(arity, |cur| cur.min(arity)));
+            }
+        }
+        inference.quiet = was_quiet;
+        best
     }
 
     /// Returns a key type hint when every `Index`/`IndexMut` candidate matching `self_ty` yields
@@ -2718,10 +3990,11 @@ impl Classes {
         &self,
         self_ty: &Type,
         mutable: bool,
-        inference: &Inference,
+        inference: &mut Inference,
         types: &TypeContext<'_>,
     ) -> Option<Type> {
-        if is_unknown(self_ty) {
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
             return None;
         }
         let list = if mutable {
@@ -2729,28 +4002,31 @@ impl Classes {
         } else {
             &self.index_instances
         };
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
         let mut matched: Option<Type> = None;
         for cand in list {
-            let mut inf = inference.clone();
-            inf.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), inf.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
             let head = substitute(&cand.self_ty, &subs);
-            if inf.unify(self_ty, &head, types, cand.span).is_ok() {
-                let key = inf.resolve(&substitute(&cand.key_ty, &subs));
-                if matched.is_some() {
+            let cand_key = substitute(&cand.key_ty, &subs);
+            let mut key_out = None;
+            if inference.unifies(&self_resolved, &head, types, |inf| {
+                key_out = Some(inf.resolve(&cand_key));
+                true
+            }) {
+                let key = key_out.unwrap();
+                if matched.is_some() || is_unknown(&key) {
+                    inference.quiet = was_quiet;
                     return None;
                 }
-                if !is_unknown(&key) {
-                    matched = Some(key);
-                } else {
-                    return None;
-                }
+                matched = Some(key);
             }
         }
+        inference.quiet = was_quiet;
         matched
     }
 
@@ -2763,7 +4039,9 @@ impl Classes {
         inference: &mut Inference,
         pending_constraints: &[Constraint],
         types: &TypeContext<'_>,
+        names: &Names,
         span: Span,
+        key_span: Span,
     ) -> Result<Option<ResolvedIndex>, Diagnostic> {
         let list = if mutable {
             &self.index_mut_instances
@@ -2775,59 +4053,108 @@ impl Classes {
             return Ok(None);
         }
         let key_resolved = inference.resolve(key_ty);
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let actual_pair = Type::Tuple(vec![self_resolved.clone(), key_resolved.clone()]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
         let mut candidates = Vec::new();
         for (idx, cand) in list.iter().enumerate() {
-            let mut trial = inference.clone();
-            trial.quiet = true;
             let subs: BTreeMap<String, Type> = cand
                 .variables
                 .iter()
-                .map(|name| (name.clone(), trial.fresh()))
+                .map(|name| (name.clone(), inference.fresh()))
                 .collect();
-            let cand_self = substitute(&cand.self_ty, &subs);
-            let cand_key = substitute(&cand.key_ty, &subs);
-            if trial
-                .unify(&self_resolved, &cand_self, types, span)
-                .is_err()
-                || trial.unify(&key_resolved, &cand_key, types, span).is_err()
-            {
-                continue;
-            }
-            // Reject candidates that newly bind a constrained inference variable (e.g. an
-            // unsuffixed integer literal in `t[[1, 2]]`) to an incompatible concrete type
-            // (e.g. `Slice.Axis`), while ignoring unrelated or still-partial constraints.
-            let compatible = pending_constraints.iter().all(|c| {
-                let before = inference.resolve(&c.ty);
-                let bound = trial.resolve(&c.ty);
-                if before == bound || bound.contains_error() {
-                    return true;
-                }
-                let mut has_unknown = false;
-                map_type(&bound, &mut |part| {
-                    if is_unknown(part) {
-                        has_unknown = true;
+            let cand_pair = Type::Tuple(vec![
+                substitute(&cand.self_ty, &subs),
+                substitute(&cand.key_ty, &subs),
+            ]);
+            let accepted = inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
                     }
-                    part.clone()
-                });
-                if has_unknown {
-                    return true;
-                }
-                self.validate(
-                    &Constraint {
-                        class: c.class,
-                        ty: bound,
-                        span: c.span,
-                    },
-                    types,
-                )
-                .is_ok()
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return true;
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                })
             });
-            if compatible {
+            if accepted {
                 candidates.push(idx);
             }
         }
+        inference.quiet = was_quiet;
         if candidates.is_empty() {
             return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            let class_name = if mutable { "IndexMut" } else { "Index" };
+            let listed: Vec<String> = candidates
+                .iter()
+                .map(|&i| {
+                    let c = &list[i];
+                    format!(
+                        "{class_name}<{}, {}, {}>",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    )
+                })
+                .collect();
+            let mut has_literal = false;
+            map_type(&key_resolved, &mut |part| {
+                if inference.is_numeric_literal(part) {
+                    has_literal = true;
+                }
+                part.clone()
+            });
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::AmbiguousInstanceCandidates,
+                format!(
+                    "more than one {class_name} instance fits {} with this key: {}; give the key a type",
+                    self_resolved.display_with(names),
+                    listed.join(", ")
+                ),
+                key_span,
+            );
+            for &i in candidates.iter().take(8) {
+                let c = &list[i];
+                diag = diag.related(
+                    crate::diagnostic::RelatedRole::DeclaredHere,
+                    format!(
+                        "candidate {class_name}<{}, {}, {}> declared here",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    ),
+                    c.span,
+                );
+            }
+            let help = if has_literal {
+                "give the number literal a type suffix, for example '1i64' or '1i8'"
+            } else {
+                "annotate the key expression or parameter with a concrete type, for example '\\(k: [i64]) -> t[k]'"
+            };
+            return Err(diag.with_help(help));
         }
         let cand = &list[candidates[0]];
         let subs: BTreeMap<String, Type> = cand
@@ -2878,6 +4205,7 @@ impl Classes {
             function: cand.function,
             type_args,
             output_ty,
+            borrows_base: cand.borrows_base,
             constraints,
             call_signature,
         }))
@@ -3681,6 +5009,63 @@ impl Classes {
         self.normalize(constraint, types).map(|_| ())
     }
 
+    /// A40: whether `ty` (typically `ref T` with a known referent head) has any direct built-in,
+    /// structural, or declared `instance` candidate for `class` without stripping its outer reference.
+    pub(super) fn has_direct_candidate(
+        &self,
+        class: usize,
+        ty: &Type,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        if self.intrinsic(class, ty, types) || self.structural(class, ty) {
+            return true;
+        }
+        let mut inf = Inference::quiet();
+        let mut ty_vars = BTreeMap::new();
+        let mut infer_vars = BTreeMap::new();
+        let open_ty = map_type(ty, &mut |part| match part {
+            Type::Variable(name) => ty_vars
+                .entry(name.clone())
+                .or_insert_with(|| inf.fresh())
+                .clone(),
+            Type::Infer(id) => infer_vars.entry(*id).or_insert_with(|| inf.fresh()).clone(),
+            _ => part.clone(),
+        });
+        let has_matching = self.instances.iter().any(|inst| {
+            if inst.class != class {
+                return false;
+            }
+            let subs: BTreeMap<String, Type> = inst
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inf.fresh()))
+                .collect();
+            let head = substitute(&inst.head, &subs);
+            inf.unifies(&open_ty, &head, types, |_| true)
+        });
+        if !has_matching {
+            return false;
+        }
+        let mut has_unknown = false;
+        map_type(ty, &mut |part| {
+            if is_unknown(part) {
+                has_unknown = true;
+            }
+            part.clone()
+        });
+        has_unknown
+            || self
+                .validate(
+                    &Constraint {
+                        class,
+                        ty: ty.clone(),
+                        span: Span::default(),
+                    },
+                    types,
+                )
+                .is_ok()
+    }
+
     fn validate_instance(
         &self,
         constraint: &Constraint,
@@ -3989,6 +5374,119 @@ fn validate_format_instance(
     }
 }
 
+/// A37 (D4): header argument indices that participate in dispatch and the orphan rule, shared
+/// across `Index`/`IndexMut`, 1-argument arithmetic, and future NC19/NC20 classes.
+pub(super) fn dispatch_positions(class_name: &str, arity: usize) -> &'static [usize] {
+    match (class_name, arity) {
+        ("Index" | "IndexMut", 3) => &[0, 1],
+        ("Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow", 3) => &[0, 1],
+        ("Neg", 2) => &[0],
+        ("Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" | "Neg", 1) => &[0],
+        _ => &[],
+    }
+}
+
+fn is_program_type(ty: &Type, types: &TypeContext<'_>, names: &Names) -> bool {
+    match ty {
+        Type::Record(id, _) => types.records[*id].origin == ModuleOrigin::User,
+        Type::Union(id, _) => {
+            !names.is_anonymous_union(*id) && types.unions[*id].origin == ModuleOrigin::User
+        }
+        Type::Handle(qualified, _) => names.handle_origin(qualified) == ModuleOrigin::User,
+        _ => false,
+    }
+}
+
+fn validate_orphan_instance(
+    class_name: &str,
+    header: &[Type],
+    types: &TypeContext<'_>,
+    names: &Names,
+    instance_origin: ModuleOrigin,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    if instance_origin == ModuleOrigin::Std {
+        return Ok(());
+    }
+    let positions = dispatch_positions(class_name, header.len());
+    if positions.is_empty()
+        || positions
+            .iter()
+            .any(|&index| is_program_type(&header[index], types, names))
+    {
+        return Ok(());
+    }
+    let args: Vec<String> = header.iter().map(|ty| ty.display_with(names)).collect();
+    let header_text = format!("{class_name}<{}>", args.join(", "));
+    let message = if matches!(class_name, "Index" | "IndexMut") {
+        format!("{header_text} needs a type declared in this program as its self or key type")
+    } else if header.len() == 3 {
+        format!(
+            "{header_text} needs a type declared in this program as its left or right operand type"
+        )
+    } else {
+        format!("{header_text} needs a type declared in this program as its operand type")
+    };
+    Err(Diagnostic::of(DiagnosticKind::OrphanInstance, message, span).with_help(
+        "types from the standard library and built-in types such as tuples, arrays and references belong to the language; wrap the value in a record declared in this program, or call a function of the type's module",
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn overlapping_instance_diagnostic(
+    class_name: &str,
+    previous_args: &[Type],
+    previous_origin: ModuleOrigin,
+    previous_span: Span,
+    current_args: &[Type],
+    current_origin: ModuleOrigin,
+    current_span: Span,
+    types: &TypeContext<'_>,
+) -> Diagnostic {
+    let format_args = |args: &[Type]| {
+        args.iter()
+            .map(|ty| ty.display(types))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match (previous_origin, current_origin) {
+        (ModuleOrigin::User, ModuleOrigin::Std) => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(previous_args)
+            ),
+            previous_span,
+        )
+        .related(
+            crate::diagnostic::RelatedRole::DeclaredHere,
+            "standard library instance declared here",
+            current_span,
+        ),
+        (ModuleOrigin::Std, ModuleOrigin::User) => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(current_args)
+            ),
+            current_span,
+        )
+        .related(
+            crate::diagnostic::RelatedRole::DeclaredHere,
+            "standard library instance declared here",
+            previous_span,
+        ),
+        _ => Diagnostic::of(
+            DiagnosticKind::OverlappingInstance,
+            format!(
+                "overlapping instance for {class_name}<{}>",
+                format_args(current_args)
+            ),
+            current_span,
+        ),
+    }
+}
+
 fn type_has_single_region(ty: &Type, types: &TypeContext<'_>) -> bool {
     match ty {
         Type::Record(id, _) => types.records[*id].region_count == 1,
@@ -3998,6 +5496,66 @@ fn type_has_single_region(ty: &Type, types: &TypeContext<'_>) -> bool {
 
 fn output_needs_region(ty: &Type, types: &TypeContext<'_>) -> bool {
     matches!(ty, Type::Reference(_, false)) || type_has_single_region(ty, types)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn operator_instance_function(
+    left_ty: &Type,
+    right_ty: Option<&Type>,
+    output_ty: &Type,
+    definition: &Definition,
+    name: String,
+    constraints: Vec<ConstraintExpr>,
+    types: &TypeContext<'_>,
+) -> Result<FunctionDecl, Diagnostic> {
+    let expected_arity = if right_ty.is_some() { 2 } else { 1 };
+    let pure = definition.pure;
+    let definition = crate::parser::normalize_definition(definition.clone(), pure, expected_arity)?;
+    if definition.parameters.len() != expected_arity {
+        return Err(Diagnostic::of(
+            DiagnosticKind::InstanceMethodParameterCount,
+            format!(
+                "method '{}' expects {} parameters",
+                definition.name.text, expected_arity
+            ),
+            definition.name.span,
+        ));
+    }
+    let make_ref_param = |(pname, pmut): &(Ident, bool), inner_ty: &Type| Parameter {
+        name: pname.clone(),
+        mutable: *pmut,
+        ty: TypeExpr {
+            span: pname.span,
+            kind: TypeExprKind::Reference(
+                Box::new(type_expression(inner_ty, types, pname.span)),
+                false,
+            ),
+        },
+        json: None,
+    };
+    let mut parameters = vec![make_ref_param(&definition.parameters[0], left_ty)];
+    if let Some(r_ty) = right_ty {
+        parameters.push(make_ref_param(&definition.parameters[1], r_ty));
+    }
+    Ok(FunctionDecl {
+        doc: None,
+        regions: Vec::new(),
+        recursion: definition.recursion,
+        name: Ident {
+            text: name,
+            span: definition.name.span,
+            provenance: Provenance::Generated,
+        },
+        visibility: Visibility::Public,
+        exported: false,
+        constant: false,
+        pure,
+        parameters,
+        result: type_expression(output_ty, types, definition.name.span),
+        constraints,
+        body: definition.body,
+        contracts: Vec::new(),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5858,6 +7416,28 @@ pub(super) fn specialize(
             }
         }
     }
+    for op_instance in &classes.operator_instances {
+        let OperatorTarget::Extension { function } = op_instance.target else {
+            continue;
+        };
+        let func = &module.functions[function];
+        for required in &func.constraints {
+            let required = Constraint {
+                class: required.class,
+                ty: required.ty.clone(),
+                span: op_instance.span,
+            };
+            for required in classes.normalize(&required, &module.types())? {
+                if !classes.entails(&op_instance.constraints, &required, &module.types())? {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::UndeclaredInstanceConstraint,
+                        "instance method requires an undeclared constraint; add it to the instance context",
+                        op_instance.span,
+                    ));
+                }
+            }
+        }
+    }
     if let Some(entry) = module.entry {
         if !module.functions[entry].type_parameters.is_empty() {
             return Err(Diagnostic::of(
@@ -6278,10 +7858,12 @@ impl Specializer<'_> {
             let pure = function.origin.pure;
             // A20: an instance is checked against the attributes of its declaration.
             let asserts = function.origin.asserts;
+            let index_method = function.origin.index_method;
             function.origin = function.origin.generated(instance);
             function.origin.cpu = cpu;
             function.origin.pure = pure;
             function.origin.asserts = asserts;
+            function.origin.index_method = index_method;
         }
         for constraint in &function.constraints {
             self.classes.validate(
@@ -6560,7 +8142,29 @@ impl Specializer<'_> {
                 {
                     let (class, method) = self.classes.operation(Operation::Binary(*operator));
                     if self.classes.intrinsic(class, &left.ty, &self.types) {
-                        None
+                        if !(*operator == BinaryOp::Add && left.ty.is_string())
+                            && (matches!(left.kind, TypedExprKind::ReferenceOperand(_))
+                                || matches!(right.kind, TypedExprKind::ReferenceOperand(_)))
+                        {
+                            let unwrap_ref_op = |op: &TypedExpr| {
+                                if let TypedExprKind::ReferenceOperand(inner) = &op.kind {
+                                    TypedExpr {
+                                        kind: TypedExprKind::Dereference(inner.clone()),
+                                        ty: op.ty.clone(),
+                                        span: op.span,
+                                    }
+                                } else {
+                                    op.clone()
+                                }
+                            };
+                            Some(Binary(
+                                *operator,
+                                Box::new(unwrap_ref_op(left)),
+                                Box::new(unwrap_ref_op(right)),
+                            ))
+                        } else {
+                            None
+                        }
                     } else {
                         Some(self.operator_call(
                             class,
@@ -6574,7 +8178,18 @@ impl Specializer<'_> {
                 Unary(operator, operand) if *operator != UnaryOp::Not => {
                     let (class, method) = self.classes.operation(Operation::Unary(*operator));
                     if self.classes.intrinsic(class, &operand.ty, &self.types) {
-                        None
+                        if let TypedExprKind::ReferenceOperand(inner) = &operand.kind {
+                            Some(Unary(
+                                *operator,
+                                Box::new(TypedExpr {
+                                    kind: TypedExprKind::Dereference(inner.clone()),
+                                    ty: operand.ty.clone(),
+                                    span: operand.span,
+                                }),
+                            ))
+                        } else {
+                            None
+                        }
                     } else {
                         Some(self.operator_call(
                             class,
@@ -6718,14 +8333,46 @@ impl Specializer<'_> {
         let arguments = if matches!(declaration.name.as_str(), "Eq" | "Ord") || borrowed_arith {
             arguments
                 .into_iter()
-                .map(|argument| TypedExpr {
-                    ty: Type::Reference(Box::new(argument.ty.clone()), false),
-                    span: argument.span,
-                    kind: TypedExprKind::BorrowOperand(Box::new(argument)),
+                .map(|argument| {
+                    let arg_ty = argument.ty.clone();
+                    let arg_span = argument.span;
+                    if let TypedExprKind::ReferenceOperand(inner) = argument.kind {
+                        TypedExpr {
+                            ty: Type::Reference(Box::new(arg_ty.clone()), false),
+                            span: arg_span,
+                            kind: TypedExprKind::Borrow(
+                                Box::new(TypedExpr {
+                                    kind: TypedExprKind::Dereference(inner),
+                                    ty: arg_ty,
+                                    span: arg_span,
+                                }),
+                                false,
+                            ),
+                        }
+                    } else {
+                        TypedExpr {
+                            ty: Type::Reference(Box::new(arg_ty), false),
+                            span: arg_span,
+                            kind: TypedExprKind::BorrowOperand(Box::new(argument)),
+                        }
+                    }
                 })
                 .collect()
         } else {
             arguments
+                .into_iter()
+                .map(|argument| {
+                    if let TypedExprKind::ReferenceOperand(inner) = argument.kind {
+                        TypedExpr {
+                            kind: TypedExprKind::Dereference(inner),
+                            ty: argument.ty,
+                            span: argument.span,
+                        }
+                    } else {
+                        argument
+                    }
+                })
+                .collect()
         };
         Ok(TypedExprKind::Call(
             Box::new(TypedExpr {

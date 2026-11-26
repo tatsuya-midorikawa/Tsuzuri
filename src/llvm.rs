@@ -6133,8 +6133,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 body,
                 descending,
                 exclusive,
+                start_open,
             } => {
-                self.range_loop(local, start, step, finish, body, *descending, *exclusive);
+                self.range_loop(
+                    local,
+                    start,
+                    step,
+                    finish,
+                    body,
+                    *descending,
+                    *exclusive,
+                    *start_open,
+                );
                 "0".into()
             }
             TypedExprKind::ForEach {
@@ -6159,6 +6169,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Local(_)
             | TypedExprKind::Dereference(_)
+            | TypedExprKind::ReferenceOperand(_)
             | TypedExprKind::ListTail(..) => {
                 unreachable!("places handled above")
             }
@@ -6209,6 +6220,9 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Cast(value) => self.cast(value, &expression.ty),
             TypedExprKind::SaturatingIndex(value) => self.saturating_index(value),
+            TypedExprKind::FromEnd { .. } => {
+                unreachable!("FromEnd is lowered through bound_value")
+            }
             TypedExprKind::Function(reference) => match reference {
                 FunctionRef::User(id) => self.make_closure(*id, &[]),
                 FunctionRef::Builtin(_) => unreachable!("builtin values are lifted before LLVM"),
@@ -6502,12 +6516,24 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Index(string, index) if string.ty.is_string() => {
                 let (value, frames) = self.read_operand(string);
-                let index = self.expression(index);
-                let ty = self.ty(&string.ty);
-                let element = self.ty(&expression.ty);
-                let data = self.value(format!("extractvalue {ty} {value}, 0"));
-                let word = self.value(format!("extractvalue {ty} {value}, 1"));
-                let length = self.string_count(&string.ty, &word);
+                let (element, data, word, length, index) =
+                    if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                        let ty = self.ty(&string.ty);
+                        let element = self.ty(&expression.ty);
+                        let data = self.value(format!("extractvalue {ty} {value}, 0"));
+                        let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                        let length = self.string_count(&string.ty, &word);
+                        let index = self.bound_value(index, &length);
+                        (element, data, word, length, index)
+                    } else {
+                        let index = self.expression(index);
+                        let ty = self.ty(&string.ty);
+                        let element = self.ty(&expression.ty);
+                        let data = self.value(format!("extractvalue {ty} {value}, 0"));
+                        let word = self.value(format!("extractvalue {ty} {value}, 1"));
+                        let length = self.string_count(&string.ty, &word);
+                        (element, data, word, length, index)
+                    };
                 let valid = self.value(format!("icmp ult i64 {index}, {length}"));
                 self.guard(&valid, TrapKind::BoundsCheck);
                 let unit = if self.marks_length(&string.ty) {
@@ -6524,7 +6550,12 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Index(array, index) if matches!(array.ty, Type::FixedArray(..)) => {
                 // A16: the element is read in place, without loading the whole array.
                 let (base, operand) = self.fixed_base(array);
-                let position = self.expression(index);
+                let position = if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                    let length = fixed_length(&array.ty).to_string();
+                    self.bound_value(index, &length)
+                } else {
+                    self.expression(index)
+                };
                 let Type::FixedArray(element, _) = &array.ty else {
                     unreachable!()
                 };
@@ -6544,7 +6575,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             TypedExprKind::Index(array, index) => {
                 let proven = self.ranges.index_in_bounds(array, index);
                 let (value, frames) = self.read_operand(array);
-                let index = self.expression(index);
+                let index = if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                    let length =
+                        self.value(format!("extractvalue {} {value}, 1", self.ty(&array.ty)));
+                    self.bound_value(index, &length)
+                } else {
+                    self.expression(index)
+                };
                 let (Type::Array(element) | Type::List(element) | Type::Vec(element)) = &array.ty
                 else {
                     unreachable!()
@@ -6661,11 +6698,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     operand
                 }
             }
-            TypedExprKind::Dereference(value) if value.ty.slice_element().is_some() => {
+            TypedExprKind::Dereference(value) | TypedExprKind::ReferenceOperand(value)
+                if value.ty.slice_element().is_some() =>
+            {
                 let view = self.expression_mode(value, false);
                 self.spill(&expression.ty, &view)
             }
-            TypedExprKind::Dereference(value) => self.expression_mode(value, false),
+            TypedExprKind::Dereference(value) | TypedExprKind::ReferenceOperand(value) => {
+                self.expression_mode(value, false)
+            }
             TypedExprKind::Field(value, index) => {
                 let slot = self.place(value);
                 let position = self.field_slot(&value.ty, *index);
@@ -6695,19 +6736,36 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             }
             TypedExprKind::Index(value, index) if matches!(value.ty, Type::FixedArray(..)) => {
                 let base = self.place(value);
-                let position = self.expression(index);
+                let position = if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                    let length = fixed_length(&value.ty).to_string();
+                    self.bound_value(index, &length)
+                } else {
+                    self.expression(index)
+                };
                 self.fixed_element_pointer(&value.ty, &base, index, &position)
             }
             TypedExprKind::Index(value, index) => {
                 let proven = self.ranges.index_in_bounds(value, index);
                 if let Some(reference) = Self::shared_array_deref(value) {
                     let array = self.expression_mode(reference, false);
-                    let index = self.expression(index);
+                    let index = if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                        let length =
+                            self.value(format!("extractvalue {} {array}, 1", self.ty(&value.ty)));
+                        self.bound_value(index, &length)
+                    } else {
+                        self.expression(index)
+                    };
                     return self.indexed_pointer(proven, &value.ty, &array, &index);
                 }
                 let slot = self.place(value);
                 let array = self.value(format!("load {}, ptr {slot}", self.ty(&value.ty)));
-                let index = self.expression(index);
+                let index = if matches!(index.kind, TypedExprKind::FromEnd { .. }) {
+                    let length =
+                        self.value(format!("extractvalue {} {array}, 1", self.ty(&value.ty)));
+                    self.bound_value(index, &length)
+                } else {
+                    self.expression(index)
+                };
                 self.indexed_pointer(proven, &value.ty, &array, &index)
             }
             _ => unreachable!("borrow checker requires an addressable place"),
@@ -7021,6 +7079,21 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         ))
     }
 
+    fn bound_value(&mut self, bound: &TypedExpr, length: &str) -> String {
+        match &bound.kind {
+            TypedExprKind::FromEnd { offset, after } => {
+                let offset = self.expression(offset);
+                let shifted = self.value(format!("sub i64 {length}, {offset}"));
+                if *after {
+                    shifted
+                } else {
+                    self.value(format!("sub i64 {shifted}, 1"))
+                }
+            }
+            _ => self.expression(bound),
+        }
+    }
+
     fn array_slice(
         &mut self,
         source: &TypedExpr,
@@ -7041,8 +7114,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             self.expression_mode(source, false)
         };
         let length = self.value(format!("extractvalue %tz.array {view}, 1"));
-        let start = start.map_or_else(|| "0".into(), |start| self.expression(start));
-        let end = end.map_or_else(|| length.clone(), |end| self.expression(end));
+        let start = start.map_or_else(|| "0".into(), |start| self.bound_value(start, &length));
+        let end = end.map_or_else(|| length.clone(), |end| self.bound_value(end, &length));
         let ordered = self.value(format!("icmp ule i64 {start}, {end}"));
         let bounded = self.value(format!("icmp ule i64 {end}, {length}"));
         let valid = self.value(format!("and i1 {ordered}, {bounded}"));
@@ -8069,14 +8142,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     });
                 }
             }
-            let take = operator == Add;
-            // Concatenation reads both operands and then destroys them, so stack strings stay put.
-            let (lhs, left_frames) = if take {
+            let left_borrowed = matches!(left.kind, TypedExprKind::ReferenceOperand(_));
+            let right_borrowed = matches!(right.kind, TypedExprKind::ReferenceOperand(_));
+            let take_left = operator == Add && !left_borrowed;
+            let take_right = operator == Add && !right_borrowed;
+            // Concatenation reads both operands and then destroys owned ones; borrowed reference
+            // operands (`ReferenceOperand`) are read in place and never appended into or freed (A40).
+            let (lhs, left_frames) = if take_left {
                 self.take_operand(left)
             } else {
                 self.read_operand(left)
             };
-            let (rhs, right_frames) = if take {
+            let (rhs, right_frames) = if take_right {
                 self.take_operand(right)
             } else {
                 self.read_operand(right)
@@ -8085,7 +8162,7 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             let runtime = &ty[1..];
             let result = match operator {
                 Add => {
-                    let operation = if left_frames.is_empty() {
+                    let operation = if take_left && left_frames.is_empty() {
                         "append"
                     } else {
                         "concat"
@@ -8112,15 +8189,18 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 }
                 _ => unreachable!("string operator checked"),
             };
-            if take {
+            if take_left {
                 if left_frames.is_empty() {
                     self.forget_temporary(&lhs);
                 } else {
                     self.drop_framed(&left.ty, &lhs, &left_frames);
                 }
-                self.drop_framed(&right.ty, &rhs, &right_frames);
             } else {
                 self.release_operand(left, &lhs, &left_frames);
+            }
+            if take_right {
+                self.drop_framed(&right.ty, &rhs, &right_frames);
+            } else {
                 self.release_operand(right, &rhs, &right_frames);
             }
             return if operator == NotEqual {

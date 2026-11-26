@@ -1,0 +1,12 @@
+def greet :: string -> string -> string = \a b -> a + b
+def same :: string -> string -> bool = \a b -> a == b
+def add_ref :: ref i64 -> i64 -> i64 = \a b -> a + b
+
+let x = "hi"
+let y = "!"
+let n = 40
+let joined = greet x y
+$"{joined} {same x x} {add_ref (ref n) 2} {x}"
+
+// rule: TYP-024
+// expect: stdout "hi! true 42 hi\n"

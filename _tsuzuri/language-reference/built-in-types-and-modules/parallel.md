@@ -6,11 +6,11 @@
 
 ## この記事のポイント
 
-- `init`、`map`、`map_ref`、`reduce`、`for_each_chunk` は、その場で全部の引数を渡して呼ぶ必要があります。関数値にはできません。
+- `init`、`map`、`map_ref`、`reduce`、`for_each_chunk`、`for_each_chunk_with` は、その場で全部の引数を渡して呼ぶ必要があります。関数値にはできません。
 - チャンクの境界は CPU 数では変わりません。同じ入力なら、ネイティブでも WASM の逐次経路でも同じ分割です。
 - `reduce` の結合順はチャンク順で固定です。浮動小数点では `Array.reduce` とビットが違うことがあります。
 - `fold` は、`Monoid` の法則（結合律と単位元）が成り立ち、`empty`・`combine` が出力や共有状態への書き込みなどの作用を持たなければ、`Array.fold_monoid` とビットまで同じ値を返します。浮動小数点を含む型の `Monoid` は `E1039` で拒否されます。[Monoid](monoid.md) を見てください。
-- コールバックが純粋なら、`map`・`map_ref`・`init`・`for_each_chunk` と整数の `sum` は逐次の対応する関数と同じ結果です（[逐次と同じ結果になる条件](#逐次と同じ結果になる条件)）。
+- コールバックが純粋なら、`map`・`map_ref`・`init`・`for_each_chunk`・`for_each_chunk_with` と整数の `sum` は逐次の対応する関数と同じ結果です（[逐次と同じ結果になる条件](#逐次と同じ結果になる条件)）。
 - ネイティブでは tzroutine のスケジューラーの上で、呼び出し元と最大 P 個（`TSUZURI_MAXPROCS`）の手伝いの tzroutine がチャンクを分けます（[スレッドと WASM](#スレッドと-wasm)）。
 - 既定の WASM は逐次です。スレッドが欲しいときは `--wasm-feature threads` を明示します。
 
@@ -42,6 +42,7 @@ Parallel.sum ref squares
 | `Parallel.sum` | `(Numeric<'a>, Add<'a>, Copy<'a>, Send<'a>) => ref ['a] -> 'a` | `reduce` の薄いラッパー |
 | `Parallel.fold` | `(Monoid<'m>, Copy<'m>, Send<'m>) => ref ['m] -> 'm` | `Monoid.empty ()` と `Monoid.combine` による `reduce`。入力は共有借用 |
 | `Parallel.for_each_chunk` | `Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` | 入力は呼び出しの間だけ排他借用 |
+| `Parallel.for_each_chunk_with` | `(Sync<'s>, Send<'a>) => i64 -> ref 's -> (ref 's -> i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` | 読み取り専用の共有借用 `ref 's` と排他スライスを並列チャンクへ渡す |
 
 `map` の関数が先、配列が後なのは `Array.map` と同じです。Copy 型でも、配列や関数値の複製は深いコピーです。大きい要素や非 Copy の要素は `map_ref` にしてください。
 
@@ -84,6 +85,27 @@ Array.sum ref values
 
 8 要素を 3 個ずつ分けると、チャンクは添字 0、3、6 から始まります。各位置を 2 倍して足すと `0+2+4+6+8+10+12+14` で 56 です。戻ったときには全部の書き込みが見えます。
 
+別の配列や窓を複製せずに読みながら排他チャンクへ書き込むときは、`for_each_chunk_with size shared body values` を使います。2 つ以上の入力を共有するときは、`let inputs = (ref a, ref b)` のように局所に束縛してから `(ref inputs)` を渡します（同じ配列を `shared` と `values` の両方に渡すと `E1014` です）。
+
+```tsuzuri run=110
+let a = [1, 2, 3, 4]
+let b = [10, 20, 30, 40]
+let inputs = (ref a, ref b)
+let mut out = [0, 0, 0, 0]
+Parallel.for_each_chunk_with 2 (ref inputs) (\pair start chunk ->
+    match pair with
+    | (la, rb) ->
+        for i in 0i64 ..= (chunk.length - 1) do
+            Array.write i (la[start + i] + rb[start + i]) chunk) (ref mut out)
+Array.sum ref out
+```
+
+実行結果:
+
+```text
+110
+```
+
 ## チャンク境界
 
 `init`、`map`、`map_ref`、`reduce`、`sum` のチャンク数は、要素数を `n` として次のとおりです。空なら 0 です。
@@ -122,7 +144,7 @@ Parallel.reduce 7 (\left right -> left + right) (ref empty)
 | `fold` | `Array.fold_monoid` と同一（ビットまで） | `Monoid` の法則が成り立つ。`empty`・`combine` に作用がない。浮動小数点を含む型は `E1039` |
 | `map`・`map_ref` | `Array.map`・`Array.mapr` と同一（各要素の値と添字の順） | コールバックが純粋。純粋でなければ、副作用の回数・順序・実行するスレッドは未規定 |
 | `init` | `new [T](n, f)` と同一 | `f` が純粋 |
-| `for_each_chunk` | チャンクを先頭から順に処理する逐次のループと同一 | `body` が純粋（自分のチャンクだけを書く。型が保証します） |
+| `for_each_chunk`・`for_each_chunk_with` | チャンクを先頭から順に処理する逐次のループと同一 | `body` が純粋（自分のチャンクだけを書く。型が保証します） |
 | `sum`（整数） | `Array.sum` と同一 | 整数の加算は折り返しても結合的 |
 | `sum`（浮動小数点） | 決定的だが `Array.sum` と異なりうる | 同じ順序が要るなら `Array.sum_pairwise`・`Array.sum_kahan` |
 | `reduce` | 決定的。結合律と単位元が成り立てば `fold` と同じ | 成り立たなければ `Array.fold`・`Array.reduce` と異なる |

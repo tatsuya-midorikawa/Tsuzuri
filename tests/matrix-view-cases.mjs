@@ -150,6 +150,7 @@ export const cases = [
   ...[[0, 0], [0, 3], [3, 0], [1, 1], [2, 3], [4, 4], [7, 2]].map(([rows, cols]) => ["rowwise", [BigInt(rows), BigInt(cols)], rowwise(rows, cols)]),
   ...[0, 1, 2, 5].map((n) => ["owned_matrix", [BigInt(n)], ownedMatrix(n)]),
   ...[0, 1, 2, 5, 12].map((n) => ["owned_elements", [BigInt(n)], ownedElements(n)]),
+  ["a37_chained_matrix_view", [], mix(105n, 108n)],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.

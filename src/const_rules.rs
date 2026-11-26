@@ -180,7 +180,10 @@ pub(super) fn validate_function(
             | K::StringLength(value)
             | K::UnionTag(value)
             | K::UnionPayload { value, .. } => pending.push((value, Position::Place)),
-            K::Borrow(value, false) | K::BorrowOperand(value) | K::Dereference(value) => {
+            K::Borrow(value, false)
+            | K::BorrowOperand(value)
+            | K::Dereference(value)
+            | K::ReferenceOperand(value) => {
                 if !reading {
                     return Err(failure(
                         DiagnosticKind::ConstBorrowNotAllowed,
@@ -358,6 +361,7 @@ pub(super) fn validate_function(
             | K::ListTail(..)
             | K::NewList(..)
             | K::Slice { .. }
+            | K::FromEnd { .. }
             | K::Borrow(_, true)
             | K::CaseConstructor { .. }
             | K::Try(_)
@@ -370,7 +374,7 @@ pub(super) fn validate_function(
         // through, so its reference type is not a value.
         let read_through = matches!(
             expression.kind,
-            K::Borrow(..) | K::BorrowOperand(_) | K::Dereference(_)
+            K::Borrow(..) | K::BorrowOperand(_) | K::Dereference(_) | K::ReferenceOperand(_)
         );
         if !read_through
             && !*cache

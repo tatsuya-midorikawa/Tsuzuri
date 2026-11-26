@@ -122,7 +122,7 @@ fn rejects(source: &str, code: &str) {
 - **テストプロジェクトは 1 つずつ別の一時 root に置く**（ディレクトリ内のソースは再帰的に読み込まれる）。
 - **整数の cast** は、整数から整数ならビットを保つ（切り捨て・符号拡張）。飽和するのは浮動小数点から整数だけ。
 - **Tsuzuri の構文の落とし穴**: `pair.0` は不可（`match pair with | (a, _) -> a`）、`(5: i64)` は不可（`let x: i64 = 5`）、`Display.to_string` はなく `to_string`（消費）か `Display.display`（借用）、`new` は予約語、
-  `for x in a .. b` は**両端を含む**（スライス `xs[a..b]` は半開）、複数行の条件は `if`／`elif`／`else`、明示ブロックの文の区切りは `;`、`abs` は f64 だけで整数は `Int.abs`、無名関数は `\x -> body`。
+  `for x in a .. b` とスライス `ref xs[a..b]` は edition 2028 では**両方とも終端を含む**（2026・2027 のスライスは半開で、2027 の `for` は `..=`・`..<` を明示する）、複数行の条件は `if`／`elif`／`else`、明示ブロックの文の区切りは `;`、`abs` は f64 だけで整数は `Int.abs`、無名関数は `\x -> body`。
   定義は `def name :: Type = \args -> body`、再帰は `def rec`、可変な局所は `let mut`、借用は `ref`／`ref mut`／`deref`。
 
 ## 11. 第3期のチケットの共通の約束

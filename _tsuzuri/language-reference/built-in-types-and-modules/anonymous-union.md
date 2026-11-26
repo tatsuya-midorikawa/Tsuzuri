@@ -255,12 +255,15 @@ width chosen + first_width (Some "ab")
 42
 ```
 
-ラムダ式の引数と `for...in` にも書けます。網羅性は検査せず、一致しなければ実行時にトラップします（`let` は名前しか取らないので書けません）。
+edition 2027 以降では、ラムダ式の引数・`for...in`・`let` の束縛は反駁不可能なパターンだけを受け付けるため、`:? T` は `match` か関数ガードの中で使います（edition 2026 ではラムダ式の引数と `for...in` でも `W1012` の警告付きで書け、一致しなければ実行時にトラップします）。
 
 ```tsuzuri run=6
-let values: [(i64 | string)] = [1, 2, 3]
+let values: [(i64 | string)] = [1, "skip", 2, 3]
 let mut total = 0
-for :? i64 as n in values do total = total + n
+for item in values do
+    match item with
+    | :? i64 as n -> total = total + n
+    | :? string -> ()
 total
 ```
 

@@ -790,7 +790,7 @@ fn spacing(
     if hints.prefixes.contains(&previous.span.start)
         && matches!(
             previous.kind,
-            Minus | Plus | Ampersand | Star | DoubleStar | Bang | Tilde | TripleTilde
+            Minus | Plus | Ampersand | Star | DoubleStar | Bang | Tilde | TripleTilde | Caret
         )
     {
         return if matches!(previous.kind, Minus | Plus) {
@@ -972,7 +972,15 @@ impl Canonical {
         }
         if matches!(
             expression.kind,
-            ExprKind::Unary(..) | ExprKind::Borrow(..) | ExprKind::Dereference(..)
+            ExprKind::Unary(..)
+                | ExprKind::Borrow(..)
+                | ExprKind::Dereference(..)
+                | ExprKind::FromEnd(_)
+                | ExprKind::Slice { .. }
+                | ExprKind::MultiIndex {
+                    borrow: Some(_),
+                    ..
+                }
         ) {
             self.hints.prefixes.insert(expression.span.start);
         }
@@ -1079,7 +1087,8 @@ impl Canonical {
             | Checked(value)
             | NewLiteral(value)
             | Borrow(value, ..)
-            | Dereference(value, _) => self.expression(value),
+            | Dereference(value, _)
+            | FromEnd(value) => self.expression(value),
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
@@ -1117,12 +1126,34 @@ impl Canonical {
                 }
                 self.expression(finish);
             }
-            Slice {
-                value, start, end, ..
-            } => {
+            Slice { value, range, .. } => {
                 self.expression(value);
-                for bound in start.iter_mut().chain(end.iter_mut()) {
+                for bound in range
+                    .start
+                    .iter_mut()
+                    .chain(range.end.iter_mut())
+                    .chain(range.step.iter_mut())
+                {
                     self.expression(bound);
+                }
+            }
+            MultiIndex { value, keys, .. } => {
+                self.expression(value);
+                for key in keys {
+                    match key {
+                        IndexComponent::Expr(expr) => self.expression(expr),
+                        IndexComponent::Range(range) => {
+                            for bound in range
+                                .start
+                                .iter_mut()
+                                .chain(range.end.iter_mut())
+                                .chain(range.step.iter_mut())
+                            {
+                                self.expression(bound);
+                            }
+                        }
+                        IndexComponent::Whole(span) => *span = Span::default(),
+                    }
                 }
             }
             Array(values) | List(values) | Tuple(values) => {

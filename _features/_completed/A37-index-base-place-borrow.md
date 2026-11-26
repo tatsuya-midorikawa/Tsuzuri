@@ -7,7 +7,7 @@
 | 規模 | M（手順 5 は別のコミットにする） |
 | 依存 | –（土台の [NC04](_completed/NC04-generic-index-class-and-slice.md) と [A31](_completed/A31-in-place-writes-keep-stored-borrows.md) は完了済み） |
 | 後続 | [A38](A38-index-evaluation-order.md), [NC16](NC16-index-ref-and-zero-alloc-element-reads.md), [NC18](NC18-multi-axis-bracket-indexing.md), [NC20](NC20-compound-assignment-and-mutable-index-views.md), [NC06](NC06-tensor-ufuncs-and-elementwise.md)（演算子インスタンスの段。手順 5 の後）, [NC19](NC19-operator-extension-instances.md)（手順 5 の後） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認） |
 | 承認 | 承認済み（D-66 の委任で決定、2026-11-25）: orphan 規則（D4。今ある 1 引数の算術クラスにも当てる）と、利用者と std のインスタンスの重なりの報告の位置（D7）。不具合の修正（D1〜D3・D5・D6）は承認が要らない（今受理している危険なプログラムが `E1013`・`E1014` になる）。NC03・NC04 を含む最初のリリースの前に入れること（D8）と、添字の評価順を A37 で変えないこと（D9）は決定（D-66 の委任で決定、2026-11-25） |
 | 改善する劣位 | 不具合（メモリ安全性）: 結果が土台を借りる `Index`（`t[[Slice…]]`、`m[(Slice…, Slice…)]`、利用者のインスタンス）の土台に一時値を書くと検査を通り、窓は解放した一時値のメモリを読む。土台が region を持つ型（`Tensor.Mut`、`Tensor.View`、`MatrixView`、利用者の region 付きレコード）だと、窓は土台の場所を借りないので、窓が生きている間に土台へ書き込め、土台を置き換えた後も古いメモリを読める。同じことを関数の形（`Tensor.freeze (ref m)`、`pick (ref base)`）で書くと正しく `E1014` になる。不具合（一貫性）: 利用者のモジュールが、std の型と組み込みの型を振り分けの位置に持つ `Index`・`IndexMut` と 1 引数の算術クラスのインスタンスを書ける。利用者の `instance Mul<Tensor<f64>>` が `t * t` の意味を決め、`instance Neg<i32u>` が符号なし整数の `-x` を通す（現状 5）。std がインスタンスを足すと、こうした利用者のソースは std のファイルの位置の `E1016` で壊れる |

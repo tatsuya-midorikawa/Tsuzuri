@@ -759,11 +759,11 @@ test "set fill blit write swap_in in place" =
 
 test "slices of a larger array are updated in place" =
     let mut values = [0, 1, 2, 3, 4, 5]
-    Array.fill 0 2 9 (ref mut values[2..5])
+    Array.fill 0 2 9 (ref mut values[2..<5])
     eq values [0, 1, 9, 9, 4, 5]
-    Array.set 0 7 (ref mut values[1..3])
+    Array.set 0 7 (ref mut values[1..<3])
     eq values [0, 7, 9, 9, 4, 5]
-    Array.blit 0 0 2 [8, 8] (ref mut values[4..6])
+    Array.blit 0 0 2 [8, 8] (ref mut values[4..<6])
     eq values [0, 7, 9, 9, 8, 8]
 
 // ---- Conversions ----

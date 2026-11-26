@@ -1,7 +1,7 @@
 # Tsuzuri guide: workflow
 
 ## Project and commands
-- `tsuzuri new app --namespace Acme::App` writes `Tsuzuri.toml` (`edition = "2027"`), `Main.tz`, `.gitignore`, `AGENTS.md`, `llms.txt`. Pass the project directory: `Main.tz` is the entry and every source below it is loaded.
+- `tsuzuri new app --namespace Acme::App` writes `Tsuzuri.toml` (`edition = "2028"`), `Main.tz`, `.gitignore`, `AGENTS.md`, `llms.txt`. Pass the project directory: `Main.tz` is the entry and every source below it is loaded.
 - `check` type-checks; `run` builds and runs (`-O3`); `build -o out` keeps the executable; `test`; `bench`; `fmt` (`--check` in CI); `doc -o dir`; `fetch` gets git and registry dependencies into `Tsuzuri.lock`. `script FILE args` runs one file; `repl`; `watch check .` reruns on save.
 - Exit codes: 0 success (warnings too, unless `--deny-warnings`), 1 diagnostics or failure, 2 bad arguments.
 

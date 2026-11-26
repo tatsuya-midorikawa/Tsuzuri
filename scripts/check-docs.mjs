@@ -70,9 +70,16 @@ try {
                 assert.ok(separator > 0, `${label}: invalid example option ${option}`);
                 return [option.slice(0, separator), option.slice(separator + 1)];
             }));
-            assert.ok(Object.keys(options).every(key => ['project', 'file', 'run'].includes(key)), `${label}: unknown example option`);
+            assert.ok(Object.keys(options).every(key => ['project', 'file', 'run', 'edition'].includes(key)), `${label}: unknown example option`);
+            if (options.edition !== undefined) {
+                assert.ok(['2026', '2027', '2028'].includes(options.edition), `${label}: unsupported example edition ${options.edition}`);
+            }
             const key = options.project ?? `block-${block}`;
-            const project = projects.get(key) ?? { files: new Map(), expected: undefined };
+            const existing = projects.get(key);
+            if (existing) {
+                assert.equal(options.edition, existing.edition, `${label}: inconsistent edition in project ${key}`);
+            }
+            const project = existing ?? { files: new Map(), expected: undefined, edition: options.edition };
             const file = options.file ?? 'Main.tz';
             assert.ok(!file.includes('..') && !file.startsWith(sep) && ['.tz', '.tt', '.tc'].includes(extname(file)), `${label}: invalid example file`);
             assert.ok(!project.files.has(file), `${label}: duplicate example file ${file}`);
@@ -82,6 +89,9 @@ try {
         }
         for (const [key, project] of projects) {
             const directory = mkdtempSync(join(temporary, 'example-'));
+            if (project.edition !== undefined) {
+                writeFileSync(join(directory, 'Tsuzuri.toml'), `[package]\nname = "doc-example"\nversion = "0.1.0"\nedition = "${project.edition}"\n`);
+            }
             for (const [file, content] of project.files) {
                 const path = join(directory, file);
                 mkdirSync(dirname(path), { recursive: true });

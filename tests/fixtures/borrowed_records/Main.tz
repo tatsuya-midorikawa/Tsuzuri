@@ -426,3 +426,39 @@ fn target_owned count =
         retag (ref mut tag) (if index % 2 == 0 then ref second else ref first) (index * 1000)
         index = index + 1
     tag.text.length * 100000 + tag.owned.length
+
+// A39: edition 2027 exclusive borrows along record field paths (`live == 0` verified by harness).
+private record A39Box { n: i64, xs: [i64], label: string }
+private record A39Grid { data: [i64] }
+private record A39Holder { g: A39Grid, tag: i64 }
+
+instance IndexMut<A39Grid, i64, i64> {
+    fn index_mut k v self = Array.write (deref k) v self.data
+}
+
+private def a39_add_len :: ref mut i64 -> ref [i64] -> unit
+fn a39_add_len n xs = deref n = deref n + Array.sum xs
+
+private def a39_set_label :: ref mut string -> string -> unit
+fn a39_set_label dst s = deref dst = clone_string s
+
+export def a39_field_slice_and_disjoint :: i64
+fn a39_field_slice_and_disjoint =
+    let mut b = A39Box { n: 5, xs: [10, 20, 30], label: $"init-{1}" }
+    let s = ref mut b.xs[1..]
+    Array.write 0 90 s
+    Array.write 2 40 b.xs
+    a39_add_len (ref mut b.n) (ref b.xs)
+    a39_set_label (ref mut b.label) $"updated-{b.n}"
+    let mut h = A39Holder { g: A39Grid { data: [1, 2, 3] }, tag: 7 }
+    h.g[1] = 42
+    b.n + b.label.length + h.g.data[1] + h.tag
+
+export def a39_arena_frame_escape :: i64
+fn a39_arena_frame_escape =
+    let mut b = A39Box { n: 0, xs: [1, 2], label: $"out-{123}" }
+    let r = ref mut b.xs
+    deref r = new [9, 8, 7]
+    a39_set_label (ref mut b.label) $"inside-{42}"
+    b.xs.length * 100 + b.label.length
+

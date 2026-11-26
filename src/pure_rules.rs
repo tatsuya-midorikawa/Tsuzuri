@@ -190,9 +190,21 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve | NetOpen | NetAccept | NetRead
         | NetWrite | NetClose | NetClassify => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
-        RoutineScope | ParallelInit | ParallelMap | ParallelMapRef | ParallelReduce
-        | ParallelForEachChunk | RoutineGo | WaitGroupGo | RoutineYield | RoutineCount
-        | RoutineMaxProcs | RoutineCpuCount | TimeAfterFunc | ContextAfterFunc => Some(Task),
+        RoutineScope
+        | ParallelInit
+        | ParallelMap
+        | ParallelMapRef
+        | ParallelReduce
+        | ParallelForEachChunk
+        | ParallelForEachChunkWith
+        | RoutineGo
+        | WaitGroupGo
+        | RoutineYield
+        | RoutineCount
+        | RoutineMaxProcs
+        | RoutineCpuCount
+        | TimeAfterFunc
+        | ContextAfterFunc => Some(Task),
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
@@ -490,6 +502,7 @@ fn closed_task_operation(builtin: Builtin) -> bool {
             | Builtin::ParallelMapRef
             | Builtin::ParallelReduce
             | Builtin::ParallelForEachChunk
+            | Builtin::ParallelForEachChunkWith
     )
 }
 
@@ -672,6 +685,7 @@ fn closed_callable<'a>(
             }
             K::Cast(value)
             | K::SaturatingIndex(value)
+            | K::FromEnd { offset: value, .. }
             | K::Borrow(value, _)
             | K::BorrowOperand(value)
             | K::Dereference(value) => pending.push((value, direct, staged)),
@@ -1085,9 +1099,11 @@ impl<'a> Scanner<'a> {
                     | K::Borrow(..)
                     | K::BorrowOperand(_)
                     | K::Dereference(_)
+                    | K::ReferenceOperand(_)
                     | K::Assign(..)
                     | K::Cast(_)
                     | K::SaturatingIndex(_)
+                    | K::FromEnd { .. }
                     | K::Construct { .. }
                     | K::UnionTag(_)
                     | K::UnionPayload { .. }
@@ -1573,7 +1589,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            169
+            170
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
     }

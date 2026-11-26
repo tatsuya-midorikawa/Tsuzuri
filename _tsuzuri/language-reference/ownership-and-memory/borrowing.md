@@ -106,6 +106,29 @@ count
 
 参照先の置換は `deref r = value`（edition 2026 の記号形式では `*r = value`）で行います。評価結果の型は `unit` です。
 
+### レコードのフィールドの排他借用（edition 2027）
+
+<!-- rule: OWN-032 -->
+edition 2027 以降では、`let mut` の持ち主または `ref mut` の参照先を根とし、途中の段がすべてレコードのフィールドである場所も、`ref mut b.f` や排他スライス `ref mut b.xs[a..b]`（および `Array.write 0 9 b.xs` の暗黙の排他借用）として借りられます。別のフィールドどうし（`ref mut b.n` と `ref b.xs`、または `ref mut b.xs[0..]`）は同時に借りられますが、フィールドの借用が生きているあいだ持ち主の全体 `b` を読んだり move・置換したりすると `E1014` になります。配列・リストの要素、共用体のペイロード、タプルの成分を経由する経路（`ref mut arr[0].n` など）はどの edition でも排他借用できません（`E1014`）。
+
+```tsuzuri run=52
+record Boxed { x: i64, xs: [i64] }
+def add_len :: ref mut i64 -> ref [i64] -> unit = \dst xs ->
+    deref dst = deref dst + Array.sum xs
+
+let mut b = Boxed { x: 2, xs: [10, 20] }
+let s = ref mut b.xs[0..]
+Array.write 0 30 s
+add_len (ref mut b.x) (ref b.xs)
+b.x
+```
+
+実行結果:
+
+```text
+52
+```
+
 ## 借用から導く最適化情報
 
 コンパイラは、検証済みの借用契約を通常の内部関数の LLVM 属性にも伝えます。
@@ -233,7 +256,7 @@ value
 | 呼び出し先の仮引数型 | 渡した実引数 | 自動補完される動作 |
 | --- | --- | --- |
 | `ref T` | 所有値 `x: T` | `ref x` による共有借用 |
-| `ref mut T` | 可変な所有値 `x: T` | `ref mut x` による排他借用 |
+| `ref mut T` | 可変な所有値 `x: T`、または可変な持ち主・排他参照を根にしたレコードのフィールド（edition 2027 以降） | `ref mut x` / `ref mut b.f` による排他借用 |
 | `ref T` | 参照 `r: ref T` または `ref mut T` | `ref r` による共有再借用 |
 | `ref mut T` | 排他参照 `r: ref mut T` | `ref mut r` による排他再借用 |
 | 非参照の値型 `T`（Copy のみ） | 参照 `r: ref T` または `ref mut T` | `deref r` による自動逆参照 |
@@ -267,7 +290,7 @@ a + b + c + d
   - 結果の型変数を含む仮引数（`Array.get` の `ref ['a]`、`Maybe.get` の `Maybe<'a>`）へ、名前やフィールドではなく呼び出しやリテラルを直接渡す呼び出し。内側の引数が借りられる場所なら、その参照が渡るので通ります（`String.length (Maybe.get (Maybe.Some s))` は `s` を借ります）。一時値や値の配列リテラルだと通りません。`String.length (Maybe.get (Maybe.Some "hi"))` は `E1013`、`id (Array.get 0 [a, b])` は `E1003` です。`let` で束縛しても通ります。
   - 結果の型を引数ではなく文脈だけが決める呼び出し（`ref Monoids.All` の仮引数へ渡す `Monoid.empty ()`、結果だけが型変数のクラスのメソッド）。`Monoid.Monoid<ref Monoids.All>` のような参照の型のインスタンスは無いので `E1005` です。型を書かない `let` で束縛しても同じなので、`let r: Monoids.All = Monoid.empty ()` と型を書きます。
   - 結果の型変数を型に含む局所の値から呼ぶ呼び出し（`let get = Array.get` のように多相の関数を局所に入れた `get 0 xs`）。局所の値を通して結果に触れられるので、推測を待ちません。`id (get 0 xs)` は `E1003` です。`let` で束縛すれば通ります（`let r = get 0 xs` と `id r`）。
-- 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。先に `let` で束縛します。
+- 一時値の借用は呼び出しの間だけです。部分適用（`let f = add (n as i64)`）のように借用が呼び出しのあとまで残り得る場合は `E1013` です。結果が土台を借りる添字（`ref t[[Slice.range 1 3]]` など）は関数の実引数に渡すときも `ref` が必要で（`Tensor.count (ref t[[Slice.range 1 3]])`。省くと `E1042`）、その土台も、インスタンスが土台の中身だけを返す窓の連鎖を除いて一時値にはできません（[Tensor](../built-in-types-and-modules/tensor.md#借用規則と診断)）。先に `let` で束縛します。
 - `if`・`match`・`try`・ブロックの値の型は、仮引数の型から推論しません。edition 2027 で関数型の仮引数へ `if c then \p -> p.x else \p -> p.y` を渡すと、ラムダの仮引数の型が決まらずエラーになります。`\(p: Point) -> p.x` と型を書くか、`let pick: Point -> i64 = if c then …` と束縛してから渡します。
 - 規約 `[Read]`・`[Mut]` を持つ関数型が期待される位置（`if n > 0 then text_length else …` の `else` の枝など）のラムダは、引数を値の型（`\(text: string) -> …`）でも参照の型（`\(text: ref string) -> …`、`\(counter: ref mut Counter) -> …`）でも注釈できます。値の型なら引数は参照先の値を読み、参照の型なら注釈のとおり参照になります（[ラムダ式](../values-and-functions/lambda-expressions.md#型注釈とパターン引数)）。
 
@@ -291,11 +314,11 @@ read (n as i64) + read (-5) + read (if flag then 10 else 20) + read (match n wit
 
 ### 共有スライス（ref [T]）
 
-共有スライスは `ref values[start..end]` の構文で作成し、型は `ref [T]` です。
+共有スライスは `ref values[start..<end]`（終端を含まない半開区間）または `ref values[start..end]`（edition 2028 では終端を含む閉区間）の構文で作成し、型は `ref [T]` です。
 
 ```tsuzuri run=50
 let values = [10, 20, 30, 40]
-let part = ref values[1..3]
+let part = ref values[1..<3]
 part[0] + part[1]
 ```
 
@@ -305,15 +328,17 @@ part[0] + part[1]
 50
 ```
 
-範囲は `start..end`（`end` は含まない半開区間）、`start..`（末尾まで）、`..end`（先頭から）が指定できます。スライス自身も `.length` の取得やインデックスアクセス `part[i]`、`for` ループによる走査が可能です。
+範囲は `start..<end`（`end` は含まない半開区間）、`start..=end`（`end` を含む閉区間。edition 2028 では素の `start..end` も同じ）、`start..`（末尾まで）、`..<end`・`..=end`（先頭から）や edition 2028 の `<..`・`<..<`・`^k` が指定できます。スライス自身も `.length` の取得やインデックスアクセス `part[i]`、`for` ループによる走査が可能です。
+
+`Tensor`・`Matrix`・`MatrixView` などの `Index` クラスで土台を借りる窓を取る添字も、配列のスライスと同じく `ref t[[Slice.range 1 3]]`・`ref m[(Slice.range 0 2, Slice.all())]` のように `ref` を付けて書きます（`ref` は添字に吸収され、式の型は `Tensor.View<T>` や `MatrixView<T>` です。省くと `E1042`、値を返す添字に `ref` を付けると `E1003` です）。
 
 ### 可変スライス（ref mut [T..]）
 
-配列の要素をその場で置き換えるには、可変スライスを使います。構文は `ref mut values[start..end]` で、型は `ref mut [T..]` です。終端を含めるときは `ref mut values[start..=end]` です。元の配列は `let mut` で束縛した名前か、すでに持っている排他参照である必要があります。一時値への可変スライスは `E1014` です。
+配列の要素をその場で置き換えるには、可変スライスを使います。構文は `ref mut values[start..<end]`（半開区間）や `ref mut values[start..=end]`（閉区間、edition 2028 では `ref mut values[start..end]` も閉区間）で、型は `ref mut [T..]` です。元の配列は `let mut` で束縛した名前か、すでに持っている排他参照である必要があります。一時値への可変スライスは `E1014` です。
 
 ```tsuzuri run=99
 let mut values = [1, 2, 3]
-let part = ref mut values[0..2]
+let part = ref mut values[0..<2]
 Array.write 0 99 part
 values[0]
 ```

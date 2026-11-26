@@ -361,9 +361,9 @@ fn rec partition_unordered view first last =
 
 private def sort_view :: Ord<'a> => ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view view index count =
-    let window = ref mut view[index .. index + count]
+    let window = ref mut view[index ..< index + count]
     let numbers = unordered_first window
-    Array.sort_in_place (ref mut window[numbers .. window.length])
+    Array.sort_in_place (ref mut window[numbers ..< window.length])
 
 /// Sorts a range in place, stably, with `Ord`; a NaN comes first, as in .NET.
 ///
@@ -394,7 +394,7 @@ fn sort values =
 
 private def sort_view_with :: Copy<'a> => own ('a -> 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view_with comparison view index count =
-    Array.sort_in_place_with comparison (ref mut view[index .. index + count])
+    Array.sort_in_place_with comparison (ref mut view[index ..< index + count])
 
 /// Sorts a range in place, stably, with a comparison that returns a negative number, zero or a positive number.
 ///
@@ -458,7 +458,7 @@ fn sort_withr comparison values =
 
 private def sort_view_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> own i64 -> own i64 -> unit
 fn sort_view_by comparison view index count =
-    sort_slice_by comparison (ref mut view[index .. index + count])
+    sort_slice_by comparison (ref mut view[index ..< index + count])
 
 private def sort_slice_by :: own (ref 'a -> ref 'a -> i64) -> ref mut ['a..] -> unit
 fn sort_slice_by comparison values =

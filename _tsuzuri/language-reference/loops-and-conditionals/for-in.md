@@ -68,8 +68,8 @@ Tsuzuri の `for...in` が直接受理するコレクションは以下の通り
 
 ### 整数範囲の反復
 
-<!-- rule: CTL-004 -->
-`start ..= finish`（終端を含む）と `start ..< finish`（終端を含まない）、ステップ幅を指定する `start .. step ..= finish`・`start .. step ..< finish` を使って、整数範囲を走査できます。配列の添字を順に回すときは `0 ..< xs.length` と書きます。
+<!-- rule: CTL-004 --> <!-- rule: CTL-031 -->
+`start ..= finish`（終端を含む）と `start ..< finish`（終端を含まない）、ステップ幅を指定する `start .. step ..= finish`・`start .. step ..< finish` を使って、整数範囲を走査できます。edition 2028 では、素の `start .. finish`（および `start .. step .. finish`）も終端を含む正準形として使え、さらに始端を含まない `start <.. finish`（`start + 1` から `finish` まで）と `start <..< finish`（`start + 1` から `finish - 1` まで。`start` がその整数型の最大値なら `start + 1` を計算せず 0 回になります）も書けます。配列の添字を順に回すときは `0 ..< xs.length` と書きます。
 
 ```tsuzuri run=30
 let mut sum = 0
@@ -121,10 +121,17 @@ total
 範囲は `for...in` 専用の列挙構文です。変数に保存すると `E1005`（`a range is an enumerable expression for 'for...in', not a stored value`）になります。浮動小数点の範囲もありません。ステップは 1 つだけで、`0 ..= 3 .. 6` のように 2 つ目の演算子が `..=`・`..<` だと `E0002`（`a range takes at most one step; write 'start .. step ..= finish'`）です。
 
 > [!NOTE]
-> 演算子のない素の `..`（`for i in 1 .. 4`）は `..=` と同じ意味ですが、edition 2027 では `E0004` です（edition 2026 では受理し、`--warn canonical` で `W1007` を出します）。`tsuzuri fix --edition 2027` が `..=` に書き換えます。スライスの `xs[a..b]` の `..` は半開のままで、どの edition でも使えます。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
+> 素の `..`（`for i in 1 .. 4`）は終端を含む閉区間で、edition 2028 では正準形です（edition 2027 では `E0004`、edition 2026 では受理して `--warn canonical` で `W1007` を出します）。スライスの素の `ref xs[a..b]` も edition 2028 では終端を含む閉区間になり、editions 2026・2027 では半開区間で `W1013` が出ます（どの edition でも同じ半開区間は `ref xs[a..<b]` と書きます）。`<..`・`<..<` は刻みを取らず、組み合わせると `E0002` です。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
 
-> [!WARNING]
-> 既知の不具合: 添字の角括弧 `xs[…]` の中に、範囲の `for` を含む式を書くと、ブロック `{ … }` や括弧の中であっても構文エラー `E0002`（`expected 'do' after the enumerable expression`）になります。`..=`・`..<`・素の `..` のどれでも同じです。`xs[({ let mut a = 0; for i in 0 ..= 1 do { a = a + i; () }; a })]` は通らないので、`let index = ({ let mut a = 0; for i in 0 ..= 1 do { a = a + i; () }; a })` のように式を `let` に束縛してから `xs[index]` と書いてください。
+```tsuzuri run=10%205
+let mut closed = 0
+for i in 1 .. 4 do
+    closed = closed + i
+let mut open_both = 0
+for j in 1 <..< 4 do
+    open_both = open_both + j
+$"{closed} {open_both}"
+```
 
 ### 文字列の走査（string と utf8string）
 

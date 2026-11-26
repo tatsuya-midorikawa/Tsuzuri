@@ -570,6 +570,7 @@ impl<'a> Checker<'a, '_> {
             root: local.id,
             fields: Vec::new(),
             through_drop: false,
+            non_record_step: false,
         };
         self.state
             .aliases
@@ -851,6 +852,7 @@ impl<'a> Checker<'a, '_> {
                     let mut places = self.place(&subject, &during)?;
                     for (place, _) in &mut places {
                         place.fields.push(ELEMENT);
+                        place.non_record_step = true;
                     }
                     self.state.aliases.insert(local.id, places);
                 }
@@ -986,6 +988,7 @@ impl<'a> Checker<'a, '_> {
                         .clear();
                 }
                 for (local, projection) in &alternative.bindings {
+                    self.pattern_locals.insert(local.id);
                     // As `TypedMatchArm::views`, which code generation follows.
                     if arm.borrowed.contains(&local.id)
                         && (!self.is_copy(&local.ty) || local.hides_narrowed())

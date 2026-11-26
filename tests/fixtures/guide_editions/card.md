@@ -9,7 +9,7 @@ def main :: unit -> i32 = \() ->
     0
 ```
 <!--endif-->
-<!--if edition=2027-->
+<!--if edition>=2027-->
 ```tsuzuri project=demo run=2027
 def main :: unit -> i32 = \() ->
     do! IO.writeln "2027"

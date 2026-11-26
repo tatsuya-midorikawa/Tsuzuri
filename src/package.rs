@@ -2382,11 +2382,11 @@ mod tests {
         for (keys, message) in [
             (
                 "edition = «\"2030\"»\n",
-                "unsupported edition '2030'; supported editions: 2026, 2027",
+                "unsupported edition '2030'; supported editions: 2026, 2027, 2028",
             ),
             (
                 "edition = «\" 2026\"»\n",
-                "unsupported edition ' 2026'; supported editions: 2026, 2027",
+                "unsupported edition ' 2026'; supported editions: 2026, 2027, 2028",
             ),
             ("edition = «2»026\n", "expected '\"'"),
             (

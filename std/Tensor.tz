@@ -464,11 +464,14 @@ fn to_tensor view =
 def map :: Copy<'a> => own ('a -> 'b) -> ref View<'a> -> Tensor<'b>
 fn map transform view =
     let total = volume (ref view.shape)
-    if total > 0 && is_contiguous view then
-        Tensor { shape: Array.copy (ref view.shape), data: Array.map_owned transform (ref view.data[view.offset .. view.offset + total]) }
+    if total == 0 then
+        Tensor { shape: Array.copy (ref view.shape), data: [] }
+    elif is_contiguous view then
+        let start = view.offset
+        Tensor { shape: Array.copy (ref view.shape), data: new ['b](total, \i -> transform view.data[start + i]) }
     else
         let packed = to_tensor view
-        Tensor { shape: Array.copy (ref packed.shape), data: Array.map_owned transform (ref packed.data) }
+        Tensor { shape: packed.shape, data: new ['b](total, \i -> transform packed.data[i]) }
 
 /// Views a rank 2 window as a matrix window without copying; traps unless the rank is 2 and both
 /// strides are non-negative (materialize negative-stride views with `to_tensor` first).
@@ -707,8 +710,8 @@ def as_slice_mut { r } :: ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]
 fn as_slice_mut view =
     assert (is_contiguous_mut (ref view))
     let total = volume (ref view.shape)
-    if total == 0 then ref mut view.data[0 .. 0]
-    else ref mut view.data[view.offset .. view.offset + total]
+    if total == 0 then ref mut view.data[0 ..< 0]
+    else ref mut view.data[view.offset ..< view.offset + total]
 
 /// Writes `value` at `index`; traps unless `index` has one entry per axis inside its extent.
 ///
@@ -1590,8 +1593,8 @@ instance Display<'a> => Display<View<'a>> {
     fn rec display view = format_strided view.data (ref view.shape) (ref view.strides) view.offset
 }
 
-private def slice_raw { r } :: own [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> View<'a> { r }
-fn slice_raw axes data offset shape strides =
+private def slice_raw { r } :: ref [Slice.Axis] -> ref { r } ['a] -> own i64 -> ref [i64] -> ref [i64] -> own bool -> View<'a> { r }
+fn slice_raw axes data offset shape strides row_major =
     let in_rank = shape.length
     let mut input_empty = false
     for d in 0i64 ..= (in_rank - 1) do
@@ -1609,7 +1612,7 @@ fn slice_raw axes data offset shape strides =
         | _ ->
             assert (in_axis < in_rank)
             let dim = shape[in_axis]
-            let stride = strides[in_axis]
+            let stride = if row_major then stride_of shape in_axis else strides[in_axis]
             match Slice.resolve dim (ref axes[i]) with
             | Slice.Resolved.Index pos ->
                 if !input_empty then
@@ -1638,7 +1641,11 @@ fn slice_raw axes data offset shape strides =
             in_axis = in_axis + 1
     while in_axis < in_rank do
         Vec.push_mut shape[in_axis] (ref mut out_shape)
-        Vec.push_mut (if input_empty then 0 else strides[in_axis]) (ref mut out_strides)
+        let tail_stride =
+            if input_empty then 0
+            elif row_major then stride_of shape in_axis
+            else strides[in_axis]
+        Vec.push_mut tail_stride (ref mut out_strides)
         in_axis = in_axis + 1
     let shape_arr = Vec.to_array out_shape
     assert (shape_arr.length <= 64)
@@ -1660,30 +1667,465 @@ fn slice_raw axes data offset shape strides =
 /// Tensor.to_array (Tensor.to_tensor (ref sub))
 /// ```
 def slice { r } :: own [Slice.Axis] -> ref View<'a> { r } -> View<'a> { r }
-fn slice axes view = slice_raw axes view.data view.offset (ref view.shape) (ref view.strides)
+fn slice axes view = slice_raw (ref axes) view.data view.offset (ref view.shape) (ref view.strides) false
+
+private def dense_offset :: ref [i64] -> ref [i64] -> i64
+fn dense_offset shape coords =
+    assert (coords.length == shape.length)
+    let mut offset = 0
+    for axis in 0i64 ..= (coords.length - 1) do
+        let c = coords[axis]
+        let dim = shape[axis]
+        assert (c >= 0 && c < dim)
+        offset = offset * dim + c
+    offset
+
+private def dense_offset_1 :: ref [i64] -> own i64 -> i64
+fn dense_offset_1 shape c0 =
+    assert (shape.length == 1)
+    assert (c0 >= 0 && c0 < shape[0])
+    c0
+
+private def dense_offset_2 :: ref [i64] -> own i64 -> own i64 -> i64
+fn dense_offset_2 shape c0 c1 =
+    assert (shape.length == 2)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1)
+    c0 * d1 + c1
+
+private def dense_offset_3 :: ref [i64] -> own i64 -> own i64 -> own i64 -> i64
+fn dense_offset_3 shape c0 c1 c2 =
+    assert (shape.length == 3)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    let d2 = shape[2]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1 && c2 >= 0 && c2 < d2)
+    (c0 * d1 + c1) * d2 + c2
+
+private def dense_offset_4 :: ref [i64] -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn dense_offset_4 shape c0 c1 c2 c3 =
+    assert (shape.length == 4)
+    let d0 = shape[0]
+    let d1 = shape[1]
+    let d2 = shape[2]
+    let d3 = shape[3]
+    assert (c0 >= 0 && c0 < d0 && c1 >= 0 && c1 < d1 && c2 >= 0 && c2 < d2 && c3 >= 0 && c3 < d3)
+    ((c0 * d1 + c1) * d2 + c2) * d3 + c3
+
+private def strided_offset_1 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> i64
+fn strided_offset_1 offset shape strides c0 =
+    assert (shape.length == 1)
+    assert (c0 >= 0 && c0 < shape[0])
+    offset + c0 * strides[0]
+
+private def strided_offset_2 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> i64
+fn strided_offset_2 offset shape strides c0 c1 =
+    assert (shape.length == 2)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1])
+    offset + c0 * strides[0] + c1 * strides[1]
+
+private def strided_offset_3 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own i64 -> i64
+fn strided_offset_3 offset shape strides c0 c1 c2 =
+    assert (shape.length == 3)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1] && c2 >= 0 && c2 < shape[2])
+    offset + c0 * strides[0] + c1 * strides[1] + c2 * strides[2]
+
+private def strided_offset_4 :: own i64 -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn strided_offset_4 offset shape strides c0 c1 c2 c3 =
+    assert (shape.length == 4)
+    assert (c0 >= 0 && c0 < shape[0] && c1 >= 0 && c1 < shape[1] && c2 >= 0 && c2 < shape[2] && c3 >= 0 && c3 < shape[3])
+    offset + c0 * strides[0] + c1 * strides[1] + c2 * strides[2] + c3 * strides[3]
 
 instance Copy<'a> => Index<Tensor<'a>, [i64], 'a> {
+    fn index coords self = self.data[dense_offset (ref self.shape) coords]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, i64, 'a> {
+    fn index c0 self = self.data[dense_offset_1 (ref self.shape) (deref c0)]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64), 'a> {
     fn index coords self =
-        let v = view self
-        deref (at (Array.copy coords) (ref v))
+        match coords with
+        | (c0, c1) -> self.data[dense_offset_2 (ref self.shape) c0 c1]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2) -> self.data[dense_offset_3 (ref self.shape) c0 c1 c2]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2, c3) -> self.data[dense_offset_4 (ref self.shape) c0 c1 c2 c3]
 }
 
 instance Copy<'a> => Index<View<'a>, [i64], 'a> {
-    fn index coords self = deref (at (Array.copy coords) self)
+    fn index coords self = self.data[offset_of self coords]
 }
+
+instance Copy<'a> => Index<View<'a>, i64, 'a> {
+    fn index c0 self = self.data[strided_offset_1 self.offset (ref self.shape) (ref self.strides) (deref c0)]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1) -> self.data[strided_offset_2 self.offset (ref self.shape) (ref self.strides) c0 c1]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2) -> self.data[strided_offset_3 self.offset (ref self.shape) (ref self.strides) c0 c1 c2]
+}
+
+instance Copy<'a> => Index<View<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2, c3) -> self.data[strided_offset_4 self.offset (ref self.shape) (ref self.strides) c0 c1 c2 c3]
+}
+
+private pure def sel_out_rank :: ref [Slice.Sel] -> own i64 -> i64
+fn sel_out_rank sels in_rank =
+    let mut rest_count = 0
+    let mut consumed = 0
+    let mut kept_spans = 0
+    let mut added_axes = 0
+    for i in 0i64 ..< sels.length do
+        match sels[i] with
+        | Slice.Sel.Rest -> rest_count = rest_count + 1
+        | Slice.Sel.AddAxis -> added_axes = added_axes + 1
+        | Slice.Sel.Item _ -> consumed = consumed + 1
+        | Slice.Sel.Span _ ->
+            consumed = consumed + 1
+            kept_spans = kept_spans + 1
+        | Slice.Sel.Whole ->
+            consumed = consumed + 1
+            kept_spans = kept_spans + 1
+    assert (rest_count <= 1 && consumed <= in_rank)
+    let out_rank = kept_spans + (in_rank - consumed) + added_axes
+    assert (out_rank <= 64)
+    out_rank
+
+private def sel_layout :: ref [Slice.Sel] -> own i64 -> ref [i64] -> ref [i64] -> own bool -> (i64 * Vec<i64> * Vec<i64>)
+fn sel_layout sels offset shape strides row_major =
+    let in_rank = shape.length
+    let out_rank = sel_out_rank sels in_rank
+    let mut rest_count = 0
+    let mut consumed = 0
+    for i in 0i64 ..< sels.length do
+        match sels[i] with
+        | Slice.Sel.Rest -> rest_count = rest_count + 1
+        | Slice.Sel.AddAxis -> ()
+        | _ -> consumed = consumed + 1
+    let fill_axes = in_rank - consumed
+    let mut input_empty = false
+    for d in 0i64 ..< in_rank do
+        if shape[d] == 0 then input_empty = true else ()
+    let mut new_offset = if input_empty then 0 else offset
+    let mut out_empty = input_empty
+    let mut out_shape = Vec.with_capacity out_rank
+    let mut out_strides = Vec.with_capacity out_rank
+    let mut in_axis = 0
+    for i in 0i64 ..< sels.length do
+        match sels[i] with
+        | Slice.Sel.Rest ->
+            for _k in 0i64 ..< fill_axes do
+                let dim = shape[in_axis]
+                let stride =
+                    if input_empty then 0
+                    elif row_major then stride_of shape in_axis
+                    else strides[in_axis]
+                Vec.push_mut dim (ref mut out_shape)
+                Vec.push_mut stride (ref mut out_strides)
+                in_axis = in_axis + 1
+        | Slice.Sel.AddAxis ->
+            Vec.push_mut 1 (ref mut out_shape)
+            Vec.push_mut 0 (ref mut out_strides)
+        | _ ->
+            let dim = shape[in_axis]
+            let stride = if row_major then stride_of shape in_axis else strides[in_axis]
+            match Slice.resolve_sel dim (ref sels[i]) with
+            | Slice.Resolved.Index pos ->
+                if !input_empty then
+                    new_offset = new_offset + pos * stride
+                else ()
+            | Slice.Resolved.Slice (start, len, step) ->
+                if len == 0 then
+                    out_empty = true
+                elif !input_empty then
+                    new_offset = new_offset + start * stride
+                else ()
+                let new_stride =
+                    if input_empty || len <= 1 then
+                        if input_empty then 0 else stride
+                    else
+                        match Int.checked_mul stride step with
+                        | Maybe.Some s -> s
+                        | Maybe.None ->
+                            assert false
+                            0
+                Vec.push_mut len (ref mut out_shape)
+                Vec.push_mut new_stride (ref mut out_strides)
+            | Slice.Resolved.InsertAxis ->
+                Vec.push_mut 1 (ref mut out_shape)
+                Vec.push_mut 0 (ref mut out_strides)
+            in_axis = in_axis + 1
+    if rest_count == 0 then
+        while in_axis < in_rank do
+            Vec.push_mut shape[in_axis] (ref mut out_shape)
+            let tail_stride =
+                if input_empty then 0
+                elif row_major then stride_of shape in_axis
+                else strides[in_axis]
+            Vec.push_mut tail_stride (ref mut out_strides)
+            in_axis = in_axis + 1
+    else ()
+    if out_empty then
+        let mut zero_strides = Vec.with_capacity out_rank
+        for _d in 0i64 ..< out_rank do
+            Vec.push_mut 0 (ref mut zero_strides)
+        (0, out_shape, zero_strides)
+    else
+        (new_offset, out_shape, out_strides)
+
+private pure def resolve_pos_axis :: own i64 -> ref Slice.Pos -> i64
+fn resolve_pos_axis dim pos =
+    let idx: i128 =
+        match pos with
+        | Slice.Pos.Front i -> i as i128
+        | Slice.Pos.Back k -> (dim as i128) - 1i128 - (k as i128)
+    assert (idx >= 0i128 && idx < (dim as i128))
+    idx as i64
+
+private def dense_pos_offset :: ref [i64] -> ref [Slice.Pos] -> i64
+fn dense_pos_offset shape coords =
+    assert (coords.length == shape.length)
+    let mut offset = 0
+    for axis in 0i64 ..< coords.length do
+        let dim = shape[axis]
+        let c = resolve_pos_axis dim (ref coords[axis])
+        offset = offset * dim + c
+    offset
+
+private def strided_pos_offset :: own i64 -> ref [i64] -> ref [i64] -> ref [Slice.Pos] -> i64
+fn strided_pos_offset base_offset shape strides coords =
+    assert (coords.length == shape.length)
+    let mut offset = base_offset
+    for axis in 0i64 ..< coords.length do
+        let c = resolve_pos_axis shape[axis] (ref coords[axis])
+        offset = offset + c * strides[axis]
+    offset
 
 instance Index<Tensor<'a>, [Slice.Axis], View<'a>> {
     fn index axes self =
-        let strides = dense_strides (ref self.shape)
-        slice_raw (Array.copy axes) (ref self.data) 0 (ref self.shape) (ref strides)
+        let no_strides: [i64] = []
+        slice_raw axes (ref self.data) 0 (ref self.shape) (ref no_strides) true
 }
 
 instance Index<View<'a>, [Slice.Axis], View<'a>> {
-    fn index axes self = slice (Array.copy axes) self
+    fn index axes self =
+        slice_raw axes self.data self.offset (ref self.shape) (ref self.strides) false
+}
+
+instance Index<Tensor<'a>, [Slice.Sel], View<'a>> {
+    fn index sels self =
+        match sel_layout sels 0 (ref self.shape) (ref self.shape) true with
+        | (off, sh_v, st_v) ->
+            let sh = Vec.to_array sh_v
+            let st = Vec.to_array st_v
+            View { data: ref self.data, offset: off, shape: sh, strides: st }
+}
+
+instance Index<View<'a>, [Slice.Sel], View<'a>> {
+    fn index sels self =
+        match sel_layout sels self.offset (ref self.shape) (ref self.strides) false with
+        | (off, sh_v, st_v) ->
+            let sh = Vec.to_array sh_v
+            let st = Vec.to_array st_v
+            View { data: self.data, offset: off, shape: sh, strides: st }
+}
+
+instance Index<Mut<'a>, [Slice.Sel], View<'a>> {
+    fn index sels self =
+        match sel_layout sels self.offset (ref self.shape) (ref self.strides) false with
+        | (off, sh_v, st_v) ->
+            let sh = Vec.to_array sh_v
+            let st = Vec.to_array st_v
+            View { data: ref self.data[0 ..], offset: off, shape: sh, strides: st }
+}
+
+instance Copy<'a> => Index<Tensor<'a>, Slice.Pos, 'a> {
+    fn index p0 self =
+        assert (self.shape.length == 1)
+        self.data[resolve_pos_axis self.shape[0] p0]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1) ->
+            let c0 = { assert (self.shape.length == 2); resolve_pos_axis self.shape[0] (ref p0) }
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            self.data[c0 * self.shape[1] + c1]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2) ->
+            assert (self.shape.length == 3)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            self.data[(c0 * self.shape[1] + c1) * self.shape[2] + c2]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2, p3) ->
+            assert (self.shape.length == 4)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let c3 = resolve_pos_axis self.shape[3] (ref p3)
+            self.data[((c0 * self.shape[1] + c1) * self.shape[2] + c2) * self.shape[3] + c3]
+}
+
+instance Copy<'a> => Index<Tensor<'a>, [Slice.Pos], 'a> {
+    fn index coords self = self.data[dense_pos_offset (ref self.shape) coords]
+}
+
+instance Copy<'a> => Index<View<'a>, Slice.Pos, 'a> {
+    fn index p0 self =
+        assert (self.shape.length == 1)
+        let c0 = resolve_pos_axis self.shape[0] p0
+        self.data[self.offset + c0 * self.strides[0]]
+}
+
+instance Copy<'a> => Index<View<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1) ->
+            assert (self.shape.length == 2)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1]]
+}
+
+instance Copy<'a> => Index<View<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2) ->
+            assert (self.shape.length == 3)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2]]
+}
+
+instance Copy<'a> => Index<View<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2, p3) ->
+            assert (self.shape.length == 4)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let c3 = resolve_pos_axis self.shape[3] (ref p3)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2] + c3 * self.strides[3]]
+}
+
+instance Copy<'a> => Index<View<'a>, [Slice.Pos], 'a> {
+    fn index coords self =
+        self.data[strided_pos_offset self.offset (ref self.shape) (ref self.strides) coords]
 }
 
 instance IndexMut<Mut<'a>, [i64], 'a> {
-    fn index_mut coords value self = write (Array.copy coords) value self
+    fn index_mut coords value self =
+        let slot = offset_of_mut (ref self) coords
+        Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, i64, 'a> {
+    fn index_mut c0 value self =
+        let slot = strided_offset_1 self.offset (ref self.shape) (ref self.strides) (deref c0)
+        Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1) ->
+            let slot = strided_offset_2 self.offset (ref self.shape) (ref self.strides) c0 c1
+            Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2) ->
+            let slot = strided_offset_3 self.offset (ref self.shape) (ref self.strides) c0 c1 c2
+            Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2, c3) ->
+            let slot = strided_offset_4 self.offset (ref self.shape) (ref self.strides) c0 c1 c2 c3
+            Array.write slot value self.data
+}
+
+instance IndexMut<Mut<'a>, Slice.Pos, 'a> {
+    fn index_mut p0 value self =
+        assert (self.shape.length == 1)
+        let c0 = resolve_pos_axis self.shape[0] p0
+        Array.write (self.offset + c0 * self.strides[0]) value self.data
+}
+
+instance IndexMut<Mut<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1) ->
+            assert (self.shape.length == 2)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            Array.write (self.offset + c0 * self.strides[0] + c1 * self.strides[1]) value self.data
+}
+
+instance IndexMut<Mut<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1, p2) ->
+            assert (self.shape.length == 3)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            Array.write (self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2]) value self.data
+}
+
+instance IndexMut<Mut<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1, p2, p3) ->
+            assert (self.shape.length == 4)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let c3 = resolve_pos_axis self.shape[3] (ref p3)
+            Array.write (self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2] + c3 * self.strides[3]) value self.data
+}
+
+instance IndexMut<Mut<'a>, [Slice.Pos], 'a> {
+    fn index_mut coords value self =
+        let slot = strided_pos_offset self.offset (ref self.shape) (ref self.strides) coords
+        Array.write slot value self.data
 }
 
 // ---------------------------------------------------------------------------
@@ -2729,36 +3171,7 @@ fn put_mask cond value target =
 /// ```
 def where_select :: Copy<'a> => ref View<bool> -> ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
 fn where_select cond on_true on_false =
-    match broadcast_shape (ref cond.shape) (ref on_true.shape) with
-    | Result.Error err -> Result.Error err
-    | Result.Ok s1 ->
-        match broadcast_shape (ref s1) (ref on_false.shape) with
-        | Result.Error err -> Result.Error err
-        | Result.Ok common ->
-            match broadcast_to (Array.copy (ref common)) cond with
-            | Result.Error err -> Result.Error err
-            | Result.Ok bc ->
-                match broadcast_to (Array.copy (ref common)) on_true with
-                | Result.Error err -> Result.Error err
-                | Result.Ok bt ->
-                    match broadcast_to (Array.copy (ref common)) on_false with
-                    | Result.Error err -> Result.Error err
-                    | Result.Ok bf ->
-                        let total = volume (ref common)
-                        if total == 0 then
-                            Result.Ok (Tensor { shape: common, data: Array.init 0 (\_ -> bt.data[0]) })
-                        elif common.length == 0 then
-                            let v = if bc.data[bc.offset] then bt.data[bt.offset] else bf.data[bf.offset]
-                            Result.Ok (Tensor { shape: common, data: [v] })
-                        else
-                            let seed = bt.data[bt.offset]
-                            let mut out = new ['a](total, \_ -> seed)
-                            let mut coords = new [i64](common.length, \_ -> 0)
-                            for flat in 0i64 ..= (total - 1) do
-                                unflatten_into flat (ref common) (ref mut coords)
-                                let v = if read_at_coords (ref bc) (ref coords) then read_at_coords (ref bt) (ref coords) else read_at_coords (ref bf) (ref coords)
-                                Array.write flat v (ref mut out)
-                            Result.Ok (Tensor { shape: common, data: out })
+    map3 (\c t f -> if c then t else f) cond on_true on_false
 
 /// Builds a tensor with the shape of `cond`, choosing scalar `on_true` or `on_false` at each slot.
 ///
@@ -2905,4 +3318,2211 @@ instance Copy<'a> => IndexMut<Mut<'a>, Tensor<bool>, 'a> {
         let cv = view cond
         put_mask (ref cv) value self
 }
+
+// ---------------------------------------------------------------------------
+// Broadcasting Element-wise Engines, Ufuncs, Comparisons & Operators (NC06)
+// ---------------------------------------------------------------------------
+
+private def same_shape :: ref [i64] -> ref [i64] -> bool
+fn same_shape left right =
+    if left.length != right.length then false
+    else
+        let mut eq = true
+        for i in 0i64 ..< left.length do
+            if left[i] != right[i] then eq = false
+        eq
+
+private def can_broadcast_to :: ref [i64] -> ref [i64] -> bool
+fn can_broadcast_to src target =
+    if src.length > target.length then false
+    else
+        let pad = target.length - src.length
+        let mut ok = true
+        for s in 0i64 ..< src.length do
+            let d = src[s]
+            let t = target[pad + s]
+            if d != t && d != 1 then ok = false
+        ok
+
+private def broadcast_matches_target :: ref [i64] -> ref [i64] -> ref [i64] -> bool
+fn broadcast_matches_target left right target =
+    let max_rank = if left.length >= right.length then left.length else right.length
+    if max_rank != target.length then false
+    else
+        let mut ok = true
+        for i in 0i64 ..< max_rank do
+            let l_idx = left.length - 1 - i
+            let r_idx = right.length - 1 - i
+            let t_idx = target.length - 1 - i
+            let l_dim = if l_idx >= 0 then left[l_idx] else 1
+            let r_dim = if r_idx >= 0 then right[r_idx] else 1
+            let expected =
+                if l_dim == r_dim then l_dim
+                elif l_dim == 1 then r_dim
+                elif r_dim == 1 then l_dim
+                else -1
+            if expected < 0 || expected != target[t_idx] then ok = false
+        ok
+
+private def broadcast3_matches_target :: ref [i64] -> ref [i64] -> ref [i64] -> ref [i64] -> bool
+fn broadcast3_matches_target a b c target =
+    let r12 = if a.length >= b.length then a.length else b.length
+    let max_rank = if r12 >= c.length then r12 else c.length
+    if max_rank != target.length then false
+    else
+        let mut ok = true
+        for i in 0i64 ..< max_rank do
+            let ai = a.length - 1 - i
+            let bi = b.length - 1 - i
+            let ci = c.length - 1 - i
+            let ti = target.length - 1 - i
+            let ad = if ai >= 0 then a[ai] else 1
+            let bd = if bi >= 0 then b[bi] else 1
+            let cd = if ci >= 0 then c[ci] else 1
+            let ab =
+                if ad == bd then ad
+                elif ad == 1 then bd
+                elif bd == 1 then ad
+                else -1
+            let abc =
+                if ab < 0 then -1
+                elif ab == cd then ab
+                elif ab == 1 then cd
+                elif cd == 1 then ab
+                else -1
+            if abc < 0 || abc != target[ti] then ok = false
+        ok
+
+private def rec map_into_axis { s r } :: Copy<'a> => ('a -> 'b) -> ref View<'a> { s } -> ref mut Mut<'b> { r } -> own i64 -> own i64 -> own i64 -> unit
+fn rec map_into_axis f src target axis src_off dst_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let s_stride = src.strides[axis]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let val = f src.data[src_off + step * s_stride]
+            Array.write (dst_off + step * d_stride) val target.data
+    else
+        for step in 0i64 ..< dim do
+            map_into_axis f src target (axis + 1) (src_off + step * s_stride) (dst_off + step * d_stride)
+
+/// Applies `transform` to each element of `src` and writes into `target` with zero heap allocations;
+/// returns `Error.ShapeMismatch` without writing if shapes differ.
+///
+/// ```tsuzuri run=[10,%2020,%2030,%2040]
+/// let src = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// let mut buf = [0, 0, 0, 0]
+/// let mut dst = Tensor.borrow_mut [2, 2] (ref mut buf)
+/// let _ = Tensor.map_into (\x -> x * 10) (Tensor.view src) (ref mut dst)
+/// $"{buf}"
+/// ```
+def map_into { s r } :: Copy<'a> => own ('a -> 'b) -> ref View<'a> { s } -> ref mut Mut<'b> { r } -> Result<unit, Error>
+fn map_into transform src target =
+    if not (same_shape (ref src.shape) (ref target.shape)) then
+        Result.Error (Error.ShapeMismatch (Array.copy (ref src.shape), Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous src && is_contiguous_mut target then
+                let s_off = src.offset
+                let d_off = target.offset
+                let s_slice = ref src.data[s_off ..< s_off + total]
+                let d_slice = ref mut target.data[d_off ..< d_off + total]
+                for i in 0i64 ..< total do
+                    Array.write i (transform s_slice[i]) d_slice
+            elif target.shape.length == 0 then
+                let s_off = src.offset
+                let d_off = target.offset
+                Array.write d_off (transform src.data[s_off]) target.data
+            else
+                let s_off = src.offset
+                let d_off = target.offset
+                map_into_axis transform src target 0 s_off d_off
+        Result.Ok ()
+
+private def rec map2_push_axis :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref View<'a> -> ref View<'b> -> ref [i64] -> own i64 -> own i64 -> own i64 -> ref mut Vec<'c> -> unit
+fn rec map2_push_axis f left right out_shape axis l_off r_off out =
+    let rank = out_shape.length
+    let dim = out_shape[axis]
+    let l_pad = rank - left.shape.length
+    let r_pad = rank - right.shape.length
+    let la = axis - l_pad
+    let ra = axis - r_pad
+    let l_stride = if la < 0 then 0 elif left.shape[la] == 1 then 0 else left.strides[la]
+    let r_stride = if ra < 0 then 0 elif right.shape[ra] == 1 then 0 else right.strides[ra]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f left.data[l_off + step * l_stride] right.data[r_off + step * r_stride]
+            Vec.push_mut v out
+    else
+        for step in 0i64 ..< dim do
+            map2_push_axis f left right out_shape (axis + 1) (l_off + step * l_stride) (r_off + step * r_stride) out
+
+private def map2_kernel :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> own [i64] -> own bool -> ref View<'a> -> ref View<'b> -> Tensor<'c>
+fn map2_kernel f out_shape equal_shapes left right =
+    let total = volume (ref out_shape)
+    if total == 0 then
+        Tensor { shape: out_shape, data: [] }
+    elif equal_shapes && is_contiguous left && is_contiguous right then
+        let l_slice = ref left.data[left.offset ..< left.offset + total]
+        let r_slice = ref right.data[right.offset ..< right.offset + total]
+        Tensor { shape: out_shape, data: new ['c](total, \i -> f l_slice[i] r_slice[i]) }
+    elif out_shape.length == 0 then
+        Tensor { shape: out_shape, data: [f left.data[left.offset] right.data[right.offset]] }
+    else
+        let mut out: Vec<'c> = Vec.with_capacity total
+        map2_push_axis f left right (ref out_shape) 0 left.offset right.offset (ref mut out)
+        Tensor { shape: out_shape, data: Vec.to_array out }
+
+/// Broadcasts `left` and `right` and applies `f` element-wise, using a 1D contiguous fast path
+/// when both windows have the same shape and are C-contiguous.
+///
+/// ```tsuzuri run=[11,%2012,%2021,%2022]
+/// let a = Tensor.of_array [2, 1] [10, 20]
+/// let b = Tensor.of_array [1, 2] [1, 2]
+/// match Tensor.map2 (\x y -> x + y) (Tensor.view a) (Tensor.view b) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def map2 :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref View<'a> -> ref View<'b> -> Result<Tensor<'c>, Error>
+fn map2 f left right =
+    if same_shape (ref left.shape) (ref right.shape) then
+        Result.Ok (map2_kernel f (Array.copy (ref left.shape)) true left right)
+    else
+        match broadcast_shape (ref left.shape) (ref right.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok common -> Result.Ok (map2_kernel f common false left right)
+
+private def map2_or_trap :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref View<'a> -> ref View<'b> -> Tensor<'c>
+fn map2_or_trap f left right =
+    if same_shape (ref left.shape) (ref right.shape) then
+        map2_kernel f (Array.copy (ref left.shape)) true left right
+    else
+        match broadcast_shape (ref left.shape) (ref right.shape) with
+        | Result.Ok common -> map2_kernel f common false left right
+        | Result.Error _ ->
+            assert false
+            Tensor { shape: [], data: [] }
+
+private def rec map2_into_axis { a b r } :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'c) -> ref View<'a> { a } -> ref View<'b> { b } -> ref mut Mut<'c> { r } -> own i64 -> own i64 -> own i64 -> own i64 -> unit
+fn rec map2_into_axis f left right target axis l_off r_off d_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let l_pad = rank - left.shape.length
+    let r_pad = rank - right.shape.length
+    let la = axis - l_pad
+    let ra = axis - r_pad
+    let l_stride = if la < 0 then 0 elif left.shape[la] == 1 then 0 else left.strides[la]
+    let r_stride = if ra < 0 then 0 elif right.shape[ra] == 1 then 0 else right.strides[ra]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f left.data[l_off + step * l_stride] right.data[r_off + step * r_stride]
+            Array.write (d_off + step * d_stride) v target.data
+    else
+        for step in 0i64 ..< dim do
+            map2_into_axis f left right target (axis + 1) (l_off + step * l_stride) (r_off + step * r_stride) (d_off + step * d_stride)
+
+/// Broadcasts `left` and `right` and writes `f l r` into `target` with zero heap allocations;
+/// returns `Result.Error` without writing if the broadcast shape differs from `target`.
+///
+/// ```tsuzuri run=[11,%2012,%2021,%2022]
+/// let a = Tensor.of_array [2, 1] [10, 20]
+/// let b = Tensor.of_array [1, 2] [1, 2]
+/// let mut buf = [0, 0, 0, 0]
+/// let mut dst = Tensor.borrow_mut [2, 2] (ref mut buf)
+/// let _ = Tensor.map2_into (\x y -> x + y) (Tensor.view a) (Tensor.view b) (ref mut dst)
+/// $"{buf}"
+/// ```
+def map2_into { a b r } :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref View<'a> { a } -> ref View<'b> { b } -> ref mut Mut<'c> { r } -> Result<unit, Error>
+fn map2_into f left right target =
+    let eq_lr = same_shape (ref left.shape) (ref right.shape)
+    let eq_lt = same_shape (ref left.shape) (ref target.shape)
+    if eq_lr && eq_lt then
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous left && is_contiguous right && is_contiguous_mut target then
+                let l_off = left.offset
+                let r_off = right.offset
+                let d_off = target.offset
+                let l_slice = ref left.data[l_off ..< l_off + total]
+                let r_slice = ref right.data[r_off ..< r_off + total]
+                let d_slice = ref mut target.data[d_off ..< d_off + total]
+                for i in 0i64 ..< total do
+                    Array.write i (f l_slice[i] r_slice[i]) d_slice
+            elif target.shape.length == 0 then
+                let d_off = target.offset
+                Array.write d_off (f left.data[left.offset] right.data[right.offset]) target.data
+            else
+                let d_off = target.offset
+                map2_into_axis f left right target 0 left.offset right.offset d_off
+        Result.Ok ()
+    elif not (broadcast_matches_target (ref left.shape) (ref right.shape) (ref target.shape)) then
+        match broadcast_shape (ref left.shape) (ref right.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok common -> Result.Error (Error.ShapeMismatch (common, Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if target.shape.length == 0 then
+                let d_off = target.offset
+                Array.write d_off (f left.data[left.offset] right.data[right.offset]) target.data
+            else
+                let d_off = target.offset
+                map2_into_axis f left right target 0 left.offset right.offset d_off
+        Result.Ok ()
+
+private def rec map3_push_axis :: (Copy<'a>, Copy<'b>, Copy<'c>) => ('a -> 'b -> 'c -> 'd) -> ref View<'a> -> ref View<'b> -> ref View<'c> -> ref [i64] -> own i64 -> own i64 -> own i64 -> own i64 -> ref mut Vec<'d> -> unit
+fn rec map3_push_axis f a b c out_shape axis a_off b_off c_off out =
+    let rank = out_shape.length
+    let dim = out_shape[axis]
+    let aa = axis - (rank - a.shape.length)
+    let ba = axis - (rank - b.shape.length)
+    let ca = axis - (rank - c.shape.length)
+    let a_stride = if aa < 0 then 0 elif a.shape[aa] == 1 then 0 else a.strides[aa]
+    let b_stride = if ba < 0 then 0 elif b.shape[ba] == 1 then 0 else b.strides[ba]
+    let c_stride = if ca < 0 then 0 elif c.shape[ca] == 1 then 0 else c.strides[ca]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f a.data[a_off + step * a_stride] b.data[b_off + step * b_stride] c.data[c_off + step * c_stride]
+            Vec.push_mut v out
+    else
+        for step in 0i64 ..< dim do
+            map3_push_axis f a b c out_shape (axis + 1) (a_off + step * a_stride) (b_off + step * b_stride) (c_off + step * c_stride) out
+
+/// Broadcasts three views and applies `f` element-wise, using a 1D contiguous fast path when all
+/// three inputs share the same shape and are C-contiguous.
+///
+/// ```tsuzuri run=[11,%2022]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 10]
+/// let c = Tensor.of_array [2] [1, 2]
+/// match Tensor.map3 (\x y z -> x * y + z) (Tensor.view a) (Tensor.view b) (Tensor.view c) with
+/// | Result.Ok t -> Tensor.to_array t
+/// | Result.Error _ -> []
+/// ```
+def map3 :: (Copy<'a>, Copy<'b>, Copy<'c>) => own ('a -> 'b -> 'c -> 'd) -> ref View<'a> -> ref View<'b> -> ref View<'c> -> Result<Tensor<'d>, Error>
+fn map3 f a b c =
+    if same_shape (ref a.shape) (ref b.shape) && same_shape (ref a.shape) (ref c.shape) then
+        let out_shape = Array.copy (ref a.shape)
+        let total = volume (ref out_shape)
+        if total == 0 then Result.Ok (Tensor { shape: out_shape, data: [] })
+        elif is_contiguous a && is_contiguous b && is_contiguous c then
+            let sa = ref a.data[a.offset ..< a.offset + total]
+            let sb = ref b.data[b.offset ..< b.offset + total]
+            let sc = ref c.data[c.offset ..< c.offset + total]
+            Result.Ok (Tensor { shape: out_shape, data: new ['d](total, \i -> f sa[i] sb[i] sc[i]) })
+        elif out_shape.length == 0 then
+            Result.Ok (Tensor { shape: out_shape, data: [f a.data[a.offset] b.data[b.offset] c.data[c.offset]] })
+        else
+            let mut out: Vec<'d> = Vec.with_capacity total
+            map3_push_axis f a b c (ref out_shape) 0 a.offset b.offset c.offset (ref mut out)
+            Result.Ok (Tensor { shape: out_shape, data: Vec.to_array out })
+    else
+        match broadcast_shape (ref a.shape) (ref b.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok ab ->
+            match broadcast_shape (ref ab) (ref c.shape) with
+            | Result.Error err -> Result.Error err
+            | Result.Ok common ->
+                let total = volume (ref common)
+                if total == 0 then Result.Ok (Tensor { shape: common, data: [] })
+                elif common.length == 0 then
+                    Result.Ok (Tensor { shape: common, data: [f a.data[a.offset] b.data[b.offset] c.data[c.offset]] })
+                else
+                    let mut out: Vec<'d> = Vec.with_capacity total
+                    map3_push_axis f a b c (ref common) 0 a.offset b.offset c.offset (ref mut out)
+                    Result.Ok (Tensor { shape: common, data: Vec.to_array out })
+
+private def rec map3_into_axis { a b c r } :: (Copy<'a>, Copy<'b>, Copy<'c>) => ('a -> 'b -> 'c -> 'd) -> ref View<'a> { a } -> ref View<'b> { b } -> ref View<'c> { c } -> ref mut Mut<'d> { r } -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> unit
+fn rec map3_into_axis f va vb vc target axis a_off b_off c_off d_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let aa = axis - (rank - va.shape.length)
+    let ba = axis - (rank - vb.shape.length)
+    let ca = axis - (rank - vc.shape.length)
+    let a_stride = if aa < 0 then 0 elif va.shape[aa] == 1 then 0 else va.strides[aa]
+    let b_stride = if ba < 0 then 0 elif vb.shape[ba] == 1 then 0 else vb.strides[ba]
+    let c_stride = if ca < 0 then 0 elif vc.shape[ca] == 1 then 0 else vc.strides[ca]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f va.data[a_off + step * a_stride] vb.data[b_off + step * b_stride] vc.data[c_off + step * c_stride]
+            Array.write (d_off + step * d_stride) v target.data
+    else
+        for step in 0i64 ..< dim do
+            map3_into_axis f va vb vc target (axis + 1) (a_off + step * a_stride) (b_off + step * b_stride) (c_off + step * c_stride) (d_off + step * d_stride)
+
+/// Broadcasts three views and writes `f x y z` into `target` with zero heap allocations;
+/// returns `Result.Error` without writing if shapes do not match.
+///
+/// ```tsuzuri run=[11,%2022]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 10]
+/// let c = Tensor.of_array [2] [1, 2]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.map3_into (\x y z -> x * y + z) (Tensor.view a) (Tensor.view b) (Tensor.view c) (ref mut dst)
+/// $"{buf}"
+/// ```
+def map3_into { a b c r } :: (Copy<'a>, Copy<'b>, Copy<'c>) => own ('a -> 'b -> 'c -> 'd) -> ref View<'a> { a } -> ref View<'b> { b } -> ref View<'c> { c } -> ref mut Mut<'d> { r } -> Result<unit, Error>
+fn map3_into f va vb vc target =
+    let all_eq = same_shape (ref va.shape) (ref target.shape) && same_shape (ref vb.shape) (ref target.shape) && same_shape (ref vc.shape) (ref target.shape)
+    if all_eq then
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous va && is_contiguous vb && is_contiguous vc && is_contiguous_mut target then
+                let ao = va.offset
+                let bo = vb.offset
+                let co = vc.offset
+                let doff = target.offset
+                let sa = ref va.data[ao ..< ao + total]
+                let sb = ref vb.data[bo ..< bo + total]
+                let sc = ref vc.data[co ..< co + total]
+                let sd = ref mut target.data[doff ..< doff + total]
+                for i in 0i64 ..< total do
+                    Array.write i (f sa[i] sb[i] sc[i]) sd
+            elif target.shape.length == 0 then
+                let doff = target.offset
+                Array.write doff (f va.data[va.offset] vb.data[vb.offset] vc.data[vc.offset]) target.data
+            else
+                let doff = target.offset
+                map3_into_axis f va vb vc target 0 va.offset vb.offset vc.offset doff
+        Result.Ok ()
+    elif not (broadcast3_matches_target (ref va.shape) (ref vb.shape) (ref vc.shape) (ref target.shape)) then
+        match broadcast_shape (ref va.shape) (ref vb.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok ab ->
+            match broadcast_shape (ref ab) (ref vc.shape) with
+            | Result.Error err -> Result.Error err
+            | Result.Ok common -> Result.Error (Error.ShapeMismatch (common, Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if target.shape.length == 0 then
+                let doff = target.offset
+                Array.write doff (f va.data[va.offset] vb.data[vb.offset] vc.data[vc.offset]) target.data
+            else
+                let doff = target.offset
+                map3_into_axis f va vb vc target 0 va.offset vb.offset vc.offset doff
+        Result.Ok ()
+
+private def rec map2_in_place_axis { s r } :: (Copy<'a>, Copy<'b>) => ('a -> 'b -> 'a) -> ref View<'b> { s } -> ref mut Mut<'a> { r } -> own i64 -> own i64 -> own i64 -> unit
+fn rec map2_in_place_axis f rhs target axis rhs_off dst_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let ra = axis - (rank - rhs.shape.length)
+    let r_stride = if ra < 0 then 0 elif rhs.shape[ra] == 1 then 0 else rhs.strides[ra]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let d_slot = dst_off + step * d_stride
+            let cur = target.data[d_slot]
+            let val = f cur rhs.data[rhs_off + step * r_stride]
+            Array.write d_slot val target.data
+    else
+        for step in 0i64 ..< dim do
+            map2_in_place_axis f rhs target (axis + 1) (rhs_off + step * r_stride) (dst_off + step * d_stride)
+
+private def map2_in_place_kernel { s r } :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'a) -> ref View<'b> { s } -> ref mut Mut<'a> { r } -> unit
+fn map2_in_place_kernel f rhs target =
+    let total = volume (ref target.shape)
+    if total > 0 then
+        if same_shape (ref rhs.shape) (ref target.shape) && is_contiguous rhs && is_contiguous_mut target then
+            let ro = rhs.offset
+            let doff = target.offset
+            let rs = ref rhs.data[ro ..< ro + total]
+            let ds = ref mut target.data[doff ..< doff + total]
+            for i in 0i64 ..< total do
+                let val = f ds[i] rs[i]
+                Array.write i val ds
+        elif target.shape.length == 0 then
+            let doff = target.offset
+            let val = f target.data[doff] rhs.data[rhs.offset]
+            Array.write doff val target.data
+        else
+            let doff = target.offset
+            map2_in_place_axis f rhs target 0 rhs.offset doff
+
+/// Updates `target` in place as `target_i = f target_i rhs_i`, broadcasting `rhs` to `target`'s
+/// shape with zero heap allocations; returns `Error.IncompatibleBroadcast` without writing if
+/// `rhs` cannot broadcast to `target`.
+///
+/// ```tsuzuri run=[11,%2022,%2013,%2024]
+/// let mut buf = [1, 2, 3, 4]
+/// let mut dst = Tensor.borrow_mut [2, 2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [10, 20]
+/// let _ = Tensor.map2_in_place (\x y -> x + y) (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def map2_in_place { s r } :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'a) -> ref View<'b> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn map2_in_place f rhs target =
+    if not (can_broadcast_to (ref rhs.shape) (ref target.shape)) then
+        Result.Error (Error.IncompatibleBroadcast (Array.copy (ref rhs.shape), Array.copy (ref target.shape)))
+    else
+        map2_in_place_kernel f rhs target
+        Result.Ok ()
+
+private def map2_in_place_or_trap { r } :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'a) -> ref View<'b> -> ref mut Mut<'a> { r } -> unit
+fn map2_in_place_or_trap f rhs target =
+    assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
+    map2_in_place_kernel f rhs target
+
+/// Element-wise integer floor division toward negative infinity (`Int.div_floor`, matching NumPy
+/// integer `//`) with broadcasting. For floating-point views, use `floor_divide_float`.
+///
+/// ```tsuzuri run=[-4,%203]
+/// let a = Tensor.of_array [2] [-7, 7]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.floor_divide (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def floor_divide :: (Integer<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn floor_divide left right = map2 Int.div_floor left right
+
+/// Element-wise integer floor remainder matching the divisor's sign (`Int.rem_floor`, matching
+/// NumPy integer `%` / `np.remainder`) with broadcasting. For floats, use `floor_mod_float`.
+///
+/// ```tsuzuri run=[1,%201]
+/// let a = Tensor.of_array [2] [-7, 7]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.floor_mod (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def floor_mod :: (Integer<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn floor_mod left right = map2 Int.rem_floor left right
+
+/// Element-wise integer `(floor_divide, floor_mod)` pair with broadcasting.
+///
+/// ```tsuzuri run=[-4,%203]%20[1,%201]
+/// let a = Tensor.of_array [2] [-7, 7]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.divmod (Tensor.view a) (Tensor.view b) with
+/// | Result.Ok (q, r) -> $"{Tensor.to_array q} {Tensor.to_array r}"
+/// | Result.Error _ -> "err"
+/// ```
+def divmod :: (Integer<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<(Tensor<'a> * Tensor<'a>), Error>
+fn divmod left right =
+    match floor_divide left right with
+    | Result.Error err -> Result.Error err
+    | Result.Ok q ->
+        match floor_mod left right with
+        | Result.Error err -> Result.Error err
+        | Result.Ok r -> Result.Ok (q, r)
+
+/// Element-wise floating-point floor division (`Math.floor_div`) with broadcasting.
+///
+/// ```tsuzuri run=[-3,%202]
+/// let a = Tensor.of_array [2] [-7.0, 7.0]
+/// let b = Tensor.of_array [2] [3.0, 3.0]
+/// match Tensor.floor_divide_float (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def floor_divide_float :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn floor_divide_float left right = map2 Math.floor_div left right
+
+/// Element-wise floating-point floor remainder (`Math.floor_mod`) with broadcasting.
+///
+/// ```tsuzuri run=[2,%201]
+/// let a = Tensor.of_array [2] [-7.0, 7.0]
+/// let b = Tensor.of_array [2] [3.0, 3.0]
+/// match Tensor.floor_mod_float (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def floor_mod_float :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn floor_mod_float left right = map2 Math.floor_mod left right
+
+/// Element-wise floating-point `(floor_divide_float, floor_mod_float)` pair with broadcasting.
+///
+/// ```tsuzuri run=[-3,%202]%20[2,%201]
+/// let a = Tensor.of_array [2] [-7.0, 7.0]
+/// let b = Tensor.of_array [2] [3.0, 3.0]
+/// match Tensor.divmod_float (Tensor.view a) (Tensor.view b) with
+/// | Result.Ok (q, r) -> $"{Tensor.to_array q} {Tensor.to_array r}"
+/// | Result.Error _ -> "err"
+/// ```
+def divmod_float :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<(Tensor<'a> * Tensor<'a>), Error>
+fn divmod_float left right =
+    match floor_divide_float left right with
+    | Result.Error err -> Result.Error err
+    | Result.Ok q ->
+        match floor_mod_float left right with
+        | Result.Error err -> Result.Error err
+        | Result.Ok r -> Result.Ok (q, r)
+
+// Binary arithmetic ufuncs (`left -> right`) & private `*_or_trap` kernels
+/// Element-wise sum (`left + right`) with broadcasting.
+///
+/// ```tsuzuri run=[11,%2022]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 20]
+/// match Tensor.add (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def add :: (Add<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn add left right = map2 (\x y -> x + y) left right
+
+private def rec add_or_trap :: (Add<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec add_or_trap left right = map2_or_trap (\x y -> x + y) left right
+
+/// Element-wise difference (`left - right`) with broadcasting.
+///
+/// ```tsuzuri run=[9,%2018]
+/// let a = Tensor.of_array [2] [10, 20]
+/// let b = Tensor.of_array [2] [1, 2]
+/// match Tensor.sub (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def sub :: (Sub<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn sub left right = map2 (\x y -> x - y) left right
+
+private def rec sub_or_trap :: (Sub<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec sub_or_trap left right = map2_or_trap (\x y -> x - y) left right
+
+/// Element-wise product (`left * right`) with broadcasting.
+///
+/// ```tsuzuri run=[10,%2040]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 20]
+/// match Tensor.mul (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def mul :: (Mul<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn mul left right = map2 (\x y -> x * y) left right
+
+private def rec mul_or_trap :: (Mul<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec mul_or_trap left right = map2_or_trap (\x y -> x * y) left right
+
+/// Element-wise quotient (`left / right`) with broadcasting.
+///
+/// ```tsuzuri run=[5,%204]
+/// let a = Tensor.of_array [2] [10, 20]
+/// let b = Tensor.of_array [2] [2, 5]
+/// match Tensor.div (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def div :: (Div<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn div left right = map2 (\x y -> x / y) left right
+
+private def rec div_or_trap :: (Div<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec div_or_trap left right = map2_or_trap (\x y -> x / y) left right
+
+/// Element-wise truncating remainder (`left % right`) with broadcasting.
+///
+/// ```tsuzuri run=[-1,%201]
+/// let a = Tensor.of_array [2] [-7, 7]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.rem (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def rem :: (Rem<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn rem left right = map2 (\x y -> x % y) left right
+
+private def rec rem_or_trap :: (Rem<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec rem_or_trap left right = map2_or_trap (\x y -> x % y) left right
+
+/// Element-wise power (`left ** right`) with broadcasting.
+///
+/// ```tsuzuri run=[8,%209]
+/// let a = Tensor.of_array [2] [2, 3]
+/// let b = Tensor.of_array [2] [3, 2]
+/// match Tensor.pow (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def pow :: (Pow<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn pow left right = map2 (\x y -> x ** y) left right
+
+private def rec pow_or_trap :: (Pow<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Tensor<'a>
+fn rec pow_or_trap left right = map2_or_trap (\x y -> x ** y) left right
+
+// (floor_divide / floor_mod / divmod placed above binary arithmetic)
+
+/// Element-wise C99 truncating floating-point remainder (`Math.fmod`) with broadcasting.
+///
+/// ```tsuzuri run=[-1,%201]
+/// let a = Tensor.of_array [2] [-7.0, 7.0]
+/// let b = Tensor.of_array [2] [3.0, 3.0]
+/// match Tensor.fmod (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def fmod :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn fmod left right = map2 Math.fmod left right
+
+/// Element-wise IEEE 754 round-to-nearest-even remainder (`Math.ieee_remainder`) with broadcasting.
+///
+/// ```tsuzuri run=[-1,%201]
+/// let a = Tensor.of_array [2] [-7.0, 7.0]
+/// let b = Tensor.of_array [2] [3.0, 3.0]
+/// match Tensor.ieee_remainder (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def ieee_remainder :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn ieee_remainder left right = map2 Math.ieee_remainder left right
+
+private def max_elem :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> 'a
+fn max_elem x y =
+    let zero: 'a = 0i64 as 'a
+    if x != x then x
+    elif y != y then y
+    elif x > y then x
+    elif y > x then y
+    elif x == zero then x + y
+    else x
+
+private def min_elem :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> 'a
+fn min_elem x y =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    let two: 'a = 2i64 as 'a
+    if x != x then x
+    elif y != y then y
+    elif x < y then x
+    elif y < x then y
+    elif x == zero && (one / two) != zero then
+        let neg1 = zero - one
+        neg1 * (neg1 * x + neg1 * y)
+    else x
+
+/// Element-wise maximum propagating `NaN` (`np.maximum`) with broadcasting.
+///
+/// ```tsuzuri run=[10,%2020]
+/// let a = Tensor.of_array [2] [10, 5]
+/// let b = Tensor.of_array [2] [3, 20]
+/// match Tensor.maximum (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def maximum :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn maximum left right = map2 max_elem left right
+
+/// Element-wise minimum propagating `NaN` (`np.minimum`) with broadcasting.
+///
+/// ```tsuzuri run=[3,%205]
+/// let a = Tensor.of_array [2] [10, 5]
+/// let b = Tensor.of_array [2] [3, 20]
+/// match Tensor.minimum (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def minimum :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn minimum left right = map2 min_elem left right
+
+/// Element-wise maximum ignoring `NaN` when the other value is non-`NaN` (`np.fmax`).
+///
+/// ```tsuzuri run=[3,%205]
+/// let a = Tensor.of_array [2] [0.0 / 0.0, 5.0]
+/// let b = Tensor.of_array [2] [3.0, 0.0 / 0.0]
+/// match Tensor.fmax (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def fmax :: (Float<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn fmax left right = map2 (\x y -> if Math.is_nan x then y elif Math.is_nan y then x else Math.max x y) left right
+
+/// Element-wise minimum ignoring `NaN` when the other value is non-`NaN` (`np.fmin`).
+///
+/// ```tsuzuri run=[3,%205]
+/// let a = Tensor.of_array [2] [0.0 / 0.0, 5.0]
+/// let b = Tensor.of_array [2] [3.0, 0.0 / 0.0]
+/// match Tensor.fmin (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def fmin :: (Float<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn fmin left right = map2 (\x y -> if Math.is_nan x then y elif Math.is_nan y then x else Math.min x y) left right
+
+/// Element-wise two-argument arctangent `Math.atan2 y x` (`left` = y, `right` = x) with broadcasting.
+///
+/// ```tsuzuri run=[0]
+/// let y = Tensor.of_array [1] [0.0]
+/// let x = Tensor.of_array [1] [1.0]
+/// match Tensor.atan2 (Tensor.view y) (Tensor.view x) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def atan2 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn atan2 left right = map2 Math.atan2 left right
+
+/// Element-wise hypotenuse `Math.hypot` with broadcasting.
+///
+/// ```tsuzuri run=[5]
+/// let a = Tensor.of_array [1] [3.0]
+/// let b = Tensor.of_array [1] [4.0]
+/// match Tensor.hypot (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def hypot :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn hypot left right = map2 Math.hypot left right
+
+/// Element-wise `Math.copysign` (magnitude of `left`, sign of `right`) with broadcasting.
+///
+/// ```tsuzuri run=[-3,%204]
+/// let a = Tensor.of_array [2] [3.0, -4.0]
+/// let b = Tensor.of_array [2] [-1.0, 1.0]
+/// match Tensor.copysign (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def copysign :: (Float<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn copysign left right = map2 Math.copysign left right
+
+/// Element-wise `ln(exp(left) + exp(right))` (`Math.logaddexp`) with broadcasting.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [1] [0.0]
+/// match Tensor.logaddexp (Tensor.view a) (Tensor.view a) with
+/// | Result.Ok t -> Math.abs ( (Tensor.as_array t)[0] - Math.log 2.0 ) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+def logaddexp :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn logaddexp left right = map2 Math.logaddexp left right
+
+/// Element-wise `log2(2**left + 2**right)` (`Math.logaddexp2`) with broadcasting.
+///
+/// ```tsuzuri run=[1]
+/// let a = Tensor.of_array [1] [0.0]
+/// match Tensor.logaddexp2 (Tensor.view a) (Tensor.view a) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def logaddexp2 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn logaddexp2 left right = map2 Math.logaddexp2 left right
+
+/// Element-wise explicit fused multiply-add `Math.fma a b c` with broadcasting.
+///
+/// ```tsuzuri run=[7,%2017]
+/// let a = Tensor.of_array [2] [2.0, 3.0]
+/// let b = Tensor.of_array [2] [3.0, 5.0]
+/// let c = Tensor.of_array [2] [1.0, 2.0]
+/// match Tensor.fma (Tensor.view a) (Tensor.view b) (Tensor.view c) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def fma :: (Float<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn fma a b c = map3 Math.fma a b c
+
+// Bitwise & Logical ufuncs
+/// Element-wise bitwise AND (`left &&& right`) with broadcasting.
+///
+/// ```tsuzuri run=[2,%200]
+/// let a = Tensor.of_array [2] [6, 5]
+/// let b = Tensor.of_array [2] [3, 2]
+/// match Tensor.bit_and (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def bit_and :: (Bits<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn bit_and left right = map2 (\x y -> x &&& y) left right
+
+/// Element-wise bitwise OR (`left ||| right`) with broadcasting.
+///
+/// ```tsuzuri run=[7,%207]
+/// let a = Tensor.of_array [2] [6, 5]
+/// let b = Tensor.of_array [2] [3, 2]
+/// match Tensor.bit_or (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def bit_or :: (Bits<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn bit_or left right = map2 (\x y -> x ||| y) left right
+
+/// Element-wise bitwise XOR (`left ^^^ right`) with broadcasting.
+///
+/// ```tsuzuri run=[5,%207]
+/// let a = Tensor.of_array [2] [6, 5]
+/// let b = Tensor.of_array [2] [3, 2]
+/// match Tensor.bit_xor (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def bit_xor :: (Bits<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn bit_xor left right = map2 (\x y -> x ^^^ y) left right
+
+/// Element-wise bitwise NOT (`~~~x`).
+///
+/// ```tsuzuri run=[-1,%20-2]
+/// let a = Tensor.of_array [2] [0, 1]
+/// Tensor.to_array (Tensor.bit_not (Tensor.view a))
+/// ```
+def bit_not :: (Bits<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn bit_not view = map (\x -> ~~~x) view
+
+/// Element-wise left bit shift (`left <<< right`) with broadcasting.
+///
+/// ```tsuzuri run=[4,%2012]
+/// let a = Tensor.of_array [2] [1, 3]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.shl (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def shl :: (Bits<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn shl left right = map2 (\x y -> x <<< y) left right
+
+/// Element-wise right bit shift (`left >>> right`) with broadcasting.
+///
+/// ```tsuzuri run=[2,%20-2]
+/// let a = Tensor.of_array [2] [8, -8]
+/// let b = Tensor.of_array [2] [2, 2]
+/// match Tensor.shr (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def shr :: (Bits<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<'a>, Error>
+fn shr left right = map2 (\x y -> x >>> y) left right
+
+/// Element-wise boolean AND with broadcasting.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [true, true]
+/// let b = Tensor.of_array [2] [true, false]
+/// match Tensor.logical_and (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def logical_and :: ref View<bool> -> ref View<bool> -> Result<Tensor<bool>, Error>
+fn logical_and left right = map2 (\x y -> x && y) left right
+
+/// Element-wise boolean OR with broadcasting.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [true, false]
+/// let b = Tensor.of_array [2] [false, false]
+/// match Tensor.logical_or (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def logical_or :: ref View<bool> -> ref View<bool> -> Result<Tensor<bool>, Error>
+fn logical_or left right = map2 (\x y -> x || y) left right
+
+/// Element-wise boolean XOR with broadcasting.
+///
+/// ```tsuzuri run=[false,%20true]
+/// let a = Tensor.of_array [2] [true, true]
+/// let b = Tensor.of_array [2] [true, false]
+/// match Tensor.logical_xor (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def logical_xor :: ref View<bool> -> ref View<bool> -> Result<Tensor<bool>, Error>
+fn logical_xor left right = map2 (\x y -> x != y) left right
+
+/// Element-wise boolean negation (`!x`).
+///
+/// ```tsuzuri run=[false,%20true]
+/// let a = Tensor.of_array [2] [true, false]
+/// Tensor.to_array (Tensor.logical_not (Tensor.view a))
+/// ```
+def logical_not :: ref View<bool> -> Tensor<bool>
+fn logical_not view = map (\x -> not x) view
+
+// Two-sided scalar arithmetic (D7: subject `View` is always last; order of `x` and `s` is preserved)
+/// Computes `x + s` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[11,%2012]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.add_scalar 10 (Tensor.view t))
+/// ```
+def add_scalar :: (Add<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn add_scalar s view = map (\x -> x + s) view
+
+/// Computes `s + x` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[11,%2012]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.radd_scalar 10 (Tensor.view t))
+/// ```
+def radd_scalar :: (Add<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn radd_scalar s view = map (\x -> s + x) view
+
+/// Computes `x - s` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[7,%208]
+/// let t = Tensor.of_array [2] [10, 11]
+/// Tensor.to_array (Tensor.sub_scalar 3 (Tensor.view t))
+/// ```
+def sub_scalar :: (Sub<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn sub_scalar s view = map (\x -> x - s) view
+
+/// Computes `s - x` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[9,%208]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.rsub_scalar 10 (Tensor.view t))
+/// ```
+def rsub_scalar :: (Sub<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn rsub_scalar s view = map (\x -> s - x) view
+
+/// Computes `x * s` for each element `x` of `view` (preserving right-multiplication order).
+///
+/// ```tsuzuri run=[3,%206]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.mul_scalar 3 (Tensor.view t))
+/// ```
+def mul_scalar :: (Mul<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn mul_scalar s view = map (\x -> x * s) view
+
+/// Computes `s * x` for each element `x` of `view` (preserving left-multiplication order).
+///
+/// ```tsuzuri run=[3,%206]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.scale 3 (Tensor.view t))
+/// ```
+def scale :: (Mul<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn scale s view = map (\x -> s * x) view
+
+/// Computes `x / s` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[5,%2010]
+/// let t = Tensor.of_array [2] [10, 20]
+/// Tensor.to_array (Tensor.div_scalar 2 (Tensor.view t))
+/// ```
+def div_scalar :: (Div<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn div_scalar s view = map (\x -> x / s) view
+
+/// Computes `s / x` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[10,%205]
+/// let t = Tensor.of_array [2] [2, 4]
+/// Tensor.to_array (Tensor.rdiv_scalar 20 (Tensor.view t))
+/// ```
+def rdiv_scalar :: (Div<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn rdiv_scalar s view = map (\x -> s / x) view
+
+/// Computes `x % s` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let t = Tensor.of_array [2] [7, 8]
+/// Tensor.to_array (Tensor.rem_scalar 3 (Tensor.view t))
+/// ```
+def rem_scalar :: (Rem<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn rem_scalar s view = map (\x -> x % s) view
+
+/// Computes `s % x` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let t = Tensor.of_array [2] [3, 4]
+/// Tensor.to_array (Tensor.rrem_scalar 10 (Tensor.view t))
+/// ```
+def rrem_scalar :: (Rem<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn rrem_scalar s view = map (\x -> s % x) view
+
+/// Computes `x ** s` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[1,%208]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.pow_scalar 3 (Tensor.view t))
+/// ```
+def pow_scalar :: (Pow<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn pow_scalar s view = map (\x -> x ** s) view
+
+/// Computes `s ** x` for each element `x` of `view`.
+///
+/// ```tsuzuri run=[2,%208]
+/// let t = Tensor.of_array [2] [1, 3]
+/// Tensor.to_array (Tensor.rpow_scalar 2 (Tensor.view t))
+/// ```
+def rpow_scalar :: (Pow<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<'a>
+fn rpow_scalar s view = map (\x -> s ** x) view
+
+private def rec map2_into_pair_axis { a b r } :: (Copy<'a>, Copy<'b>) => (('a * 'b) -> 'c) -> ref View<'a> { a } -> ref View<'b> { b } -> ref mut Mut<'c> { r } -> own i64 -> own i64 -> own i64 -> own i64 -> unit
+fn rec map2_into_pair_axis f left right target axis l_off r_off d_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let la = axis - (rank - left.shape.length)
+    let ra = axis - (rank - right.shape.length)
+    let l_stride = if la < 0 then 0 elif left.shape[la] == 1 then 0 else left.strides[la]
+    let r_stride = if ra < 0 then 0 elif right.shape[ra] == 1 then 0 else right.strides[ra]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f (left.data[l_off + step * l_stride], right.data[r_off + step * r_stride])
+            Array.write (d_off + step * d_stride) v target.data
+    else
+        for step in 0i64 ..< dim do
+            map2_into_pair_axis f left right target (axis + 1) (l_off + step * l_stride) (r_off + step * r_stride) (d_off + step * d_stride)
+
+private def map2_into_pair { a b r } :: (Copy<'a>, Copy<'b>) => own (('a * 'b) -> 'c) -> ref View<'a> { a } -> ref View<'b> { b } -> ref mut Mut<'c> { r } -> Result<unit, Error>
+fn map2_into_pair f left right target =
+    let eq_lr = same_shape (ref left.shape) (ref right.shape)
+    let eq_lt = same_shape (ref left.shape) (ref target.shape)
+    if eq_lr && eq_lt then
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous left && is_contiguous right && is_contiguous_mut target then
+                let l_off = left.offset
+                let r_off = right.offset
+                let d_off = target.offset
+                let l_slice = ref left.data[l_off ..< l_off + total]
+                let r_slice = ref right.data[r_off ..< r_off + total]
+                let d_slice = ref mut target.data[d_off ..< d_off + total]
+                for i in 0i64 ..< total do
+                    Array.write i (f (l_slice[i], r_slice[i])) d_slice
+            elif target.shape.length == 0 then
+                let d_off = target.offset
+                Array.write d_off (f (left.data[left.offset], right.data[right.offset])) target.data
+            else
+                let d_off = target.offset
+                map2_into_pair_axis f left right target 0 left.offset right.offset d_off
+        Result.Ok ()
+    elif not (broadcast_matches_target (ref left.shape) (ref right.shape) (ref target.shape)) then
+        match broadcast_shape (ref left.shape) (ref right.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok common -> Result.Error (Error.ShapeMismatch (common, Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if target.shape.length == 0 then
+                let d_off = target.offset
+                Array.write d_off (f (left.data[left.offset], right.data[right.offset])) target.data
+            else
+                let d_off = target.offset
+                map2_into_pair_axis f left right target 0 left.offset right.offset d_off
+        Result.Ok ()
+
+private def rec map3_into_triple_axis { a b c r } :: (Copy<'a>, Copy<'b>, Copy<'c>) => (('a * 'b * 'c) -> 'd) -> ref View<'a> { a } -> ref View<'b> { b } -> ref View<'c> { c } -> ref mut Mut<'d> { r } -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> unit
+fn rec map3_into_triple_axis f va vb vc target axis a_off b_off c_off d_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let aa = axis - (rank - va.shape.length)
+    let ba = axis - (rank - vb.shape.length)
+    let ca = axis - (rank - vc.shape.length)
+    let a_stride = if aa < 0 then 0 elif va.shape[aa] == 1 then 0 else va.strides[aa]
+    let b_stride = if ba < 0 then 0 elif vb.shape[ba] == 1 then 0 else vb.strides[ba]
+    let c_stride = if ca < 0 then 0 elif vc.shape[ca] == 1 then 0 else vc.strides[ca]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let v = f (va.data[a_off + step * a_stride], vb.data[b_off + step * b_stride], vc.data[c_off + step * c_stride])
+            Array.write (d_off + step * d_stride) v target.data
+    else
+        for step in 0i64 ..< dim do
+            map3_into_triple_axis f va vb vc target (axis + 1) (a_off + step * a_stride) (b_off + step * b_stride) (c_off + step * c_stride) (d_off + step * d_stride)
+
+private def map3_into_triple { a b c r } :: (Copy<'a>, Copy<'b>, Copy<'c>) => own (('a * 'b * 'c) -> 'd) -> ref View<'a> { a } -> ref View<'b> { b } -> ref View<'c> { c } -> ref mut Mut<'d> { r } -> Result<unit, Error>
+fn map3_into_triple f va vb vc target =
+    let all_eq = same_shape (ref va.shape) (ref target.shape) && same_shape (ref vb.shape) (ref target.shape) && same_shape (ref vc.shape) (ref target.shape)
+    if all_eq then
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous va && is_contiguous vb && is_contiguous vc && is_contiguous_mut target then
+                let ao = va.offset
+                let bo = vb.offset
+                let co = vc.offset
+                let doff = target.offset
+                let sa = ref va.data[ao ..< ao + total]
+                let sb = ref vb.data[bo ..< bo + total]
+                let sc = ref vc.data[co ..< co + total]
+                let sd = ref mut target.data[doff ..< doff + total]
+                for i in 0i64 ..< total do
+                    Array.write i (f (sa[i], sb[i], sc[i])) sd
+            elif target.shape.length == 0 then
+                let doff = target.offset
+                Array.write doff (f (va.data[va.offset], vb.data[vb.offset], vc.data[vc.offset])) target.data
+            else
+                let doff = target.offset
+                map3_into_triple_axis f va vb vc target 0 va.offset vb.offset vc.offset doff
+        Result.Ok ()
+    elif not (broadcast3_matches_target (ref va.shape) (ref vb.shape) (ref vc.shape) (ref target.shape)) then
+        match broadcast_shape (ref va.shape) (ref vb.shape) with
+        | Result.Error err -> Result.Error err
+        | Result.Ok ab ->
+            match broadcast_shape (ref ab) (ref vc.shape) with
+            | Result.Error err -> Result.Error err
+            | Result.Ok common -> Result.Error (Error.ShapeMismatch (common, Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if target.shape.length == 0 then
+                let doff = target.offset
+                Array.write doff (f (va.data[va.offset], vb.data[vb.offset], vc.data[vc.offset])) target.data
+            else
+                let doff = target.offset
+                map3_into_triple_axis f va vb vc target 0 va.offset vb.offset vc.offset doff
+        Result.Ok ()
+
+// Zero-allocation `_into` output kernels
+/// Writes `left + right` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[11,%2022]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 20]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.add_into (Tensor.view a) (Tensor.view b) (ref mut dst)
+/// $"{buf}"
+/// ```
+def add_into { a b r } :: (Add<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn add_into left right target = map2_into_pair (\p -> match p with | (x, y) -> x + y) left right target
+
+/// Writes `left - right` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[9,%2018]
+/// let a = Tensor.of_array [2] [10, 20]
+/// let b = Tensor.of_array [2] [1, 2]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.sub_into (Tensor.view a) (Tensor.view b) (ref mut dst)
+/// $"{buf}"
+/// ```
+def sub_into { a b r } :: (Sub<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn sub_into left right target = map2_into_pair (\p -> match p with | (x, y) -> x - y) left right target
+
+/// Writes `left * right` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[10,%2040]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [10, 20]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.mul_into (Tensor.view a) (Tensor.view b) (ref mut dst)
+/// $"{buf}"
+/// ```
+def mul_into { a b r } :: (Mul<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn mul_into left right target = map2_into_pair (\p -> match p with | (x, y) -> x * y) left right target
+
+/// Writes `left / right` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[5,%204]
+/// let a = Tensor.of_array [2] [10, 20]
+/// let b = Tensor.of_array [2] [2, 5]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.div_into (Tensor.view a) (Tensor.view b) (ref mut dst)
+/// $"{buf}"
+/// ```
+def div_into { a b r } :: (Div<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn div_into left right target = map2_into_pair (\p -> match p with | (x, y) -> x / y) left right target
+
+private def rec scale_into_axis { s r } :: (Mul<'a>, Copy<'a>) => own 'a -> ref View<'a> { s } -> ref mut Mut<'a> { r } -> own i64 -> own i64 -> own i64 -> unit
+fn rec scale_into_axis factor src target axis src_off dst_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let s_stride = src.strides[axis]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let val = factor * src.data[src_off + step * s_stride]
+            Array.write (dst_off + step * d_stride) val target.data
+    else
+        for step in 0i64 ..< dim do
+            scale_into_axis factor src target (axis + 1) (src_off + step * s_stride) (dst_off + step * d_stride)
+
+/// Writes `s * x` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[3,%206]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.scale_into 3 (Tensor.view a) (ref mut dst)
+/// $"{buf}"
+/// ```
+def scale_into { s r } :: (Mul<'a>, Copy<'a>) => own 'a -> ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn scale_into factor src target =
+    if not (same_shape (ref src.shape) (ref target.shape)) then
+        Result.Error (Error.ShapeMismatch (Array.copy (ref src.shape), Array.copy (ref target.shape)))
+    else
+        let total = volume (ref target.shape)
+        if total > 0 then
+            if is_contiguous src && is_contiguous_mut target then
+                let s_off = src.offset
+                let d_off = target.offset
+                let s_slice = ref src.data[s_off ..< s_off + total]
+                let d_slice = ref mut target.data[d_off ..< d_off + total]
+                for i in 0i64 ..< total do
+                    Array.write i (factor * s_slice[i]) d_slice
+            elif target.shape.length == 0 then
+                let s_off = src.offset
+                let d_off = target.offset
+                Array.write d_off (factor * src.data[s_off]) target.data
+            else
+                let s_off = src.offset
+                let d_off = target.offset
+                scale_into_axis factor src target 0 s_off d_off
+        Result.Ok ()
+
+/// Writes `a * b + c` (separate multiply and add, no FMA contraction) into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[7,%2017]
+/// let a = Tensor.of_array [2] [2, 3]
+/// let b = Tensor.of_array [2] [3, 5]
+/// let c = Tensor.of_array [2] [1, 2]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.mul_add_into (Tensor.view a) (Tensor.view b) (Tensor.view c) (ref mut dst)
+/// $"{buf}"
+/// ```
+def mul_add_into { a b c r } :: (Add<'a>, Mul<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref View<'a> { c } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn mul_add_into va vb vc target = map3_into_triple (\t -> match t with | (x, y, z) -> x * y + z) va vb vc target
+
+/// Writes explicit fused `Math.fma a b c` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[7,%2017]
+/// let a = Tensor.of_array [2] [2.0, 3.0]
+/// let b = Tensor.of_array [2] [3.0, 5.0]
+/// let c = Tensor.of_array [2] [1.0, 2.0]
+/// let mut buf = [0.0, 0.0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.fma_into (Tensor.view a) (Tensor.view b) (Tensor.view c) (ref mut dst)
+/// $"{buf}"
+/// ```
+def fma_into { a b c r } :: (Float<'a>, Copy<'a>) => ref View<'a> { a } -> ref View<'a> { b } -> ref View<'a> { c } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn fma_into va vb vc target = map3_into_triple (\t -> match t with | (x, y, z) -> Math.fma x y z) va vb vc target
+
+// Accumulating `*_in_place` & private `*_in_place_or_trap` kernels (D8, for NC20 `+=` etc.)
+/// Accumulates `target_i = target_i + rhs_i` in place, broadcasting `rhs` to `target`.
+///
+/// ```tsuzuri run=[11,%2022]
+/// let mut buf = [1, 2]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [10, 20]
+/// let _ = Tensor.add_in_place (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def add_in_place { s r } :: (Add<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn add_in_place rhs target = map2_in_place (\x y -> x + y) rhs target
+
+private def add_in_place_or_trap { r } :: (Add<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn add_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x + y) rhs target
+
+/// Accumulates `target_i = target_i - rhs_i` in place, broadcasting `rhs` to `target`.
+///
+/// ```tsuzuri run=[9,%2018]
+/// let mut buf = [10, 20]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [1, 2]
+/// let _ = Tensor.sub_in_place (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def sub_in_place { s r } :: (Sub<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn sub_in_place rhs target = map2_in_place (\x y -> x - y) rhs target
+
+private def sub_in_place_or_trap { r } :: (Sub<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn sub_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x - y) rhs target
+
+/// Accumulates `target_i = target_i * rhs_i` in place, broadcasting `rhs` to `target`.
+///
+/// ```tsuzuri run=[10,%2040]
+/// let mut buf = [1, 2]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [10, 20]
+/// let _ = Tensor.mul_in_place (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def mul_in_place { s r } :: (Mul<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn mul_in_place rhs target = map2_in_place (\x y -> x * y) rhs target
+
+private def mul_in_place_or_trap { r } :: (Mul<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn mul_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x * y) rhs target
+
+/// Accumulates `target_i = target_i / rhs_i` in place, broadcasting `rhs` to `target`.
+///
+/// ```tsuzuri run=[5,%204]
+/// let mut buf = [10, 20]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [2, 5]
+/// let _ = Tensor.div_in_place (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def div_in_place { s r } :: (Div<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn div_in_place rhs target = map2_in_place (\x y -> x / y) rhs target
+
+private def div_in_place_or_trap { r } :: (Div<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn div_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x / y) rhs target
+
+/// Accumulates `target_i = target_i % rhs_i` in place, broadcasting `rhs` to `target`.
+///
+/// ```tsuzuri run=[1,%202]
+/// let mut buf = [7, 8]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let rhs = Tensor.of_array [2] [3, 3]
+/// let _ = Tensor.rem_in_place (Tensor.view rhs) (ref mut dst)
+/// $"{buf}"
+/// ```
+def rem_in_place { s r } :: (Rem<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn rem_in_place rhs target = map2_in_place (\x y -> x % y) rhs target
+
+private def rem_in_place_or_trap { r } :: (Rem<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
+fn rem_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x % y) rhs target
+
+// Unary mathematical, Complex, & special-value ufuncs (plus `*_into` zero-alloc variants)
+private def abs_elem :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => own 'a -> 'a
+fn abs_elem x =
+    let zero: 'a = 0i64 as 'a
+    if x < zero then zero - x elif x == zero then zero else x
+
+private def sign_elem :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => own 'a -> 'a
+fn sign_elem x =
+    let zero: 'a = 0i64 as 'a
+    let one: 'a = 1i64 as 'a
+    if x > zero then one elif x < zero then zero - one else x
+
+/// Element-wise negation (`-x`).
+///
+/// ```tsuzuri run=[-1,%202]
+/// let t = Tensor.of_array [2] [1, -2]
+/// Tensor.to_array (Tensor.neg (Tensor.view t))
+/// ```
+def rec neg :: (Neg<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn rec neg view = map (\x -> -x) view
+
+/// Writes `-x` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[-1,%202]
+/// let t = Tensor.of_array [2] [1, -2]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.neg_into (Tensor.view t) (ref mut dst)
+/// $"{buf}"
+/// ```
+def neg_into { s r } :: (Neg<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn neg_into src target = map_into (\x -> -x) src target
+
+/// Element-wise magnitude (`|x|`) for integers and floats (`-0.0` becomes `+0.0`, `NaN` stays `NaN`).
+///
+/// ```tsuzuri run=[3,%204]
+/// let t = Tensor.of_array [2] [-3, 4]
+/// Tensor.to_array (Tensor.abs (Tensor.view t))
+/// ```
+def abs :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn abs view = map abs_elem view
+
+/// Writes `|x|` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[3,%204]
+/// let t = Tensor.of_array [2] [-3, 4]
+/// let mut buf = [0, 0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.abs_into (Tensor.view t) (ref mut dst)
+/// $"{buf}"
+/// ```
+def abs_into { s r } :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn abs_into src target = map_into abs_elem src target
+
+/// Element-wise square root (`Math.sqrt`).
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.of_array [2] [4.0, 9.0]
+/// Tensor.to_array (Tensor.sqrt (Tensor.view t))
+/// ```
+def sqrt :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sqrt view = map Math.sqrt view
+
+/// Writes `Math.sqrt` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[2,%203]
+/// let t = Tensor.of_array [2] [4.0, 9.0]
+/// let mut buf = [0.0, 0.0]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// let _ = Tensor.sqrt_into (Tensor.view t) (ref mut dst)
+/// $"{buf}"
+/// ```
+def sqrt_into { s r } :: (Float<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn sqrt_into src target = map_into Math.sqrt src target
+
+/// Element-wise cube root (`Math.cbrt`).
+///
+/// ```tsuzuri run=[2,%20-3]
+/// let t = Tensor.of_array [2] [8.0, -27.0]
+/// Tensor.to_array (Tensor.cbrt (Tensor.view t))
+/// ```
+def cbrt :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn cbrt view = map Math.cbrt view
+
+/// Element-wise square (`x * x`).
+///
+/// ```tsuzuri run=[9,%2016]
+/// let t = Tensor.of_array [2] [-3, 4]
+/// Tensor.to_array (Tensor.square (Tensor.view t))
+/// ```
+def square :: (Mul<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn square view = map (\x -> x * x) view
+
+/// Element-wise reciprocal (`1 / x`).
+///
+/// ```tsuzuri run=[0.5,%200.25]
+/// let t = Tensor.of_array [2] [2.0, 4.0]
+/// Tensor.to_array (Tensor.reciprocal (Tensor.view t))
+/// ```
+def reciprocal :: (Numeric<'a>, Div<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn reciprocal view = map (\x -> (1i64 as 'a) / x) view
+
+/// Element-wise `Math.floor`.
+///
+/// ```tsuzuri run=[-2,%202]
+/// let t = Tensor.of_array [2] [-1.2, 2.8]
+/// Tensor.to_array (Tensor.floor (Tensor.view t))
+/// ```
+def floor :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn floor view = map Math.floor view
+
+/// Element-wise `Math.ceil`.
+///
+/// ```tsuzuri run=[-1,%203]
+/// let t = Tensor.of_array [2] [-1.2, 2.2]
+/// Tensor.to_array (Tensor.ceil (Tensor.view t))
+/// ```
+def ceil :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn ceil view = map Math.ceil view
+
+/// Element-wise `Math.trunc`.
+///
+/// ```tsuzuri run=[-1,%202]
+/// let t = Tensor.of_array [2] [-1.8, 2.8]
+/// Tensor.to_array (Tensor.trunc (Tensor.view t))
+/// ```
+def trunc :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn trunc view = map Math.trunc view
+
+/// Element-wise `Math.round` (ties away from zero; use `round_even` for NumPy `np.round`).
+///
+/// ```tsuzuri run=[3,%20-3]
+/// let t = Tensor.of_array [2] [2.5, -2.5]
+/// Tensor.to_array (Tensor.round (Tensor.view t))
+/// ```
+def round :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn round view = map Math.round view
+
+/// Element-wise `Math.round_even` (ties to nearest even, matching NumPy `np.round` / `np.rint`).
+///
+/// ```tsuzuri run=[2,%204]
+/// let t = Tensor.of_array [2] [2.5, 3.5]
+/// Tensor.to_array (Tensor.round_even (Tensor.view t))
+/// ```
+def round_even :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn round_even view = map Math.round_even view
+
+/// Element-wise sign (`-1`, `0`/`±0.0`, `+1`, or `NaN`; preserves `-0.0` like `Math.sign`).
+///
+/// ```tsuzuri run=[-1,%200,%201]
+/// let t = Tensor.of_array [3] [-5, 0, 9]
+/// Tensor.to_array (Tensor.sign (Tensor.view t))
+/// ```
+def sign :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sign view = map sign_elem view
+
+/// Element-wise `Math.sin`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.sin (Tensor.view t))
+/// ```
+def sin :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sin view = map Math.sin view
+
+/// Element-wise `Math.cos`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.cos (Tensor.view t))
+/// ```
+def cos :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn cos view = map Math.cos view
+
+/// Element-wise `Math.tan`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.tan (Tensor.view t))
+/// ```
+def tan :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn tan view = map Math.tan view
+
+/// Element-wise `Math.asin`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.asin (Tensor.view t))
+/// ```
+def asin :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn asin view = map Math.asin view
+
+/// Element-wise `Math.acos`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [1.0]
+/// Tensor.to_array (Tensor.acos (Tensor.view t))
+/// ```
+def acos :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn acos view = map Math.acos view
+
+/// Element-wise `Math.atan`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.atan (Tensor.view t))
+/// ```
+def atan :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn atan view = map Math.atan view
+
+/// Element-wise `Math.sinh`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.sinh (Tensor.view t))
+/// ```
+def sinh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sinh view = map Math.sinh view
+
+/// Element-wise `Math.cosh`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.cosh (Tensor.view t))
+/// ```
+def cosh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn cosh view = map Math.cosh view
+
+/// Element-wise `Math.tanh`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.tanh (Tensor.view t))
+/// ```
+def tanh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn tanh view = map Math.tanh view
+
+/// Element-wise `Math.asinh`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.asinh (Tensor.view t))
+/// ```
+def asinh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn asinh view = map Math.asinh view
+
+/// Element-wise `Math.acosh`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [1.0]
+/// Tensor.to_array (Tensor.acosh (Tensor.view t))
+/// ```
+def acosh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn acosh view = map Math.acosh view
+
+/// Element-wise `Math.atanh`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.atanh (Tensor.view t))
+/// ```
+def atanh :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn atanh view = map Math.atanh view
+
+/// Element-wise `Math.exp`.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.exp (Tensor.view t))
+/// ```
+def exp :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn exp view = map Math.exp view
+
+/// Writes `Math.exp` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[1]
+/// let t = Tensor.of_array [1] [0.0]
+/// let mut buf = [0.0]
+/// let mut dst = Tensor.borrow_mut [1] (ref mut buf)
+/// let _ = Tensor.exp_into (Tensor.view t) (ref mut dst)
+/// $"{buf}"
+/// ```
+def exp_into { s r } :: (Elementary<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn exp_into src target = map_into Math.exp src target
+
+/// Element-wise `Math.exp2`.
+///
+/// ```tsuzuri run=[8]
+/// let t = Tensor.of_array [1] [3.0]
+/// Tensor.to_array (Tensor.exp2 (Tensor.view t))
+/// ```
+def exp2 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn exp2 view = map Math.exp2 view
+
+/// Element-wise `Math.expm1`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.expm1 (Tensor.view t))
+/// ```
+def expm1 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn expm1 view = map Math.expm1 view
+
+/// Element-wise natural logarithm `Math.log`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [1.0]
+/// Tensor.to_array (Tensor.log (Tensor.view t))
+/// ```
+def log :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn log view = map Math.log view
+
+/// Writes `Math.log` into `target` with zero heap allocations.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [1.0]
+/// let mut buf = [9.0]
+/// let mut dst = Tensor.borrow_mut [1] (ref mut buf)
+/// let _ = Tensor.log_into (Tensor.view t) (ref mut dst)
+/// $"{buf}"
+/// ```
+def log_into { s r } :: (Elementary<'a>, Copy<'a>) => ref View<'a> { s } -> ref mut Mut<'a> { r } -> Result<unit, Error>
+fn log_into src target = map_into Math.log src target
+
+/// Element-wise base-2 logarithm `Math.log2`.
+///
+/// ```tsuzuri run=[3]
+/// let t = Tensor.of_array [1] [8.0]
+/// Tensor.to_array (Tensor.log2 (Tensor.view t))
+/// ```
+def log2 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn log2 view = map Math.log2 view
+
+/// Element-wise base-10 logarithm `Math.log10`.
+///
+/// ```tsuzuri run=[2]
+/// let t = Tensor.of_array [1] [100.0]
+/// Tensor.to_array (Tensor.log10 (Tensor.view t))
+/// ```
+def log10 :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn log10 view = map Math.log10 view
+
+/// Element-wise `Math.log1p`.
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.log1p (Tensor.view t))
+/// ```
+def log1p :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn log1p view = map Math.log1p view
+
+/// Element-wise normalized sinc `sin(pi * x) / (pi * x)` (`Math.sinc`).
+///
+/// ```tsuzuri run=[1,%200]
+/// let t = Tensor.of_array [2] [0.0, 1.0]
+/// Tensor.to_array (Tensor.sinc (Tensor.view t))
+/// ```
+def sinc :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn sinc view = map Math.sinc view
+
+/// Converts radians to degrees element-wise (`Math.degrees`).
+///
+/// ```tsuzuri run=[180]
+/// let pi: f64 = Math.pi()
+/// let t = Tensor.of_array [1] [pi]
+/// Tensor.to_array (Tensor.degrees (Tensor.view t))
+/// ```
+def degrees :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn degrees view = map Math.degrees view
+
+/// Converts degrees to radians element-wise (`Math.radians`).
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [0.0]
+/// Tensor.to_array (Tensor.radians (Tensor.view t))
+/// ```
+def radians :: (Elementary<'a>, Copy<'a>) => ref View<'a> -> Tensor<'a>
+fn radians view = map Math.radians view
+
+/// Extracts the real part of every complex element (`Complex.real`).
+///
+/// ```tsuzuri run=[3,%205]
+/// let t = Tensor.of_array [2] [Complex.of 3.0 4.0, Complex.of 5.0 (-1.0)]
+/// Tensor.to_array (Tensor.real (Tensor.view t))
+/// ```
+def real :: Copy<'a> => ref View<Complex<'a>> -> Tensor<'a>
+fn real view = map (\z -> Complex.real (ref z)) view
+
+/// Extracts the imaginary part of every complex element (`Complex.imag`).
+///
+/// ```tsuzuri run=[4,%20-1]
+/// let t = Tensor.of_array [2] [Complex.of 3.0 4.0, Complex.of 5.0 (-1.0)]
+/// Tensor.to_array (Tensor.imag (Tensor.view t))
+/// ```
+def imag :: Copy<'a> => ref View<Complex<'a>> -> Tensor<'a>
+fn imag view = map (\z -> Complex.imag (ref z)) view
+
+/// Computes the complex conjugate of every element (`Complex.conj`).
+///
+/// ```tsuzuri run=[-4]
+/// let t = Tensor.of_array [1] [Complex.of 3.0 4.0]
+/// let c = Tensor.conj (Tensor.view t)
+/// Tensor.to_array (Tensor.imag (Tensor.view c))
+/// ```
+def conj :: (Float<'a>, Neg<'a>, Copy<'a>) => ref View<Complex<'a>> -> Tensor<Complex<'a>>
+fn conj view = map (\z -> Complex.conj (ref z)) view
+
+/// Computes the phase angle in radians of every complex element (`Complex.arg`).
+///
+/// ```tsuzuri run=[0]
+/// let t = Tensor.of_array [1] [Complex.of 2.0 0.0]
+/// Tensor.to_array (Tensor.angle (Tensor.view t))
+/// ```
+def angle :: (Elementary<'a>, Copy<'a>) => ref View<Complex<'a>> -> Tensor<'a>
+fn angle view = map (\z -> Complex.arg (ref z)) view
+
+/// Tests each element for `NaN` (`Math.is_nan`).
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [0.0 / 0.0, 1.0]
+/// Tensor.to_array (Tensor.is_nan (Tensor.view t))
+/// ```
+def is_nan :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<bool>
+fn is_nan view = map Math.is_nan view
+
+/// Tests each element for `±Inf` (`Math.is_infinite`).
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [1.0 / 0.0, 1.0]
+/// Tensor.to_array (Tensor.is_infinite (Tensor.view t))
+/// ```
+def is_infinite :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<bool>
+fn is_infinite view = map Math.is_infinite view
+
+/// Tests whether each element is finite (`Math.is_finite`).
+///
+/// ```tsuzuri run=[false,%20true]
+/// let t = Tensor.of_array [2] [1.0 / 0.0, 1.0]
+/// Tensor.to_array (Tensor.is_finite (Tensor.view t))
+/// ```
+def is_finite :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<bool>
+fn is_finite view = map Math.is_finite view
+
+/// Tests the IEEE 754 sign bit of each element (`Math.signbit`, `true` on `-0.0`).
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [-0.0, 0.0]
+/// Tensor.to_array (Tensor.signbit (Tensor.view t))
+/// ```
+def signbit :: (Float<'a>, Copy<'a>) => ref View<'a> -> Tensor<bool>
+fn signbit view = map Math.signbit view
+
+/// Replaces `NaN` with `nan_val`, `+Inf` with `posinf_val`, and `-Inf` with `neginf_val`.
+///
+/// ```tsuzuri run=[0,%2099,%20-99,%203]
+/// let t = Tensor.of_array [4] [0.0 / 0.0, 1.0 / 0.0, -1.0 / 0.0, 3.0]
+/// Tensor.to_array (Tensor.nan_to_num 0.0 99.0 (-99.0) (Tensor.view t))
+/// ```
+def nan_to_num :: (Float<'a>, Copy<'a>) => own 'a -> own 'a -> own 'a -> ref View<'a> -> Tensor<'a>
+fn nan_to_num nan_val posinf_val neginf_val view =
+    map (\x ->
+        if Math.is_nan x then nan_val
+        elif Math.is_infinite x then (if Math.signbit x then neginf_val else posinf_val)
+        else x) view
+
+// Element-wise comparisons & approximate equality (§3)
+/// Element-wise equality (`left == right`) with broadcasting.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [1, 3]
+/// match Tensor.elem_eq (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_eq :: (Eq<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_eq left right = map2 (\x y -> x == y) left right
+
+/// Element-wise inequality (`left != right`) with broadcasting.
+///
+/// ```tsuzuri run=[false,%20true]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [2] [1, 3]
+/// match Tensor.elem_ne (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_ne :: (Eq<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_ne left right = map2 (\x y -> x != y) left right
+
+/// Element-wise `left < right` with broadcasting.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [1, 5]
+/// let b = Tensor.of_array [2] [2, 3]
+/// match Tensor.elem_lt (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_lt :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_lt left right = map2 (\x y -> x < y) left right
+
+/// Element-wise `left <= right` with broadcasting.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [2, 5]
+/// let b = Tensor.of_array [2] [2, 3]
+/// match Tensor.elem_le (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_le :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_le left right = map2 (\x y -> x <= y) left right
+
+/// Element-wise `left > right` with broadcasting.
+///
+/// ```tsuzuri run=[false,%20true]
+/// let a = Tensor.of_array [2] [2, 5]
+/// let b = Tensor.of_array [2] [2, 3]
+/// match Tensor.elem_gt (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_gt :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_gt left right = map2 (\x y -> x > y) left right
+
+/// Element-wise `left >= right` with broadcasting.
+///
+/// ```tsuzuri run=[true,%20true]
+/// let a = Tensor.of_array [2] [2, 5]
+/// let b = Tensor.of_array [2] [2, 3]
+/// match Tensor.elem_ge (Tensor.view a) (Tensor.view b) with | Result.Ok t -> Tensor.to_array t | Result.Error _ -> []
+/// ```
+def elem_ge :: (Ord<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn elem_ge left right = map2 (\x y -> x >= y) left right
+
+/// Mask of elements where `x == threshold`.
+///
+/// ```tsuzuri run=[false,%20true]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.eq_scalar 2 (Tensor.view t))
+/// ```
+def eq_scalar :: (Eq<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn eq_scalar threshold view = map (\x -> x == threshold) view
+
+/// Mask of elements where `x != threshold`.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [1, 2]
+/// Tensor.to_array (Tensor.ne_scalar 2 (Tensor.view t))
+/// ```
+def ne_scalar :: (Eq<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn ne_scalar threshold view = map (\x -> x != threshold) view
+
+/// Mask of elements where `x < threshold`.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [1, 3]
+/// Tensor.to_array (Tensor.lt_scalar 2 (Tensor.view t))
+/// ```
+def lt_scalar :: (Ord<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn lt_scalar threshold view = map (\x -> x < threshold) view
+
+/// Mask of elements where `x <= threshold`.
+///
+/// ```tsuzuri run=[true,%20false]
+/// let t = Tensor.of_array [2] [2, 3]
+/// Tensor.to_array (Tensor.le_scalar 2 (Tensor.view t))
+/// ```
+def le_scalar :: (Ord<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn le_scalar threshold view = map (\x -> x <= threshold) view
+
+/// Mask of elements where `x > threshold` (so `t[Tensor.gt_scalar 0 (Tensor.view t)]` keeps positives).
+///
+/// ```tsuzuri run=[false,%20true]
+/// let t = Tensor.of_array [2] [0, 3]
+/// Tensor.to_array (Tensor.gt_scalar 0 (Tensor.view t))
+/// ```
+def gt_scalar :: (Ord<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn gt_scalar threshold view = map (\x -> x > threshold) view
+
+/// Mask of elements where `x >= threshold`.
+///
+/// ```tsuzuri run=[true,%20true]
+/// let t = Tensor.of_array [2] [0, 3]
+/// Tensor.to_array (Tensor.ge_scalar 0 (Tensor.view t))
+/// ```
+def ge_scalar :: (Ord<'a>, Copy<'a>) => own 'a -> ref View<'a> -> Tensor<bool>
+fn ge_scalar threshold view = map (\x -> x >= threshold) view
+
+private def close_elem :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> own bool -> own 'a -> own 'a -> bool
+fn close_elem rtol atol equal_nan x y =
+    if Math.is_nan x || Math.is_nan y then
+        equal_nan && Math.is_nan x && Math.is_nan y
+    elif Math.is_infinite x || Math.is_infinite y then
+        x == y
+    else
+        Math.abs (x - y) <= atol + rtol * Math.abs y
+
+/// Element-wise tolerance comparison `|left - right| <= atol + rtol * |right|` with broadcasting
+/// (`equal_nan` controls whether two `NaN`s compare equal).
+///
+/// ```tsuzuri run=[true,%20false]
+/// let a = Tensor.of_array [2] [1.0, 1.1]
+/// let b = Tensor.of_array [2] [1.0 + 1e-9, 1.0]
+/// match Tensor.isclose 1e-5 1e-8 false (Tensor.view a) (Tensor.view b) with
+/// | Result.Ok m -> Tensor.to_array m
+/// | Result.Error _ -> []
+/// ```
+def isclose :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> own bool -> ref View<'a> -> ref View<'a> -> Result<Tensor<bool>, Error>
+fn isclose rtol atol equal_nan left right =
+    map2 (\x y -> close_elem rtol atol equal_nan x y) left right
+
+/// Returns `true` when `left` and `right` broadcast and every pair satisfies `isclose`.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2] [1.0, 2.0]
+/// let b = Tensor.of_array [2] [1.0 + 1e-9, 2.0 - 1e-9]
+/// Tensor.allclose 1e-5 1e-8 false (Tensor.view a) (Tensor.view b)
+/// ```
+def allclose :: (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Ord<'a>, Copy<'a>) => own 'a -> own 'a -> own bool -> ref View<'a> -> ref View<'a> -> bool
+fn allclose rtol atol equal_nan left right =
+    match isclose rtol atol equal_nan left right with
+    | Result.Error _ -> false
+    | Result.Ok m -> Array.forall (\b -> b) (ref m.data)
+
+private def rec equal_axis :: Eq<'a> => ref View<'a> -> ref View<'a> -> own i64 -> own i64 -> own i64 -> bool
+fn rec equal_axis left right axis l_off r_off =
+    let rank = left.shape.length
+    let dim = left.shape[axis]
+    let ls = left.strides[axis]
+    let rs = right.strides[axis]
+    if axis == rank - 1 then
+        let mut ok = true
+        for step in 0i64 ..< dim do
+            if ok && not (Eq.eq (ref left.data[l_off + step * ls]) (ref right.data[r_off + step * rs])) then ok = false
+        ok
+    else
+        let mut ok = true
+        for step in 0i64 ..< dim do
+            if ok && not (equal_axis left right (axis + 1) (l_off + step * ls) (r_off + step * rs)) then ok = false
+        ok
+
+/// Returns `true` when `left` and `right` have identical shapes and equal elements at all positions.
+///
+/// ```tsuzuri run=true%20false
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [1, 2] [1, 2]
+/// $"{Tensor.array_equal (Tensor.view a) (Tensor.view a)} {Tensor.array_equal (Tensor.view a) (Tensor.view b)}"
+/// ```
+def array_equal :: Eq<'a> => ref View<'a> -> ref View<'a> -> bool
+fn array_equal left right =
+    if not (same_shape (ref left.shape) (ref right.shape)) then false
+    else
+        let total = volume (ref left.shape)
+        if total == 0 then true
+        elif left.shape.length == 0 then Eq.eq (ref left.data[left.offset]) (ref right.data[right.offset])
+        else equal_axis left right 0 left.offset right.offset
+
+/// Returns `true` when `left` and `right` are broadcast-compatible and equal at all broadcast positions.
+///
+/// ```tsuzuri run=true
+/// let a = Tensor.of_array [2] [5, 5]
+/// let b = Tensor.of_array [1] [5]
+/// Tensor.array_equiv (Tensor.view a) (Tensor.view b)
+/// ```
+def array_equiv :: (Eq<'a>, Copy<'a>) => ref View<'a> -> ref View<'a> -> bool
+fn array_equiv left right =
+    match elem_eq left right with
+    | Result.Error _ -> false
+    | Result.Ok m -> Array.forall (\b -> b) (ref m.data)
+
+// Outer product & axis accumulation (§1 & §4)
+/// Computes the outer-table tensor of shape `left.shape ++ right.shape` where each entry is `f x y`.
+///
+/// ```tsuzuri run=[2,%203]%20[10,%2020,%2030,%2020,%2040,%2060]
+/// let a = Tensor.of_array [2] [1, 2]
+/// let b = Tensor.of_array [3] [10, 20, 30]
+/// let out = Tensor.outer_with (\x y -> x * y) (Tensor.view a) (Tensor.view b)
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
+/// ```
+def outer_with :: (Copy<'a>, Copy<'b>) => own ('a -> 'b -> 'c) -> ref View<'a> -> ref View<'b> -> Tensor<'c>
+fn outer_with f left right =
+    let lr = left.shape.length
+    let rr = right.shape.length
+    assert (lr + rr <= 64)
+    let out_shape = new [i64](lr + rr, \d -> if d < lr then left.shape[d] else right.shape[d - lr])
+    let total = volume (ref out_shape)
+    if total == 0 then Tensor { shape: out_shape, data: [] }
+    else
+        let lp = to_tensor left
+        let rp = to_tensor right
+        let r_len = rp.data.length
+        let l_data = ref lp.data
+        let r_data = ref rp.data
+        Tensor { shape: out_shape, data: new ['c](total, \idx -> f l_data[idx / r_len] r_data[idx % r_len]) }
+
+/// Applies binary `f` cumulatively along `axis` (ufunc `accumulate`), preserving the input shape.
+///
+/// ```tsuzuri run=[1,%203,%206,%204,%209,%2015]
+/// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+/// Tensor.to_array (Tensor.accumulate (\acc x -> acc + x) 1 (Tensor.view t))
+/// ```
+def accumulate :: Copy<'a> => own ('a -> 'a -> 'a) -> own i64 -> ref View<'a> -> Tensor<'a>
+fn accumulate f axis view =
+    let rank = view.shape.length
+    let norm = normalize_axis axis rank
+    let out_shape = Array.copy (ref view.shape)
+    let total = volume (ref out_shape)
+    if total == 0 then Tensor { shape: out_shape, data: [] }
+    else
+        let packed = to_tensor view
+        let mut out = Array.copy (ref packed.data)
+        let dim = out_shape[norm]
+        if dim > 1 then
+            let mut inner_step = 1
+            for d in (norm + 1) ..< rank do inner_step = inner_step * out_shape[d]
+            let outer_span = inner_step * dim
+            let outer_count = total / outer_span
+            for o in 0i64 ..< outer_count do
+                let base = o * outer_span
+                for k in 0i64 ..< inner_step do
+                    let mut acc = out[base + k]
+                    for step in 1i64 ..< dim do
+                        let slot = base + step * inner_step + k
+                        acc = f acc out[slot]
+                        Array.write slot acc (ref mut out)
+        Tensor { shape: out_shape, data: out }
+
+// Same-type `Tensor<'a>` arithmetic operator instances (§4, NC03 D1-A borrowed operands)
+instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>> {
+    fn rec add left right = add_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<Tensor<'a>> {
+    fn rec sub left right = sub_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<Tensor<'a>> {
+    fn rec mul left right = mul_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<Tensor<'a>> {
+    fn rec div left right = div_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<Tensor<'a>> {
+    fn rec rem left right = rem_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>> {
+    fn rec pow left right = pow_or_trap (ref (view left)) (ref (view right))
+}
+
+instance (Neg<'a>, Copy<'a>) => Neg<Tensor<'a>> {
+    fn rec neg value = Tensor.neg (ref (view value))
+}
+
+// generated:tensor-operators
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, View<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap left right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap (ref (view left)) right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn add left right = add_or_trap left (ref (view right))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<'a, Tensor<'a>, Tensor<'a>> {
+    fn add left right = radd_scalar (deref left) (ref (view right))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<Tensor<'a>, 'a, Tensor<'a>> {
+    fn add left right = add_scalar (deref right) (ref (view left))
+}
+
+instance (Add<'a>, Copy<'a>) => Add<'a, View<'a>, Tensor<'a>> {
+    fn add left right = radd_scalar (deref left) right
+}
+
+instance (Add<'a>, Copy<'a>) => Add<View<'a>, 'a, Tensor<'a>> {
+    fn add left right = add_scalar (deref right) left
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, View<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap left right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap (ref (view left)) right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn sub left right = sub_or_trap left (ref (view right))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<'a, Tensor<'a>, Tensor<'a>> {
+    fn sub left right = rsub_scalar (deref left) (ref (view right))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<Tensor<'a>, 'a, Tensor<'a>> {
+    fn sub left right = sub_scalar (deref right) (ref (view left))
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<'a, View<'a>, Tensor<'a>> {
+    fn sub left right = rsub_scalar (deref left) right
+}
+
+instance (Sub<'a>, Copy<'a>) => Sub<View<'a>, 'a, Tensor<'a>> {
+    fn sub left right = sub_scalar (deref right) left
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, View<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap left right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap (ref (view left)) right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn mul left right = mul_or_trap left (ref (view right))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<'a, Tensor<'a>, Tensor<'a>> {
+    fn mul left right = scale (deref left) (ref (view right))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<Tensor<'a>, 'a, Tensor<'a>> {
+    fn mul left right = mul_scalar (deref right) (ref (view left))
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<'a, View<'a>, Tensor<'a>> {
+    fn mul left right = scale (deref left) right
+}
+
+instance (Mul<'a>, Copy<'a>) => Mul<View<'a>, 'a, Tensor<'a>> {
+    fn mul left right = mul_scalar (deref right) left
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, View<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap left right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap (ref (view left)) right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn div left right = div_or_trap left (ref (view right))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<'a, Tensor<'a>, Tensor<'a>> {
+    fn div left right = rdiv_scalar (deref left) (ref (view right))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<Tensor<'a>, 'a, Tensor<'a>> {
+    fn div left right = div_scalar (deref right) (ref (view left))
+}
+
+instance (Div<'a>, Copy<'a>) => Div<'a, View<'a>, Tensor<'a>> {
+    fn div left right = rdiv_scalar (deref left) right
+}
+
+instance (Div<'a>, Copy<'a>) => Div<View<'a>, 'a, Tensor<'a>> {
+    fn div left right = div_scalar (deref right) left
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, View<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap left right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap (ref (view left)) right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn rem left right = rem_or_trap left (ref (view right))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<'a, Tensor<'a>, Tensor<'a>> {
+    fn rem left right = rrem_scalar (deref left) (ref (view right))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<Tensor<'a>, 'a, Tensor<'a>> {
+    fn rem left right = rem_scalar (deref right) (ref (view left))
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<'a, View<'a>, Tensor<'a>> {
+    fn rem left right = rrem_scalar (deref left) right
+}
+
+instance (Rem<'a>, Copy<'a>) => Rem<View<'a>, 'a, Tensor<'a>> {
+    fn rem left right = rem_scalar (deref right) left
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, View<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap left right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>, View<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap (ref (view left)) right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, Tensor<'a>, Tensor<'a>> {
+    fn pow left right = pow_or_trap left (ref (view right))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<'a, Tensor<'a>, Tensor<'a>> {
+    fn pow left right = rpow_scalar (deref left) (ref (view right))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<Tensor<'a>, 'a, Tensor<'a>> {
+    fn pow left right = pow_scalar (deref right) (ref (view left))
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<'a, View<'a>, Tensor<'a>> {
+    fn pow left right = rpow_scalar (deref left) right
+}
+
+instance (Pow<'a>, Copy<'a>) => Pow<View<'a>, 'a, Tensor<'a>> {
+    fn pow left right = pow_scalar (deref right) left
+}
+
+instance (Neg<'a>, Copy<'a>) => Neg<View<'a>, Tensor<'a>> {
+    fn neg value = neg value
+}
+// /generated:tensor-operators
+
+
 

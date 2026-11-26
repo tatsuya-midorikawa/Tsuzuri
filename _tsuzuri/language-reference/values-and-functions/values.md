@@ -251,7 +251,7 @@ def table :: unit -> ref [i64]
 fn table _ = ref Primes
 
 def window :: i64 -> i64 -> ref [i64]
-fn window from until = ref Primes[from..until]
+fn window from until = ref Primes[from..<until]
 
 Primes[0] + (table ())[5] + Array.sum (window 1 4) + Primes.length * 2
 ```

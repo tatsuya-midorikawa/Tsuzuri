@@ -1,0 +1,626 @@
+// NC17: Edition 2028 inclusive range family and `^k` from-end positions across i32, i64, i64u, i128.
+
+private def fold_slice :: ref [i64] -> i64 = \part ->
+    let mut t: i64 = 0
+    for v in part do
+        t = t * 31 + v
+    t
+
+private def make_array :: i64 -> [i64] = \n ->
+    new [i64](n, \i -> (i + 1) * 10)
+
+private def pack128 :: i64 -> i64 -> i128 = \hi lo ->
+    ((hi as i128) <<< 64) ||| ((lo as i64u) as i128)
+
+// --- Array slices & item_from_end: i32 ---
+
+export def array_closed_i32 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) .. (b as i32)])
+
+export def array_open_i32 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) ..< (b as i32)])
+
+export def array_open_closed_i32 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) <.. (b as i32)])
+
+export def array_open_open_i32 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) <..< (b as i32)])
+
+export def array_to_i32 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. (b as i32)])
+
+export def array_to_open_i32 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< (b as i32)])
+
+export def array_from_i32 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) ..])
+
+export def array_from_open_i32 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) <..])
+
+export def array_drop_end_i32 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. ^(b as i32)])
+
+export def array_from_end_start_i32 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^(a as i32) ..])
+
+export def array_from_end_start_open_i32 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^(a as i32) <..])
+
+export def array_between_from_end_i32 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i32) .. ^(b as i32)])
+
+export def array_until_from_end_i32 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< ^(b as i32)])
+
+export def array_item_from_end_i32 :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_array n
+    xs[^(k as i32)]
+
+// --- Array slices & item_from_end: i64 ---
+
+export def array_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[a .. b])
+
+export def array_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[a ..< b])
+
+export def array_open_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[a <.. b])
+
+export def array_open_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[a <..< b])
+
+export def array_to_i64 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. b])
+
+export def array_to_open_i64 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< b])
+
+export def array_from_i64 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[a ..])
+
+export def array_from_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[a <..])
+
+export def array_drop_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. ^b])
+
+export def array_from_end_start_i64 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^a ..])
+
+export def array_from_end_start_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^a <..])
+
+export def array_between_from_end_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[a .. ^b])
+
+export def array_until_from_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< ^b])
+
+export def array_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_array n
+    xs[^k]
+
+// --- Array slices & item_from_end: i64u ---
+
+export def array_closed_i64u :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) .. (b as i64u)])
+
+export def array_open_i64u :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) ..< (b as i64u)])
+
+export def array_open_closed_i64u :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) <.. (b as i64u)])
+
+export def array_open_open_i64u :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) <..< (b as i64u)])
+
+export def array_to_i64u :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. (b as i64u)])
+
+export def array_to_open_i64u :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< (b as i64u)])
+
+export def array_from_i64u :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) ..])
+
+export def array_from_open_i64u :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) <..])
+
+export def array_drop_end_i64u :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[.. ^(b as i64u)])
+
+export def array_from_end_start_i64u :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^(a as i64u) ..])
+
+export def array_from_end_start_open_i64u :: i64 -> i64 -> i64 = \n a ->
+    let xs = make_array n
+    fold_slice (ref xs[^(a as i64u) <..])
+
+export def array_between_from_end_i64u :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let xs = make_array n
+    fold_slice (ref xs[(a as i64u) .. ^(b as i64u)])
+
+export def array_until_from_end_i64u :: i64 -> i64 -> i64 = \n b ->
+    let xs = make_array n
+    fold_slice (ref xs[..< ^(b as i64u)])
+
+export def array_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_array n
+    xs[^(k as i64u)]
+
+// --- Array slices & item_from_end: i128 ---
+
+export def array_closed_i128 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 = \n ahi alo bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) .. (pack128 bhi blo)])
+
+export def array_open_i128 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 = \n ahi alo bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) ..< (pack128 bhi blo)])
+
+export def array_open_closed_i128 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 = \n ahi alo bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) <.. (pack128 bhi blo)])
+
+export def array_open_open_i128 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 = \n ahi alo bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) <..< (pack128 bhi blo)])
+
+export def array_to_i128 :: i64 -> i64 -> i64 -> i64 = \n bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[.. (pack128 bhi blo)])
+
+export def array_to_open_i128 :: i64 -> i64 -> i64 -> i64 = \n bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[..< (pack128 bhi blo)])
+
+export def array_from_i128 :: i64 -> i64 -> i64 -> i64 = \n ahi alo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) ..])
+
+export def array_from_open_i128 :: i64 -> i64 -> i64 -> i64 = \n ahi alo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) <..])
+
+export def array_drop_end_i128 :: i64 -> i64 -> i64 -> i64 = \n bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[.. ^(pack128 bhi blo)])
+
+export def array_from_end_start_i128 :: i64 -> i64 -> i64 -> i64 = \n ahi alo ->
+    let xs = make_array n
+    fold_slice (ref xs[^(pack128 ahi alo) ..])
+
+export def array_from_end_start_open_i128 :: i64 -> i64 -> i64 -> i64 = \n ahi alo ->
+    let xs = make_array n
+    fold_slice (ref xs[^(pack128 ahi alo) <..])
+
+export def array_between_from_end_i128 :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 = \n ahi alo bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[(pack128 ahi alo) .. ^(pack128 bhi blo)])
+
+export def array_until_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n bhi blo ->
+    let xs = make_array n
+    fold_slice (ref xs[..< ^(pack128 bhi blo)])
+
+export def array_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
+    let xs = make_array n
+    xs[^(pack128 khi klo)]
+
+// --- Fixed-length array [i64; 5] slices & item_from_end ---
+
+export def fixed_closed_i32 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) .. (b as i32)])
+
+export def fixed_open_i32 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) ..< (b as i32)])
+
+export def fixed_open_closed_i32 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) <.. (b as i32)])
+
+export def fixed_open_open_i32 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) <..< (b as i32)])
+
+export def fixed_to_i32 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. (b as i32)])
+
+export def fixed_to_open_i32 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< (b as i32)])
+
+export def fixed_from_i32 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) ..])
+
+export def fixed_from_open_i32 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) <..])
+
+export def fixed_drop_end_i32 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. ^(b as i32)])
+
+export def fixed_from_end_start_i32 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(a as i32) ..])
+
+export def fixed_from_end_start_open_i32 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(a as i32) <..])
+
+export def fixed_between_from_end_i32 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i32) .. ^(b as i32)])
+
+export def fixed_until_from_end_i32 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< ^(b as i32)])
+
+export def fixed_item_from_end_i32 :: i64 -> i64 = \k ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    xs[^(k as i32)]
+
+export def fixed_closed_i64 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a .. b])
+
+export def fixed_open_i64 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a ..< b])
+
+export def fixed_open_closed_i64 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a <.. b])
+
+export def fixed_open_open_i64 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a <..< b])
+
+export def fixed_to_i64 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. b])
+
+export def fixed_to_open_i64 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< b])
+
+export def fixed_from_i64 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a ..])
+
+export def fixed_from_open_i64 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a <..])
+
+export def fixed_drop_end_i64 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. ^b])
+
+export def fixed_from_end_start_i64 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^a ..])
+
+export def fixed_from_end_start_open_i64 :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^a <..])
+
+export def fixed_between_from_end_i64 :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[a .. ^b])
+
+export def fixed_until_from_end_i64 :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< ^b])
+
+export def fixed_item_from_end_i64 :: i64 -> i64 = \k ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    xs[^k]
+
+export def fixed_closed_i64u :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) .. (b as i64u)])
+
+export def fixed_open_i64u :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) ..< (b as i64u)])
+
+export def fixed_open_closed_i64u :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) <.. (b as i64u)])
+
+export def fixed_open_open_i64u :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) <..< (b as i64u)])
+
+export def fixed_to_i64u :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. (b as i64u)])
+
+export def fixed_to_open_i64u :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< (b as i64u)])
+
+export def fixed_from_i64u :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) ..])
+
+export def fixed_from_open_i64u :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) <..])
+
+export def fixed_drop_end_i64u :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. ^(b as i64u)])
+
+export def fixed_from_end_start_i64u :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(a as i64u) ..])
+
+export def fixed_from_end_start_open_i64u :: i64 -> i64 = \a ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(a as i64u) <..])
+
+export def fixed_between_from_end_i64u :: i64 -> i64 -> i64 = \a b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(a as i64u) .. ^(b as i64u)])
+
+export def fixed_until_from_end_i64u :: i64 -> i64 = \b ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< ^(b as i64u)])
+
+export def fixed_item_from_end_i64u :: i64 -> i64 = \k ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    xs[^(k as i64u)]
+
+export def fixed_closed_i128 :: i64 -> i64 -> i64 -> i64 -> i64 = \ahi alo bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) .. (pack128 bhi blo)])
+
+export def fixed_open_i128 :: i64 -> i64 -> i64 -> i64 -> i64 = \ahi alo bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) ..< (pack128 bhi blo)])
+
+export def fixed_open_closed_i128 :: i64 -> i64 -> i64 -> i64 -> i64 = \ahi alo bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) <.. (pack128 bhi blo)])
+
+export def fixed_open_open_i128 :: i64 -> i64 -> i64 -> i64 -> i64 = \ahi alo bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) <..< (pack128 bhi blo)])
+
+export def fixed_to_i128 :: i64 -> i64 -> i64 = \bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. (pack128 bhi blo)])
+
+export def fixed_to_open_i128 :: i64 -> i64 -> i64 = \bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< (pack128 bhi blo)])
+
+export def fixed_from_i128 :: i64 -> i64 -> i64 = \ahi alo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) ..])
+
+export def fixed_from_open_i128 :: i64 -> i64 -> i64 = \ahi alo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) <..])
+
+export def fixed_drop_end_i128 :: i64 -> i64 -> i64 = \bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[.. ^(pack128 bhi blo)])
+
+export def fixed_from_end_start_i128 :: i64 -> i64 -> i64 = \ahi alo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(pack128 ahi alo) ..])
+
+export def fixed_from_end_start_open_i128 :: i64 -> i64 -> i64 = \ahi alo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[^(pack128 ahi alo) <..])
+
+export def fixed_between_from_end_i128 :: i64 -> i64 -> i64 -> i64 -> i64 = \ahi alo bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[(pack128 ahi alo) .. ^(pack128 bhi blo)])
+
+export def fixed_until_from_end_i128 :: i64 -> i64 -> i64 = \bhi blo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    fold_slice (ref xs[..< ^(pack128 bhi blo)])
+
+export def fixed_item_from_end_i128 :: i64 -> i64 -> i64 = \khi klo ->
+    let xs: [i64; 5] = [10, 20, 30, 40, 50]
+    xs[^(pack128 khi klo)]
+
+// --- List, Vec, string, utf8string: item_from_end ---
+
+export def list_item_from_end_i32 :: i64 -> i64 -> i64 = \n k ->
+    let xs = List.init n (\i -> (i + 1) * 10)
+    xs[^(k as i32)]
+
+export def list_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let xs = List.init n (\i -> (i + 1) * 10)
+    xs[^k]
+
+export def list_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
+    let xs = List.init n (\i -> (i + 1) * 10)
+    xs[^(k as i64u)]
+
+export def list_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
+    let xs = List.init n (\i -> (i + 1) * 10)
+    xs[^(pack128 khi klo)]
+
+private def make_vec :: i64 -> Vec<i64> = \n ->
+    let mut xs: Vec<i64> = Vec.empty()
+    for i in 0 ..< n do
+        Vec.push ((i + 1) * 10) xs
+    xs
+
+export def vec_item_from_end_i32 :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_vec n
+    xs[^(k as i32)]
+
+export def vec_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_vec n
+    xs[^k]
+
+export def vec_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
+    let xs = make_vec n
+    xs[^(k as i64u)]
+
+export def vec_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
+    let xs = make_vec n
+    xs[^(pack128 khi klo)]
+
+private def make_str :: i64 -> string = \n ->
+    if n == 0 then "" elif n == 1 then "A" else "ABCDE"
+
+private def make_utf8 :: i64 -> utf8string = \n ->
+    if n == 0 then u8"" elif n == 1 then u8"A" else u8"ABCDE"
+
+export def string_item_from_end_i32 :: i64 -> i64 -> i64 = \n k ->
+    let s = make_str n
+    ((s[^(k as i32)] as i64) - 64) * 10
+
+export def string_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let s = make_str n
+    ((s[^k] as i64) - 64) * 10
+
+export def string_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
+    let s = make_str n
+    ((s[^(k as i64u)] as i64) - 64) * 10
+
+export def string_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
+    let s = make_str n
+    ((s[^(pack128 khi klo)] as i64) - 64) * 10
+
+export def utf8string_item_from_end_i32 :: i64 -> i64 -> i64 = \n k ->
+    let s = make_utf8 n
+    ((s[^(k as i32)] as i64) - 64) * 10
+
+export def utf8string_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let s = make_utf8 n
+    ((s[^k] as i64) - 64) * 10
+
+export def utf8string_item_from_end_i64u :: i64 -> i64 -> i64 = \n k ->
+    let s = make_utf8 n
+    ((s[^(k as i64u)] as i64) - 64) * 10
+
+export def utf8string_item_from_end_i128 :: i64 -> i64 -> i64 -> i64 = \n khi klo ->
+    let s = make_utf8 n
+    ((s[^(pack128 khi klo)] as i64) - 64) * 10
+
+// --- NC18: 1D Tensor slices, stepped windows, and `^k` element reads (i64) ---
+
+private def fold_tensor_view :: ref Tensor.View<i64> -> i64 = \part ->
+    Tensor.fold (\acc v -> acc * 31 + v) 0 part
+
+private def make_tensor :: i64 -> Tensor<i64> = \n ->
+    Tensor.of_array [n] (make_array n)
+
+export def tensor_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. b])
+
+export def tensor_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a ..< b])
+
+export def tensor_open_closed_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <.. b])
+
+export def tensor_open_open_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <..< b])
+
+export def tensor_to_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. b])
+
+export def tensor_to_open_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[..< b])
+
+export def tensor_from_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a ..])
+
+export def tensor_from_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a <..])
+
+export def tensor_drop_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. ^b])
+
+export def tensor_from_end_start_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[^a ..])
+
+export def tensor_from_end_start_open_i64 :: i64 -> i64 -> i64 = \n a ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[^a <..])
+
+export def tensor_between_from_end_i64 :: i64 -> i64 -> i64 -> i64 = \n a b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. ^b])
+
+export def tensor_until_from_end_i64 :: i64 -> i64 -> i64 = \n b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[..< ^b])
+
+export def tensor_item_from_end_i64 :: i64 -> i64 -> i64 = \n k ->
+    let t = make_tensor n
+    t[^k]
+
+export def tensor_step_whole_i64 :: i64 -> i64 -> i64 = \n s ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[.. s ..])
+
+export def tensor_step_closed_i64 :: i64 -> i64 -> i64 -> i64 -> i64 = \n a s b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. s .. b])
+
+export def tensor_step_open_i64 :: i64 -> i64 -> i64 -> i64 -> i64 = \n a s b ->
+    let t = make_tensor n
+    fold_tensor_view (ref t[a .. s ..< b])
+

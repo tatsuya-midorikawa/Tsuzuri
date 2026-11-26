@@ -7,7 +7,7 @@
 | 規模 | L（ブロードキャスト反復エンジン、算術/比較/論理/ビット/数学 ufunc、`_into` ゼロ確保版と累積のインプレース版、同じ型どうしの `Tensor` 演算子インスタンス、[NC19](NC19-operator-extension-instances.md)・[NC20](NC20-compound-assignment-and-mutable-index-views.md) が呼ぶ非公開のトラップ版カーネル） |
 | 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([NC03](_completed/NC03-borrowed-arithmetic-operators.md)), ([A37](A37-index-base-place-borrow.md))（演算子インスタンスの段（手順 3）は A37 の手順 5 の後） |
 | 後続 | [NC07](NC07-tensor-reductions-stats-and-sorting.md), [NC08](NC08-linalg-core-and-einsum.md), [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md), [NC19](NC19-operator-extension-instances.md), [NC20](NC20-compound-assignment-and-mutable-index-views.md) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認）。2026-11-25 更新（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認。差分は末尾の「改訂（2026-11-25）」。同日、D-66 の委任による決定を反映） |
 | 承認 | 不要（既定案のみ。演算子インスタンスの非消費の契約は完了済みの [NC03](_completed/NC03-borrowed-arithmetic-operators.md) の D1-A に従う。`View`・混在・スカラーとの演算子に要る言語の拡張とその承認は [NC19](NC19-operator-extension-instances.md) が扱う。NC19 の D1 は承認済み（D-66 の委任で決定、2026-11-25）） |
 | 手本にする既存実装 | `std/Tensor.tz`（`map` の連続高速経路＋汎用ストライド走査）、`std/Matrix.tz`（`add`）、`std/MatrixView.tz`（`map_in_place`）、`std/Complex.tz`（条件付きの算術インスタンス `instance (Float<'a>, Add<'a>, Copy<'a>) => Add<Complex<'a>>`、354 行付近） |

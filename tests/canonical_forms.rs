@@ -80,9 +80,14 @@ fn every_decision_row_is_reported() {
         "for i in 1 .. 2 ..= 9 do ()",
     );
     check(
-        "for i in 1 ..= 3 do ()\nlet a = ref xs[1..3]\nfor i = 1 to 3 do ()",
+        "for i in 1 ..= 3 do ()\nlet a = ref xs[1..<3]\nfor i = 1 to 3 do ()",
         &[],
-        "for i in 1 ..= 3 do ()\nlet a = ref xs[1..3]\nfor i = 1 to 3 do ()",
+        "for i in 1 ..= 3 do ()\nlet a = ref xs[1..<3]\nfor i = 1 to 3 do ()",
+    );
+    check(
+        "let a = ref xs[1..3]",
+        &[(LegacyBareSliceRange, "..", "..<", Certain)],
+        "let a = ref xs[1..<3]",
     );
     check(
         "let a = 86uy",
@@ -150,12 +155,12 @@ fn every_decision_row_is_reported() {
         "let a = f (ref [1, 2, 3])",
     );
     check(
-        "let a = f (&xs[1..3])\nlet b = f &xs[1..3]",
+        "let a = f (&xs[1..<3])\nlet b = f &xs[1..<3]",
         &[
             (SymbolicBorrow, "&", "ref", Certain),
             (SymbolicBorrow, "&", "ref", Certain),
         ],
-        "let a = f (ref xs[1..3])\nlet b = f (ref xs[1..3])",
+        "let a = f (ref xs[1..<3])\nlet b = f (ref xs[1..<3])",
     );
     check(
         "let r = ref x\nlet a = *r + 1",

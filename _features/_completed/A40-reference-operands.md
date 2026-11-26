@@ -7,7 +7,7 @@
 | 規模 | M |
 | 依存 | –（土台の [A11](_completed/A11-borrowed-comparisons.md)・[NC03](_completed/NC03-borrowed-arithmetic-operators.md)・[A18](_completed/A18-parameter-conventions.md) は完了済み。A11 は `Eq`・`Ord` の被演算子の借用、NC03 は算術の被演算子の借用 D1-A、A18 は edition 2027 の読み取りの既定） |
 | 後続 | ([NC19](NC19-operator-extension-instances.md))・([NC20](NC20-compound-assignment-and-mutable-index-views.md))（順序はどちらでもよい。後に入る方が、他方の経路に参照を外す処理を足す。NC19 の前に入れるのを推奨: D4） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の委任による決定。NC19 の D9 (ii) を分けた。HEAD `858a949c` で確認） |
 | 承認 | 承認済み（D-66 の委任で決定、2026-11-25）: NC19 の D9 (ii)（参照の被演算子を、借りる演算子へ直接貸す）を、NC19 の Phase 2 ではなくこのチケットに分けて承認した（D1）。対象を、参照先の頭が分かる型と、今の道が `E1003`・`E1005` を報告する場所に限る（D2）。NC19・NC20 との順序（D4）は決定（D-66 の委任で決定、2026-11-25）。ほかは既定案 |
 | 改善する劣位 | 書きにくさ（最新の edition の既定）: `fn same a b = a == b`（`string`）は `E1005`、`fn greet a b = a + b`（`string`）・`fn add2 a b = a + b`（`BigInt`）・非 Copy のレコードの `a + b` は `E1003` になる（現状 P1〜P5）。`E1003` の help が勧める `own` は実引数を move させる。今の回避は `deref a == deref b` で、`string` の連結には演算子の回避がない（P8）。一貫性: 演算子はすでに被演算子を暗黙に借りている（A11、NC03 D1-A）のに、すでに参照である被演算子は受けない。呼び出しは `ref mut T` を `ref T` の仮引数へ借り直して渡す |

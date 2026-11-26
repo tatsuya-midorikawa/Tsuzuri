@@ -948,6 +948,21 @@ impl Type {
         )
     }
 
+    /// Whether a value of this type (or behind any shared reference inside it) may hold a
+    /// function/closure environment not already proven owned (`Owned.Function`), or a borrowed
+    /// `dyn` / exclusive reference (NC15).
+    pub(crate) fn reaches_unproven_function(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches_closed(
+            self,
+            |ty| {
+                !ty.is_owned_function(types)
+                    && (matches!(ty, Self::Function(..) | Self::Reference(_, true))
+                        || matches!(ty, Self::Dyn(dyn_type) if dyn_type.borrowed))
+            },
+            |ty| ty.is_owned_function(types),
+        )
+    }
+
     pub(crate) fn contains_stored_reference(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| {
             !matches!(ty, Self::Reference(..))
@@ -1649,6 +1664,8 @@ pub enum Builtin {
     /// `Parallel.for_each_chunk :: Send<'a> => i64 -> (i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit`
     /// runs the callback on disjoint chunks of an exclusive slice in parallel (C08 Phase 2).
     ParallelForEachChunk,
+    /// `Parallel.for_each_chunk_with :: (Sync<'s>, Send<'a>) => i64 -> ref 's -> (ref 's -> i64 -> ref mut ['a..] -> unit) -> ref mut ['a..] -> unit` (NC15).
+    ParallelForEachChunkWith,
     /// `unreachable : unit -> 'a` traps (GUIDE D-21).
     Unreachable,
     ToString,
@@ -2319,6 +2336,7 @@ impl Builtin {
         Self::ParallelMapRef,
         Self::ParallelReduce,
         Self::ParallelForEachChunk,
+        Self::ParallelForEachChunkWith,
         Self::Unreachable,
         Self::ToString,
         Self::DebugPrintString,
@@ -2703,6 +2721,7 @@ impl Builtin {
             Self::ParallelMapRef => "Parallel.map_ref",
             Self::ParallelReduce => "Parallel.reduce",
             Self::ParallelForEachChunk => "Parallel.for_each_chunk",
+            Self::ParallelForEachChunkWith => "Parallel.for_each_chunk_with",
             Self::Unreachable => "unreachable",
             Self::ToString => "to_string",
             Self::DebugPrintString => "Debug.__print_string",
@@ -3875,6 +3894,32 @@ impl Builtin {
                     }],
                 )
             }
+            Self::ParallelForEachChunkWith => {
+                let shared = || Reference(Box::new(Var("s")), false);
+                let view = || Reference(Box::new(BuiltinType::ArrayView(Box::new(a()))), true);
+                (
+                    vec![
+                        Concrete(Type::I64),
+                        shared(),
+                        BuiltinType::Function(
+                            vec![shared(), Concrete(Type::I64), view()],
+                            Box::new(Concrete(Type::Unit)),
+                        ),
+                        view(),
+                    ],
+                    Concrete(Type::Unit),
+                    vec![
+                        BuiltinConstraint {
+                            class: "Sync",
+                            ty: Var("s"),
+                        },
+                        BuiltinConstraint {
+                            class: "Send",
+                            ty: a(),
+                        },
+                    ],
+                )
+            }
             Self::Unreachable => (vec![Concrete(Type::Unit)], a(), Vec::new()),
             Self::ToString => (
                 vec![a()],
@@ -4296,6 +4341,7 @@ impl Builtin {
                 | Self::ParallelMapRef
                 | Self::ParallelReduce
                 | Self::ParallelForEachChunk
+                | Self::ParallelForEachChunkWith
                 | Self::RoutineScope
         )
     }
@@ -4303,7 +4349,7 @@ impl Builtin {
     /// The argument of a parallel operation that holds the callback.
     pub(crate) fn parallel_callback(self) -> usize {
         match self {
-            Self::RoutineScope => 2,
+            Self::RoutineScope | Self::ParallelForEachChunkWith => 2,
             Self::ParallelInit | Self::ParallelReduce | Self::ParallelForEachChunk => 1,
             _ => 0,
         }
@@ -4886,6 +4932,26 @@ pub enum ModuleOrigin {
     Std,
 }
 
+/// Generated method role of an `Index` / `IndexMut` instance (A37, A38).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IndexMethodKind {
+    Read { borrows_base: bool },
+    Write,
+}
+
+impl IndexMethodKind {
+    pub(crate) fn base_param_index(self) -> usize {
+        match self {
+            Self::Read { .. } => 1,
+            Self::Write => 2,
+        }
+    }
+
+    pub(crate) fn is_view(self) -> bool {
+        matches!(self, Self::Read { borrows_base: true })
+    }
+}
+
 /// Where a function comes from (GUIDE D-22). Generated helpers inherit the
 /// module origin and test of the function that created them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4906,6 +4972,10 @@ pub struct FunctionOrigin {
     /// The `@trusted` mark of an extern function (E15): `None` without one, else the bits of its
     /// properties (`syntax::TRUSTED_PROPERTIES`). Other functions have none.
     pub trusted: Option<u8>,
+    /// A37/A38: generated method role of an `Index` or `IndexMut` instance.
+    pub(crate) index_method: Option<IndexMethodKind>,
+    /// A39: whether the module that wrote this function uses edition 2027+ parameter/field-borrow rules.
+    pub(crate) field_borrows: bool,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -4947,6 +5017,8 @@ impl FunctionOrigin {
             pure_values: false,
             asserts: Asserts(0),
             trusted: None,
+            index_method: None,
+            field_borrows: false,
         }
     }
 
@@ -4959,6 +5031,7 @@ impl FunctionOrigin {
             pure: false,
             asserts: Asserts(0),
             trusted: None,
+            index_method: None,
             ..self
         }
     }
@@ -5371,7 +5444,15 @@ pub(crate) const NARROWED_PREFIX: &str = "$narrow.";
 /// value of a narrowing) gives the payload of a member.
 pub(crate) const RETAGGED_PREFIX: &str = "$retag";
 
+/// The start of the name of a binding that holds a temporary base of `Index` (A38).
+pub(crate) const TEMP_INDEX_BASE_PREFIX: &str = "$index.temp_base.";
+
 impl Local {
+    /// Whether this is a generated binding holding a temporary base of `Index` (A37, A38).
+    pub(crate) fn is_temp_index_base(&self) -> bool {
+        self.provenance == Provenance::Generated && self.name.starts_with(TEMP_INDEX_BASE_PREFIX)
+    }
+
     /// Whether this is the binding of a member's payload in a retagging (A25, `Checker::retag`).
     /// The bindings of members that may be arrays share one span there, which is the key of
     /// `LastUses` for a binding's move.
@@ -5489,6 +5570,9 @@ pub enum TypedExprKind {
         descending: bool,
         /// `start ..< finish` (A22): the counter stops before `finish`.
         exclusive: bool,
+        /// `start <.. finish` (NC17, edition 2028): the first value is `start + 1`, or 0 iterations
+        /// when `start` is the integer type's maximum.
+        start_open: bool,
     },
     ForEach {
         owner: Local,
@@ -5530,12 +5614,23 @@ pub enum TypedExprKind {
     Borrow(Box<TypedExpr>, bool),
     BorrowOperand(Box<TypedExpr>),
     Dereference(Box<TypedExpr>),
+    /// A40: a `ref T` or `ref mut T` operand stripped to `T` for an operator; `Specializer::lower`
+    /// rewrites it to `Borrow(Dereference(..), false)` on borrowing operator calls and
+    /// `Dereference(..)` on value-taking operators, leaving `ReferenceOperand` only on borrowed
+    /// `string` / `utf8string` `+` operands so concatenation reads them without consuming.
+    ReferenceOperand(Box<TypedExpr>),
     Assign(Box<TypedExpr>, Box<TypedExpr>),
     Cast(Box<TypedExpr>),
     /// An index, a slice bound or an array length of a 128-bit integer type or a type parameter,
     /// saturated to the `i64` range: a value that `i64` cannot hold becomes `i64::MIN` or
     /// `i64::MAX`, which no collection reaches (`Checker::index_operand`). Its type is `i64`.
     SaturatingIndex(Box<TypedExpr>),
+    /// NC17 `^k`: position `n - 1 - k` (`after == false`) or derived bound `n - k`
+    /// (`after == true`) against the enclosing built-in collection or slice base length `n`.
+    FromEnd {
+        offset: Box<TypedExpr>,
+        after: bool,
+    },
     /// A case used as a function value, `Some : 'a -> Maybe<'a>`. After
     /// specialization `closures::lower` replaces it with a generated function.
     CaseConstructor {
@@ -5583,6 +5678,18 @@ pub struct TypedTry {
 }
 
 #[derive(Clone, Copy)]
+enum IndexBorrowCover {
+    Uncovered,
+    Direct {
+        mutable: bool,
+        borrow_span: Span,
+        operand_span: Span,
+        notation: Notation,
+    },
+    ChainInner,
+}
+
+#[derive(Clone, Copy)]
 enum LocalAccess {
     Consume,
     Read,
@@ -5598,10 +5705,38 @@ impl TypedExpr {
         }
     }
 
+    /// Whether this expression is a constant index expression (literals, negated numeric literals,
+    /// and tuples/arrays thereof; A38).
+    pub(crate) fn is_index_const(&self) -> bool {
+        match &self.kind {
+            TypedExprKind::Int(_)
+            | TypedExprKind::Float(_)
+            | TypedExprKind::String(_)
+            | TypedExprKind::Bool(_)
+            | TypedExprKind::Unit
+            | TypedExprKind::GenericInteger(_, _)
+            | TypedExprKind::GenericFloat(_)
+            | TypedExprKind::Static(_) => true,
+            TypedExprKind::Unary(UnaryOp::Negate, inner) => matches!(
+                inner.kind,
+                TypedExprKind::Int(_)
+                    | TypedExprKind::Float(_)
+                    | TypedExprKind::GenericInteger(_, _)
+                    | TypedExprKind::GenericFloat(_)
+            ),
+            TypedExprKind::Tuple(items) | TypedExprKind::Array(items) => {
+                items.iter().all(Self::is_index_const)
+            }
+            _ => false,
+        }
+    }
+
     /// Whether code generation can address the value in place.
     pub(crate) fn is_place(&self) -> bool {
         match &self.kind {
-            TypedExprKind::Local(_) | TypedExprKind::Dereference(_) => true,
+            TypedExprKind::Local(_)
+            | TypedExprKind::Dereference(_)
+            | TypedExprKind::ReferenceOperand(_) => true,
             TypedExprKind::Field(value, _)
             | TypedExprKind::ListTail(value, _)
             | TypedExprKind::UnionPayload { value, .. } => value.is_place(),
@@ -5731,8 +5866,10 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -5832,8 +5969,10 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -5985,8 +6124,10 @@ impl TypedExpr {
             | Borrow(value, _)
             | BorrowOperand(value)
             | Dereference(value)
+            | ReferenceOperand(value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Field(value, _)
             | Length(value)
             | StringLength(value)
@@ -6186,6 +6327,8 @@ struct Names {
     declared: Vec<DeclaredFunction>,
     warning_options: warnings::WarningOptions,
     borrowing_modules: BTreeSet<String>,
+    module_editions: BTreeMap<String, crate::syntax::Edition>,
+    root_user_modules: BTreeSet<String>,
     modules: BTreeMap<String, ModuleOrigin>,
     /// Module keys by full name (`Namespace.File`), and each module's namespace by key.
     full_modules: BTreeMap<String, String>,
@@ -6646,6 +6789,12 @@ impl Names {
             .get(module)
             .copied()
             .unwrap_or(ModuleOrigin::User)
+    }
+
+    pub(super) fn handle_origin(&self, qualified: &str) -> ModuleOrigin {
+        self.handles
+            .get(qualified)
+            .map_or(ModuleOrigin::Std, |info| self.origin(&info.module))
     }
 
     /// The module origins whose declarations `requester` searches, in order;
@@ -8304,6 +8453,15 @@ fn check_modules_collect(
         .iter()
         .filter(|(_, edition)| edition.borrows_parameters())
         .map(|(module, _)| (*module).to_owned())
+        .collect();
+    names.module_editions = module_editions
+        .iter()
+        .map(|(module, edition)| ((*module).to_owned(), *edition))
+        .collect();
+    names.root_user_modules = modules
+        .iter()
+        .filter(|input| input.origin == ModuleOrigin::User && input.package.is_none())
+        .map(|input| input.name.to_owned())
         .collect();
     let mut sources: BTreeMap<&str, (usize, ModuleOrigin)> = BTreeMap::new();
     for (source, module) in modules.iter().enumerate() {
@@ -10115,6 +10273,8 @@ fn check_modules_collect(
                         trusted: trusted_by_id.get(&id).copied(),
                         pure: function.pure,
                         pure_values: checker.pure_values,
+                        index_method: classes.index_method(id),
+                        field_borrows: checker.read_conventions,
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),
@@ -10214,6 +10374,7 @@ fn check_modules_collect(
                 origin: FunctionOrigin {
                     pure_values: checker.pure_values,
                     provenance: Provenance::Generated,
+                    field_borrows: checker.read_conventions,
                     ..FunctionOrigin::source(ModuleOrigin::User)
                 },
                 name: "$entry".into(),
@@ -10276,6 +10437,9 @@ fn check_modules_collect(
                     function_warnings.extend(warnings::unused_locals(function, &function_names));
                     function_warnings.append(&mut checker.shadowing_warnings);
                     function_warnings.append(&mut checker.contract_warnings);
+                    if names.root_user_modules.contains(&function.module) {
+                        function_warnings.append(&mut checker.range_warnings);
+                    }
                 }
                 if function.name == "$entry" {
                     entry_result(&mut function.body, &names, &classes, &types);
@@ -10383,6 +10547,21 @@ fn check_modules_collect(
         &references,
         entry,
     ));
+    let noncanonical = root_noncanonical(modules, &reference_borrows);
+    let root_source_editions: BTreeMap<usize, crate::syntax::Edition> = modules
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| input.origin == ModuleOrigin::User && input.package.is_none())
+        .map(|(source, input)| (source, input.edition))
+        .collect();
+    warnings.extend(crate::canonical::default_warnings(
+        &noncanonical,
+        |source| {
+            source
+                .and_then(|source| root_source_editions.get(&source).copied())
+                .unwrap_or(crate::syntax::Edition::E2026)
+        },
+    ));
     // Warnings follow source order rather than the order bodies are checked.
     warnings.sort_by_key(|warning: &Diagnostic| (warning.span.source, warning.span.start));
     let extern_abis: BTreeMap<String, crate::abi::CSignature> = explicit_symbols
@@ -10414,7 +10593,7 @@ fn check_modules_collect(
         gpu: Default::default(),
         statics,
         effects: None,
-        noncanonical: root_noncanonical(modules, &reference_borrows),
+        noncanonical,
         generic_declarations: Vec::new(),
         extern_abis,
     };
@@ -11219,6 +11398,11 @@ pub(super) fn recursive_group_len(bindings: &[Binding]) -> usize {
 #[cfg(test)]
 pub(crate) fn is_builtin_class(name: &str) -> bool {
     polymorph::BUILTIN_CLASSES.contains(&name)
+}
+
+#[cfg(test)]
+pub(crate) fn polymorph_dispatch_positions(class_name: &str, arity: usize) -> &'static [usize] {
+    polymorph::dispatch_positions(class_name, arity)
 }
 
 /// Whether no record, extern type, or type alias may be named `name` (`E1001`):
@@ -12961,6 +13145,41 @@ struct PendingHint {
     span: Span,
 }
 
+struct CheckerWatermark {
+    inference: polymorph::InferenceWatermark,
+    constraints_len: usize,
+    members_len: usize,
+    scopes_len: usize,
+    old_locals_len: usize,
+    open_locals_len: usize,
+    next_local: usize,
+    normal_loop_depth: usize,
+    computation_depth: usize,
+    undecided_borrows_len: usize,
+    symbolic_borrows_len: usize,
+    reference_borrows_len: usize,
+    format_specs_len: usize,
+    use_bindings_len: usize,
+    piped: Option<Type>,
+    operand_len: usize,
+    integer_literals_len: usize,
+    families_len: usize,
+    coverage_len: usize,
+    shadowing_warnings_len: usize,
+    contract_warnings_len: usize,
+    range_warnings_len: usize,
+    poisoned: bool,
+    recovering: bool,
+    recovered_len: usize,
+    indexing: bool,
+    name_uses_len: usize,
+    checked_arithmetic: bool,
+    dyn_callee: bool,
+    holes_searched: usize,
+    call_constraints_len: usize,
+    soft_hint_class: Option<usize>,
+}
+
 #[derive(Clone, Copy)]
 struct RecoveryMark {
     scopes: usize,
@@ -13030,9 +13249,12 @@ struct Checker<'a> {
     shadowing_warnings: Vec<Diagnostic>,
     /// A21: `W1009` for the contract lines of the function being checked.
     contract_warnings: Vec<Diagnostic>,
+    /// NC17: `W1014` (`negative_literal_range_bound`, `negative_literal_index`) in the function body.
+    range_warnings: Vec<Diagnostic>,
     /// Locals that alias borrowed storage: `for...in` elements, match
     /// subjects bound to such a place, and pattern variables that may view it.
     borrowed: BTreeSet<usize>,
+    mutable_locals: BTreeSet<usize>,
     default_reads: BTreeMap<usize, (String, String, bool)>,
     read_value_parameters: BTreeSet<usize>,
     read_conventions: bool,
@@ -13053,6 +13275,12 @@ struct Checker<'a> {
     /// The declared constraints of the generic functions that this body instantiated, over their
     /// fresh variables. Specialization checks them; only typed holes read them here (G25).
     call_constraints: Vec<(usize, Type)>,
+    /// A40: inside the outermost operator tree on today's path, or inside the A40 reference-stripping trial.
+    in_a40_tree: bool,
+    in_a40_trial: bool,
+    /// NC19: when `Some(class_id)`, the expected type passed into the next `expression` call is a
+    /// soft operator hint for arithmetic class `class_id` (Specification §3.1).
+    pub(super) soft_hint_class: Option<usize>,
 }
 
 impl<'a> Checker<'a> {
@@ -13093,7 +13321,9 @@ impl<'a> Checker<'a> {
             coverage: Vec::new(),
             shadowing_warnings: Vec::new(),
             contract_warnings: Vec::new(),
+            range_warnings: Vec::new(),
             borrowed: BTreeSet::new(),
+            mutable_locals: BTreeSet::new(),
             default_reads: BTreeMap::new(),
             read_value_parameters: BTreeSet::new(),
             read_conventions: names.borrowing_modules.contains(module),
@@ -13108,6 +13338,9 @@ impl<'a> Checker<'a> {
             function: None,
             holes_searched: 0,
             call_constraints: Vec::new(),
+            in_a40_tree: false,
+            in_a40_trial: false,
+            soft_hint_class: None,
         }
     }
 
@@ -13258,6 +13491,9 @@ impl<'a> Checker<'a> {
             provenance: name.provenance,
         };
         self.next_local += 1;
+        if mutable {
+            self.mutable_locals.insert(local.id);
+        }
         if name.text != "_" {
             if self.inference.is_open(&local.ty) {
                 self.open_locals.push((local.id, name.text.clone()));
@@ -13572,6 +13808,7 @@ impl<'a> Checker<'a> {
                 return Ok(TypedExpr::error(expression.span));
             }
         }
+        let soft = self.soft_hint_class.take();
         let mark = RecoveryMark {
             scopes: self.scopes.len(),
             normal_loop_depth: self.normal_loop_depth,
@@ -13590,20 +13827,23 @@ impl<'a> Checker<'a> {
             }
             ExprKind::ComputationBoundary(ref body) => {
                 let outer = std::mem::take(&mut self.normal_loop_depth);
+                self.soft_hint_class = soft;
                 let result = self.expression(body, expected);
                 self.normal_loop_depth = outer;
                 result
             }
             ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
-                self.control_expression(expression, expected)
+                self.control_expression(expression, expected, soft)
             }
-            ExprKind::Binary(..) => self.binary_expression(expression, expected),
+            ExprKind::Binary(..) => self.binary_expression_with_soft(expression, expected, soft),
             ExprKind::Lambda(..)
             | ExprKind::Routine(_)
             | ExprKind::Select(_)
             | ExprKind::Call(..)
-            | ExprKind::Block { .. } => self.composed_expression(expression, expected),
-            _ => self.value_expression(expression, expected),
+            | ExprKind::Block { .. } => {
+                self.composed_expression_with_soft(expression, expected, soft)
+            }
+            _ => self.value_expression_with_soft(expression, expected, soft),
         };
         let result = result.map_err(|mut error| {
             if error.code == "E1003"
@@ -13691,11 +13931,51 @@ impl<'a> Checker<'a> {
         Ok(TypedExpr::error(span))
     }
 
+    fn is_soft_operator_hint(&self, class_id: usize, actual: &Type, expected: &Type) -> bool {
+        let resolved_exp = self.inference.resolve(expected);
+        let resolved_act = self.inference.resolve(actual);
+        self.classes.head_in_oei_lro(class_id, &resolved_exp)
+            || self.classes.head_in_oei_lr(class_id, &resolved_act)
+    }
+
+    fn unifies_respecting_constraints(&mut self, actual: &Type, expected: &Type) -> bool {
+        let before: Vec<(usize, Type)> = self
+            .constraints
+            .iter()
+            .map(|c| (c.class, self.inference.resolve(&c.ty)))
+            .collect();
+        let classes = self.classes;
+        let types = &self.types;
+        self.inference.unifies(actual, expected, types, |trial| {
+            before.iter().all(|(class, prev)| {
+                let bound = trial.resolve(prev);
+                if prev == &bound || bound.contains_error() {
+                    return true;
+                }
+                if matches!(bound, Type::Infer(_) | Type::Variable(_)) {
+                    return true;
+                }
+                classes.has_direct_candidate(*class, &bound, types)
+            })
+        })
+    }
+
     fn finish_expression(
         &mut self,
         kind: TypedExprKind,
         ty: Type,
         expected: Option<&Type>,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        self.finish_expression_with_soft(kind, ty, expected, None, span)
+    }
+
+    fn finish_expression_with_soft(
+        &mut self,
+        kind: TypedExprKind,
+        ty: Type,
+        expected: Option<&Type>,
+        soft: Option<usize>,
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         let mut value = TypedExpr { kind, ty, span };
@@ -13722,6 +14002,13 @@ impl<'a> Checker<'a> {
             return Ok(TypedExpr::error(span));
         }
         if let Some(expected) = expected {
+            if let Some(cid) = soft
+                && self.is_soft_operator_hint(cid, &value.ty, expected)
+                && !self.unifies_respecting_constraints(&value.ty, expected)
+            {
+                value.ty = self.inference.resolve(&value.ty);
+                return Ok(value);
+            }
             value = self.callable_effect(value, expected)?;
             if self.read_conventions
                 && matches!(expected, Type::Function(..) | Type::Infer(_))
@@ -13766,10 +14053,11 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn composed_expression(
+    fn composed_expression_with_soft(
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
+        soft: Option<usize>,
     ) -> Result<TypedExpr, Diagnostic> {
         let expected = expected.map(|ty| self.inference.resolve(ty));
         let expected = expected.as_ref();
@@ -13806,16 +14094,18 @@ impl<'a> Checker<'a> {
                     span: expression.span,
                 });
             }
-            ExprKind::Call(..) => return self.call_expression(expression, expected, false),
+            ExprKind::Call(..) => {
+                return self.call_expression_with_soft(expression, expected, false, soft);
+            }
             ExprKind::Block { bindings, result } => {
                 self.scopes.push(BTreeMap::new());
-                let checked_block = self.check_block_tail(bindings, result, expected);
+                let checked_block = self.check_block_tail(bindings, result, expected, soft);
                 self.scopes.pop();
                 checked_block?
             }
             _ => unreachable!("composed expression kinds are checked by expression"),
         };
-        self.finish_expression(kind, ty, expected, expression.span)
+        self.finish_expression_with_soft(kind, ty, expected, soft, expression.span)
     }
 
     fn check_block_tail(
@@ -13823,12 +14113,14 @@ impl<'a> Checker<'a> {
         bindings: &[Binding],
         result: &Expr,
         expected: Option<&Type>,
+        soft: Option<usize>,
     ) -> Result<(TypedExprKind, Type), Diagnostic> {
         let Some(split) = bindings
             .iter()
             .position(|binding| binding.pattern.is_some())
         else {
             let checked = self.block_bindings(bindings)?;
+            self.soft_hint_class = soft;
             let result = self.expression(result, expected)?;
             let ty = result.ty.clone();
             return Ok((
@@ -13888,7 +14180,7 @@ impl<'a> Checker<'a> {
                 depth: result.depth + 1,
             }
         };
-        let matched = self.match_value(
+        let matched = self.match_value_with_soft(
             value,
             &[MatchArm {
                 pattern: pattern.clone(),
@@ -13899,6 +14191,7 @@ impl<'a> Checker<'a> {
             expected,
             pattern.span,
             Some(*origin),
+            soft,
         )?;
         let ty = matched.ty.clone();
         Ok((
@@ -14025,6 +14318,16 @@ impl<'a> Checker<'a> {
         expected: Option<&Type>,
         argument: bool,
     ) -> Result<TypedExpr, Diagnostic> {
+        self.call_expression_with_soft(expression, expected, argument, None)
+    }
+
+    fn call_expression_with_soft(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        argument: bool,
+        soft: Option<usize>,
+    ) -> Result<TypedExpr, Diagnostic> {
         let ExprKind::Call(callee, arguments) = &expression.kind else {
             unreachable!("call expressions only")
         };
@@ -14041,7 +14344,7 @@ impl<'a> Checker<'a> {
                     span: expression.span,
                     depth: expression.depth,
                 };
-                return self.call_expression(&combined, expected, argument);
+                return self.call_expression_with_soft(&combined, expected, argument, soft);
             }
         }
         // `xs |> f a` passes `xs` last; its type fixes `f`'s next parameter before
@@ -14078,7 +14381,7 @@ impl<'a> Checker<'a> {
             .map_err(|error| Self::operator_spacing_hint(error, arguments));
         let (mut parameters, result) =
             self.recover_signature(signature, arguments.len(), expression.span)?;
-        let parallel = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk) && arguments.len() == instance.builtin.scheme().parameters.len());
+        let parallel = matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(instance)) if matches!(instance.builtin, Builtin::ParallelMap | Builtin::ParallelMapRef | Builtin::ParallelReduce | Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith) && arguments.len() == instance.builtin.scheme().parameters.len());
         let mut pending = None;
         if let Some(expected) = expected {
             if argument && !parallel && self.defers_argument_hint(&result, expected) {
@@ -14093,10 +14396,22 @@ impl<'a> Checker<'a> {
                 } else {
                     expected.clone()
                 };
-                self.same(&result, &hint, expression.span)
-                    .map_err(|error| {
-                        self.partial_application(error, &callee.ty, arguments.len(), &result, &hint)
-                    })?;
+                let drop_soft = soft.is_some_and(|cid| {
+                    self.is_soft_operator_hint(cid, &result, &hint)
+                        && !self.unifies_respecting_constraints(&result, &hint)
+                });
+                if !drop_soft {
+                    self.same(&result, &hint, expression.span)
+                        .map_err(|error| {
+                            self.partial_application(
+                                error,
+                                &callee.ty,
+                                arguments.len(),
+                                &result,
+                                &hint,
+                            )
+                        })?;
+                }
             }
         }
         if self.recovering && expected.is_some_and(|ty| matches!(ty, Type::Error)) {
@@ -14193,10 +14508,11 @@ impl<'a> Checker<'a> {
         {
             self.dyn_of(&callee, expression.span)?;
         }
-        let value = self.finish_expression(
+        let value = self.finish_expression_with_soft(
             Self::call_kind(callee, arguments),
             result,
             if argument { None } else { expected },
+            if argument { None } else { soft },
             expression.span,
         )?;
         if let (true, Some(expected)) = (argument, expected) {
@@ -14206,16 +14522,197 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn binary_expression(
+    fn is_oei_binary_op(op: BinaryOp) -> bool {
+        matches!(
+            op,
+            BinaryOp::Add
+                | BinaryOp::Subtract
+                | BinaryOp::Multiply
+                | BinaryOp::Divide
+                | BinaryOp::Remainder
+                | BinaryOp::Power
+        )
+    }
+
+    fn binary_op_symbol(op: BinaryOp) -> &'static str {
+        match op {
+            BinaryOp::Add => "+",
+            BinaryOp::Subtract => "-",
+            BinaryOp::Multiply => "*",
+            BinaryOp::Divide => "/",
+            BinaryOp::Remainder => "%",
+            BinaryOp::Power => "**",
+            _ => "?",
+        }
+    }
+
+    fn untyped_number_info(expr: &Expr) -> (bool, Option<(u128, bool)>, String) {
+        match &expr.kind {
+            ExprKind::Integer(val, None) => (false, Some((*val, false)), val.to_string()),
+            ExprKind::Float(text, None) => (true, None, text.clone()),
+            ExprKind::Unary(UnaryOp::Negate, inner) => {
+                let (is_flt, int_info, text) = Self::untyped_number_info(inner);
+                let flipped = int_info.map(|(v, neg)| (v, !neg));
+                (is_flt, flipped, format!("-{text}"))
+            }
+            ExprKind::Unary(UnaryOp::Plus, inner) => {
+                let (is_flt, int_info, text) = Self::untyped_number_info(inner);
+                (is_flt, int_info, format!("+{text}"))
+            }
+            ExprKind::Unary(_, inner) => {
+                let (_, _, text) = Self::untyped_number_info(inner);
+                (false, None, format!("~{text}"))
+            }
+            _ => (false, None, String::new()),
+        }
+    }
+
+    fn check_oei_literal(&mut self, expr: &Expr, hint: &Type) -> Result<TypedExpr, Diagnostic> {
+        let resolved_hint = self.inference.resolve(hint);
+        let (is_flt, int_info, _) = Self::untyped_number_info(expr);
+        if !is_flt
+            && let Some((val, neg)) = int_info
+            && matches!(resolved_hint, Type::Infer(_))
+            && let Some(float_class) = self.classes.class_id("Float")
+            && self
+                .constraints
+                .iter()
+                .any(|c| c.class == float_class && self.inference.resolve(&c.ty) == resolved_hint)
+        {
+            let float = TypedExpr {
+                kind: TypedExprKind::GenericFloat(val.to_string()),
+                ty: resolved_hint.clone(),
+                span: expr.span,
+            };
+            let kind = if neg {
+                TypedExprKind::Unary(UnaryOp::Negate, Box::new(float))
+            } else {
+                float.kind
+            };
+            return self.finish_expression(
+                kind,
+                resolved_hint.clone(),
+                Some(&resolved_hint),
+                expr.span,
+            );
+        }
+        self.expression(expr, Some(&resolved_hint))
+    }
+
+    fn build_oei_call(
+        &mut self,
+        resolved: polymorph::ResolvedOperator,
+        operands: Vec<(TypedExpr, bool)>,
+        span: Span,
+    ) -> Result<(TypedExprKind, Type), Diagnostic> {
+        self.constraints.extend(resolved.constraints);
+        let callee = TypedExpr {
+            kind: if resolved.type_args.is_empty() {
+                TypedExprKind::Function(FunctionRef::User(resolved.function))
+            } else {
+                TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+            },
+            ty: resolved.call_signature,
+            span,
+        };
+        let mut args: Vec<TypedExpr> = operands
+            .into_iter()
+            .map(|(op_expr, stripped)| {
+                let op_span = op_expr.span;
+                if stripped {
+                    let inner_ty = self.reference_operand(&op_expr.ty).unwrap();
+                    TypedExpr {
+                        kind: TypedExprKind::Borrow(
+                            Box::new(TypedExpr {
+                                kind: TypedExprKind::Dereference(Box::new(op_expr)),
+                                ty: inner_ty.clone(),
+                                span: op_span,
+                            }),
+                            false,
+                        ),
+                        ty: Type::Reference(Box::new(inner_ty), false),
+                        span: op_span,
+                    }
+                } else {
+                    let op_ty = self.inference.resolve(&op_expr.ty);
+                    TypedExpr {
+                        kind: TypedExprKind::Borrow(Box::new(op_expr), false),
+                        ty: Type::Reference(Box::new(op_ty), false),
+                        span: op_span,
+                    }
+                }
+            })
+            .collect();
+        self.temporary_borrows(&callee, &mut args, &resolved.output_ty, span)?;
+        Ok((
+            TypedExprKind::Call(Box::new(callee), args),
+            resolved.output_ty,
+        ))
+    }
+
+    fn attach_oei_fallback_help(
+        &self,
+        mut diag: Diagnostic,
+        class_id: usize,
+        left_ty: &Type,
+        right_ty: &Type,
+    ) -> Diagnostic {
+        if matches!(diag.code, "E1003" | "E1005") && diag.help.is_none() {
+            let class_name = self.classes.declared_name(class_id);
+            let headers = self
+                .classes
+                .matching_oei_headers_for_help(class_id, left_ty, right_ty, self.names);
+            if !headers.is_empty() {
+                diag = diag.with_help(format!(
+                    "available {class_name} operator instances include {}; operator instances do not implicitly convert element types",
+                    headers.join(", ")
+                ));
+            }
+        }
+        diag
+    }
+
+    fn binary_expression_with_soft(
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
+        outer_soft: Option<usize>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let ExprKind::Binary(operator, _, _) = &expression.kind else {
+            unreachable!("binary expressions only")
+        };
+        if *operator != BinaryOp::Pipe && !self.in_a40_tree && !self.in_a40_trial {
+            return self.try_operator_with_a40_soft(expression, expected, true, outer_soft);
+        }
+        if *operator != BinaryOp::Pipe && self.in_a40_trial {
+            let (expr, _sibling_strip) =
+                self.a40_binary_inner(expression, expected, false, outer_soft)?;
+            return Ok(expr);
+        }
+        self.binary_expression_today_with_soft(expression, expected, outer_soft)
+    }
+
+    fn binary_expression_today_with_soft(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        outer_soft: Option<usize>,
     ) -> Result<TypedExpr, Diagnostic> {
         let ExprKind::Binary(operator, left, right) = &expression.kind else {
             unreachable!("binary expressions only")
         };
+        let left_is_lit = Self::untyped_number(left);
+        let right_is_lit = Self::untyped_number(right);
         let expected = expected.map(|ty| self.inference.resolve(ty));
         let expected = expected.as_ref();
+        let oei_class = Self::is_oei_binary_op(*operator)
+            .then(|| {
+                self.classes
+                    .class_id(polymorph::binary_class(*operator))
+                    .unwrap()
+            })
+            .filter(|&cid| self.classes.has_oei(cid));
+
         let (left, right) = if *operator == BinaryOp::Pipe {
             // The piped value is checked first, as it runs first.
             let open = self.inference.fresh();
@@ -14239,6 +14736,101 @@ impl<'a> Checker<'a> {
                     error
                 })?;
             (left, right)
+        } else if let Some(cid) = oei_class {
+            let hint = expected;
+            let op_sym = Self::binary_op_symbol(*operator);
+            if Self::untyped_number(left) && !Self::untyped_number(right) {
+                self.soft_hint_class = Some(cid);
+                let right = self.expression(right, hint)?;
+                let right_ty = self.inference.resolve(&right.ty);
+                let (is_flt, int_info, lit_text) = Self::untyped_number_info(left);
+                let lit_hint = self.classes.operator_literal_hint(
+                    cid,
+                    op_sym,
+                    &right_ty,
+                    true,
+                    is_flt,
+                    int_info,
+                    &lit_text,
+                    &mut self.inference,
+                    &self.constraints,
+                    &self.types,
+                    self.names,
+                    expression.span,
+                )?;
+                let left = if let Some(lh) = lit_hint {
+                    self.check_oei_literal(left, &lh)?
+                } else {
+                    let fallback = self.sibling_hint(&right.ty, hint);
+                    let was_rec = std::mem::replace(&mut self.recovering, false);
+                    let res = self.expression(left, fallback);
+                    self.recovering = was_rec;
+                    match res {
+                        Ok(l) => l,
+                        Err(err) => {
+                            let err =
+                                self.attach_oei_fallback_help(err, cid, &Type::Error, &right_ty);
+                            if self.recovering {
+                                self.recover_expression(err, left.span)?
+                            } else {
+                                return Err(err);
+                            }
+                        }
+                    }
+                };
+                (left, right)
+            } else if !Self::untyped_number(left) && Self::untyped_number(right) {
+                self.soft_hint_class = Some(cid);
+                let left = self.expression(left, hint)?;
+                let left_ty = self.inference.resolve(&left.ty);
+                let (is_flt, int_info, lit_text) = Self::untyped_number_info(right);
+                let lit_hint = self.classes.operator_literal_hint(
+                    cid,
+                    op_sym,
+                    &left_ty,
+                    false,
+                    is_flt,
+                    int_info,
+                    &lit_text,
+                    &mut self.inference,
+                    &self.constraints,
+                    &self.types,
+                    self.names,
+                    expression.span,
+                )?;
+                let right = if let Some(rh) = lit_hint {
+                    self.check_oei_literal(right, &rh)?
+                } else {
+                    let fallback = self.sibling_hint(&left.ty, hint);
+                    let marked = self.operand_results(right);
+                    let was_rec = std::mem::replace(&mut self.recovering, false);
+                    let res = self.expression(right, fallback);
+                    self.recovering = was_rec;
+                    self.operand.truncate(marked);
+                    match res {
+                        Ok(r) => r,
+                        Err(err) => {
+                            let err =
+                                self.attach_oei_fallback_help(err, cid, &left_ty, &Type::Error);
+                            if self.recovering {
+                                self.recover_expression(err, right.span)?
+                            } else {
+                                return Err(err);
+                            }
+                        }
+                    }
+                };
+                (left, right)
+            } else {
+                self.soft_hint_class = Some(cid);
+                let left = self.expression(left, hint)?;
+                let sib = self.sibling_hint(&left.ty, hint);
+                let marked = self.operand_results(right);
+                self.soft_hint_class = Some(cid);
+                let right = self.expression(right, sib);
+                self.operand.truncate(marked);
+                (left, right?)
+            }
         } else {
             let hint = expected.filter(|_| {
                 !matches!(
@@ -14270,6 +14862,74 @@ impl<'a> Checker<'a> {
                 (left, right?)
             }
         };
+
+        if let Some(cid) = oei_class
+            && !left.ty.contains_error()
+            && !right.ty.contains_error()
+        {
+            let left_ty = self.inference.resolve(&left.ty);
+            let right_ty = self.inference.resolve(&right.ty);
+            // Step (b): same-type instance head matches -> existing path.
+            let classes = self.classes;
+            let types = self.types;
+            let same_type_matches = self
+                .inference
+                .unifies(&right_ty, &left_ty, &types, |trial| {
+                    let t = trial.resolve(&left_ty);
+                    classes.has_same_type_operator_head(cid, &t, &types)
+                });
+            if !same_type_matches {
+                // Step (c): query unified operator table when at least one side has a named non-builtin head
+                // and neither side is an unresolved non-literal inference variable.
+                let left_known = !matches!(left_ty, Type::Infer(_))
+                    || (left_is_lit && self.inference.is_numeric_literal(&left_ty));
+                let right_known = !matches!(right_ty, Type::Infer(_))
+                    || (right_is_lit && self.inference.is_numeric_literal(&right_ty));
+                if (polymorph::Classes::is_named_non_builtin_type(&left_ty, self.names)
+                    || polymorph::Classes::is_named_non_builtin_type(&right_ty, self.names))
+                    && left_known
+                    && right_known
+                    && let Some(resolved) = self.classes.resolve_operator(
+                        cid,
+                        Self::binary_op_symbol(*operator),
+                        &left_ty,
+                        Some(&right_ty),
+                        &mut self.inference,
+                        &self.constraints,
+                        &self.types,
+                        self.names,
+                        expression.span,
+                    )?
+                {
+                    let (call_kind, out_ty) = self.build_oei_call(
+                        resolved,
+                        vec![(left, false), (right, false)],
+                        expression.span,
+                    )?;
+                    return self.finish_expression_with_soft(
+                        call_kind,
+                        out_ty,
+                        expected,
+                        outer_soft,
+                        expression.span,
+                    );
+                }
+                // Step (d): fallback to same-type path + attach OEI candidate hints on E1003/E1005.
+                let result = self
+                    .binary_type(*operator, &left, &right, expression.span)
+                    .map_err(|err| self.attach_oei_fallback_help(err, cid, &left_ty, &right_ty))?;
+                return self.finish_binary_with_soft(
+                    *operator,
+                    left,
+                    right,
+                    result,
+                    expected,
+                    outer_soft,
+                    expression.span,
+                );
+            }
+        }
+
         let result = if *operator == BinaryOp::Pipe {
             let signature = self.call_signature(&right.ty, 1, right.span);
             let (parameters, result) = self.recover_signature(signature, 1, right.span)?;
@@ -14284,19 +14944,29 @@ impl<'a> Checker<'a> {
         } else {
             self.binary_type(*operator, &left, &right, expression.span)?
         };
-        self.finish_binary(*operator, left, right, result, expected, expression.span)
+        self.finish_binary_with_soft(
+            *operator,
+            left,
+            right,
+            result,
+            expected,
+            outer_soft,
+            expression.span,
+        )
     }
 
     /// The typed node of a checked binary expression: a pipe may borrow its
     /// temporary or become `!` for `x |> not`, and `@checked` marks arithmetic.
     #[inline(never)]
-    fn finish_binary(
+    #[allow(clippy::too_many_arguments)]
+    fn finish_binary_with_soft(
         &mut self,
         operator: BinaryOp,
         mut left: TypedExpr,
         right: TypedExpr,
         result: Type,
         expected: Option<&Type>,
+        soft: Option<usize>,
         span: Span,
     ) -> Result<TypedExpr, Diagnostic> {
         if operator == BinaryOp::Pipe {
@@ -14319,16 +14989,28 @@ impl<'a> Checker<'a> {
         } else {
             (kind, result)
         };
-        self.finish_expression(kind, result, expected, span)
+        self.finish_expression_with_soft(kind, result, expected, soft, span)
     }
 
-    fn value_expression(
+    fn value_expression_with_soft(
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
+        soft: Option<usize>,
     ) -> Result<TypedExpr, Diagnostic> {
         let expected = expected.map(|ty| self.inference.resolve(ty));
         let expected = expected.as_ref();
+        let literal_expected = match (soft, expected) {
+            (Some(cid), Some(exp))
+                if self.classes.head_in_oei_lro(cid, exp)
+                    && !exp.is_float()
+                    && !exp.is_integer()
+                    && !self.is_bigint(exp) =>
+            {
+                None
+            }
+            _ => expected,
+        };
         let case = match &expression.kind {
             ExprKind::Field(..) => self.case_reference(expression)?,
             _ => None,
@@ -14356,18 +15038,22 @@ impl<'a> Checker<'a> {
                 .transpose()?
         };
         if let Some((kind, ty)) = resolved {
-            return self.finish_expression(kind, ty, expected, expression.span);
+            return self.finish_expression_with_soft(kind, ty, expected, soft, expression.span);
         }
         let (kind, ty) = match &expression.kind {
             ExprKind::Hole(name) => {
                 return Err(self.typed_hole(name.as_ref(), expected, expression.span));
             }
-            ExprKind::Integer(value, suffix) => {
-                self.integer(*value, suffix.as_deref(), expected, false, expression.span)?
-            }
+            ExprKind::Integer(value, suffix) => self.integer(
+                *value,
+                suffix.as_deref(),
+                literal_expected,
+                false,
+                expression.span,
+            )?,
             ExprKind::Float(value, suffix) => {
-                if suffix.is_none() && expected.is_some_and(polymorph::is_unknown) {
-                    let ty = expected.unwrap().clone();
+                if suffix.is_none() && literal_expected.is_some_and(polymorph::is_unknown) {
+                    let ty = literal_expected.unwrap().clone();
                     self.require("Float", ty.clone(), expression.span)?;
                     self.inference.default_numeric(&ty, Type::F64);
                     (TypedExprKind::GenericFloat(value.clone()), ty)
@@ -14375,7 +15061,7 @@ impl<'a> Checker<'a> {
                     let ty = suffix
                         .as_deref()
                         .and_then(crate::numeric::primitive)
-                        .or_else(|| expected.filter(|ty| ty.is_float()).cloned())
+                        .or_else(|| literal_expected.filter(|ty| ty.is_float()).cloned())
                         .unwrap_or(Type::F64);
                     if !ty.is_float() {
                         return Err(Diagnostic::of(
@@ -14471,30 +15157,30 @@ impl<'a> Checker<'a> {
                 let ExprKind::Integer(value, suffix) = &operand.kind else {
                     unreachable!()
                 };
-                self.integer(*value, suffix.as_deref(), expected, true, expression.span)?
+                self.integer(
+                    *value,
+                    suffix.as_deref(),
+                    literal_expected,
+                    true,
+                    expression.span,
+                )?
             }
             ExprKind::Unary(operator, operand) => {
-                let operand = self.expression(operand, expected)?;
-                if *operator == UnaryOp::Not {
-                    self.same(&operand.ty, &Type::Bool, expression.span)?;
-                } else {
-                    self.require(
-                        if *operator == UnaryOp::Negate {
-                            "Neg"
-                        } else {
-                            "Bits"
-                        },
-                        operand.ty.clone(),
-                        expression.span,
-                    )?;
+                if !self.in_a40_tree && !self.in_a40_trial {
+                    return self.try_operator_with_a40_soft(expression, expected, false, soft);
                 }
-                let ty = operand.ty.clone();
-                let kind = TypedExprKind::Unary(*operator, Box::new(operand));
-                if *operator == UnaryOp::Negate && self.checked_arithmetic {
-                    Self::checked_kind(kind, &ty, expression.span)
-                } else {
-                    (kind, ty)
+                if self.in_a40_trial {
+                    let (expr, _sibling_strip) =
+                        self.a40_unary_inner(expression, expected, false, soft)?;
+                    return Ok(expr);
                 }
+                return self.unary_expression_today_with_soft(
+                    *operator,
+                    operand,
+                    expected,
+                    soft,
+                    expression.span,
+                );
             }
             ExprKind::If {
                 condition,
@@ -14502,9 +15188,10 @@ impl<'a> Checker<'a> {
                 else_branch,
             } => {
                 let condition = self.expression(condition, Some(&Type::Bool))?;
+                self.soft_hint_class = soft;
                 let then_branch = self.expression(then_branch, expected)?;
-                let expected = self.sibling_hint(&then_branch.ty, expected);
-                let else_branch = self.expression(else_branch, expected)?;
+                let branch_expected = self.sibling_hint(&then_branch.ty, expected);
+                let else_branch = self.expression(else_branch, branch_expected)?;
                 let ty = then_branch.ty.clone();
                 (
                     TypedExprKind::If {
@@ -14525,18 +15212,77 @@ impl<'a> Checker<'a> {
             ExprKind::Utf8Char(value) => (TypedExprKind::Int(u128::from(*value)), Type::Utf8Char),
             ExprKind::Slice {
                 value,
-                start,
-                end,
+                range,
                 mutable,
-                op,
-            } => self.slice(
+            } => {
+                let inner_exp = if soft.is_some() { None } else { expected };
+                let (checked, _absorbed) = self.slice_expr(
+                    value,
+                    range,
+                    *mutable,
+                    expression.span,
+                    IndexBorrowCover::Direct {
+                        mutable: *mutable,
+                        borrow_span: expression.span,
+                        operand_span: Span {
+                            start: value.span.start,
+                            end: expression.span.end,
+                            source: expression.span.source,
+                        },
+                        notation: Notation::Keyword,
+                    },
+                    inner_exp,
+                )?;
+                if soft.is_some() {
+                    return self.finish_expression_with_soft(
+                        checked.kind,
+                        checked.ty,
+                        expected,
+                        soft,
+                        expression.span,
+                    );
+                }
+                return Ok(checked);
+            }
+            ExprKind::MultiIndex {
                 value,
-                start.as_deref(),
-                end.as_deref(),
-                *mutable,
-                *op == RangeOp::Closed,
-                expression.span,
-            )?,
+                keys,
+                borrow,
+            } => {
+                let cover = match borrow {
+                    Some(mutable) => IndexBorrowCover::Direct {
+                        mutable: *mutable,
+                        borrow_span: expression.span,
+                        operand_span: Span {
+                            start: value.span.start,
+                            end: expression.span.end,
+                            source: expression.span.source,
+                        },
+                        notation: Notation::Keyword,
+                    },
+                    None => IndexBorrowCover::Uncovered,
+                };
+                let inner_exp = if soft.is_some() { None } else { expected };
+                let (expr, _absorbed) =
+                    self.multi_index(expression.span, value, keys, cover, inner_exp)?;
+                if soft.is_some() {
+                    return self.finish_expression_with_soft(
+                        expr.kind,
+                        expr.ty,
+                        expected,
+                        soft,
+                        expression.span,
+                    );
+                }
+                return Ok(expr);
+            }
+            ExprKind::FromEnd(_) => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndOutsideIndex,
+                    "'^' counts from the end only at the start of an index or a slice bound, as in 'xs[^0]' or 'ref xs[1..^1]'",
+                    expression.span,
+                ));
+            }
             ExprKind::Break | ExprKind::Continue => {
                 let breaking = matches!(expression.kind, ExprKind::Break);
                 if self.normal_loop_depth == 0 {
@@ -14682,7 +15428,7 @@ impl<'a> Checker<'a> {
                             depth: expression.depth,
                         };
                         self.recovered.push(renamed);
-                        return self.value_expression(&replaced, expected);
+                        return self.value_expression_with_soft(&replaced, expected, soft);
                     }
                     if let Some((removed, replacement)) = self.names.removed_written(
                         self.module,
@@ -14723,7 +15469,7 @@ impl<'a> Checker<'a> {
                             depth: expression.depth,
                         };
                         self.recovered.push(removed);
-                        return self.value_expression(&replaced, expected);
+                        return self.value_expression_with_soft(&replaced, expected, soft);
                     }
                     member = true;
                     format!(
@@ -14746,97 +15492,50 @@ impl<'a> Checker<'a> {
             }
             ExprKind::Field(value, field) => self.field_access(value, field)?,
             ExprKind::Index(value, index) => {
-                let value = Self::autoderef(self.expression(value, None)?);
-                if value.ty.contains_error() {
-                    return Ok(TypedExpr::error(expression.span));
-                }
-                let built_in_ty = match &value.ty {
-                    Type::Array(element)
-                    | Type::List(element)
-                    | Type::Vec(element)
-                    | Type::FixedArray(element, _) => Some((**element).clone()),
-                    Type::String => Some(Type::Integer(16, false)),
-                    Type::Utf8String => Some(Type::Integer(8, false)),
-                    _ => None,
-                };
-                if let Some(ty) = built_in_ty {
-                    let index = self.index_operand(index)?;
-                    (TypedExprKind::Index(Box::new(value), Box::new(index)), ty)
-                } else {
-                    let self_ty = self.inference.resolve(&value.ty);
-                    let hint =
-                        self.classes
-                            .index_key_hint(&self_ty, false, &self.inference, &self.types);
-                    let key = self.expression(index, hint.as_ref())?;
-                    if key.ty.contains_error() {
-                        return Ok(TypedExpr::error(expression.span));
-                    }
-                    let Some(resolved) = self.classes.resolve_index(
-                        &self_ty,
-                        &key.ty,
-                        false,
-                        &mut self.inference,
-                        &self.constraints,
-                        &self.types,
+                let inner_exp = if soft.is_some() { None } else { expected };
+                let (expr, _absorbed) = self.index_access(
+                    expression.span,
+                    value,
+                    index,
+                    IndexBorrowCover::Uncovered,
+                    inner_exp,
+                )?;
+                if soft.is_some() {
+                    return self.finish_expression_with_soft(
+                        expr.kind,
+                        expr.ty,
+                        expected,
+                        soft,
                         expression.span,
-                    )?
-                    else {
-                        let key_ty = self.inference.resolve(&key.ty);
-                        if self.classes.has_index_instances(
-                            &self_ty,
-                            false,
-                            &self.inference,
-                            &self.types,
-                        ) {
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::NoInstance,
-                                format!(
-                                    "no instance for Index<{}, {}>; define an instance or use a supported key type",
-                                    self_ty.display_with(self.names),
-                                    key_ty.display_with(self.names)
-                                ),
-                                expression.span,
-                            ));
-                        }
-                        return Err(Diagnostic::of(
-                            DiagnosticKind::IndexNonIndexable,
-                            "indexing requires an array, list, string, utf8string, or a type implementing Index",
-                            value.span,
-                        ));
-                    };
-                    self.constraints.extend(resolved.constraints);
-                    let callee_kind = if resolved.type_args.is_empty() {
-                        TypedExprKind::Function(FunctionRef::User(resolved.function))
-                    } else {
-                        TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
-                    };
-                    let key_span = key.span;
-                    let key_ty = self.inference.resolve(&key.ty);
-                    let val_span = value.span;
-                    let val_ty = self.inference.resolve(&value.ty);
-                    let call = TypedExprKind::Call(
-                        Box::new(TypedExpr {
-                            kind: callee_kind,
-                            ty: resolved.call_signature,
-                            span: expression.span,
-                        }),
-                        vec![
-                            TypedExpr {
-                                kind: TypedExprKind::BorrowOperand(Box::new(key)),
-                                ty: Type::Reference(Box::new(key_ty), false),
-                                span: key_span,
-                            },
-                            TypedExpr {
-                                kind: TypedExprKind::BorrowOperand(Box::new(value)),
-                                ty: Type::Reference(Box::new(val_ty), false),
-                                span: val_span,
-                            },
-                        ],
                     );
-                    (call, resolved.output_ty)
                 }
+                return Ok(expr);
             }
             ExprKind::Borrow(value, mutable, notation) => {
+                if matches!(
+                    value.kind,
+                    ExprKind::Index(..) | ExprKind::MultiIndex { borrow: None, .. }
+                ) {
+                    let inner_exp = if soft.is_some() { None } else { expected };
+                    let (checked, _absorbed) = self.borrow_index_expression(
+                        expression.span,
+                        value,
+                        *mutable,
+                        *notation,
+                        inner_exp,
+                        false,
+                    )?;
+                    if soft.is_some() {
+                        return self.finish_expression_with_soft(
+                            checked.kind,
+                            checked.ty,
+                            expected,
+                            soft,
+                            expression.span,
+                        );
+                    }
+                    return Ok(checked);
+                }
                 let value = match notation {
                     Notation::Symbol => {
                         let hint = match expected {
@@ -14916,76 +15615,96 @@ impl<'a> Checker<'a> {
                             | Type::Utf8String
                     );
                     if !built_in_index {
-                        let target_arg = if matches!(raw_target.ty, Type::Reference(_, true)) {
-                            raw_target
-                        } else {
+                        let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
+                        if !raw_is_mut_ref {
                             Self::require_mutable_reference(&raw_target)?;
-                            let target_span = raw_target.span;
-                            let target_ty = self.inference.resolve(&raw_target.ty);
-                            TypedExpr {
-                                kind: TypedExprKind::Borrow(Box::new(raw_target), true),
-                                ty: Type::Reference(Box::new(target_ty), true),
-                                span: target_span,
+                        }
+                        if let ExprKind::FromEnd(offset) = &key_expr.kind {
+                            if let Some(key) = self.one_component_from_end_key(
+                                &inner_ty,
+                                true,
+                                offset,
+                                key_expr.span,
+                            )? {
+                                return self.assign_index_mut_typed(
+                                    expression.span,
+                                    raw_target,
+                                    raw_is_mut_ref,
+                                    inner_ty,
+                                    key,
+                                    value,
+                                    expected,
+                                );
                             }
-                        };
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::FromEndNeedsLength,
+                                format!(
+                                    "'^' counts from the end of an array, a list, a Vec, a string, a utf8string or a fixed-length array, not of {}",
+                                    inner_ty.display_with(self.names)
+                                ),
+                                key_expr.span,
+                            ));
+                        }
                         let hint = self.classes.index_key_hint(
                             &inner_ty,
                             true,
-                            &self.inference,
+                            &mut self.inference,
                             &self.types,
                         );
                         let key = self.expression(key_expr, hint.as_ref())?;
                         if key.ty.contains_error() {
                             return Ok(TypedExpr::error(expression.span));
                         }
-                        let Some(resolved) = self.classes.resolve_index(
-                            &inner_ty,
-                            &key.ty,
-                            true,
-                            &mut self.inference,
-                            &self.constraints,
-                            &self.types,
+                        return self.assign_index_mut_typed(
                             expression.span,
-                        )?
-                        else {
-                            let key_ty = self.inference.resolve(&key.ty);
-                            return Err(Diagnostic::of(
-                                DiagnosticKind::NoInstance,
-                                format!(
-                                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
-                                    inner_ty.display_with(self.names),
-                                    key_ty.display_with(self.names)
-                                ),
-                                expression.span,
-                            ));
-                        };
-                        self.constraints.extend(resolved.constraints);
-                        let rhs = self.expression(value, Some(&resolved.output_ty))?;
-                        let callee_kind = if resolved.type_args.is_empty() {
-                            TypedExprKind::Function(FunctionRef::User(resolved.function))
-                        } else {
-                            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
-                        };
-                        let key_span = key.span;
-                        let key_ty = self.inference.resolve(&key.ty);
-                        let call = TypedExprKind::Call(
-                            Box::new(TypedExpr {
-                                kind: callee_kind,
-                                ty: resolved.call_signature,
-                                span: expression.span,
-                            }),
-                            vec![
-                                TypedExpr {
-                                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
-                                    ty: Type::Reference(Box::new(key_ty), false),
-                                    span: key_span,
-                                },
-                                rhs,
-                                target_arg,
-                            ],
+                            raw_target,
+                            raw_is_mut_ref,
+                            inner_ty,
+                            key,
+                            value,
+                            expected,
                         );
-                        return self.finish_expression(call, Type::Unit, expected, expression.span);
                     }
+                } else if let ExprKind::MultiIndex {
+                    value: target,
+                    keys,
+                    borrow: None,
+                } = &place.kind
+                {
+                    let raw_target = self.expression(target, None)?;
+                    if raw_target.ty.contains_error() {
+                        return Ok(TypedExpr::error(expression.span));
+                    }
+                    let inner_ty = self.inference.resolve(
+                        &raw_target
+                            .ty
+                            .dereferenced()
+                            .unwrap_or_else(|| raw_target.ty.clone()),
+                    );
+                    if Self::is_builtin_six_indexable(&inner_ty) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::BuiltinIndexOneComponent,
+                            "arrays, lists, Vec, and strings take one index; write 'xs[i][j]' for an element of a nested array",
+                            place.span,
+                        ));
+                    }
+                    let raw_is_mut_ref = matches!(raw_target.ty, Type::Reference(_, true));
+                    if !raw_is_mut_ref {
+                        Self::require_mutable_reference(&raw_target)?;
+                    }
+                    let Some(key) = self.multi_index_assign_key(place.span, &inner_ty, keys)?
+                    else {
+                        return Ok(TypedExpr::error(expression.span));
+                    };
+                    return self.assign_index_mut_typed(
+                        expression.span,
+                        raw_target,
+                        raw_is_mut_ref,
+                        inner_ty,
+                        key,
+                        value,
+                        expected,
+                    );
                 }
                 let place = self.expression(place, None)?;
                 if place.ty.contains_error() {
@@ -15040,7 +15759,7 @@ impl<'a> Checker<'a> {
             | ExprKind::ComputationBoundary(_)
             | ExprKind::Block { .. } => unreachable!("composed expressions use their own checker"),
         };
-        self.finish_expression(kind, ty, expected, expression.span)
+        self.finish_expression_with_soft(kind, ty, expected, soft, expression.span)
     }
 
     /// The lambda written directly as the argument of `Owned.function` (B07).
@@ -15088,6 +15807,8 @@ impl<'a> Checker<'a> {
             | ExprKind::TypeFunction(..)
             | ExprKind::Field(..)
             | ExprKind::Index(..)
+            | ExprKind::Slice { .. }
+            | ExprKind::MultiIndex { .. }
             | ExprKind::Dereference(..)
                 if !expected.contains_error() =>
             {
@@ -15122,6 +15843,26 @@ impl<'a> Checker<'a> {
                 if self.shared_reference(expected) =>
             {
                 self.place_argument(expression, expected)
+            }
+            ExprKind::Borrow(ref inner, false, notation)
+                if matches!(
+                    inner.kind,
+                    ExprKind::Index(..) | ExprKind::MultiIndex { borrow: None, .. }
+                ) && self.shared_reference(expected) =>
+            {
+                let (checked, absorbed) = self.borrow_index_expression(
+                    expression.span,
+                    inner,
+                    false,
+                    notation,
+                    Some(expected),
+                    true,
+                )?;
+                if absorbed {
+                    self.coerce_argument(checked, expected)
+                } else {
+                    Ok(checked)
+                }
             }
             ExprKind::Integer(..)
             | ExprKind::Float(..)
@@ -15415,6 +16156,8 @@ impl<'a> Checker<'a> {
                 | ExprKind::TypeFunction(..)
                 | ExprKind::Field(..)
                 | ExprKind::Index(..)
+                | ExprKind::Slice { .. }
+                | ExprKind::MultiIndex { .. }
                 | ExprKind::Dereference(..)
                 | ExprKind::Borrow(_, false, Notation::Keyword)
         )
@@ -15488,6 +16231,1653 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn borrow_index_expression(
+        &mut self,
+        borrow_span: Span,
+        value: &Expr,
+        mutable: bool,
+        notation: Notation,
+        expected: Option<&Type>,
+        shared_arg: bool,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let built_in_hint = match notation {
+            Notation::Symbol => match expected {
+                Some(reference @ Type::Reference(_, expected_mutable))
+                    if mutable == *expected_mutable =>
+                {
+                    reference.dereferenced()
+                }
+                Some(Type::Error) => Some(Type::Error),
+                _ => None,
+            },
+            Notation::Keyword => None,
+        };
+        let cover = IndexBorrowCover::Direct {
+            mutable,
+            borrow_span,
+            operand_span: value.span,
+            notation,
+        };
+        let (indexed, absorbed) = match &value.kind {
+            ExprKind::Index(base_expr, key_expr) => self.index_access(
+                value.span,
+                base_expr,
+                key_expr,
+                cover,
+                built_in_hint.as_ref(),
+            )?,
+            ExprKind::MultiIndex {
+                value: base_expr,
+                keys,
+                borrow: None,
+            } => self.multi_index(value.span, base_expr, keys, cover, built_in_hint.as_ref())?,
+            _ => unreachable!("index operand checked"),
+        };
+        if absorbed {
+            let absorbed_expected = if shared_arg { None } else { expected };
+            let finished =
+                self.finish_expression(indexed.kind, indexed.ty, absorbed_expected, borrow_span)?;
+            return Ok((finished, true));
+        }
+        let value = match notation {
+            Notation::Symbol => {
+                let operator = Span {
+                    start: borrow_span.start,
+                    end: value.span.start.max(borrow_span.start),
+                    source: borrow_span.source,
+                };
+                self.symbolic_borrows.push((indexed.ty.clone(), operator));
+                indexed
+            }
+            Notation::Keyword => {
+                if matches!(indexed.ty, Type::Infer(_)) {
+                    self.undecided_borrows
+                        .push((indexed.ty.clone(), indexed.span));
+                }
+                Self::reborrow_operand(indexed)
+            }
+        };
+        let (kind, ty) = if mutable {
+            Self::require_mutable_reference(&value)?;
+            Self::exclusive_borrow(value, expected)?
+        } else {
+            let ty = Type::Reference(Box::new(value.ty.clone()), false);
+            (TypedExprKind::Borrow(Box::new(value), false), ty)
+        };
+        let finished = self.finish_expression(kind, ty, expected, borrow_span)?;
+        Ok((finished, false))
+    }
+
+    fn eval_index_base(
+        &mut self,
+        base_expr: &Expr,
+        cover: IndexBorrowCover,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        if !matches!(cover, IndexBorrowCover::Uncovered) {
+            match &base_expr.kind {
+                ExprKind::Index(inner_base, inner_key) => {
+                    return self.index_access(
+                        base_expr.span,
+                        inner_base,
+                        inner_key,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                ExprKind::MultiIndex {
+                    value: inner_base,
+                    keys: inner_keys,
+                    borrow: None,
+                } => {
+                    return self.multi_index(
+                        base_expr.span,
+                        inner_base,
+                        inner_keys,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                ExprKind::Slice {
+                    value: inner_base,
+                    range: inner_range,
+                    mutable: false,
+                } => {
+                    return self.slice_expr(
+                        inner_base,
+                        inner_range,
+                        false,
+                        base_expr.span,
+                        IndexBorrowCover::ChainInner,
+                        None,
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok((self.expression(base_expr, None)?, false))
+    }
+
+    fn is_builtin_six_indexable(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Array(_)
+                | Type::List(_)
+                | Type::Vec(_)
+                | Type::FixedArray(..)
+                | Type::String
+                | Type::Utf8String
+        )
+    }
+
+    fn std_slice_union(&self, short: &str) -> Option<usize> {
+        let target = format!("Slice.{short}");
+        self.types
+            .unions
+            .iter()
+            .position(|u| u.origin == ModuleOrigin::Std && u.name == target)
+    }
+
+    fn std_slice_pos_type(&self) -> Option<(usize, Type)> {
+        let id = self.std_slice_union("Pos")?;
+        Some((id, Type::Union(id, Box::new([]))))
+    }
+
+    fn is_std_slice_sel(&self, ty: &Type) -> bool {
+        let resolved = self.inference.resolve(ty);
+        self.std_slice_union("Sel")
+            .is_some_and(|id| matches!(resolved, Type::Union(uid, _) if uid == id))
+    }
+
+    fn std_selector_unions(&self) -> Vec<usize> {
+        ["Axis", "Sel", "Pos"]
+            .into_iter()
+            .filter_map(|short| self.std_slice_union(short))
+            .collect()
+    }
+
+    fn is_std_matrix_family(&self, ty: &Type) -> bool {
+        matches!(
+            self.inference.resolve(ty),
+            Type::Record(rec_id, _)
+                if self.types.records[rec_id].origin == ModuleOrigin::Std
+                    && matches!(
+                        self.types.records[rec_id].name.as_str(),
+                        "Matrix.Matrix" | "MatrixView.MatrixView" | "MatrixView.Mut"
+                    )
+        )
+    }
+
+    fn construct_union_unit(union_id: usize, case_id: usize, ty: Type, span: Span) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Construct {
+                union_id,
+                case_id,
+                payload: None,
+            },
+            ty,
+            span,
+        }
+    }
+
+    fn construct_union_payload(
+        union_id: usize,
+        case_id: usize,
+        ty: Type,
+        payload: TypedExpr,
+        span: Span,
+    ) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Construct {
+                union_id,
+                case_id,
+                payload: Some(Box::new(payload)),
+            },
+            ty,
+            span,
+        }
+    }
+
+    fn window_i64_bound(&mut self, expr: &Expr) -> Result<TypedExpr, Diagnostic> {
+        let was_recovering = std::mem::replace(&mut self.recovering, false);
+        let res = self.expression(expr, Some(&Type::I64));
+        self.recovering = was_recovering;
+        match res {
+            Ok(typed) => Ok(typed),
+            Err(diag) => {
+                if diag.code == "E1003" {
+                    Err(diag.with_help("Tensor and Matrix positions are i64; write 'a as i64'"))
+                } else {
+                    Err(diag)
+                }
+            }
+        }
+    }
+
+    fn one_component_from_end_key(
+        &mut self,
+        self_ty: &Type,
+        mutable: bool,
+        offset: &Expr,
+        span: Span,
+    ) -> Result<Option<TypedExpr>, Diagnostic> {
+        let Some((pos_uid, pos_ty)) = self.std_slice_pos_type() else {
+            return Ok(None);
+        };
+        if self.classes.has_exact_index_key(
+            self_ty,
+            mutable,
+            &pos_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            self.negative_from_end_warning(offset);
+            let off = self.window_i64_bound(offset)?;
+            if off.ty.contains_error() {
+                return Ok(Some(TypedExpr::error(span)));
+            }
+            return Ok(Some(Self::construct_union_payload(
+                pos_uid, 1, pos_ty, off, span,
+            )));
+        }
+        let arr_pos_ty = Type::Array(Box::new(pos_ty.clone()));
+        if self.classes.has_exact_index_key(
+            self_ty,
+            mutable,
+            &arr_pos_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            self.negative_from_end_warning(offset);
+            let off = self.window_i64_bound(offset)?;
+            if off.ty.contains_error() {
+                return Ok(Some(TypedExpr::error(span)));
+            }
+            let elem = Self::construct_union_payload(pos_uid, 1, pos_ty, off, span);
+            return Ok(Some(TypedExpr {
+                kind: TypedExprKind::Array(vec![elem]),
+                ty: arr_pos_ty,
+                span,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Checks `base_expr[key_expr]` under `cover`. Returns `(typed_expr, absorbed_ref)` where
+    /// `absorbed_ref` is `true` when an enclosing `ref` was absorbed by a base-borrowing `Index`
+    /// (and `false` for the 6 built-in indexable types or error recovery).
+    fn index_access(
+        &mut self,
+        span: Span,
+        base_expr: &Expr,
+        key_expr: &Expr,
+        cover: IndexBorrowCover,
+        built_in_expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let (raw_base, inner_was_view) = self.eval_index_base(base_expr, cover)?;
+        let value = Self::autoderef(raw_base);
+        if value.ty.contains_error() {
+            return Ok((TypedExpr::error(span), true));
+        }
+        let built_in_ty = match &value.ty {
+            Type::Array(element)
+            | Type::List(element)
+            | Type::Vec(element)
+            | Type::FixedArray(element, _) => Some((**element).clone()),
+            Type::String => Some(Type::Integer(16, false)),
+            Type::Utf8String => Some(Type::Integer(8, false)),
+            _ => None,
+        };
+        if let Some(ty) = built_in_ty {
+            let index = if let ExprKind::FromEnd(offset) = &key_expr.kind {
+                self.negative_from_end_warning(offset);
+                let offset = self.bound_operand(offset)?;
+                TypedExpr {
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: false,
+                    },
+                    ty: Type::I64,
+                    span: key_expr.span,
+                }
+            } else {
+                self.negative_index_warning(key_expr);
+                self.index_operand(key_expr)?
+            };
+            let expected = match cover {
+                IndexBorrowCover::Uncovered | IndexBorrowCover::Direct { .. } => built_in_expected,
+                IndexBorrowCover::ChainInner => None,
+            };
+            let finished = self.finish_expression(
+                TypedExprKind::Index(Box::new(value), Box::new(index)),
+                ty,
+                expected,
+                span,
+            )?;
+            return Ok((finished, false));
+        }
+        let self_ty = self.inference.resolve(&value.ty);
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => built_in_expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        if let ExprKind::FromEnd(offset) = &key_expr.kind {
+            if let Some(key) =
+                self.one_component_from_end_key(&self_ty, false, offset, key_expr.span)?
+            {
+                if key.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                return self.index_access_typed(
+                    span,
+                    value,
+                    key,
+                    cover,
+                    inner_was_view,
+                    false,
+                    expected_after,
+                );
+            }
+            if self.is_std_matrix_family(&self_ty) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for Index<{}, Slice.Pos>; define an instance or use a supported key type",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                )
+                .with_help("write 'ref m[i, ..]' for a row"));
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::FromEndNeedsLength,
+                format!(
+                    "'^' counts from the end of an array, a list, a Vec, a string, a utf8string or a fixed-length array, not of {}",
+                    self_ty.display_with(self.names)
+                ),
+                key_expr.span,
+            ));
+        }
+        let hint = self
+            .classes
+            .index_key_hint(&self_ty, false, &mut self.inference, &self.types);
+        let key = if self.is_std_matrix_family(&self_ty)
+            && !matches!(key_expr.kind, ExprKind::Tuple(_))
+            && hint.is_some()
+        {
+            let was_recovering = std::mem::replace(&mut self.recovering, false);
+            let res = self.expression(key_expr, hint.as_ref());
+            self.recovering = was_recovering;
+            match res {
+                Ok(key) => key,
+                Err(diag) => return Err(diag.with_help("write 'ref m[i, ..]' for a row")),
+            }
+        } else {
+            self.expression(key_expr, hint.as_ref())?
+        };
+        if key.ty.contains_error() {
+            return Ok((TypedExpr::error(span), true));
+        }
+        if self.is_std_slice_sel(&key.ty) {
+            let direct = self.classes.resolve_index(
+                &self_ty,
+                &key.ty,
+                false,
+                &mut self.inference,
+                &self.constraints,
+                &self.types,
+                self.names,
+                span,
+                key.span,
+            )?;
+            if direct.is_none()
+                && let Some(wrapped) =
+                    self.wrap_window_sels_opt(vec![key.clone()], &self_ty, key.span)
+            {
+                return self.index_access_typed(
+                    span,
+                    value,
+                    wrapped,
+                    cover,
+                    inner_was_view,
+                    false,
+                    expected_after,
+                );
+            }
+        }
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            false,
+            expected_after,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn index_access_typed(
+        &mut self,
+        span: Span,
+        value: TypedExpr,
+        key: TypedExpr,
+        cover: IndexBorrowCover,
+        inner_was_view: bool,
+        multi_all_expr: bool,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let self_ty = self.inference.resolve(&value.ty);
+        let Some(resolved) = self.classes.resolve_index(
+            &self_ty,
+            &key.ty,
+            false,
+            &mut self.inference,
+            &self.constraints,
+            &self.types,
+            self.names,
+            span,
+            key.span,
+        )?
+        else {
+            let key_ty = self.inference.resolve(&key.ty);
+            if self
+                .classes
+                .has_index_instances(&self_ty, false, &mut self.inference, &self.types)
+            {
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for Index<{}, {}>; define an instance or use a supported key type",
+                        self_ty.display_with(self.names),
+                        key_ty.display_with(self.names)
+                    ),
+                    span,
+                );
+                if !multi_all_expr
+                    && self.is_std_matrix_family(&self_ty)
+                    && !matches!(key_ty, Type::Tuple(_))
+                {
+                    diag = diag.with_help("write 'ref m[i, ..]' for a row");
+                }
+                return Err(diag);
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::IndexNonIndexable,
+                "indexing requires an array, list, string, utf8string, or a type implementing Index",
+                value.span,
+            ));
+        };
+
+        if resolved.borrows_base {
+            match cover {
+                IndexBorrowCover::Uncovered => {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::IndexViewRequiresRef,
+                        format!(
+                            "this index gives {}, which borrows its base; write 'ref' before it",
+                            resolved.output_ty.display_with(self.names)
+                        ),
+                        span,
+                    )
+                    .with_help(
+                        "an index whose result borrows its base is written like an array slice, for example 'ref t[[...]]'",
+                    )
+                    .fix(
+                        "wrap the index expression in '(ref ...)'",
+                        crate::diagnostic::Applicability::Certain,
+                        vec![
+                            crate::diagnostic::Edit {
+                                span: Span {
+                                    start: span.start,
+                                    end: span.start,
+                                    source: span.source,
+                                },
+                                text: "(ref ".to_owned(),
+                            },
+                            crate::diagnostic::Edit {
+                                span: Span {
+                                    start: span.end,
+                                    end: span.end,
+                                    source: span.source,
+                                },
+                                text: ")".to_owned(),
+                            },
+                        ],
+                    ));
+                }
+                IndexBorrowCover::Direct {
+                    mutable: true,
+                    borrow_span,
+                    operand_span,
+                    notation,
+                } => {
+                    let prefix_span = Span {
+                        start: borrow_span.start,
+                        end: operand_span.start.max(borrow_span.start),
+                        source: borrow_span.source,
+                    };
+                    let mut edits = Vec::new();
+                    let new_prefix = match (notation, borrow_span.end > operand_span.end) {
+                        (Notation::Keyword, false) => "ref ",
+                        (Notation::Keyword, true) => "(ref ",
+                        (Notation::Symbol, false) => "&",
+                        (Notation::Symbol, true) => "(&",
+                    };
+                    edits.push(crate::diagnostic::Edit {
+                        span: prefix_span,
+                        text: new_prefix.to_owned(),
+                    });
+                    if borrow_span.end > operand_span.end {
+                        edits.push(crate::diagnostic::Edit {
+                            span: Span {
+                                start: operand_span.end,
+                                end: borrow_span.end,
+                                source: borrow_span.source,
+                            },
+                            text: ")".to_owned(),
+                        });
+                    }
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::IndexViewNotWritable,
+                        format!(
+                            "'ref mut' cannot take a writable window from this index; it gives {}, a shared borrow of its base",
+                            resolved.output_ty.display_with(self.names)
+                        ),
+                        borrow_span,
+                    )
+                    .fix(
+                        "replace 'ref mut' with 'ref'",
+                        crate::diagnostic::Applicability::Likely,
+                        edits,
+                    ));
+                }
+                IndexBorrowCover::Direct { mutable: false, .. } | IndexBorrowCover::ChainInner => {}
+            }
+        } else if let IndexBorrowCover::Direct {
+            mutable,
+            borrow_span,
+            operand_span,
+            ..
+        } = cover
+        {
+            let kw = if mutable { "ref mut" } else { "ref" };
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::IndexRefOnValue,
+                format!(
+                    "this index gives a value of type {}, not a borrow of its base; remove '{kw}'",
+                    resolved.output_ty.display_with(self.names)
+                ),
+                borrow_span,
+            );
+            if inner_was_view {
+                diag = diag.with_help("put 'ref' on the window only: '(ref t[[...]])[[...]]'");
+                if !mutable
+                    && borrow_span.end == operand_span.end
+                    && value.span.end <= operand_span.end
+                {
+                    diag = diag.fix(
+                        "put 'ref' on the inner window only",
+                        crate::diagnostic::Applicability::Likely,
+                        vec![
+                            crate::diagnostic::Edit {
+                                span: Span {
+                                    start: borrow_span.start,
+                                    end: borrow_span.start,
+                                    source: borrow_span.source,
+                                },
+                                text: "(".to_owned(),
+                            },
+                            crate::diagnostic::Edit {
+                                span: Span {
+                                    start: value.span.end,
+                                    end: value.span.end,
+                                    source: borrow_span.source,
+                                },
+                                text: ")".to_owned(),
+                            },
+                        ],
+                    );
+                }
+            } else {
+                let mut edits = vec![crate::diagnostic::Edit {
+                    span: Span {
+                        start: borrow_span.start,
+                        end: operand_span.start.max(borrow_span.start),
+                        source: borrow_span.source,
+                    },
+                    text: String::new(),
+                }];
+                if borrow_span.end > operand_span.end {
+                    edits.push(crate::diagnostic::Edit {
+                        span: Span {
+                            start: operand_span.end,
+                            end: borrow_span.end,
+                            source: borrow_span.source,
+                        },
+                        text: String::new(),
+                    });
+                }
+                if multi_all_expr && !mutable {
+                    diag =
+                        diag.with_help("add a range component such as 'ref t[i, ..]' for a window");
+                }
+                diag = diag.fix(
+                    format!("remove '{kw}'"),
+                    crate::diagnostic::Applicability::Likely,
+                    edits,
+                );
+            }
+            return Err(diag);
+        }
+
+        self.constraints.extend(resolved.constraints);
+        let callee_kind = if resolved.type_args.is_empty() {
+            TypedExprKind::Function(FunctionRef::User(resolved.function))
+        } else {
+            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+        };
+        let key_span = key.span;
+        let key_ty = self.inference.resolve(&key.ty);
+        let val_span = value.span;
+        let val_ty = self.inference.resolve(&value.ty);
+        let mut bindings = Vec::new();
+        let (value, temp_base) = if key.is_index_const() || self.is_simple_index_place(&value) {
+            (value, false)
+        } else if !value.is_place() {
+            let base_local =
+                self.index_generated_local(TEMP_INDEX_BASE_PREFIX, val_ty.clone(), val_span);
+            let base_id = base_local.id;
+            bindings.push((base_local, value));
+            (
+                TypedExpr {
+                    kind: TypedExprKind::Local(base_id),
+                    ty: val_ty.clone(),
+                    span: val_span,
+                },
+                true,
+            )
+        } else {
+            (self.hoist_index_read_place(value, &mut bindings), false)
+        };
+        let base_kind = if resolved.borrows_base && value.is_place() && !temp_base {
+            TypedExprKind::Borrow(Box::new(value), false)
+        } else {
+            TypedExprKind::BorrowOperand(Box::new(value))
+        };
+        let call = TypedExprKind::Call(
+            Box::new(TypedExpr {
+                kind: callee_kind,
+                ty: resolved.call_signature,
+                span,
+            }),
+            vec![
+                TypedExpr {
+                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                    ty: Type::Reference(Box::new(key_ty), false),
+                    span: key_span,
+                },
+                TypedExpr {
+                    kind: base_kind,
+                    ty: Type::Reference(Box::new(val_ty), false),
+                    span: val_span,
+                },
+            ],
+        );
+        let kind = if bindings.is_empty() {
+            call
+        } else {
+            TypedExprKind::Block {
+                bindings,
+                result: Box::new(TypedExpr {
+                    kind: call,
+                    ty: resolved.output_ty.clone(),
+                    span,
+                }),
+            }
+        };
+        let finished = self.finish_expression(kind, resolved.output_ty, expected, span)?;
+        Ok((finished, resolved.borrows_base))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assign_index_mut_typed(
+        &mut self,
+        span: Span,
+        raw_target: TypedExpr,
+        raw_is_mut_ref: bool,
+        inner_ty: Type,
+        key: TypedExpr,
+        value_expr: &Expr,
+        expected: Option<&Type>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let Some(resolved) = self.classes.resolve_index(
+            &inner_ty,
+            &key.ty,
+            true,
+            &mut self.inference,
+            &self.constraints,
+            &self.types,
+            self.names,
+            span,
+            key.span,
+        )?
+        else {
+            let key_ty = self.inference.resolve(&key.ty);
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for IndexMut<{}, {}>; define an instance or use a supported key type",
+                    inner_ty.display_with(self.names),
+                    key_ty.display_with(self.names)
+                ),
+                span,
+            ));
+        };
+        self.constraints.extend(resolved.constraints);
+        let rhs = self.expression(value_expr, Some(&resolved.output_ty))?;
+        let mut bindings = Vec::new();
+        let base_needs_hoist = !key.is_index_const()
+            && if raw_is_mut_ref {
+                !Self::is_local_ref_chain(&raw_target)
+            } else {
+                !Self::is_mut_target_simple_or_d9(&raw_target)
+            };
+        let rhs_needs_hoist = if base_needs_hoist {
+            !rhs.is_index_const()
+        } else {
+            !self.is_rhs_key_order_unobservable(&rhs, &key)
+        };
+        let rhs = if rhs_needs_hoist {
+            let rhs_ty = self.inference.resolve(&rhs.ty);
+            let rhs_span = rhs.span;
+            let rhs_local = self.index_generated_local("$index.rhs.", rhs_ty.clone(), rhs_span);
+            let rhs_id = rhs_local.id;
+            bindings.push((rhs_local, rhs));
+            TypedExpr {
+                kind: TypedExprKind::Local(rhs_id),
+                ty: rhs_ty,
+                span: rhs_span,
+            }
+        } else {
+            rhs
+        };
+        let target_arg = if raw_is_mut_ref {
+            if base_needs_hoist {
+                let ref_ty = self.inference.resolve(&raw_target.ty);
+                let ref_span = raw_target.span;
+                let ref_local = self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                let ref_id = ref_local.id;
+                bindings.push((ref_local, raw_target));
+                TypedExpr {
+                    kind: TypedExprKind::Local(ref_id),
+                    ty: ref_ty,
+                    span: ref_span,
+                }
+            } else {
+                raw_target
+            }
+        } else {
+            let hoisted_target = if base_needs_hoist {
+                self.hoist_index_mut_place(raw_target, &mut bindings)
+            } else {
+                raw_target
+            };
+            let target_span = hoisted_target.span;
+            let target_ty = self.inference.resolve(&hoisted_target.ty);
+            TypedExpr {
+                kind: TypedExprKind::Borrow(Box::new(hoisted_target), true),
+                ty: Type::Reference(Box::new(target_ty), true),
+                span: target_span,
+            }
+        };
+        let callee_kind = if resolved.type_args.is_empty() {
+            TypedExprKind::Function(FunctionRef::User(resolved.function))
+        } else {
+            TypedExprKind::GenericFunction(resolved.function, resolved.type_args)
+        };
+        let key_span = key.span;
+        let key_ty = self.inference.resolve(&key.ty);
+        let call = TypedExprKind::Call(
+            Box::new(TypedExpr {
+                kind: callee_kind,
+                ty: resolved.call_signature,
+                span,
+            }),
+            vec![
+                TypedExpr {
+                    kind: TypedExprKind::BorrowOperand(Box::new(key)),
+                    ty: Type::Reference(Box::new(key_ty), false),
+                    span: key_span,
+                },
+                rhs,
+                target_arg,
+            ],
+        );
+        let kind = if bindings.is_empty() {
+            call
+        } else {
+            TypedExprKind::Block {
+                bindings,
+                result: Box::new(TypedExpr {
+                    kind: call,
+                    ty: Type::Unit,
+                    span,
+                }),
+            }
+        };
+        self.finish_expression(kind, Type::Unit, expected, span)
+    }
+
+    fn component_hints(
+        &mut self,
+        self_ty: &Type,
+        mutable: bool,
+        count: usize,
+    ) -> Vec<Option<Type>> {
+        let selectors = self.std_selector_unions();
+        let hint = self
+            .classes
+            .index_key_hint(self_ty, mutable, &mut self.inference, &self.types);
+        match hint {
+            Some(Type::Tuple(items))
+                if items.len() == count
+                    && !items
+                        .iter()
+                        .any(|t| matches!(t, Type::Union(uid, _) if selectors.contains(uid))) =>
+            {
+                items.into_iter().map(Some).collect()
+            }
+            Some(Type::Array(elem)) if !matches!(elem.as_ref(), Type::Union(uid, _) if selectors.contains(uid)) =>
+            {
+                vec![Some(*elem); count]
+            }
+            _ => vec![None; count],
+        }
+    }
+
+    fn check_not_slice_axis(&mut self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
+        let resolved = self.inference.resolve(ty);
+        if self
+            .std_slice_union("Axis")
+            .is_some_and(|id| matches!(resolved, Type::Union(uid, _) if uid == id))
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::IndexComponentType,
+                "a bracket key takes positions, ranges, or Slice.Sel values, not Slice.Axis; keep Slice.Axis in the long form 't[[...]]'",
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn build_element_or_pos_key(
+        &mut self,
+        span: Span,
+        self_ty: &Type,
+        mutable: bool,
+        items: Vec<(TypedExpr, bool)>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let n = items.len();
+        let has_from_end = items.iter().any(|(_, is_back)| *is_back);
+        if has_from_end {
+            let class_name = if mutable { "IndexMut" } else { "Index" };
+            let Some((pos_uid, pos_ty)) = self.std_slice_pos_type() else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for {class_name}<{}, [Slice.Pos]>; define an instance with Slice.Pos keys to support '^' positions",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                ));
+            };
+            let mut pos_exprs = Vec::with_capacity(n);
+            for (mut expr, is_back) in items {
+                let expr_span = expr.span;
+                if !is_back {
+                    if self
+                        .inference
+                        .unify(&expr.ty, &Type::I64, &self.types, expr_span)
+                        .is_err()
+                    {
+                        let shown = self.inference.resolve(&expr.ty).display_with(self.names);
+                        let mut diag = Diagnostic::of(
+                            DiagnosticKind::TypeMismatch,
+                            format!("expected i64, found {shown}"),
+                            expr_span,
+                        );
+                        if self.inference.resolve(&expr.ty).is_integer() {
+                            diag = diag
+                                .with_help("Tensor and Matrix positions are i64; write 'a as i64'");
+                        }
+                        return Err(diag);
+                    }
+                    expr =
+                        self.finish_expression(expr.kind, expr.ty, Some(&Type::I64), expr_span)?;
+                }
+                let case_id = usize::from(is_back);
+                pos_exprs.push(Self::construct_union_payload(
+                    pos_uid,
+                    case_id,
+                    pos_ty.clone(),
+                    expr,
+                    expr_span,
+                ));
+            }
+            let tuple_probe = if n == 1 {
+                pos_ty.clone()
+            } else {
+                Type::Tuple(vec![pos_ty.clone(); n])
+            };
+            if self.classes.has_exact_index_key(
+                self_ty,
+                mutable,
+                &tuple_probe,
+                &mut self.inference,
+                &self.types,
+            ) {
+                return Ok(if n == 1 {
+                    pos_exprs.pop().expect("single pos")
+                } else {
+                    TypedExpr {
+                        kind: TypedExprKind::Tuple(pos_exprs),
+                        ty: tuple_probe,
+                        span,
+                    }
+                });
+            }
+            let arr_probe = Type::Array(Box::new(pos_ty));
+            if self.classes.has_exact_index_key(
+                self_ty,
+                mutable,
+                &arr_probe,
+                &mut self.inference,
+                &self.types,
+            ) {
+                return Ok(TypedExpr {
+                    kind: TypedExprKind::Array(pos_exprs),
+                    ty: arr_probe,
+                    span,
+                });
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for {class_name}<{}, {}>; define an instance with Slice.Pos keys to support '^' positions",
+                    self_ty.display_with(self.names),
+                    tuple_probe.display_with(self.names)
+                ),
+                span,
+            )
+            .with_help("use Slice.Pos keys, or compute the position from the container's shape"));
+        }
+
+        let exprs: Vec<TypedExpr> = items.into_iter().map(|(e, _)| e).collect();
+        let selectors = self.std_selector_unions();
+        if self.classes.has_element_tuple_key(
+            self_ty,
+            mutable,
+            n,
+            &selectors,
+            &mut self.inference,
+            &self.types,
+        ) {
+            let tys = exprs.iter().map(|e| e.ty.clone()).collect();
+            return Ok(TypedExpr {
+                kind: TypedExprKind::Tuple(exprs),
+                ty: Type::Tuple(tys),
+                span,
+            });
+        }
+        if self.classes.has_element_array_key(
+            self_ty,
+            mutable,
+            &selectors,
+            &mut self.inference,
+            &self.types,
+        ) {
+            let elem_ty = self.inference.fresh();
+            for item in &exprs {
+                self.same(&item.ty, &elem_ty, item.span)?;
+            }
+            let resolved_elem = self.inference.resolve(&elem_ty);
+            return Ok(TypedExpr {
+                kind: TypedExprKind::Array(exprs),
+                ty: Type::Array(Box::new(resolved_elem)),
+                span,
+            });
+        }
+        let class_name = if mutable { "IndexMut" } else { "Index" };
+        let tuple_ty = Type::Tuple(
+            exprs
+                .iter()
+                .map(|e| self.inference.resolve(&e.ty))
+                .collect(),
+        );
+        if self
+            .classes
+            .has_index_instances(self_ty, mutable, &mut self.inference, &self.types)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::NoInstance,
+                format!(
+                    "no instance for {class_name}<{}, {}>; define an instance or use a supported key type",
+                    self_ty.display_with(self.names),
+                    tuple_ty.display_with(self.names)
+                ),
+                span,
+            ));
+        }
+        Err(Diagnostic::of(
+            DiagnosticKind::IndexNonIndexable,
+            "indexing requires an array, list, string, utf8string, or a type implementing Index",
+            span,
+        ))
+    }
+
+    fn multi_index_assign_key(
+        &mut self,
+        span: Span,
+        inner_ty: &Type,
+        keys: &[crate::syntax::IndexComponent],
+    ) -> Result<Option<TypedExpr>, Diagnostic> {
+        let has_from_end = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Expr(Expr {
+                    kind: ExprKind::FromEnd(_),
+                    ..
+                })
+            )
+        });
+        let hints = if has_from_end {
+            vec![None; keys.len()]
+        } else {
+            self.component_hints(inner_ty, true, keys.len())
+        };
+        let mut items = Vec::with_capacity(keys.len());
+        for (comp, hint) in keys.iter().zip(hints) {
+            let crate::syntax::IndexComponent::Expr(expr) = comp else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::IndexComponentType,
+                    "cannot assign through a range component; index an element position",
+                    span,
+                ));
+            };
+            if let ExprKind::FromEnd(offset) = &expr.kind {
+                self.negative_from_end_warning(offset);
+                let mut off = self.window_i64_bound(offset)?;
+                if off.ty.contains_error() {
+                    return Ok(None);
+                }
+                off.span = expr.span;
+                items.push((off, true));
+            } else {
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok(None);
+                }
+                self.check_not_slice_axis(&typed.ty, expr.span)?;
+                items.push((typed, false));
+            }
+        }
+        self.build_element_or_pos_key(span, inner_ty, true, items)
+            .map(Some)
+    }
+
+    fn expr_to_sel_item(
+        &mut self,
+        raw: &Expr,
+        mut typed: TypedExpr,
+        pos_uid: usize,
+        sel_uid: usize,
+    ) -> Result<TypedExpr, Diagnostic> {
+        self.check_not_slice_axis(&typed.ty, raw.span)?;
+        if self.is_std_slice_sel(&typed.ty) {
+            return Ok(typed);
+        }
+        self.negative_window_index_warning(raw);
+        if self
+            .inference
+            .unify(&typed.ty, &Type::I64, &self.types, raw.span)
+            .is_err()
+        {
+            let resolved = self.inference.resolve(&typed.ty);
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::IndexComponentType,
+                format!(
+                    "expected an i64 position or a Slice.Sel, found {}",
+                    resolved.display_with(self.names)
+                ),
+                raw.span,
+            );
+            if resolved.is_integer() {
+                diag = diag.with_help("Tensor and Matrix positions are i64; write 'a as i64'");
+            }
+            return Err(diag);
+        }
+        let span = typed.span;
+        typed = self.finish_expression(typed.kind, typed.ty, Some(&Type::I64), span)?;
+        let pos_ty = Type::Union(pos_uid, Box::new([]));
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        let pos = Self::construct_union_payload(pos_uid, 0, pos_ty, typed, span);
+        Ok(Self::construct_union_payload(sel_uid, 0, sel_ty, pos, span))
+    }
+
+    fn range_bound_to_slice_bound(
+        &mut self,
+        bound: Option<&Expr>,
+        excluded: bool,
+        pos_uid: usize,
+        bound_uid: usize,
+        fallback_span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let bound_ty = Type::Union(bound_uid, Box::new([]));
+        let Some(expr) = bound else {
+            return Ok(Self::construct_union_unit(
+                bound_uid,
+                0,
+                bound_ty,
+                fallback_span,
+            ));
+        };
+        let pos_ty = Type::Union(pos_uid, Box::new([]));
+        let pos = if let ExprKind::FromEnd(offset) = &expr.kind {
+            let off = self.window_i64_bound(offset)?;
+            Self::construct_union_payload(pos_uid, 1, pos_ty, off, expr.span)
+        } else {
+            let val = self.window_i64_bound(expr)?;
+            Self::construct_union_payload(pos_uid, 0, pos_ty, val, expr.span)
+        };
+        let case_id = if excluded { 2 } else { 1 };
+        Ok(Self::construct_union_payload(
+            bound_uid, case_id, bound_ty, pos, expr.span,
+        ))
+    }
+
+    fn component_to_sel(
+        &mut self,
+        component: &crate::syntax::IndexComponent,
+        pos_uid: usize,
+        bound_uid: usize,
+        sel_uid: usize,
+        fallback_span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        match component {
+            crate::syntax::IndexComponent::Whole(span) => {
+                Ok(Self::construct_union_unit(sel_uid, 2, sel_ty, *span))
+            }
+            crate::syntax::IndexComponent::Expr(expr) => {
+                if let ExprKind::FromEnd(offset) = &expr.kind {
+                    self.negative_from_end_warning(offset);
+                    let off = self.window_i64_bound(offset)?;
+                    if off.ty.contains_error() {
+                        return Ok(TypedExpr::error(expr.span));
+                    }
+                    let pos_ty = Type::Union(pos_uid, Box::new([]));
+                    let pos = Self::construct_union_payload(pos_uid, 1, pos_ty, off, expr.span);
+                    return Ok(Self::construct_union_payload(
+                        sel_uid, 0, sel_ty, pos, expr.span,
+                    ));
+                }
+                let is_int_lit = matches!(&expr.kind, ExprKind::Integer(_, None))
+                    || matches!(
+                        &expr.kind,
+                        ExprKind::Unary(UnaryOp::Negate, inner)
+                            if matches!(inner.kind, ExprKind::Integer(_, None))
+                    );
+                let hint = is_int_lit.then_some(Type::I64);
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok(TypedExpr::error(expr.span));
+                }
+                self.expr_to_sel_item(expr, typed, pos_uid, sel_uid)
+            }
+            crate::syntax::IndexComponent::Range(range) => {
+                self.negative_bound_warnings(range);
+                let span = range
+                    .start
+                    .as_ref()
+                    .map(|s| s.span)
+                    .or_else(|| range.step.as_ref().map(|s| s.span))
+                    .or_else(|| range.end.as_ref().map(|e| e.span))
+                    .unwrap_or(fallback_span);
+                let start_bound = self.range_bound_to_slice_bound(
+                    range.start.as_deref(),
+                    range.ends.start_open,
+                    pos_uid,
+                    bound_uid,
+                    span,
+                )?;
+                let step_expr = match range.step.as_deref() {
+                    Some(step) => Some(self.window_i64_bound(step)?),
+                    None => None,
+                };
+                let end_bound = self.range_bound_to_slice_bound(
+                    range.end.as_deref(),
+                    !range.ends.end_closed,
+                    pos_uid,
+                    bound_uid,
+                    span,
+                )?;
+                if start_bound.ty.contains_error()
+                    || end_bound.ty.contains_error()
+                    || step_expr.as_ref().is_some_and(|s| s.ty.contains_error())
+                {
+                    return Ok(TypedExpr::error(span));
+                }
+                let bound_ty = Type::Union(bound_uid, Box::new([]));
+                let payload_ty = Type::Tuple(vec![bound_ty.clone(), bound_ty.clone(), Type::I64]);
+                // NC18 §5: evaluate start, then step, then end when both `step` and `end` exist,
+                // while `Span` stores `(start_bound, end_bound, step)`.
+                if range.end.is_some()
+                    && let Some(step_val) = step_expr
+                {
+                    let mut bindings = Vec::new();
+                    let start_ref = if range.start.is_some() {
+                        let s_span = start_bound.span;
+                        let s_local =
+                            self.index_generated_local("$sel.start.", bound_ty.clone(), s_span);
+                        let s_id = s_local.id;
+                        bindings.push((s_local, start_bound));
+                        TypedExpr {
+                            kind: TypedExprKind::Local(s_id),
+                            ty: bound_ty.clone(),
+                            span: s_span,
+                        }
+                    } else {
+                        start_bound
+                    };
+                    let st_span = step_val.span;
+                    let st_local = self.index_generated_local("$sel.step.", Type::I64, st_span);
+                    let st_id = st_local.id;
+                    bindings.push((st_local, step_val));
+                    let e_span = end_bound.span;
+                    let e_local = self.index_generated_local("$sel.end.", bound_ty.clone(), e_span);
+                    let e_id = e_local.id;
+                    bindings.push((e_local, end_bound));
+                    let payload = TypedExpr {
+                        kind: TypedExprKind::Tuple(vec![
+                            start_ref,
+                            TypedExpr {
+                                kind: TypedExprKind::Local(e_id),
+                                ty: bound_ty,
+                                span: e_span,
+                            },
+                            TypedExpr {
+                                kind: TypedExprKind::Local(st_id),
+                                ty: Type::I64,
+                                span: st_span,
+                            },
+                        ]),
+                        ty: payload_ty,
+                        span,
+                    };
+                    let constructed =
+                        Self::construct_union_payload(sel_uid, 1, sel_ty.clone(), payload, span);
+                    return Ok(TypedExpr {
+                        kind: TypedExprKind::Block {
+                            bindings,
+                            result: Box::new(constructed),
+                        },
+                        ty: sel_ty,
+                        span,
+                    });
+                }
+                let step_val = step_expr.unwrap_or(TypedExpr {
+                    kind: TypedExprKind::Int(1),
+                    ty: Type::I64,
+                    span,
+                });
+                let payload = TypedExpr {
+                    kind: TypedExprKind::Tuple(vec![start_bound, end_bound, step_val]),
+                    ty: payload_ty,
+                    span,
+                };
+                Ok(Self::construct_union_payload(
+                    sel_uid, 1, sel_ty, payload, span,
+                ))
+            }
+        }
+    }
+
+    fn wrap_window_sels_opt(
+        &mut self,
+        mut sels: Vec<TypedExpr>,
+        self_ty: &Type,
+        span: Span,
+    ) -> Option<TypedExpr> {
+        let sel_uid = self.std_slice_union("Sel")?;
+        let sel_ty = Type::Union(sel_uid, Box::new([]));
+        let arr_sel_ty = Type::Array(Box::new(sel_ty.clone()));
+        if self.classes.has_exact_index_key(
+            self_ty,
+            false,
+            &arr_sel_ty,
+            &mut self.inference,
+            &self.types,
+        ) {
+            return Some(TypedExpr {
+                kind: TypedExprKind::Array(sels),
+                ty: arr_sel_ty,
+                span,
+            });
+        }
+        let arity = self.classes.min_sel_tuple_arity(
+            self_ty,
+            sels.len(),
+            &sel_ty,
+            &mut self.inference,
+            &self.types,
+        )?;
+        while sels.len() < arity {
+            sels.push(Self::construct_union_unit(sel_uid, 2, sel_ty.clone(), span));
+        }
+        if arity == 1 {
+            sels.pop()
+        } else {
+            Some(TypedExpr {
+                kind: TypedExprKind::Tuple(sels),
+                ty: Type::Tuple(vec![sel_ty; arity]),
+                span,
+            })
+        }
+    }
+
+    fn finish_window_sels(
+        &mut self,
+        span: Span,
+        value: TypedExpr,
+        sels: Vec<TypedExpr>,
+        cover: IndexBorrowCover,
+        inner_was_view: bool,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        if sels.iter().any(|s| s.ty.contains_error()) {
+            return Ok((TypedExpr::error(span), true));
+        }
+        let self_ty = self.inference.resolve(&value.ty);
+        let Some(key) = self.wrap_window_sels_opt(sels, &self_ty, span) else {
+            if self
+                .classes
+                .has_index_instances(&self_ty, false, &mut self.inference, &self.types)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::NoInstance,
+                    format!(
+                        "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                        self_ty.display_with(self.names)
+                    ),
+                    span,
+                ));
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::IndexNonIndexable,
+                "indexing requires an array, list, string, utf8string, or a type implementing Index",
+                value.span,
+            ));
+        };
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            false,
+            expected_after,
+        )
+    }
+
+    fn validate_window_components_without_slice_module(
+        &mut self,
+        keys: &[crate::syntax::IndexComponent],
+    ) -> Result<(), Diagnostic> {
+        for comp in keys {
+            match comp {
+                crate::syntax::IndexComponent::Whole(_) => {}
+                crate::syntax::IndexComponent::Expr(expr) => {
+                    if let ExprKind::FromEnd(offset) = &expr.kind {
+                        self.negative_from_end_warning(offset);
+                        self.window_i64_bound(offset)?;
+                    } else {
+                        self.negative_window_index_warning(expr);
+                        let typed = self.expression(expr, None)?;
+                        if !typed.ty.contains_error()
+                            && self
+                                .inference
+                                .unify(&typed.ty, &Type::I64, &self.types, expr.span)
+                                .is_err()
+                        {
+                            let resolved = self.inference.resolve(&typed.ty);
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::IndexComponentType,
+                                format!(
+                                    "expected an i64 position or a Slice.Sel, found {}",
+                                    resolved.display_with(self.names)
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                }
+                crate::syntax::IndexComponent::Range(range) => {
+                    self.negative_bound_warnings(range);
+                    for bound in [
+                        range.start.as_deref(),
+                        range.step.as_deref(),
+                        range.end.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        if let ExprKind::FromEnd(offset) = &bound.kind {
+                            self.window_i64_bound(offset)?;
+                        } else {
+                            self.window_i64_bound(bound)?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn multi_index(
+        &mut self,
+        span: Span,
+        base_expr: &Expr,
+        keys: &[crate::syntax::IndexComponent],
+        cover: IndexBorrowCover,
+        built_in_expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let (raw_base, inner_was_view) = self.eval_index_base(base_expr, cover)?;
+        let value = Self::autoderef(raw_base);
+        if value.ty.contains_error() {
+            return Ok((TypedExpr::error(span), true));
+        }
+        let self_ty = self.inference.resolve(&value.ty);
+        if Self::is_builtin_six_indexable(&self_ty) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinIndexOneComponent,
+                "arrays, lists, Vec, and strings take one index; write 'xs[i][j]' for an element of a nested array",
+                span,
+            ));
+        }
+
+        let has_syntax_window = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Range(_) | crate::syntax::IndexComponent::Whole(_)
+            )
+        });
+        if has_syntax_window {
+            let (Some(pos_uid), Some(bound_uid), Some(sel_uid)) = (
+                self.std_slice_union("Pos"),
+                self.std_slice_union("Bound"),
+                self.std_slice_union("Sel"),
+            ) else {
+                self.validate_window_components_without_slice_module(keys)?;
+                if self.classes.has_index_instances(
+                    &self_ty,
+                    false,
+                    &mut self.inference,
+                    &self.types,
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::NoInstance,
+                        format!(
+                            "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                            self_ty.display_with(self.names)
+                        ),
+                        span,
+                    ));
+                }
+                return Err(Diagnostic::of(
+                    DiagnosticKind::IndexNonIndexable,
+                    "indexing requires an array, list, string, utf8string, or a type implementing Index",
+                    value.span,
+                ));
+            };
+            let mut sels = Vec::with_capacity(keys.len());
+            for comp in keys {
+                sels.push(self.component_to_sel(comp, pos_uid, bound_uid, sel_uid, span)?);
+            }
+            return self.finish_window_sels(
+                span,
+                value,
+                sels,
+                cover,
+                inner_was_view,
+                built_in_expected,
+            );
+        }
+
+        let has_from_end = keys.iter().any(|k| {
+            matches!(
+                k,
+                crate::syntax::IndexComponent::Expr(Expr {
+                    kind: ExprKind::FromEnd(_),
+                    ..
+                })
+            )
+        });
+        let hints = if has_from_end {
+            vec![None; keys.len()]
+        } else {
+            self.component_hints(&self_ty, false, keys.len())
+        };
+        enum PreChecked<'a> {
+            FromEnd { offset: TypedExpr, span: Span },
+            Expr { raw: &'a Expr, typed: TypedExpr },
+        }
+        let mut pre = Vec::with_capacity(keys.len());
+        let mut any_sel = false;
+        for (comp, hint) in keys.iter().zip(hints) {
+            let crate::syntax::IndexComponent::Expr(expr) = comp else {
+                unreachable!("syntax window handled above");
+            };
+            if let ExprKind::FromEnd(offset) = &expr.kind {
+                self.negative_from_end_warning(offset);
+                let off = self.window_i64_bound(offset)?;
+                if off.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                pre.push(PreChecked::FromEnd {
+                    offset: off,
+                    span: expr.span,
+                });
+            } else {
+                let typed = self.expression(expr, hint.as_ref())?;
+                if typed.ty.contains_error() {
+                    return Ok((TypedExpr::error(span), true));
+                }
+                self.check_not_slice_axis(&typed.ty, expr.span)?;
+                if self.is_std_slice_sel(&typed.ty) {
+                    any_sel = true;
+                }
+                pre.push(PreChecked::Expr { raw: expr, typed });
+            }
+        }
+
+        if any_sel {
+            let (Some(pos_uid), Some(sel_uid)) =
+                (self.std_slice_union("Pos"), self.std_slice_union("Sel"))
+            else {
+                unreachable!("Slice.Sel value present implies Slice unions exist");
+            };
+            let pos_ty = Type::Union(pos_uid, Box::new([]));
+            let sel_ty = Type::Union(sel_uid, Box::new([]));
+            let mut sels = Vec::with_capacity(pre.len());
+            for item in pre {
+                match item {
+                    PreChecked::FromEnd {
+                        offset,
+                        span: comp_span,
+                    } => {
+                        let pos = Self::construct_union_payload(
+                            pos_uid,
+                            1,
+                            pos_ty.clone(),
+                            offset,
+                            comp_span,
+                        );
+                        sels.push(Self::construct_union_payload(
+                            sel_uid,
+                            0,
+                            sel_ty.clone(),
+                            pos,
+                            comp_span,
+                        ));
+                    }
+                    PreChecked::Expr { raw, typed } => {
+                        sels.push(self.expr_to_sel_item(raw, typed, pos_uid, sel_uid)?);
+                    }
+                }
+            }
+            return self.finish_window_sels(
+                span,
+                value,
+                sels,
+                cover,
+                inner_was_view,
+                built_in_expected,
+            );
+        }
+
+        let items: Vec<(TypedExpr, bool)> = pre
+            .into_iter()
+            .map(|item| match item {
+                PreChecked::FromEnd {
+                    mut offset,
+                    span: comp_span,
+                } => {
+                    offset.span = comp_span;
+                    (offset, true)
+                }
+                PreChecked::Expr { typed, .. } => (typed, false),
+            })
+            .collect();
+        let key = self.build_element_or_pos_key(span, &self_ty, false, items)?;
+        let expected_after = match cover {
+            IndexBorrowCover::Uncovered => built_in_expected,
+            IndexBorrowCover::Direct { .. } | IndexBorrowCover::ChainInner => None,
+        };
+        self.index_access_typed(
+            span,
+            value,
+            key,
+            cover,
+            inner_was_view,
+            true,
+            expected_after,
+        )
+    }
+
     fn callback_local(&mut self, ty: Type, span: Span) -> Local {
         let id = self.next_local;
         self.next_local += 1;
@@ -15499,6 +17889,258 @@ impl<'a> Checker<'a> {
             span,
             provenance: Provenance::Generated,
         }
+    }
+
+    fn index_generated_local(&mut self, prefix: &str, ty: Type, span: Span) -> Local {
+        let id = self.next_local;
+        self.next_local += 1;
+        Local {
+            id,
+            ty,
+            name: format!("{prefix}{id}"),
+            mutable: false,
+            span,
+            provenance: Provenance::Generated,
+        }
+    }
+
+    fn is_simple_index_place(&self, expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) => self.is_simple_index_place(inner),
+            TypedExprKind::Dereference(inner) => self.is_immutable_ref_chain(inner),
+            _ => false,
+        }
+    }
+
+    fn is_immutable_ref_chain(&self, expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(id) => !self.mutable_locals.contains(id),
+            TypedExprKind::Field(inner, _) | TypedExprKind::Dereference(inner) => {
+                self.is_immutable_ref_chain(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_local_ref_chain(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) | TypedExprKind::Dereference(inner) => {
+                Self::is_local_ref_chain(inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_mut_target_simple_or_d9(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            TypedExprKind::Local(_) => true,
+            TypedExprKind::Field(inner, _) => Self::is_mut_target_simple_or_d9(inner),
+            TypedExprKind::Dereference(inner) => Self::is_local_ref_chain(inner),
+            _ => false,
+        }
+    }
+
+    fn hoist_index_read_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        if let TypedExprKind::Field(inner, field) = place.kind {
+            let hoisted = self.hoist_index_read_place(*inner, bindings);
+            return TypedExpr {
+                kind: TypedExprKind::Field(Box::new(hoisted), field),
+                ty: place.ty,
+                span: place.span,
+            };
+        }
+        if let TypedExprKind::Dereference(ref_expr) = place.kind {
+            if !ref_expr.is_place() {
+                let ref_ty = self.inference.resolve(&ref_expr.ty);
+                let ref_span = ref_expr.span;
+                let ref_local = self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                let ref_id = ref_local.id;
+                bindings.push((ref_local, *ref_expr));
+                return TypedExpr {
+                    kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                        kind: TypedExprKind::Local(ref_id),
+                        ty: ref_ty,
+                        span: ref_span,
+                    })),
+                    ty: place.ty,
+                    span: place.span,
+                };
+            }
+            let place = TypedExpr {
+                kind: TypedExprKind::Dereference(ref_expr),
+                ty: place.ty,
+                span: place.span,
+            };
+            return self.reborrow_index_place(place, bindings);
+        }
+        self.reborrow_index_place(place, bindings)
+    }
+
+    fn reborrow_index_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        let place_ty = self.inference.resolve(&place.ty);
+        let place_span = place.span;
+        let ptr_ty = Type::Reference(Box::new(place_ty.clone()), false);
+        let ptr_local = self.index_generated_local("$index.place.", ptr_ty.clone(), place_span);
+        let ptr_id = ptr_local.id;
+        bindings.push((
+            ptr_local,
+            TypedExpr {
+                kind: TypedExprKind::Borrow(Box::new(place), false),
+                ty: ptr_ty.clone(),
+                span: place_span,
+            },
+        ));
+        TypedExpr {
+            kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                kind: TypedExprKind::Local(ptr_id),
+                ty: ptr_ty,
+                span: place_span,
+            })),
+            ty: place_ty,
+            span: place_span,
+        }
+    }
+
+    fn hoist_index_mut_place(
+        &mut self,
+        place: TypedExpr,
+        bindings: &mut Vec<(Local, TypedExpr)>,
+    ) -> TypedExpr {
+        match place.kind {
+            TypedExprKind::Field(inner, field) => {
+                let hoisted = self.hoist_index_mut_place(*inner, bindings);
+                TypedExpr {
+                    kind: TypedExprKind::Field(Box::new(hoisted), field),
+                    ty: place.ty,
+                    span: place.span,
+                }
+            }
+            TypedExprKind::Dereference(ref_expr) => {
+                if Self::is_local_ref_chain(&ref_expr) {
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(ref_expr),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                } else if !ref_expr.is_place() {
+                    let ref_ty = self.inference.resolve(&ref_expr.ty);
+                    let ref_span = ref_expr.span;
+                    let ref_local =
+                        self.index_generated_local("$index.ref.", ref_ty.clone(), ref_span);
+                    let ref_id = ref_local.id;
+                    bindings.push((ref_local, *ref_expr));
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(Box::new(TypedExpr {
+                            kind: TypedExprKind::Local(ref_id),
+                            ty: ref_ty,
+                            span: ref_span,
+                        })),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                } else {
+                    let hoisted_ref = self.hoist_index_mut_place(*ref_expr, bindings);
+                    TypedExpr {
+                        kind: TypedExprKind::Dereference(Box::new(hoisted_ref)),
+                        ty: place.ty,
+                        span: place.span,
+                    }
+                }
+            }
+            other => TypedExpr {
+                kind: other,
+                ty: place.ty,
+                span: place.span,
+            },
+        }
+    }
+
+    fn is_side_effect_free_index_expr(expr: &TypedExpr) -> bool {
+        fn is_local_field_path(expr: &TypedExpr) -> bool {
+            match &expr.kind {
+                TypedExprKind::Local(_) => true,
+                TypedExprKind::Field(inner, _) => is_local_field_path(inner),
+                _ => false,
+            }
+        }
+        if expr.is_index_const() || is_local_field_path(expr) {
+            return true;
+        }
+        match &expr.kind {
+            TypedExprKind::Tuple(items) | TypedExprKind::Array(items) => {
+                items.iter().all(Self::is_side_effect_free_index_expr)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_rhs_key_order_unobservable(&self, rhs: &TypedExpr, key: &TypedExpr) -> bool {
+        if key.is_index_const() || rhs.is_index_const() {
+            return true;
+        }
+        if !Self::is_side_effect_free_index_expr(rhs) || !Self::is_side_effect_free_index_expr(key)
+        {
+            return false;
+        }
+        fn root_local(expr: &TypedExpr) -> Option<usize> {
+            match &expr.kind {
+                TypedExprKind::Local(id) => Some(*id),
+                TypedExprKind::Field(inner, _) => root_local(inner),
+                _ => None,
+            }
+        }
+        fn collect_reads(expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+            if let Some(id) = root_local(expr) {
+                out.insert(id);
+                return;
+            }
+            if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &expr.kind {
+                for item in items {
+                    collect_reads(item, out);
+                }
+            }
+        }
+        fn collect_moved_by_value(
+            checker: &Checker<'_>,
+            expr: &TypedExpr,
+            out: &mut BTreeSet<usize>,
+        ) {
+            if let Some(id) = root_local(expr) {
+                let ty = checker.inference.resolve(&expr.ty);
+                if !ty.is_copy(&checker.types) && !checker.inference.is_numeric_literal(&ty) {
+                    out.insert(id);
+                }
+                return;
+            }
+            if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &expr.kind {
+                for item in items {
+                    collect_moved_by_value(checker, item, out);
+                }
+            }
+        }
+        let mut rhs_reads = BTreeSet::new();
+        let mut key_reads = BTreeSet::new();
+        let mut rhs_moved = BTreeSet::new();
+        let mut key_moved = BTreeSet::new();
+        collect_reads(rhs, &mut rhs_reads);
+        collect_reads(key, &mut key_reads);
+        collect_moved_by_value(self, rhs, &mut rhs_moved);
+        if let TypedExprKind::Tuple(items) | TypedExprKind::Array(items) = &key.kind {
+            for item in items {
+                collect_moved_by_value(self, item, &mut key_moved);
+            }
+        }
+        rhs_moved.is_disjoint(&key_reads) && key_moved.is_disjoint(&rhs_reads)
     }
 
     fn callable_effect(
@@ -15708,6 +18350,1040 @@ impl<'a> Checker<'a> {
     /// Types `$"a{x}b"`: every hole is borrowed, never consumed, and shown
     /// by `Display.display`; the pieces are joined into one string at run time.
     #[inline(never)]
+    fn unary_expression_today_with_soft(
+        &mut self,
+        operator: UnaryOp,
+        operand: &Expr,
+        expected: Option<&Type>,
+        outer_soft: Option<usize>,
+        span: Span,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let neg_oei = (operator == UnaryOp::Negate)
+            .then(|| self.classes.class_id("Neg").unwrap())
+            .filter(|&cid| self.classes.has_oei(cid));
+        if let Some(cid) = neg_oei {
+            self.soft_hint_class = Some(cid);
+        }
+        let operand = self.expression(operand, expected)?;
+        if operator == UnaryOp::Not {
+            self.same(&operand.ty, &Type::Bool, span)?;
+        } else if let Some(cid) = neg_oei
+            && !operand.ty.contains_error()
+        {
+            let op_ty = self.inference.resolve(&operand.ty);
+            if !self
+                .classes
+                .has_same_type_operator_head(cid, &op_ty, &self.types)
+                && polymorph::Classes::is_named_non_builtin_type(&op_ty, self.names)
+                && let Some(resolved) = self.classes.resolve_operator(
+                    cid,
+                    "-",
+                    &op_ty,
+                    None,
+                    &mut self.inference,
+                    &self.constraints,
+                    &self.types,
+                    self.names,
+                    span,
+                )?
+            {
+                let (call_kind, out_ty) =
+                    self.build_oei_call(resolved, vec![(operand, false)], span)?;
+                return self
+                    .finish_expression_with_soft(call_kind, out_ty, expected, outer_soft, span);
+            }
+            self.require("Neg", operand.ty.clone(), span)?;
+        } else {
+            self.require(
+                if operator == UnaryOp::Negate {
+                    "Neg"
+                } else {
+                    "Bits"
+                },
+                operand.ty.clone(),
+                span,
+            )?;
+        }
+        let ty = operand.ty.clone();
+        let kind = TypedExprKind::Unary(operator, Box::new(operand));
+        let (kind, ty) = if operator == UnaryOp::Negate && self.checked_arithmetic {
+            Self::checked_kind(kind, &ty, span)
+        } else {
+            (kind, ty)
+        };
+        self.finish_expression_with_soft(kind, ty, expected, outer_soft, span)
+    }
+
+    /// A40: `Some(T)` when `ty` resolves to `ref T` or `ref mut T` and the head of `T` is known
+    /// (neither a type variable nor an unresolved inference variable / open application). Strips
+    /// at most one reference level.
+    pub(crate) fn reference_operand(&self, ty: &Type) -> Option<Type> {
+        let resolved = self.inference.resolve(ty);
+        let Type::Reference(inner, _) = resolved else {
+            return None;
+        };
+        let inner = self.inference.resolve(&inner);
+        if matches!(
+            inner,
+            Type::Variable(_) | Type::Infer(_) | Type::Application(..) | Type::Partial(_)
+        ) {
+            return None;
+        }
+        Some(inner)
+    }
+
+    fn begin_watermark(&mut self) -> CheckerWatermark {
+        CheckerWatermark {
+            inference: self.inference.begin_watermark(),
+            constraints_len: self.constraints.len(),
+            members_len: self.members.len(),
+            scopes_len: self.scopes.len(),
+            old_locals_len: self.old_locals.len(),
+            open_locals_len: self.open_locals.len(),
+            next_local: self.next_local,
+            normal_loop_depth: self.normal_loop_depth,
+            computation_depth: self.computation_depth,
+            undecided_borrows_len: self.undecided_borrows.len(),
+            symbolic_borrows_len: self.symbolic_borrows.len(),
+            reference_borrows_len: self.reference_borrows.len(),
+            format_specs_len: self.format_specs.len(),
+            use_bindings_len: self.use_bindings.len(),
+            piped: self.piped.clone(),
+            operand_len: self.operand.len(),
+            integer_literals_len: self.integer_literals.len(),
+            families_len: self.families.len(),
+            coverage_len: self.coverage.len(),
+            shadowing_warnings_len: self.shadowing_warnings.len(),
+            contract_warnings_len: self.contract_warnings.len(),
+            range_warnings_len: self.range_warnings.len(),
+            poisoned: self.poisoned,
+            recovering: self.recovering,
+            recovered_len: self.recovered.len(),
+            indexing: self.indexing,
+            name_uses_len: self.name_uses.len(),
+            checked_arithmetic: self.checked_arithmetic,
+            dyn_callee: self.dyn_callee,
+            holes_searched: self.holes_searched,
+            call_constraints_len: self.call_constraints.len(),
+            soft_hint_class: self.soft_hint_class,
+        }
+    }
+
+    fn commit_watermark(&mut self, mark: CheckerWatermark) {
+        self.inference.commit_watermark(mark.inference);
+    }
+
+    fn rollback_watermark(&mut self, mark: CheckerWatermark) {
+        self.inference.rollback_watermark(mark.inference);
+        self.constraints.truncate(mark.constraints_len);
+        self.members.truncate(mark.members_len);
+        self.scopes.truncate(mark.scopes_len);
+        self.old_locals.truncate(mark.old_locals_len);
+        self.open_locals.truncate(mark.open_locals_len);
+        if self.next_local > mark.next_local {
+            let limit = mark.next_local;
+            for scope in &mut self.scopes {
+                scope.retain(|_, local| local.id < limit);
+            }
+            self.borrowed.retain(|&id| id < limit);
+            self.mutable_locals.retain(|&id| id < limit);
+            self.default_reads.retain(|&id, _| id < limit);
+            self.read_value_parameters.retain(|&id| id < limit);
+            self.next_local = limit;
+        }
+        self.normal_loop_depth = mark.normal_loop_depth;
+        self.computation_depth = mark.computation_depth;
+        self.undecided_borrows.truncate(mark.undecided_borrows_len);
+        self.symbolic_borrows.truncate(mark.symbolic_borrows_len);
+        self.reference_borrows.truncate(mark.reference_borrows_len);
+        self.format_specs.truncate(mark.format_specs_len);
+        self.use_bindings.truncate(mark.use_bindings_len);
+        self.piped = mark.piped;
+        self.operand.truncate(mark.operand_len);
+        self.integer_literals.truncate(mark.integer_literals_len);
+        self.families.truncate(mark.families_len);
+        self.coverage.truncate(mark.coverage_len);
+        self.shadowing_warnings
+            .truncate(mark.shadowing_warnings_len);
+        self.contract_warnings.truncate(mark.contract_warnings_len);
+        self.range_warnings.truncate(mark.range_warnings_len);
+        self.poisoned = mark.poisoned;
+        self.recovering = mark.recovering;
+        self.recovered.truncate(mark.recovered_len);
+        self.indexing = mark.indexing;
+        self.name_uses.truncate(mark.name_uses_len);
+        self.checked_arithmetic = mark.checked_arithmetic;
+        self.dyn_callee = mark.dyn_callee;
+        self.holes_searched = mark.holes_searched;
+        self.call_constraints.truncate(mark.call_constraints_len);
+        self.soft_hint_class = mark.soft_hint_class;
+    }
+
+    fn has_dead_ref_constraint(&self, from: usize) -> bool {
+        self.constraints[from..].iter().any(|c| {
+            let resolved = self.inference.resolve(&c.ty);
+            self.reference_operand(&resolved).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(c.class, &resolved, &self.types)
+        })
+    }
+
+    fn has_unsatisfied_trial_constraint(&self, from: usize) -> bool {
+        self.constraints[from..].iter().any(|c| {
+            let resolved = self.inference.resolve(&c.ty);
+            let resolved = self
+                .inference
+                .numeric_default(&resolved)
+                .unwrap_or(resolved);
+            if matches!(resolved, Type::Infer(_) | Type::Variable(_) | Type::Error) {
+                return false;
+            }
+            !self
+                .classes
+                .has_direct_candidate(c.class, &resolved, &self.types)
+        })
+    }
+
+    fn try_operator_with_a40_soft(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        is_binary: bool,
+        outer_soft: Option<usize>,
+    ) -> Result<TypedExpr, Diagnostic> {
+        let mark = self.begin_watermark();
+        self.in_a40_tree = true;
+        let today_res = if is_binary {
+            self.binary_expression_today_with_soft(expression, expected, outer_soft)
+        } else {
+            let ExprKind::Unary(op, operand) = &expression.kind else {
+                unreachable!()
+            };
+            self.unary_expression_today_with_soft(
+                *op,
+                operand,
+                expected,
+                outer_soft,
+                expression.span,
+            )
+        };
+        self.in_a40_tree = false;
+
+        let failed_e1003_e1005 = match &today_res {
+            Err(e) => matches!(e.code, "E1003" | "E1005"),
+            Ok(_) => {
+                self.recovered.len() > mark.recovered_len
+                    && self.recovered[mark.recovered_len..]
+                        .iter()
+                        .any(|e| matches!(e.code, "E1003" | "E1005"))
+            }
+        };
+        let dead_ref = today_res.is_ok()
+            && self.recovered.len() == mark.recovered_len
+            && self.has_dead_ref_constraint(mark.constraints_len);
+        if !failed_e1003_e1005 && !dead_ref {
+            self.commit_watermark(mark);
+            return today_res;
+        }
+
+        self.rollback_watermark(mark);
+        let trial_mark = self.begin_watermark();
+        self.in_a40_trial = true;
+        self.recovering = false;
+        self.inference.set_quiet(true);
+        let a40_res = if is_binary {
+            self.a40_binary_inner(expression, expected, false, outer_soft)
+                .map(|(e, _)| e)
+        } else {
+            self.a40_unary_inner(expression, expected, false, outer_soft)
+                .map(|(e, _)| e)
+        };
+        self.in_a40_trial = false;
+
+        if let Ok(a40_expr) = a40_res
+            && self.recovered.len() == trial_mark.recovered_len
+            && !self.has_unsatisfied_trial_constraint(trial_mark.constraints_len)
+        {
+            self.commit_watermark(trial_mark);
+            return Ok(a40_expr);
+        }
+
+        self.rollback_watermark(trial_mark);
+        self.in_a40_tree = true;
+        let replay = if is_binary {
+            self.binary_expression_today_with_soft(expression, expected, outer_soft)
+        } else {
+            let ExprKind::Unary(op, operand) = &expression.kind else {
+                unreachable!()
+            };
+            self.unary_expression_today_with_soft(
+                *op,
+                operand,
+                expected,
+                outer_soft,
+                expression.span,
+            )
+        };
+        self.in_a40_tree = false;
+        replay
+    }
+
+    fn constraints_mention(&self, root: usize) -> bool {
+        self.constraints
+            .iter()
+            .any(|c| self.inference.mentions(&c.ty, root))
+            || self
+                .members
+                .iter()
+                .any(|m| self.inference.mentions(&m.receiver, root))
+    }
+
+    fn is_isolated_open_expected(&mut self, expected: Option<&Type>) -> bool {
+        let Some(exp) = expected else {
+            return false;
+        };
+        let resolved = self.inference.resolve(exp);
+        let Type::Infer(root) = resolved else {
+            return false;
+        };
+        !self.inference.is_numeric_literal(&resolved)
+            && !self.locals_mention(root)
+            && !self.constraints_mention(root)
+    }
+
+    fn is_a40_nested_operator(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Binary(op, _, _) => *op != BinaryOp::Pipe,
+            ExprKind::Unary(UnaryOp::Negate, inner) => {
+                !matches!(inner.kind, ExprKind::Integer(..) | ExprKind::BigInt(_))
+            }
+            ExprKind::Unary(UnaryOp::Not | UnaryOp::BitNot, _) => true,
+            _ => false,
+        }
+    }
+
+    fn is_a40_literal(expr: &Expr) -> bool {
+        if Self::untyped_number(expr) {
+            return true;
+        }
+        match &expr.kind {
+            ExprKind::Integer(..)
+            | ExprKind::Float(..)
+            | ExprKind::BigInt(_)
+            | ExprKind::String(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_)
+            | ExprKind::Utf8Char(_) => true,
+            ExprKind::Unary(UnaryOp::Negate, inner) => {
+                matches!(inner.kind, ExprKind::Integer(..) | ExprKind::BigInt(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// Checks one operand in the A40 trial. Returns `(typed_operand, self_stripped, sibling_stripped)`.
+    fn a40_check_operand(
+        &mut self,
+        expr: &Expr,
+        hint: Option<&Type>,
+        hint_is_sibling: bool,
+        soft_class: Option<usize>,
+    ) -> Result<(TypedExpr, bool, bool), Diagnostic> {
+        if Self::is_a40_nested_operator(expr) {
+            let (typed, sib_stripped) = match &expr.kind {
+                ExprKind::Binary(..) => {
+                    self.a40_binary_inner(expr, hint, hint_is_sibling, soft_class)?
+                }
+                ExprKind::Unary(..) => {
+                    self.a40_unary_inner(expr, hint, hint_is_sibling, soft_class)?
+                }
+                _ => unreachable!(),
+            };
+            return Ok((typed, false, sib_stripped));
+        }
+
+        if Self::is_a40_literal(expr) {
+            if let Some(h) = hint {
+                let h_res = self.inference.resolve(h);
+                if (hint_is_sibling || Self::untyped_number(expr))
+                    && let Some(stripped_h) = self.reference_operand(&h_res)
+                    && hint_is_sibling
+                {
+                    self.soft_hint_class = soft_class;
+                    let typed = self.expression(expr, Some(&stripped_h))?;
+                    return Ok((typed, false, true));
+                }
+            }
+            self.soft_hint_class = soft_class;
+            let typed = self.expression(expr, hint)?;
+            return Ok((typed, false, false));
+        }
+
+        if matches!(
+            expr.kind,
+            ExprKind::If { .. }
+                | ExprKind::Match { .. }
+                | ExprKind::Try(_)
+                | ExprKind::Block { .. }
+                | ExprKind::Lambda(..)
+        ) {
+            self.soft_hint_class = soft_class;
+            let typed = self.expression(expr, hint)?;
+            return Ok((typed, false, false));
+        }
+
+        // Value / place / call expression: check without hint first (or for calls, try with hint
+        // first if not an isolated open var / ref sibling, falling back to `None` on mismatch).
+        let typed = if matches!(expr.kind, ExprKind::Call(..))
+            && let Some(h) = hint
+            && !(hint_is_sibling && self.reference_operand(h).is_some())
+        {
+            let sub = self.begin_watermark();
+            self.soft_hint_class = soft_class;
+            match self.expression(expr, Some(h)) {
+                Ok(ok) if !self.has_dead_ref_constraint(sub.constraints_len) => {
+                    self.commit_watermark(sub);
+                    return Ok((ok, false, false));
+                }
+                _ => {
+                    self.rollback_watermark(sub);
+                    self.expression(expr, None)?
+                }
+            }
+        } else {
+            self.expression(expr, None)?
+        };
+
+        let Some(h) = hint else {
+            return Ok((typed, false, false));
+        };
+        let actual = self.inference.resolve(&typed.ty);
+        let h_res = self.inference.resolve(h);
+
+        // Defer isolated open expected type on reference operands (`Some (a + b)`).
+        if !hint_is_sibling
+            && self.reference_operand(&actual).is_some()
+            && self.is_isolated_open_expected(Some(&h_res))
+        {
+            return Ok((typed, false, false));
+        }
+
+        if let Some(cid) = soft_class {
+            let eff_act = self
+                .reference_operand(&actual)
+                .unwrap_or_else(|| actual.clone());
+            let eff_exp = self
+                .reference_operand(&h_res)
+                .unwrap_or_else(|| h_res.clone());
+            if self.is_soft_operator_hint(cid, &eff_act, &eff_exp)
+                && !self.unifies_respecting_constraints(&actual, &h_res)
+                && self
+                    .reference_operand(&actual)
+                    .is_none_or(|sa| !self.unifies_respecting_constraints(&sa, &h_res))
+                && !(hint_is_sibling
+                    && self.reference_operand(&h_res).is_some_and(|sh| {
+                        self.unifies_respecting_constraints(&actual, &sh)
+                            || self
+                                .reference_operand(&actual)
+                                .is_some_and(|sa| self.unifies_respecting_constraints(&sa, &sh))
+                    }))
+            {
+                return Ok((typed, false, false));
+            }
+        }
+
+        if self.unifies_respecting_constraints(&actual, &h_res) {
+            self.same(&actual, &h_res, typed.span)?;
+            return Ok((typed, false, false));
+        }
+
+        // (1-a): strip `actual` (`ref T` -> `T`) against `h_res`.
+        if let Some(sa) = self.reference_operand(&actual)
+            && self.unifies_respecting_constraints(&sa, &h_res)
+        {
+            self.same(&sa, &h_res, typed.span)?;
+            return Ok((typed, true, false));
+        }
+
+        // (1-b): strip sibling `h_res` (`ref S` -> `S`) against `actual` or stripped `actual`.
+        if hint_is_sibling && let Some(sh) = self.reference_operand(&h_res) {
+            if self.unifies_respecting_constraints(&actual, &sh) {
+                self.same(&actual, &sh, typed.span)?;
+                return Ok((typed, false, true));
+            }
+            if let Some(sa) = self.reference_operand(&actual)
+                && self.unifies_respecting_constraints(&sa, &sh)
+            {
+                self.same(&sa, &sh, typed.span)?;
+                return Ok((typed, true, true));
+            }
+        }
+
+        self.same(&actual, &h_res, typed.span)?;
+        Ok((typed, false, false))
+    }
+
+    fn wrap_stripped_operand(operand: TypedExpr, target_ty: Type, direct_deref: bool) -> TypedExpr {
+        let span = operand.span;
+        TypedExpr {
+            kind: if direct_deref {
+                TypedExprKind::Dereference(Box::new(operand))
+            } else {
+                TypedExprKind::ReferenceOperand(Box::new(operand))
+            },
+            ty: target_ty,
+            span,
+        }
+    }
+
+    fn a40_binary_inner(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        expected_is_sibling: bool,
+        outer_soft: Option<usize>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let ExprKind::Binary(operator, left_ast, right_ast) = &expression.kind else {
+            unreachable!()
+        };
+        let op = *operator;
+        let oei_class = Self::is_oei_binary_op(op)
+            .then(|| self.classes.class_id(polymorph::binary_class(op)).unwrap())
+            .filter(|&cid| self.classes.has_oei(cid));
+        let resolved_expected = expected.map(|ty| self.inference.resolve(ty));
+        let mut parent_sibling_stripped = false;
+        let adjusted_expected = if expected_is_sibling
+            && let Some(ref exp) = resolved_expected
+            && let Some(stripped_exp) = self.reference_operand(exp)
+        {
+            let keep_ref = matches!(
+                op,
+                BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::ShiftLeft
+                    | BinaryOp::ShiftRight
+                    | BinaryOp::ShiftRightUnsigned
+            ) && self.classes.has_direct_candidate(
+                self.classes.class_id("Bits").unwrap(),
+                exp,
+                &self.types,
+            );
+            if !keep_ref {
+                parent_sibling_stripped = true;
+                Some(stripped_exp)
+            } else {
+                Some(exp.clone())
+            }
+        } else {
+            resolved_expected.clone()
+        };
+
+        let pass_down = !matches!(
+            op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual
+                | BinaryOp::And
+                | BinaryOp::Or
+        );
+        let isolated_open = pass_down && self.is_isolated_open_expected(adjusted_expected.as_ref());
+        let child_hint = if pass_down && !isolated_open {
+            adjusted_expected.as_ref()
+        } else {
+            None
+        };
+
+        let (mut left, mut left_stripped, mut right, mut right_stripped) =
+            if Self::untyped_number(left_ast) && !Self::untyped_number(right_ast) {
+                let (right, mut r_strip, from_parent) =
+                    self.a40_check_operand(right_ast, child_hint, expected_is_sibling, oei_class)?;
+                parent_sibling_stripped |= from_parent;
+                let mut r_eff = if r_strip {
+                    self.reference_operand(&right.ty).unwrap()
+                } else {
+                    self.inference.resolve(&right.ty)
+                };
+                if let Some(cid) = oei_class {
+                    if !r_strip
+                        && let Some(sr) = self.reference_operand(&r_eff)
+                        && !self
+                            .classes
+                            .has_same_type_operator_head(cid, &r_eff, &self.types)
+                    {
+                        r_strip = true;
+                        r_eff = sr;
+                    }
+                    let (is_flt, int_info, lit_text) = Self::untyped_number_info(left_ast);
+                    if let Some(lh) = self.classes.operator_literal_hint(
+                        cid,
+                        Self::binary_op_symbol(op),
+                        &r_eff,
+                        true,
+                        is_flt,
+                        int_info,
+                        &lit_text,
+                        &mut self.inference,
+                        &self.constraints,
+                        &self.types,
+                        self.names,
+                        expression.span,
+                    )? {
+                        let left = self.check_oei_literal(left_ast, &lh)?;
+                        (left, false, right, r_strip)
+                    } else {
+                        let (left, l_strip, strip_r) =
+                            self.a40_check_operand(left_ast, Some(&r_eff), true, oei_class)?;
+                        r_strip |= strip_r;
+                        (left, l_strip, right, r_strip)
+                    }
+                } else {
+                    let (left, l_strip, strip_r) =
+                        self.a40_check_operand(left_ast, Some(&r_eff), true, oei_class)?;
+                    r_strip |= strip_r;
+                    (left, l_strip, right, r_strip)
+                }
+            } else if !Self::untyped_number(left_ast)
+                && Self::untyped_number(right_ast)
+                && let Some(cid) = oei_class
+            {
+                let (left, mut l_strip, from_parent) =
+                    self.a40_check_operand(left_ast, child_hint, expected_is_sibling, oei_class)?;
+                parent_sibling_stripped |= from_parent;
+                let mut l_eff = if l_strip {
+                    self.reference_operand(&left.ty).unwrap()
+                } else {
+                    self.inference.resolve(&left.ty)
+                };
+                if !l_strip
+                    && let Some(sl) = self.reference_operand(&l_eff)
+                    && !self
+                        .classes
+                        .has_same_type_operator_head(cid, &l_eff, &self.types)
+                {
+                    l_strip = true;
+                    l_eff = sl;
+                }
+                let (is_flt, int_info, lit_text) = Self::untyped_number_info(right_ast);
+                if let Some(rh) = self.classes.operator_literal_hint(
+                    cid,
+                    Self::binary_op_symbol(op),
+                    &l_eff,
+                    false,
+                    is_flt,
+                    int_info,
+                    &lit_text,
+                    &mut self.inference,
+                    &self.constraints,
+                    &self.types,
+                    self.names,
+                    expression.span,
+                )? {
+                    let right = self.check_oei_literal(right_ast, &rh)?;
+                    (left, l_strip, right, false)
+                } else {
+                    let marked = self.operand_results(right_ast);
+                    let res = self.a40_check_operand(right_ast, Some(&l_eff), true, oei_class);
+                    self.operand.truncate(marked);
+                    let (right, r_strip, strip_l) = res?;
+                    l_strip |= strip_l;
+                    (left, l_strip, right, r_strip)
+                }
+            } else {
+                let (left, mut l_strip, from_parent) =
+                    self.a40_check_operand(left_ast, child_hint, expected_is_sibling, oei_class)?;
+                parent_sibling_stripped |= from_parent;
+                let l_eff = if l_strip {
+                    self.reference_operand(&left.ty).unwrap()
+                } else {
+                    self.inference.resolve(&left.ty)
+                };
+                let marked = self.operand_results(right_ast);
+                let res = self.a40_check_operand(right_ast, Some(&l_eff), true, oei_class);
+                self.operand.truncate(marked);
+                let (right, r_strip, strip_l) = res?;
+                l_strip |= strip_l;
+                (left, l_strip, right, r_strip)
+            };
+
+        let mut left_eff = if left_stripped {
+            self.reference_operand(&left.ty).unwrap()
+        } else {
+            self.inference.resolve(&left.ty)
+        };
+        let mut right_eff = if right_stripped {
+            self.reference_operand(&right.ty).unwrap()
+        } else {
+            self.inference.resolve(&right.ty)
+        };
+
+        if let Some(cid) = oei_class {
+            let classes = self.classes;
+            let types = self.types;
+            let same_head = |l: &Type, trial: &polymorph::Inference| {
+                let t = trial.resolve(l);
+                classes.has_same_type_operator_head(cid, &t, &types)
+            };
+            let same_pair = if self
+                .inference
+                .unifies(&right_eff, &left_eff, &types, |tr| same_head(&left_eff, tr))
+            {
+                true
+            } else if !left_stripped
+                && let Some(sl) = self.reference_operand(&left_eff)
+                && self
+                    .inference
+                    .unifies(&right_eff, &sl, &types, |tr| same_head(&sl, tr))
+            {
+                left_stripped = true;
+                left_eff = sl;
+                true
+            } else if !right_stripped
+                && let Some(sr) = self.reference_operand(&right_eff)
+                && self
+                    .inference
+                    .unifies(&sr, &left_eff, &types, |tr| same_head(&left_eff, tr))
+            {
+                right_stripped = true;
+                right_eff = sr;
+                true
+            } else if !left_stripped
+                && !right_stripped
+                && let (Some(sl), Some(sr)) = (
+                    self.reference_operand(&left_eff),
+                    self.reference_operand(&right_eff),
+                )
+                && self
+                    .inference
+                    .unifies(&sr, &sl, &types, |tr| same_head(&sl, tr))
+            {
+                left_stripped = true;
+                right_stripped = true;
+                left_eff = sl;
+                right_eff = sr;
+                true
+            } else {
+                false
+            };
+
+            if !same_pair {
+                if !left_stripped
+                    && let Some(sl) = self.reference_operand(&left_eff)
+                    && !self
+                        .classes
+                        .has_same_type_operator_head(cid, &left_eff, &self.types)
+                {
+                    left_stripped = true;
+                    left_eff = sl;
+                }
+                if !right_stripped
+                    && let Some(sr) = self.reference_operand(&right_eff)
+                    && !self
+                        .classes
+                        .has_same_type_operator_head(cid, &right_eff, &self.types)
+                {
+                    right_stripped = true;
+                    right_eff = sr;
+                }
+                let left_known = !matches!(left_eff, Type::Infer(_))
+                    || (Self::untyped_number(left_ast)
+                        && self.inference.is_numeric_literal(&left_eff));
+                let right_known = !matches!(right_eff, Type::Infer(_))
+                    || (Self::untyped_number(right_ast)
+                        && self.inference.is_numeric_literal(&right_eff));
+                if (polymorph::Classes::is_named_non_builtin_type(&left_eff, self.names)
+                    || polymorph::Classes::is_named_non_builtin_type(&right_eff, self.names))
+                    && left_known
+                    && right_known
+                    && let Some(resolved) = self.classes.resolve_operator(
+                        cid,
+                        Self::binary_op_symbol(op),
+                        &left_eff,
+                        Some(&right_eff),
+                        &mut self.inference,
+                        &self.constraints,
+                        &self.types,
+                        self.names,
+                        expression.span,
+                    )?
+                {
+                    let (call_kind, out_ty) = self.build_oei_call(
+                        resolved,
+                        vec![(left, left_stripped), (right, right_stripped)],
+                        expression.span,
+                    )?;
+                    let finished = self.finish_expression_with_soft(
+                        call_kind,
+                        out_ty,
+                        adjusted_expected.as_ref(),
+                        outer_soft,
+                        expression.span,
+                    )?;
+                    return Ok((finished, parent_sibling_stripped));
+                }
+            }
+        }
+
+        // Stage 2: unify right and left.
+        if self
+            .inference
+            .unifies(&right_eff, &left_eff, &self.types, |_| true)
+        {
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !left_stripped
+            && let Some(sl) = self.reference_operand(&left_eff)
+            && self
+                .inference
+                .unifies(&right_eff, &sl, &self.types, |_| true)
+        {
+            left_stripped = true;
+            left_eff = sl;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !right_stripped
+            && let Some(sr) = self.reference_operand(&right_eff)
+            && self
+                .inference
+                .unifies(&sr, &left_eff, &self.types, |_| true)
+        {
+            right_stripped = true;
+            right_eff = sr;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else if !left_stripped
+            && !right_stripped
+            && let (Some(sl), Some(sr)) = (
+                self.reference_operand(&left_eff),
+                self.reference_operand(&right_eff),
+            )
+            && self.inference.unifies(&sr, &sl, &self.types, |_| true)
+        {
+            left_stripped = true;
+            right_stripped = true;
+            left_eff = sl;
+            right_eff = sr;
+            self.same(&right_eff, &left_eff, right.span)?;
+        } else {
+            self.same(&right_eff, &left_eff, right.span)?;
+        }
+
+        left_eff = self.inference.resolve(&left_eff);
+        right_eff = self.inference.resolve(&right_eff);
+
+        // Stage 2 (And/Or) & Stage 3 (Class check).
+        let result_ty = if matches!(op, BinaryOp::And | BinaryOp::Or) {
+            if !self
+                .inference
+                .unifies(&left_eff, &Type::Bool, &self.types, |_| true)
+                && !left_stripped
+                && let Some(sl) = self.reference_operand(&left_eff)
+                && self
+                    .inference
+                    .unifies(&sl, &Type::Bool, &self.types, |_| true)
+            {
+                left_stripped = true;
+                left_eff = sl;
+            }
+            if !self
+                .inference
+                .unifies(&right_eff, &Type::Bool, &self.types, |_| true)
+                && !right_stripped
+                && let Some(sr) = self.reference_operand(&right_eff)
+                && self
+                    .inference
+                    .unifies(&sr, &Type::Bool, &self.types, |_| true)
+            {
+                right_stripped = true;
+                right_eff = sr;
+            }
+            self.same(&left_eff, &Type::Bool, expression.span)?;
+            self.same(&right_eff, &Type::Bool, expression.span)?;
+            Type::Bool
+        } else {
+            let class_name = polymorph::binary_class(op);
+            let class_id = self.classes.class_id(class_name).unwrap();
+            if self.reference_operand(&left_eff).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(class_id, &left_eff, &self.types)
+                && !left_stripped
+                && !right_stripped
+                && let (Some(sl), Some(sr)) = (
+                    self.reference_operand(&left_eff),
+                    self.reference_operand(&right_eff),
+                )
+            {
+                self.same(&sr, &sl, right.span)?;
+                left_stripped = true;
+                right_stripped = true;
+                left_eff = self.inference.resolve(&sl);
+                right_eff = self.inference.resolve(&sr);
+            }
+            self.require(class_name, left_eff.clone(), expression.span)?;
+            match op {
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterEqual => Type::Bool,
+                _ => left_eff.clone(),
+            }
+        };
+
+        let is_logic = matches!(op, BinaryOp::And | BinaryOp::Or);
+        if left_stripped {
+            left = Self::wrap_stripped_operand(left, self.inference.resolve(&left_eff), is_logic);
+        }
+        if right_stripped {
+            right =
+                Self::wrap_stripped_operand(right, self.inference.resolve(&right_eff), is_logic);
+        }
+
+        let finished = self.finish_binary_with_soft(
+            op,
+            left,
+            right,
+            result_ty,
+            adjusted_expected.as_ref(),
+            outer_soft,
+            expression.span,
+        )?;
+        Ok((finished, parent_sibling_stripped))
+    }
+
+    fn a40_unary_inner(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&Type>,
+        expected_is_sibling: bool,
+        outer_soft: Option<usize>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let ExprKind::Unary(operator, operand_ast) = &expression.kind else {
+            unreachable!()
+        };
+        let op = *operator;
+        let neg_oei = (op == UnaryOp::Negate)
+            .then(|| self.classes.class_id("Neg").unwrap())
+            .filter(|&cid| self.classes.has_oei(cid));
+        let resolved_expected = expected.map(|ty| self.inference.resolve(ty));
+        let mut parent_sibling_stripped = false;
+        let adjusted_expected = if expected_is_sibling
+            && let Some(ref exp) = resolved_expected
+            && let Some(stripped_exp) = self.reference_operand(exp)
+        {
+            let keep_ref = op == UnaryOp::BitNot
+                && self.classes.has_direct_candidate(
+                    self.classes.class_id("Bits").unwrap(),
+                    exp,
+                    &self.types,
+                );
+            if !keep_ref {
+                parent_sibling_stripped = true;
+                Some(stripped_exp)
+            } else {
+                Some(exp.clone())
+            }
+        } else {
+            resolved_expected.clone()
+        };
+
+        let isolated_open = self.is_isolated_open_expected(adjusted_expected.as_ref());
+        let child_hint = if !isolated_open {
+            adjusted_expected.as_ref()
+        } else {
+            None
+        };
+
+        let (mut operand, mut op_stripped, from_parent) =
+            self.a40_check_operand(operand_ast, child_hint, expected_is_sibling, neg_oei)?;
+        parent_sibling_stripped |= from_parent;
+        let mut op_eff = if op_stripped {
+            self.reference_operand(&operand.ty).unwrap()
+        } else {
+            self.inference.resolve(&operand.ty)
+        };
+
+        if op == UnaryOp::Not {
+            if !self
+                .inference
+                .unifies(&op_eff, &Type::Bool, &self.types, |_| true)
+                && !op_stripped
+                && let Some(so) = self.reference_operand(&op_eff)
+                && self
+                    .inference
+                    .unifies(&so, &Type::Bool, &self.types, |_| true)
+            {
+                op_stripped = true;
+                op_eff = so;
+            }
+            self.same(&op_eff, &Type::Bool, expression.span)?;
+        } else {
+            let class_name = if op == UnaryOp::Negate { "Neg" } else { "Bits" };
+            let class_id = self.classes.class_id(class_name).unwrap();
+            if self.reference_operand(&op_eff).is_some()
+                && !self
+                    .classes
+                    .has_direct_candidate(class_id, &op_eff, &self.types)
+                && !op_stripped
+                && let Some(so) = self.reference_operand(&op_eff)
+            {
+                op_stripped = true;
+                op_eff = so;
+            }
+            if let Some(cid) = neg_oei
+                && !self
+                    .classes
+                    .has_same_type_operator_head(cid, &op_eff, &self.types)
+                && polymorph::Classes::is_named_non_builtin_type(&op_eff, self.names)
+                && let Some(resolved) = self.classes.resolve_operator(
+                    cid,
+                    "-",
+                    &op_eff,
+                    None,
+                    &mut self.inference,
+                    &self.constraints,
+                    &self.types,
+                    self.names,
+                    expression.span,
+                )?
+            {
+                let (call_kind, out_ty) =
+                    self.build_oei_call(resolved, vec![(operand, op_stripped)], expression.span)?;
+                let finished = self.finish_expression_with_soft(
+                    call_kind,
+                    out_ty,
+                    adjusted_expected.as_ref(),
+                    outer_soft,
+                    expression.span,
+                )?;
+                return Ok((finished, parent_sibling_stripped));
+            }
+            self.require(class_name, op_eff.clone(), expression.span)?;
+        }
+
+        op_eff = self.inference.resolve(&op_eff);
+        if op_stripped {
+            operand = Self::wrap_stripped_operand(operand, op_eff.clone(), op == UnaryOp::Not);
+        }
+        let kind = TypedExprKind::Unary(op, Box::new(operand));
+        let (kind, ty) = if op == UnaryOp::Negate && self.checked_arithmetic {
+            Self::checked_kind(kind, &op_eff, expression.span)
+        } else {
+            (kind, op_eff)
+        };
+        let finished = self.finish_expression_with_soft(
+            kind,
+            ty,
+            adjusted_expected.as_ref(),
+            outer_soft,
+            expression.span,
+        )?;
+        Ok((finished, parent_sibling_stripped))
+    }
+
     fn interpolation(
         &mut self,
         interpolation: &Interpolation,
@@ -16025,20 +19701,192 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn slice(
+    /// Converts a derived range bound (an inclusive end `b + 1`, an open start `a + 1`, or a
+    /// from-end offset `k` in `^k`) to `i64`, saturating `i64u` values above `i64::MAX` via
+    /// `SaturatingIndex` so `2^64 - 1` cannot wrap to `-1` and become `0` after `+ 1` (NC17).
+    fn bound_operand(&mut self, bound: &Expr) -> Result<TypedExpr, Diagnostic> {
+        let bound = self.expression(bound, None)?;
+        let span = bound.span;
+        let cast = |value: TypedExpr, ty: Type| TypedExpr {
+            kind: TypedExprKind::Cast(Box::new(value)),
+            ty,
+            span,
+        };
+        match self.inference.resolve(&bound.ty) {
+            ty if ty.contains_error() => Ok(TypedExpr::error(span)),
+            Type::I64 => Ok(bound),
+            Type::Integer(bits, signed) if bits < 64 || (bits == 64 && signed) => {
+                Ok(cast(bound, Type::I64))
+            }
+            ty @ Type::Infer(_) => {
+                self.same(&ty, &Type::I64, span)?;
+                Ok(bound)
+            }
+            ty @ (Type::Integer(..) | Type::Variable(_)) => {
+                self.require("Integer", ty, span)?;
+                Ok(TypedExpr {
+                    kind: TypedExprKind::SaturatingIndex(Box::new(bound)),
+                    ty: Type::I64,
+                    span,
+                })
+            }
+            ty => Err(Diagnostic::of(
+                DiagnosticKind::IndexNotInteger,
+                format!(
+                    "an index must have an integer type (i8 to i128 or i8u to i128u), found {}",
+                    ty.display(&self.types)
+                ),
+                span,
+            )),
+        }
+    }
+
+    fn module_edition(&self) -> crate::syntax::Edition {
+        self.names
+            .module_editions
+            .get(self.module)
+            .copied()
+            .unwrap_or(crate::syntax::Edition::E2026)
+    }
+
+    fn negative_literal(expr: &Expr) -> Option<(u128, String, Span)> {
+        if let ExprKind::Unary(UnaryOp::Negate, inner) = &expr.kind
+            && let ExprKind::Integer(value, suffix) = &inner.kind
+            && *value != 0
+        {
+            let text = match suffix {
+                Some(suffix) => format!("-{value}{suffix}"),
+                None => format!("-{value}"),
+            };
+            Some((*value, text, expr.span))
+        } else {
+            None
+        }
+    }
+
+    fn range_bound_help(&self) -> &'static str {
+        if self.module_edition().range_family() {
+            "count from the end with '^': '^0' is the last element, so 'ref xs[..^1]' drops it (NumPy 'a[:-1]')"
+        } else {
+            "edition 2028 counts from the end with '^'; here compute the position from 'xs.length'"
+        }
+    }
+
+    fn negative_slice_bound_warning(&mut self, bound: &Expr) {
+        if let Some((_, text, span)) = Self::negative_literal(bound) {
+            let help = self.range_bound_help();
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralRangeBound,
+                    format!(
+                        "'{text}' is a negative position; slice bounds never count from the end"
+                    ),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    fn negative_from_end_warning(&mut self, offset: &Expr) {
+        if let Some((_, text, span)) = Self::negative_literal(offset) {
+            let help = self.range_bound_help();
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralRangeBound,
+                    format!("'^{text}' counts past the end; '^0' is the last element"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    pub(crate) fn negative_bound_warnings(&mut self, range: &crate::syntax::RangeKey) {
+        for bound in [range.start.as_deref(), range.end.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            if let ExprKind::FromEnd(offset) = &bound.kind {
+                self.negative_from_end_warning(offset);
+            } else {
+                self.negative_slice_bound_warning(bound);
+            }
+        }
+    }
+
+    pub(crate) fn negative_index_warning(&mut self, index: &Expr) {
+        if let Some((k, text, span)) = Self::negative_literal(index) {
+            let k_minus_1 = k - 1;
+            let help = if self.module_edition().range_family() {
+                format!("'^0' is the last element: write 'xs[^{k_minus_1}]' for NumPy 'a[-{k}]'")
+            } else {
+                format!("write 'xs[xs.length - {k}]'; edition 2028 writes 'xs[^{k_minus_1}]'")
+            };
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralIndex,
+                    format!("'{text}' is a negative position; an index never counts from the end"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    fn negative_window_index_warning(&mut self, index: &Expr) {
+        if let Some((k, text, span)) = Self::negative_literal(index) {
+            let k_minus_1 = k - 1;
+            let help = if self.module_edition().range_family() {
+                format!(
+                    "'^0' is the last element: write '^{k_minus_1}' (for example 'ref t[^{k_minus_1}, ..]')"
+                )
+            } else {
+                format!(
+                    "write 'Slice.Sel.Item (Slice.Pos.Back {k_minus_1})'; edition 2028 writes '^{k_minus_1}'"
+                )
+            };
+            self.range_warnings.push(
+                Diagnostic::of(
+                    DiagnosticKind::NegativeLiteralIndex,
+                    format!("'{text}' is a negative position; an index never counts from the end"),
+                    span,
+                )
+                .with_help(help),
+            );
+        }
+    }
+
+    fn wrapping_add_one(bound: TypedExpr, span: Span) -> TypedExpr {
+        TypedExpr {
+            kind: TypedExprKind::Binary(
+                BinaryOp::Add,
+                Box::new(bound),
+                Box::new(TypedExpr {
+                    kind: TypedExprKind::Int(1),
+                    ty: Type::I64,
+                    span,
+                }),
+            ),
+            ty: Type::I64,
+            span,
+        }
+    }
+
+    fn slice_expr(
         &mut self,
-        source: &Expr,
-        start: Option<&Expr>,
-        end: Option<&Expr>,
+        source_expr: &Expr,
+        range: &crate::syntax::RangeKey,
         mutable: bool,
-        inclusive: bool,
         span: Span,
-    ) -> Result<(TypedExprKind, Type), Diagnostic> {
-        let mut source = self.expression(source, None)?;
-        source.ty = self.inference.resolve(&source.ty);
-        let source = Self::autoderef(source);
+        cover: IndexBorrowCover,
+        expected: Option<&Type>,
+    ) -> Result<(TypedExpr, bool), Diagnostic> {
+        let (mut raw_source, inner_was_view) = self.eval_index_base(source_expr, cover)?;
+        raw_source.ty = self.inference.resolve(&raw_source.ty);
+        let source = Self::autoderef(raw_source);
         if source.ty == Type::Error {
-            return Ok((TypedExprKind::Error, Type::Error));
+            return Ok((TypedExpr::error(span), true));
         }
         let element = match &source.ty {
             Type::Array(element) => element.clone(),
@@ -16054,58 +19902,139 @@ impl<'a> Checker<'a> {
                     span,
                 ));
             }
-            _ => {
+            Type::List(_) | Type::Vec(_) | Type::String | Type::Utf8String => {
                 return Err(Diagnostic::of(
                     DiagnosticKind::SliceNonArray,
                     "a slice requires an array; lists and strings do not support array slicing",
                     span,
                 ));
             }
+            _ => {
+                let self_ty = self.inference.resolve(&source.ty);
+                let has_index = self.classes.has_index_instances(
+                    &self_ty,
+                    false,
+                    &mut self.inference,
+                    &self.types,
+                );
+                if has_index && self.module_edition().range_family() {
+                    let comp = crate::syntax::IndexComponent::Range(Box::new(range.clone()));
+                    let (Some(pos_uid), Some(bound_uid), Some(sel_uid)) = (
+                        self.std_slice_union("Pos"),
+                        self.std_slice_union("Bound"),
+                        self.std_slice_union("Sel"),
+                    ) else {
+                        self.validate_window_components_without_slice_module(
+                            std::slice::from_ref(&comp),
+                        )?;
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::NoInstance,
+                            format!(
+                                "no instance for Index<{}, [Slice.Sel]>; define an instance or use a supported key type",
+                                self_ty.display_with(self.names)
+                            ),
+                            span,
+                        ));
+                    };
+                    let sel = self.component_to_sel(&comp, pos_uid, bound_uid, sel_uid, span)?;
+                    return self.finish_window_sels(
+                        span,
+                        source,
+                        vec![sel],
+                        cover,
+                        inner_was_view,
+                        expected,
+                    );
+                }
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::SliceNonArray,
+                    "a slice requires an array; lists and strings do not support array slicing",
+                    span,
+                );
+                if has_index {
+                    diag = diag.with_help(
+                        "in edition 2028, 'ref t[a..b]' takes a window of a type with an Index instance for [Slice.Sel]",
+                    );
+                }
+                return Err(diag);
+            }
         };
+        if let Some(step) = &range.step {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ArraySliceWithStep,
+                "array slices are contiguous; a range with a step cannot slice an array",
+                step.span,
+            )
+            .with_help("copy the selected elements with a loop over 'first .. step .. last'"));
+        }
         if mutable {
             Self::require_mutable_reference(&source)?;
             Self::named_slice_source(&source, span)?;
         }
-        let start = start
-            .map(|value| self.index_operand(value).map(Box::new))
-            .transpose()?;
-        let end = end
-            .map(|value| self.index_operand(value).map(Box::new))
-            .transpose()?;
-        // A22: `xs[a..=b]` ends at `b + 1`, a wrapping addition, so that the slice's unsigned
-        // bounds checks reject `b = MAX` and negative ends as they reject any other bad end.
-        let end = match end {
-            Some(end) if inclusive => {
-                let span = end.span;
+        self.negative_bound_warnings(range);
+        let start = match range.start.as_deref() {
+            None => None,
+            Some(Expr {
+                kind: ExprKind::FromEnd(offset),
+                span: bound_span,
+                ..
+            }) => {
+                let offset = self.bound_operand(offset)?;
                 Some(Box::new(TypedExpr {
-                    kind: TypedExprKind::Binary(
-                        BinaryOp::Add,
-                        end,
-                        Box::new(TypedExpr {
-                            kind: TypedExprKind::Int(1),
-                            ty: Type::I64,
-                            span,
-                        }),
-                    ),
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: range.ends.start_open,
+                    },
                     ty: Type::I64,
-                    span,
+                    span: *bound_span,
                 }))
             }
-            end => end,
+            Some(value) if range.ends.start_open => {
+                let bound = self.bound_operand(value)?;
+                let bound_span = bound.span;
+                Some(Box::new(Self::wrapping_add_one(bound, bound_span)))
+            }
+            Some(value) => Some(Box::new(self.index_operand(value)?)),
+        };
+        // A22 / NC17: an inclusive end `b` becomes `b + 1` (a wrapping addition on a saturated
+        // `bound_operand`) so the slice's unsigned bounds checks reject `b = MAX` and negative
+        // ends identically to any other out-of-bounds end.
+        let end = match range.end.as_deref() {
+            None => None,
+            Some(Expr {
+                kind: ExprKind::FromEnd(offset),
+                span: bound_span,
+                ..
+            }) => {
+                let offset = self.bound_operand(offset)?;
+                Some(Box::new(TypedExpr {
+                    kind: TypedExprKind::FromEnd {
+                        offset: Box::new(offset),
+                        after: range.ends.end_closed,
+                    },
+                    ty: Type::I64,
+                    span: *bound_span,
+                }))
+            }
+            Some(value) if range.ends.end_closed => {
+                let bound = self.bound_operand(value)?;
+                let bound_span = bound.span;
+                Some(Box::new(Self::wrapping_add_one(bound, bound_span)))
+            }
+            Some(value) => Some(Box::new(self.index_operand(value)?)),
         };
         let ty = if mutable {
             Type::Reference(Box::new(Type::ArrayView(element)), true)
         } else {
             Type::Reference(Box::new(Type::Array(element)), false)
         };
-        Ok((
-            TypedExprKind::Slice {
-                value: Box::new(source),
-                start,
-                end,
-            },
-            ty,
-        ))
+        let kind = TypedExprKind::Slice {
+            value: Box::new(source),
+            start,
+            end,
+        };
+        let finished = self.finish_expression(kind, ty, expected, span)?;
+        Ok((finished, false))
     }
 
     /// An exclusive slice borrows a named array: a local, a field path, or a dereference.
@@ -16515,6 +20444,35 @@ impl<'a> Checker<'a> {
         if suffix.is_none() && expected.is_some_and(|ty| self.is_bigint(ty)) {
             let value = self.bigint_literal(&value.to_string(), negative, expected, span)?;
             return Ok((value.kind, value.ty));
+        }
+        if suffix.is_none()
+            && let Some(ty) = expected
+            && matches!(ty, Type::Infer(_))
+            && self.inference.is_numeric_literal(ty)
+            && let Some(float_class) = self.classes.class_id("Float")
+            && self
+                .constraints
+                .iter()
+                .any(|c| c.class == float_class && self.inference.resolve(&c.ty) == *ty)
+            && !self.constraints.iter().any(|c| {
+                self.inference.resolve(&c.ty) == *ty
+                    && matches!(
+                        self.classes.declared_name(c.class),
+                        "Integer" | "SignedInteger" | "UnsignedInteger"
+                    )
+            })
+        {
+            let float = TypedExpr {
+                kind: TypedExprKind::GenericFloat(value.to_string()),
+                ty: ty.clone(),
+                span,
+            };
+            let kind = if negative {
+                TypedExprKind::Unary(UnaryOp::Negate, Box::new(float))
+            } else {
+                float.kind
+            };
+            return Ok((kind, ty.clone()));
         }
         if suffix.is_none() && expected.is_none_or(polymorph::is_unknown) {
             // Like Rust, an unsuffixed integer takes the type that its uses

@@ -1266,3 +1266,379 @@ fn named_target_regions_do_not_change_generated_ir() {
     }
     assert_eq!(analyze(&erased).unwrap_err().code, "E1013");
 }
+
+fn emits_2027(source: &str) -> [String; 2] {
+    let module = tsuzuri::analyze_with_edition(source, tsuzuri::syntax::Edition::E2027)
+        .unwrap_or_else(|error| {
+            let data = error.into_data();
+            panic!(
+                "{source}\n{}: {} at {:?}",
+                data.code,
+                data.message,
+                &source[data.span.start..]
+            );
+        });
+    [false, true].map(|wasm| {
+        let ir = llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap();
+        assert_eq!(
+            ir,
+            llvm::emit_target(&module, llvm::Entry::Library, wasm).unwrap(),
+            "{source}: IR is deterministic"
+        );
+        assert!(
+            llvm::duplicate_declarations(&ir).is_empty(),
+            "{source}: declarations"
+        );
+        ir
+    })
+}
+
+fn rejects_2027(source: &str, code: &str, kind: &str) -> tsuzuri::diagnostic::DiagnosticData {
+    let error = tsuzuri::analyze_with_edition(source, tsuzuri::syntax::Edition::E2027)
+        .expect_err(source)
+        .into_data();
+    assert_eq!(error.code, code, "{source}\n{}", error.message);
+    assert_eq!(error.kind, Some(kind), "{source}\n{}", error.message);
+    error
+}
+
+const A39_PRELUDE: &str = "\
+record B { n: i64, xs: [i64] }
+record Outer { inner: B, m: i64 }
+def bump :: ref mut i64 -> unit = \\p -> deref p = deref p + 10
+";
+
+#[test]
+fn field_exclusive_borrows_need_edition_2027() {
+    let shared_cases = [
+        "let mut b = B { n: 1, xs: [10, 20] }\nlet r = ref mut b.xs\nderef r = [99]\nb.xs[0]",
+        "let mut b = B { n: 1, xs: [10, 20] }\nlet s = ref mut b.xs[0..]\nArray.write 0 9 s\nb.xs[0]",
+        "let mut b = B { n: 1, xs: [10, 20] }\nArray.write 0 9 b.xs\nb.xs[0]",
+        "let mut b = B { n: 1, xs: [10, 20] }\nbump (ref mut b.n)\nb.n",
+        "def f :: ref mut B -> i64 = \\r -> { let s = ref mut r.xs[0..]; Array.write 0 9 s; r.xs[0] }\nlet mut b = B { n: 1, xs: [10, 20] }\nf (ref mut b)",
+        "let mut o = Outer { inner: B { n: 1, xs: [10, 20] }, m: 5 }\nlet s = ref mut o.inner.xs[0..]\nArray.write 0 9 s\no.inner.xs[0] + o.m",
+        "let m = Mutex.create (B { n: 1, xs: [10] })\nMutex.with_lock (ref m) (\\value -> bump (ref mut value.n))\nMutex.with_lock (ref m) (\\value -> value.n)",
+    ];
+    for body in shared_cases {
+        let src = format!("{A39_PRELUDE}{body}");
+        emits_2027(&src);
+        let err_2026 = analyze(&src).expect_err(&src).into_data();
+        assert_eq!(err_2026.code, "E1014", "{src}");
+        assert_eq!(err_2026.kind, Some("mutate_immutable_value"), "{src}");
+        assert!(
+            err_2026
+                .help
+                .as_deref()
+                .unwrap_or("")
+                .contains("edition 2027"),
+            "{src}\nhelp={:?}",
+            err_2026.help
+        );
+    }
+
+    // `mut T` parameter in 2027 (`E1005` in 2026).
+    let mut_param_src = format!(
+        "{A39_PRELUDE}def put :: mut [i64] -> unit = \\xs -> xs[0] = 9\nlet mut b = B {{ n: 1, xs: [10, 20] }}\nput b.xs\nb.xs[0]"
+    );
+    emits_2027(&mut_param_src);
+
+    // `IndexMut` on a field `h.g[1] = 42` in 2027 vs 2026.
+    let idx_mut = "\
+record Grid { data: [i64] }
+record Holder { g: Grid, n: i64 }
+instance IndexMut<Grid, i64, i64> {
+    fn index_mut k v self =
+        let mut arr = Array.copy (ref self.data)
+        Array.write (deref k) v (ref mut arr)
+        deref self = Grid { data: arr }
+}
+let mut h = Holder { g: Grid { data: [1, 2, 3] }, n: 0 }
+h.g[1] = 42
+h.g.data[1]";
+    emits_2027(idx_mut);
+    let err_idx_2026 = analyze(idx_mut).expect_err(idx_mut).into_data();
+    assert_eq!(err_idx_2026.code, "E1014");
+    assert_eq!(err_idx_2026.kind, Some("mutate_immutable_value"));
+    assert!(
+        idx_mut[err_idx_2026.span.start..].starts_with("h.g"),
+        "span={:?}",
+        &idx_mut[err_idx_2026.span.start..]
+    );
+}
+
+#[test]
+fn field_exclusive_borrows_keep_rejections() {
+    // 1. Element step `ref mut arr[0].n`.
+    rejects_2027(
+        &format!("{A39_PRELUDE}let mut arr = [B {{ n: 1, xs: [2] }}]\nbump (ref mut arr[0].n)\n0"),
+        "E1014",
+        "mutate_immutable_value",
+    );
+
+    // 2. Immutable `let b` has `DeclaredHere` related note.
+    let let_err = rejects_2027(
+        &format!("{A39_PRELUDE}let b = B {{ n: 1, xs: [2] }}\nbump (ref mut b.n)\n0"),
+        "E1014",
+        "mutate_immutable_value",
+    );
+    assert!(
+        let_err
+            .related
+            .iter()
+            .any(|r| r.role == tsuzuri::diagnostic::RelatedRole::DeclaredHere),
+        "{:?}",
+        let_err.related
+    );
+
+    // 3. Captured owner inside a closure has NO `DeclaredHere` related note and explains capture.
+    let cap_err = rejects_2027(
+        &format!(
+            "{A39_PRELUDE}let mut b = B {{ n: 1, xs: [2] }}\nlet f = \\() -> bump (ref mut b.n)\nf (); 0"
+        ),
+        "E1014",
+        "mutate_immutable_value",
+    );
+    assert!(
+        !cap_err
+            .related
+            .iter()
+            .any(|r| r.role == tsuzuri::diagnostic::RelatedRole::DeclaredHere),
+        "unexpected DeclaredHere on captured owner: {:?}",
+        cap_err.related
+    );
+    assert!(
+        cap_err
+            .help
+            .as_deref()
+            .unwrap_or("")
+            .contains("captures 'b'"),
+        "help={:?}",
+        cap_err.help
+    );
+
+    // 4. Pattern variable in `match` is an immutable view (no `DeclaredHere`).
+    let pat_err = rejects_2027(
+        &format!(
+            "{A39_PRELUDE}union U = A of B\nlet mut u = U.A (B {{ n: 1, xs: [2] }})\nmatch u with | U.A b -> bump (ref mut b.n)\n0"
+        ),
+        "E1014",
+        "mutate_immutable_value",
+    );
+    assert!(
+        !pat_err
+            .related
+            .iter()
+            .any(|r| r.role == tsuzuri::diagnostic::RelatedRole::DeclaredHere)
+    );
+
+    // 5. Through a shared reference `r: ref B`.
+    rejects_2027(
+        &format!("{A39_PRELUDE}def f :: ref B -> unit = \\r -> bump (ref mut r.n)\n0"),
+        "E1014",
+        "mutate_immutable_value",
+    );
+
+    // 6. Temporary base `ref mut (mk ()).n` stays E1013 (`borrow_of_temporary`).
+    rejects_2027(
+        &format!(
+            "{A39_PRELUDE}def mk :: unit -> B = \\() -> B {{ n: 1, xs: [2] }}\nbump (ref mut (mk ()).n)\n0"
+        ),
+        "E1013",
+        "borrow_of_temporary",
+    );
+
+    // 7. Opaque std record field outside `std/` stays E1022.
+    rejects_2027(
+        "let mut t = Tensor.zeros [2]\nlet _ = ref mut t.data\n0",
+        "E1022",
+        "opaque_type_representation",
+    );
+}
+
+#[test]
+fn disjoint_field_borrows_coexist_and_overlaps_conflict() {
+    emits_2027(&format!(
+        "{A39_PRELUDE}\
+         let mut b = B {{ n: 1, xs: [10, 20] }}\n\
+         let a = ref mut b.n\n\
+         let c = ref mut b.xs[0..]\n\
+         deref a = 5\n\
+         Array.write 0 99 c\n\
+         let mut o = Outer {{ inner: B {{ n: 2, xs: [3, 4] }}, m: 7 }}\n\
+         let is = ref mut o.inner.xs[0..]\n\
+         let mr = ref o.m\n\
+         Array.write 1 (deref mr) is\n\
+         b.n + b.xs[0] + o.inner.xs[1]"
+    ));
+
+    // Overlapping field borrows / whole-owner access are E1014 (`borrow_conflict`).
+    for bad in [
+        "let mut b = B { n: 1, xs: [2] }\nlet a = ref mut b.n\nlet c = ref mut b.n\nderef a = 2; deref c = 3; 0",
+        "let mut b = B { n: 1, xs: [2] }\nlet a = ref mut b.n\nlet whole = b\nderef a = 2; whole.n",
+        "let mut b = B { n: 1, xs: [2] }\nlet a = ref mut b.n\nb = B { n: 9, xs: [8] }\nderef a = 2; b.n",
+        "let mut o = Outer { inner: B { n: 1, xs: [2] }, m: 3 }\nlet a = ref mut o.inner\nlet sub = ref o.inner.xs\nderef a = B { n: 4, xs: [5] }; sub.length",
+    ] {
+        rejects_2027(&format!("{A39_PRELUDE}{bad}"), "E1014", "borrow_conflict");
+    }
+}
+
+#[test]
+fn field_borrows_through_params_call_results_region_markers_views_and_closures() {
+    // 1. `r: ref mut B` parameter disjoint fields.
+    emits_2027(&format!(
+        "{A39_PRELUDE}{}",
+        r#"def edit :: ref mut B -> unit = \r ->
+    let p = ref mut r.n
+    let s = ref mut r.xs[0..]
+    deref p = 77
+    Array.write 0 88 s
+let mut b = B { n: 1, xs: [2, 3] }
+edit (ref mut b)
+b.n + b.xs[0]"#
+    ));
+
+    // 2. Call result `choose (ref mut b) (ref mut log)` -> `Array.write 0 9 r.xs` accepted,
+    // while `log.count = 3` while `r` is live stays E1014.
+    let choose_defs = format!(
+        "{A39_PRELUDE}{}",
+        "record Log { count: i64 }\ndef choose { r } :: ref mut { r } B -> ref mut { r } Log -> ref mut { r } B = \\b _l -> b\n"
+    );
+    emits_2027(&format!(
+        "{choose_defs}{}",
+        r#"let mut b = B { n: 1, xs: [10, 20] }
+let mut log = Log { count: 0 }
+let r = choose (ref mut b) (ref mut log)
+Array.write 0 9 r.xs
+b.xs[0] + log.count"#
+    ));
+    rejects_2027(
+        &format!(
+            "{choose_defs}{}",
+            r#"let mut b = B { n: 1, xs: [10, 20] }
+let mut log = Log { count: 0 }
+let r = choose (ref mut b) (ref mut log)
+log.count = 3
+Array.write 0 9 r.xs
+0"#
+        ),
+        "E1014",
+        "borrow_conflict",
+    );
+
+    // 3. Multi-region external loan marker (`P {r s}`).
+    emits_2027(&format!(
+        "{A39_PRELUDE}{}",
+        r#"record P { r s } { left: ref mut { r } B, right: ref mut { s } B }
+def touch { r s } :: P { r s } -> unit = \p -> bump (ref mut p.left.n)
+let mut a = B { n: 1, xs: [2] }
+let mut c = B { n: 3, xs: [4] }
+touch (P { left: ref mut a, right: ref mut c })
+a.n + c.n"#
+    ));
+
+    // 4. Live non-Copy pattern view conflicts with `ref mut r.xs`, while `ref mut r.n` is accepted.
+    let sbox_defs = "record SBox { n: i64, xs: [string] }\ndef bump :: ref mut i64 -> unit = \\p -> deref p = deref p + 1\n";
+    emits_2027(&format!(
+        "{sbox_defs}{}",
+        r#"def ok :: ref mut SBox -> i64 = \r ->
+    match deref r with
+    | SBox { xs = xs } ->
+        bump (ref mut r.n)
+        xs.length
+let mut s = SBox { n: 1, xs: ["hi"] }
+ok (ref mut s) + s.n"#
+    ));
+    rejects_2027(
+        &format!(
+            "{sbox_defs}{}",
+            r#"def bad :: ref mut SBox -> i64 = \r ->
+    match deref r with
+    | SBox { xs = xs } ->
+        let sl = ref mut r.xs[0..]
+        Array.write 0 "bye" sl
+        xs.length
+0"#
+        ),
+        "E1014",
+        "borrow_conflict",
+    );
+
+    // 5. `tzroutine` (`$once`) inherits `field_borrows` from creating function: 2027 accepts, 2026 rejects.
+    let tz_src = format!(
+        "{A39_PRELUDE}{}",
+        r#"tzroutine {
+    let mut b = B { n: 1, xs: [2] }
+    bump (ref mut b.n)
+}
+0"#
+    );
+    let m2027 = tsuzuri::analyze_with_edition(&tz_src, tsuzuri::syntax::Edition::E2027).unwrap();
+    llvm::emit_target(&m2027, llvm::Entry::Library, false).unwrap();
+    assert_eq!(analyze(&tz_src).unwrap_err().code, "E1014");
+}
+
+#[test]
+fn field_borrow_self_store_drop_and_owner_loans() {
+    // 1. Self-referential store through field exclusive borrow is E1013 (`self_referential_store`).
+    rejects_2027(
+        r#"record View { r } { data: ref { r } string }
+record P { r } { hv: View { r }, s: string }
+def set_view { q r } :: ref mut { q } View { r } -> ref { r } string -> unit = \v s ->
+    deref v = View { data: s }
+let init = "ext"
+let mut p = P { hv: View { data: ref init }, s: "self" }
+set_view (ref mut p.hv) (ref p.s)
+p.hv.data.length"#,
+        "E1013",
+        "self_referential_store",
+    );
+
+    // 2. Storing an external borrow through a field exclusive slice keeps the loan on the owner (A31).
+    rejects_2027(
+        r#"record PtrBox { r } { ptrs: [ref { r } string] }
+let a = "alpha"
+let mut other = "beta"
+let mut b = PtrBox { ptrs: [ref a] }
+Array.write 0 (ref other) b.ptrs
+other = "gamma"
+b.ptrs[0].length"#,
+        "E1014",
+        "borrow_conflict",
+    );
+
+    // 3. `Drop.drop` field exclusive borrow is E1012 (`drop_replace_whole_value`) in 2027, and E1014 in 2026.
+    let drop_src = "\
+record D { xs: [i64] }
+instance Drop<D> {
+    fn drop self =
+        let s = ref mut self.xs[0..]
+        Array.write 0 9 s
+}
+let d = D { xs: [1, 2] }
+d.xs[0]";
+    rejects_2027(drop_src, "E1012", "drop_replace_whole_value");
+    let drop_2026 = analyze(drop_src).unwrap_err().into_data();
+    assert_eq!(drop_2026.code, "E1014");
+    assert_eq!(drop_2026.kind, Some("mutate_immutable_value"));
+
+    // 4. Disjoint field arguments `f (ref mut b.n) (ref b.xs)` accepted; overlapping `f (ref mut b.xs) (ref b)` E1014.
+    let [native_ir, _] = emits_2027(&format!(
+        "{A39_PRELUDE}\
+         def pair_op :: ref mut i64 -> ref [i64] -> unit = \\n xs -> deref n = deref n + xs.length\n\
+         let mut b = B {{ n: 10, xs: [1, 2, 3] }}\n\
+         pair_op (ref mut b.n) (ref b.xs)\n\
+         b.n"
+    ));
+    assert!(native_ir.contains("noalias"), "{native_ir}");
+    rejects_2027(
+        &format!(
+            "{A39_PRELUDE}\
+             def overlap_op :: ref mut [i64] -> ref B -> unit = \\_xs _b -> ()\n\
+             let mut b = B {{ n: 10, xs: [1, 2, 3] }}\n\
+             overlap_op (ref mut b.xs) (ref b)\n\
+             0"
+        ),
+        "E1014",
+        "borrow_conflict",
+    );
+}

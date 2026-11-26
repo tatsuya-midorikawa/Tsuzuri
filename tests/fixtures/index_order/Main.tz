@@ -1,0 +1,102 @@
+record Foo { v: i64 }
+
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+
+instance IndexMut<Foo, i64, i64> {
+    fn index_mut _k x self = deref self = Foo { v: x }
+}
+
+record OwnedBox { tag: string, v: i64 }
+
+instance Index<OwnedBox, i64, i64> {
+    fn index k self = self.tag.length + self.v + deref k
+}
+
+instance IndexMut<OwnedBox, i64, string> {
+    fn index_mut _k s self = deref self = OwnedBox { tag: s, v: self.v + 1 }
+}
+
+def mark :: ref mut i64 -> i64 -> i64 -> i64 = \log tag value ->
+    deref log = deref log * 10 + tag
+    value
+
+def mk :: ref mut i64 -> Foo = \log ->
+    deref log = deref log * 10 + 1
+    Foo { v: 100 }
+
+def arr :: ref mut i64 -> [i64] = \log ->
+    deref log = deref log * 10 + 1
+    [10, 20, 30]
+
+def pick { r } :: ref mut { r } Foo -> ref mut i64 -> ref mut { r } Foo = \foo log ->
+    deref log = deref log * 10 + 1
+    foo
+
+def pick_array { r } :: ref mut { r } [i64] -> ref mut i64 -> ref mut { r } [i64] = \xs log ->
+    deref log = deref log * 10 + 1
+    xs
+
+export def class_read :: i64 -> i64
+fn class_read _n =
+    let mut log = 0
+    let _v = (mk (ref mut log))[mark (ref mut log) 2 1]
+    log
+
+export def array_read :: i64 -> i64
+fn array_read _n =
+    let mut log = 0
+    let _v = (arr (ref mut log))[mark (ref mut log) 2 1]
+    log
+
+export def class_assign :: i64 -> i64
+fn class_assign _n =
+    let mut log = 0
+    let mut foo = Foo { v: 100 }
+    (pick (ref mut foo) (ref mut log))[mark (ref mut log) 2 0] = mark (ref mut log) 3 7
+    log
+
+export def array_assign :: i64 -> i64
+fn array_assign _n =
+    let mut log = 0
+    let mut xs = [10, 20, 30]
+    (deref (pick_array (ref mut xs) (ref mut log)))[mark (ref mut log) 2 0] = mark (ref mut log) 3 7
+    log
+
+def mk_owned :: i64 -> OwnedBox = \n ->
+    OwnedBox { tag: $"owned-{n}", v: n }
+
+export def early_exit_temp_base :: i64 -> i64 -> i64
+fn early_exit_temp_base n k =
+    let huge = 9223372036854775807
+    match (try (mk_owned n)[@checked (k + huge)] with | e -> e) with
+    | Result.Ok v -> v
+    | Result.Error _ -> -1
+
+export def early_exit_rhs_value :: i64 -> i64 -> i64
+fn early_exit_rhs_value n k =
+    let huge = 9223372036854775807
+    let mut b = OwnedBox { tag: $"init-{n}", v: 0 }
+    match (try { b[@checked (k + huge)] = $"rhs-{n}"; b.v } with | e -> e) with
+    | Result.Ok v -> v
+    | Result.Error _ -> -1
+
+def pick_tensor { r } :: ref { r } Tensor<i64> -> ref mut i64 -> ref { r } Tensor<i64> = \t log ->
+    deref log = deref log * 10 + 1
+    t
+
+def mark_range :: ref mut i64 -> i64 -> i64 -> Slice.Axis = \log a b ->
+    deref log = deref log * 10 + 2
+    Slice.range a b
+
+def mark_at :: ref mut i64 -> i64 -> Slice.Axis = \log i ->
+    deref log = deref log * 10 + 3
+    Slice.at i
+
+export def chained_view_order :: i64 -> i64
+fn chained_view_order _n =
+    let mut log = 0
+    let t = Tensor.init [3, 2] (\i -> i + 10)
+    let sub = ref (pick_tensor (ref t) (ref mut log))[[mark_range (ref mut log) 0 2]][[mark_at (ref mut log) 1]]
+    log * 100 + sub[[0]]

@@ -79,14 +79,42 @@ impl FunctionEmitter<'_, '_> {
         body: &TypedExpr,
         descending: bool,
         exclusive: bool,
+        start_open: bool,
     ) {
         let first = self.expression(start);
         let stride = self.expression(step);
         // ranges.rs (R1, R2) relies on start, step and finish being evaluated once, before the loop.
         let last = self.expression(finish);
-        // A half-open range keeps the closed range's facts: its end is one past a sound bound.
+        // A half-open or start-open range keeps the closed range's facts: its bounds are inside
+        // `[start, finish]`.
         self.ranges
             .enter_counter(self.module, local, start, step, finish, descending);
+        if start_open {
+            let Type::Integer(bits, signed) = local.ty else {
+                unreachable!("integer range checked")
+            };
+            let ty = self.ty(&local.ty);
+            let max_bits = if signed {
+                (1u128 << (bits - 1)) - 1
+            } else {
+                u128::MAX >> (128 - bits)
+            };
+            let join = self.label();
+            let after_start = self.label();
+            let has_room = self.value(format!("icmp ne {ty} {first}, {max_bits}"));
+            self.branch(&has_room, &after_start, &join);
+            self.begin(&after_start);
+            let first = self.value(format!("add {ty} {first}, 1"));
+            if exclusive {
+                let last = self.half_open_last(local, step, &first, &stride, &last, &join);
+                self.closed_range_loop(local, step, &first, &stride, &last, body, false);
+            } else {
+                self.closed_range_loop(local, step, &first, &stride, &last, body, descending);
+            }
+            self.jump(&join);
+            self.begin(&join);
+            return;
+        }
         if !exclusive {
             self.closed_range_loop(local, step, &first, &stride, &last, body, descending);
             return;

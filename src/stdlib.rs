@@ -349,7 +349,7 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "Tensor",
         names: &["Tensor"],
         aliases: &[],
-        uses: &["Matrix", "MatrixView", "Slice"],
+        uses: &["Complex", "Matrix", "MatrixView", "Slice"],
     },
     // The old names of DataChannel are `Channel.bounded` and the like (TZ03): they resolve as their
     // replacements while they are reported (E1040), so a program that names Channel loads it too.
@@ -529,6 +529,65 @@ fn member_triggers(text: &str, triggered: &mut Vec<&'static str>) {
     }
 }
 
+/// NC18 D11: whether `text` contains an index bracket (`[` right after an identifier, `)` or `]`)
+/// whose top-level components contain a range operator or a prefix `^` (`^k`). Checked only when
+/// `Matrix` is already needed so non-`Matrix` programs never change their loaded modules.
+fn has_bracket_selector(text: &str) -> bool {
+    if !text.contains('[') || (!text.contains("..") && !text.contains('^')) {
+        return false;
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Group {
+        IndexBracket,
+        Other,
+    }
+    let (tokens, _) = crate::lexer::lex_all(text, crate::syntax::Edition::LATEST);
+    let mut stack: Vec<Group> = Vec::new();
+    let mut prev: Option<&TokenKind> = None;
+    for token in &tokens {
+        match &token.kind {
+            TokenKind::LeftBracket => {
+                let is_index = matches!(
+                    prev,
+                    Some(TokenKind::Ident(_) | TokenKind::RightParen | TokenKind::RightBracket)
+                );
+                stack.push(if is_index {
+                    Group::IndexBracket
+                } else {
+                    Group::Other
+                });
+            }
+            TokenKind::LeftParen | TokenKind::LeftBrace | TokenKind::LeftList => {
+                stack.push(Group::Other);
+            }
+            TokenKind::RightBracket
+            | TokenKind::RightParen
+            | TokenKind::RightBrace
+            | TokenKind::RightList => {
+                stack.pop();
+            }
+            TokenKind::DotDot
+            | TokenKind::DotDotLess
+            | TokenKind::DotDotEqual
+            | TokenKind::LessDotDot
+            | TokenKind::LessDotDotLess
+                if stack.last() == Some(&Group::IndexBracket) =>
+            {
+                return true;
+            }
+            TokenKind::Caret
+                if stack.last() == Some(&Group::IndexBracket)
+                    && matches!(prev, Some(TokenKind::LeftBracket | TokenKind::Comma)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        prev = Some(&token.kind);
+    }
+    false
+}
+
 /// Whether `module` is an opt-in std module, whose declarations user code names
 /// only qualified (D-40).
 pub(crate) fn is_opt_in(module: &str) -> bool {
@@ -541,13 +600,14 @@ pub(crate) fn is_opt_in(module: &str) -> bool {
 pub fn sources_for<'a>(
     texts: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(&'static str, &'static str)> {
+    let texts: Vec<&'a str> = texts.into_iter().collect();
     let aliases: Vec<&str> = OPT_IN
         .iter()
         .flat_map(|module| module.aliases.iter().copied())
         .collect();
     let mut words = std::collections::BTreeSet::new();
     let mut triggered = Vec::new();
-    for text in texts {
+    for &text in &texts {
         member_triggers(text, &mut triggered);
         let bytes = text.as_bytes();
         let mut index = 0;
@@ -590,6 +650,12 @@ pub fn sources_for<'a>(
         if !needed.contains(&module) {
             needed.push(module);
         }
+    }
+    if needed.contains(&"Matrix")
+        && !needed.contains(&"Slice")
+        && texts.iter().copied().any(has_bracket_selector)
+    {
+        needed.push("Slice");
     }
     for &(first, second, target) in PAIR_TRIGGERS {
         if needed.contains(&first) && needed.contains(&second) && !needed.contains(&target) {
@@ -738,27 +804,41 @@ mod tests {
                 "{path}: OptIn aliases must list the '@alias' declarations of the module"
             );
             for instance in &program.instances {
-                use crate::syntax::TypeExprKind;
-                let head = match &instance.ty.kind {
-                    TypeExprKind::Named(name) => Some(name.as_str()),
-                    TypeExprKind::Apply(name, _) => Some(name.text.as_str()),
-                    _ => None,
+                let mut all_args = vec![&instance.ty];
+                all_args.extend(instance.extra_args.iter());
+                let positions = crate::check::polymorph_dispatch_positions(
+                    &instance.class.text,
+                    all_args.len(),
+                );
+                let check_args: Vec<&crate::syntax::TypeExpr> = if positions.is_empty() {
+                    vec![&instance.ty]
+                } else {
+                    positions.iter().map(|&i| all_args[i]).collect()
                 };
-                let own = head.is_some_and(|head| {
-                    let head = head
-                        .strip_prefix(&format!("{}.", module.module))
-                        .unwrap_or(head);
-                    program
-                        .records
-                        .iter()
-                        .any(|record| record.name.text == head)
-                        || program.unions.iter().any(|union| union.name.text == head)
-                        || program
-                            .type_aliases
+                fn head_of(ty_expr: &crate::syntax::TypeExpr) -> Option<&str> {
+                    match &ty_expr.kind {
+                        crate::syntax::TypeExprKind::Named(name) => Some(name.as_str()),
+                        crate::syntax::TypeExprKind::Apply(name, _) => Some(name.text.as_str()),
+                        _ => None,
+                    }
+                }
+                let own = check_args.iter().any(|ty_expr| {
+                    head_of(ty_expr).is_some_and(|head| {
+                        let head = head
+                            .strip_prefix(&format!("{}.", module.module))
+                            .unwrap_or(head);
+                        program
+                            .records
                             .iter()
-                            .any(|alias| alias.name.text == head)
+                            .any(|record| record.name.text == head)
+                            || program.unions.iter().any(|union| union.name.text == head)
+                            || program
+                                .type_aliases
+                                .iter()
+                                .any(|alias| alias.name.text == head)
+                    })
                 });
-                let pair_triggered = head.is_some_and(|head| {
+                let pair_triggered = head_of(&instance.ty).is_some_and(|head| {
                     PAIR_TRIGGERS.iter().any(|&(first, second, target)| {
                         target == module.module
                             && head == first
@@ -920,6 +1000,68 @@ mod tests {
         assert!(!is_reserved_module("Async"));
         assert!(!is_reserved_module("Main"));
         assert!(!is_reserved_module("math"));
+    }
+
+    #[test]
+    fn std_instances_with_open_dispatch_positions_are_listed() {
+        use crate::syntax::TypeExprKind;
+        let mut open = Vec::new();
+        for &(path, source) in SOURCES {
+            let program = crate::parser::parse(source).unwrap();
+            for instance in &program.instances {
+                let mut all_args = vec![&instance.ty];
+                all_args.extend(instance.extra_args.iter());
+                let positions = crate::check::polymorph_dispatch_positions(
+                    &instance.class.text,
+                    all_args.len(),
+                );
+                if positions
+                    .iter()
+                    .any(|&i| matches!(all_args[i].kind, TypeExprKind::Variable(_)))
+                {
+                    let args: Vec<String> = all_args
+                        .iter()
+                        .map(|t| crate::docgen::type_text(t))
+                        .collect();
+                    open.push(format!(
+                        "{path}: {}<{}>",
+                        instance.class.text,
+                        args.join(", ")
+                    ));
+                }
+            }
+        }
+        assert_eq!(
+            open,
+            [
+                "std/HashMap.tz: Index<HashMap<'key, 'value>, 'key, 'value>",
+                "std/Map.tz: Index<Map<'key, 'value>, 'key, 'value>",
+                "std/Tensor.tz: Add<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Add<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Add<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Add<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Sub<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Sub<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Sub<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Sub<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Mul<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Mul<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Mul<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Mul<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Div<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Div<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Div<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Div<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Rem<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Rem<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Rem<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Rem<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Pow<'a, Tensor<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Pow<Tensor<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: Pow<'a, View<'a>, Tensor<'a>>",
+                "std/Tensor.tz: Pow<View<'a>, 'a, Tensor<'a>>",
+            ]
+        );
     }
 
     #[test]

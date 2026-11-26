@@ -64,6 +64,9 @@ struct Place {
     /// A field or payload step starts at a value whose type implements Drop. The types along
     /// `root` and `fields` decide it, so equal places always agree.
     through_drop: bool,
+    /// A39: whether any step after any leading region-slot marker is not a `Type::Record` field
+    /// (i.e. `ELEMENT`, `PAYLOAD`, or a `Type::Tuple` component).
+    non_record_step: bool,
 }
 
 /// Collection elements are conservatively one place.
@@ -546,6 +549,7 @@ fn ownership_free(body: &TypedExpr) -> bool {
                 | E::Unary(..)
                 | E::Cast(_)
                 | E::SaturatingIndex(_)
+                | E::FromEnd { .. }
                 | E::Binary(..)
                 | E::If { .. }
         ) {
@@ -580,6 +584,8 @@ struct Contract<'a> {
     captures: usize,
     /// A34 (`fvdrop`): edition-2027 read-by-default parameter flags of the function.
     read_by_default: &'a [bool],
+    /// A39: whether this body uses edition 2027+ record-field exclusive borrow rules.
+    field_borrows: bool,
 }
 
 impl<'a> Contract<'a> {
@@ -592,6 +598,7 @@ impl<'a> Contract<'a> {
             lends_mutable: None,
             captures: function.capture_count,
             read_by_default: &function.read_by_default,
+            field_borrows: function.origin.field_borrows,
         }
     }
 }
@@ -723,6 +730,7 @@ fn start_checker<'a, 'run>(
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
         builtin_wrapper: contract.builtin_wrapper,
+        field_borrows: contract.field_borrows,
         lends_mutable: contract.lends_mutable,
         dropped: None,
         drop_types: BTreeMap::new(),
@@ -770,6 +778,7 @@ fn start_checker<'a, 'run>(
         hidden_walks: BTreeMap::new(),
         exporting: false,
         views: BTreeSet::new(),
+        pattern_locals: BTreeSet::new(),
         drop_read_types: BTreeMap::new(),
         drop_read_locals: BTreeMap::new(),
         binding_order: BTreeMap::new(),
@@ -790,6 +799,8 @@ fn start_checker<'a, 'run>(
         parameter_path_steps: std::cell::Cell::new(0),
         matched_by: None,
         injections: BTreeSet::new(),
+        checking_contents: false,
+        last_deref_all_through: false,
     };
     if !infer && facts.seeded {
         known_functions(
@@ -1422,9 +1433,21 @@ struct CallFacts {
     /// A34 (`shareparam`): by function and parameter index, whether a complete call returns only
     /// a `Loan::share` of that parameter's block (`fn dup r = Rc.share r`).
     share_returns: Vec<Option<Box<[bool]>>>,
+    /// A37: by function and parameter index, whether a complete call returns loans from a shared
+    /// reference parameter only as contents read through its target (`Part::Contents`).
+    contents_returns: Vec<Option<Box<[bool]>>>,
 }
 
 impl CallFacts {
+    /// A37: whether parameter `index` reaches `function`'s result only as contents behind a
+    /// shared reference target (or not at all).
+    fn returns_contents(&self, function: usize, index: usize) -> bool {
+        self.contents_returns
+            .get(function)
+            .and_then(Option::as_deref)
+            .is_some_and(|flags| flags.get(index) == Some(&true))
+    }
+
     /// A34 (`shareparam`): whether parameter `index` reaches `function`'s result only as a shared
     /// block owner (`Loan::share`).
     fn returns_share(&self, function: usize, index: usize) -> bool {
@@ -1497,6 +1520,7 @@ fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
         self_borrow_paths: joint.self_borrow_paths,
         self_borrow_any: joint.self_borrow_any,
         share_returns: joint.share_returns,
+        contents_returns: joint.contents_returns,
     }
 }
 
@@ -1730,6 +1754,7 @@ struct JointFacts {
     self_borrow_paths: BTreeMap<Type, BTreeSet<Vec<usize>>>,
     self_borrow_any: bool,
     share_returns: Vec<Option<Box<[bool]>>>,
+    contents_returns: Vec<Option<Box<[bool]>>>,
 }
 
 /// A31: the builtins that store a value that they get where an exclusive reference that they get
@@ -2065,6 +2090,37 @@ fn joint_facts(
             .user_drops
             .values()
             .any(|drop| candidates.may_store[*drop] || candidates.top[*drop]);
+    let mut contents_targets: BTreeSet<usize> = (0..count)
+        .filter(|id| {
+            module.functions[*id]
+                .origin
+                .index_method
+                .is_some_and(crate::check::IndexMethodKind::is_view)
+        })
+        .collect();
+    let mut pending_contents: Vec<usize> = contents_targets.iter().copied().collect();
+    let mut contents_callees: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    while let Some(caller_id) = pending_contents.pop() {
+        let mut exprs = vec![&module.functions[caller_id].body];
+        while let Some(expr) = exprs.pop() {
+            if let E::Call(callee, _) | E::Binary(BinaryOp::Pipe, _, callee) = &expr.kind
+                && let Some(callee_id) = direct_callee(callee)
+            {
+                contents_callees
+                    .entry(caller_id)
+                    .or_default()
+                    .insert(callee_id);
+                if contents_targets.insert(callee_id) {
+                    pending_contents.push(callee_id);
+                }
+            }
+            expr.try_for_each_child(&mut |child| {
+                exprs.push(child);
+                Ok(())
+            })
+            .expect("collecting contents callees cannot fail");
+        }
+    }
     let mut facts = CallFacts {
         closed: closed.to_vec(),
         retained: vec![None; count],
@@ -2086,6 +2142,7 @@ fn joint_facts(
         self_borrow_paths: BTreeMap::new(),
         self_borrow_any: false,
         share_returns: vec![None; count],
+        contents_returns: vec![None; count],
         revoked: vec![false; count],
         stores: (0..count)
             .map(|id| {
@@ -2132,6 +2189,7 @@ fn joint_facts(
     let checked: BTreeSet<usize> = callers
         .keys()
         .copied()
+        .chain(contents_targets.iter().copied())
         .chain((0..count).filter(|id| storing[*id] || (closed[*id] && revocable(*id))))
         .collect();
     // The functions whose checks read the facts of each function.
@@ -2141,6 +2199,13 @@ fn joint_facts(
             .entry(callee)
             .or_default()
             .extend(users.iter().filter(|user| checked.contains(user)));
+    }
+    for (&caller, used) in &contents_callees {
+        for &callee in used {
+            if checked.contains(&caller) {
+                dependents.entry(callee).or_default().insert(caller);
+            }
+        }
     }
     for &user in &checked {
         for &callee in &candidates.mentions[user] {
@@ -2165,6 +2230,7 @@ fn joint_facts(
             .get(&id)
             .into_iter()
             .flatten()
+            .chain(contents_callees.get(&id).into_iter().flatten())
             .chain(&candidates.mentions[id])
             .copied()
             .filter(|callee| checked.contains(callee))
@@ -2261,6 +2327,7 @@ fn joint_facts(
                 for id in unsettled {
                     facts.retained[id] = None;
                     facts.share_returns[id] = None;
+                    facts.contents_returns[id] = None;
                     if candidates.may_store[id] {
                         facts.stores[id] = StoreFacts::top();
                     }
@@ -2279,6 +2346,7 @@ fn joint_facts(
                 infer,
                 &facts,
                 retention.contains(&id),
+                contents_targets.contains(&id),
                 storing[id],
                 facts.closed[id] && revocable(id),
             );
@@ -2303,6 +2371,12 @@ fn joint_facts(
                 && facts.share_returns[id].as_deref() != Some(shares.as_ref())
             {
                 facts.share_returns[id] = Some(shares);
+                changed = true;
+            }
+            if contents_targets.contains(&id)
+                && facts.contents_returns[id] != outcome.contents_returns
+            {
+                facts.contents_returns[id] = outcome.contents_returns;
                 changed = true;
             }
             if storing[id] {
@@ -2476,6 +2550,7 @@ fn joint_facts(
         self_borrow_paths: facts.self_borrow_paths,
         self_borrow_any: facts.self_borrow_any,
         share_returns: facts.share_returns,
+        contents_returns: facts.contents_returns,
     }
 }
 
@@ -3585,9 +3660,11 @@ fn partial_results(module: &CheckedModule) -> BTreeSet<Type> {
                 | E::Borrow(..)
                 | E::BorrowOperand(_)
                 | E::Dereference(_)
+                | E::ReferenceOperand(_)
                 | E::Assign(..)
                 | E::Cast(_)
                 | E::SaturatingIndex(_)
+                | E::FromEnd { .. }
                 | E::CaseConstructor { .. }
                 | E::Construct { .. }
                 | E::UnionTag(_)
@@ -3800,6 +3877,8 @@ struct FactsOutcome {
     retained: Option<Box<[bool]>>,
     /// A34 (`shareparam`): parameters that reach the result exclusively via `Loan::share`.
     share_returns: Option<Box<[bool]>>,
+    /// A37: parameters that reach the result only as contents read through their reference target.
+    contents_returns: Option<Box<[bool]>>,
     stores: StoreFacts,
     /// The closed result is revoked: the result holds a loan.
     revoke: bool,
@@ -3812,21 +3891,25 @@ struct FactsOutcome {
 /// a loan of its own locals, or when it lends a way to write or makes an opaque call,
 /// `lending_bodies`), its store facts (`stores`; `top` when it does not check), and whether its
 /// result holds a loan (`revocable`).
+#[allow(clippy::too_many_arguments)]
 fn check_facts(
     module: &CheckedModule,
     id: usize,
     infer: bool,
     facts: &CallFacts,
     retention: bool,
+    contents: bool,
     stores: bool,
     revocable: bool,
 ) -> FactsOutcome {
     let function = &module.functions[id];
     let retention = retention && !facts.lending.no_facts(id);
-    if !retention && !stores && !revocable {
+    let contents = contents && !facts.lending.no_reads(id);
+    if !retention && !contents && !stores && !revocable {
         return FactsOutcome {
             retained: None,
             share_returns: None,
+            contents_returns: None,
             stores: StoreFacts::default(),
             revoke: false,
             failed: false,
@@ -3847,6 +3930,7 @@ fn check_facts(
         None,
         None,
     );
+    checker.checking_contents = contents;
     checker.drops_stop_reads = drops_stop_reads(
         module,
         function.parameters.iter(),
@@ -3875,6 +3959,7 @@ fn check_facts(
             return FactsOutcome {
                 retained: None,
                 share_returns: None,
+                contents_returns: None,
                 stores: StoreFacts::top(),
                 revoke: revocable,
                 failed: true,
@@ -3929,10 +4014,74 @@ fn check_facts(
     } else {
         None
     };
+    let contents_returns = if contents
+        && result.loans.iter().all(|loan| {
+            let root = checker.loans[*loan].place.root;
+            roots.contains_key(&root) || is_static_root(root)
+        }) {
+        let types = module.types();
+        let dropped = checker.dropped.as_ref();
+        let mut flags = vec![false; function.parameters.len()];
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            let carries = matches!(
+                &parameter.ty,
+                Type::Reference(target, false)
+                    if target.carries_loans(&types) && !target.reaches_exclusive(&types)
+            );
+            let param_root = usize::MAX - parameter.id;
+            let mut reaches_param = false;
+            let mut all_contents = true;
+            let mut pending: Vec<(usize, bool)> = result
+                .loans
+                .iter()
+                .map(|&l| (l, result.through.contains(&l)))
+                .collect();
+            if facts.drops_write
+                && let Some(dropped_set) = dropped
+            {
+                for &l in dropped_set {
+                    pending.push((l, false));
+                }
+            }
+            let mut seen = BTreeSet::new();
+            while let Some((loan_id, is_through)) = pending.pop() {
+                if !seen.insert((loan_id, is_through)) {
+                    continue;
+                }
+                let loan = &checker.loans[loan_id];
+                if loan.place.root == param_root {
+                    reaches_param = true;
+                    let is_slot_target = checker
+                        .slots
+                        .get(&(param_root, 0))
+                        .is_some_and(|slot| slot.target.contains(&loan_id));
+                    let valid_place = loan.place.fields.is_empty() && !loan.share;
+                    if !(carries && valid_place && (is_through || is_slot_target)) {
+                        all_contents = false;
+                        break;
+                    }
+                    for &parent in &loan.parents {
+                        pending.push((parent, is_through));
+                    }
+                    continue;
+                }
+                for &parent in &loan.parents {
+                    pending.push((parent, false));
+                }
+            }
+            if !reaches_param || all_contents {
+                flags[index] = true;
+            }
+        }
+        flags.iter().any(|&f| f).then_some(flags.into_boxed_slice())
+    } else {
+        None
+    };
     if !retention {
         return FactsOutcome {
             retained: None,
             share_returns,
+            contents_returns,
             stores: found,
             revoke,
             failed: false,
@@ -3945,6 +4094,7 @@ fn check_facts(
         return FactsOutcome {
             retained: None,
             share_returns,
+            contents_returns,
             stores: found,
             revoke,
             failed: false,
@@ -3974,6 +4124,7 @@ fn check_facts(
     FactsOutcome {
         retained: Some(retained.into_boxed_slice()),
         share_returns,
+        contents_returns,
         stores: found,
         revoke,
         failed: false,
@@ -5649,6 +5800,8 @@ struct Checker<'a, 'run> {
     later_use_budget: usize,
     /// The body is a generated function that applies a builtin to its own parameters (A30).
     builtin_wrapper: bool,
+    /// A39: whether edition 2027+ record-field exclusive borrows are enabled for this body.
+    field_borrows: bool,
     /// Whether the body, or one that it is lifted from or that is lifted from it, lends a way to
     /// write (`lending_bodies`); the body alone is asked when the contract does not say.
     lends_mutable: Option<bool>,
@@ -5772,6 +5925,7 @@ struct Checker<'a, 'run> {
     /// A31: the pattern variables of the body bound as read-only views of the matched storage
     /// (`view`): a borrow of one points into that storage (`expand_views`).
     views: BTreeSet<usize>,
+    pattern_locals: BTreeSet<usize>,
     /// A31: whether dropping a value of a type may run a user `Drop.drop` (`drop_reads`), by type,
     /// and by local (`local_drop_reads`).
     drop_read_types: BTreeMap<Type, bool>,
@@ -5843,6 +5997,8 @@ struct Checker<'a, 'run> {
     /// The spans of the values that moved into an anonymous union when they were injected (A24),
     /// for the help of a later use: a borrow cannot be injected.
     injections: BTreeSet<(Option<usize>, usize, usize)>,
+    checking_contents: bool,
+    last_deref_all_through: bool,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -6209,6 +6365,7 @@ impl<'a> Checker<'a, '_> {
                             lends_mutable: Some(self.facts.lending.no_reads(*id)),
                             captures: captures.len(),
                             read_by_default: &function.read_by_default,
+                            field_borrows: function.origin.field_borrows,
                         },
                         &mut Vec::new(),
                         None,
@@ -6801,6 +6958,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root,
                 fields,
                 through_drop: false,
+                non_record_step: false,
             };
             let mutable = exclusive & (1 << slot) != 0;
             loans.push(self.loan(place, mutable, BTreeSet::new(), parameter.span));
@@ -7109,8 +7267,10 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// Adds to a direct call's result the loans of `argument` that its named result regions select.
     /// The target slot of a result written `ref {r} T {s}` gets none (A13 Phase 2).
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn argument_regions(
         &self,
+        known: Option<usize>,
         sources: &RegionSources,
         slots: Option<&RegionSlots>,
         index: usize,
@@ -7119,6 +7279,8 @@ impl<'a, 'run> Checker<'a, 'run> {
         current: &mut Value,
     ) {
         let result_target = slots.is_some_and(|slots| slots.result_target);
+        let from_contents = self.checking_contents
+            && known.is_some_and(|id| self.facts.returns_contents(id, index));
         for (result_slot, allowed) in sources.iter().enumerate() {
             if result_target && result_slot == 1 {
                 continue;
@@ -7131,7 +7293,20 @@ impl<'a, 'run> Checker<'a, 'run> {
                 if let Some(slots) = current.regions.as_mut() {
                     slots[result_slot].extend(&loans);
                 }
-                current.hold(loans);
+                if self.checking_contents {
+                    for loan in loans {
+                        let as_contents = from_contents || value.through.contains(&loan);
+                        if current.loans.insert(loan) {
+                            if as_contents {
+                                current.through.insert(loan);
+                            }
+                        } else if !as_contents {
+                            current.through.remove(&loan);
+                        }
+                    }
+                } else {
+                    current.hold(loans);
+                }
             }
         }
     }
@@ -7396,6 +7571,18 @@ impl<'a, 'run> Checker<'a, 'run> {
                 span,
             ));
         }
+        if usage == Use::MutBorrow
+            && Some(place.root) == self.drop_root
+            && !place.fields.is_empty()
+            && self.field_borrows
+            && !place.non_record_step
+        {
+            return Err(error(
+                DiagnosticKind::DropReplaceWholeValue,
+                "cannot borrow a field exclusively inside Drop.drop; read it or borrow it with 'ref' instead",
+                span,
+            ));
+        }
         // Replacing the value reruns this drop, and a `ref mut` callee could replace it too.
         if place.fields.is_empty() {
             // A move of the parameter (`usize::MAX - drop_root`) passes the reference on.
@@ -7426,38 +7613,128 @@ impl<'a, 'run> Checker<'a, 'run> {
             } else {
                 via.iter().all(|id| self.loans[*id].mutable)
             };
-            if !mutable || (usage != Use::Write && !unmarked_fields(place).is_empty()) {
-                let diagnostic = Diagnostic::of(
-                    DiagnosticKind::MutateImmutableValue,
-                    "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
-                    span,
-                );
-                let declared = self
-                    .state
-                    .locals
-                    .get(&place.root)
-                    .map(|(local, _)| *local)
-                    .filter(|local| {
-                        via.is_empty()
-                            && !local.mutable
-                            && unmarked_fields(place).is_empty()
-                            && local.span.end > local.span.start
-                            && !local.name.starts_with('$')
-                    });
-                let diagnostic = match declared {
-                    Some(local) => diagnostic
-                        .related(
-                            RelatedRole::DeclaredHere,
-                            format!("'{}' is declared here without 'mut'", local.name),
-                            local.span,
+            let has_fields = !unmarked_fields(place).is_empty();
+            let disallow_field_borrow = usage != Use::Write
+                && has_fields
+                && !(self.field_borrows && !place.non_record_step);
+            if !mutable || disallow_field_borrow {
+                let diagnostic = if !has_fields {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
+                        span,
+                    );
+                    let declared = self
+                        .state
+                        .locals
+                        .get(&place.root)
+                        .map(|(local, _)| *local)
+                        .filter(|local| {
+                            via.is_empty()
+                                && !local.mutable
+                                && local.span.end > local.span.start
+                                && !local.name.starts_with('$')
+                        });
+                    match declared {
+                        Some(local) => diagnostic
+                            .related(
+                                RelatedRole::DeclaredHere,
+                                format!("'{}' is declared here without 'mut'", local.name),
+                                local.span,
+                            )
+                            .with_help(format!(
+                                "declare '{}' with 'let mut', or take it by 'ref mut'",
+                                local.name
+                            )),
+                        None => diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        ),
+                    }
+                } else if !self.field_borrows {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
+                        span,
+                    );
+                    if mutable && !place.non_record_step {
+                        diagnostic.with_help(
+                            "record fields are immutable in edition 2026: copy the field into a 'let mut' local, change it, and rebuild the record with '{ b with f = ... }'; edition 2027 can borrow it with 'ref mut b.f'",
                         )
-                        .with_help(format!(
-                            "declare '{}' with 'let mut', or take it by 'ref mut'",
-                            local.name
-                        )),
-                    None => diagnostic.with_help(
-                        "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
-                    ),
+                    } else {
+                        diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        )
+                    }
+                } else if place.non_record_step {
+                    Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); array elements, list elements, union payloads, and tuple components cannot be borrowed exclusively",
+                        span,
+                    )
+                    .with_help(
+                        "write elements through an exclusive slice with 'Array.write', or keep the value in a 'let mut' local or a record field",
+                    )
+                } else {
+                    let diagnostic = Diagnostic::of(
+                        DiagnosticKind::MutateImmutableValue,
+                        "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut')",
+                        span,
+                    );
+                    let captured_name = if via.is_empty()
+                        && self.capture_roots.contains(&(usize::MAX - place.root))
+                    {
+                        self.state
+                            .locals
+                            .get(&place.root)
+                            .map(|(local, _)| local.name.as_str())
+                            .filter(|name| !name.starts_with('$'))
+                    } else {
+                        via.iter().find_map(|id| {
+                            let root = self.loans[*id].place.root;
+                            self.capture_roots
+                                .contains(&root)
+                                .then(|| self.declarations.get(&(usize::MAX - root)))
+                                .flatten()
+                                .map(|local| local.name.as_str())
+                                .filter(|name| !name.starts_with('$'))
+                        })
+                    };
+                    let is_view = self.views.contains(&place.root)
+                        || self.pattern_locals.contains(&place.root)
+                        || via.iter().any(|id| self.loans[*id].view.is_some());
+                    if let Some(name) = captured_name {
+                        let name = name.to_owned();
+                        diagnostic.with_help(format!(
+                            "a closure captures '{name}' as an immutable value; pass it by 'ref mut' as an argument instead"
+                        ))
+                    } else if !is_view
+                        && via.is_empty()
+                        && let Some(local) = self
+                            .state
+                            .locals
+                            .get(&place.root)
+                            .map(|(local, _)| *local)
+                            .filter(|local| {
+                                !local.mutable
+                                    && local.span.end > local.span.start
+                                    && !local.name.starts_with('$')
+                            })
+                    {
+                        diagnostic
+                            .related(
+                                RelatedRole::DeclaredHere,
+                                format!("'{}' is declared here without 'mut'", local.name),
+                                local.span,
+                            )
+                            .with_help(format!(
+                                "declare '{}' with 'let mut', or take it by 'ref mut'",
+                                local.name
+                            ))
+                    } else {
+                        diagnostic.with_help(
+                            "write through a 'let mut' variable that holds the whole value, or take it by 'ref mut'",
+                        )
+                    }
                 };
                 return self.report(place, diagnostic);
             }
@@ -7717,6 +7994,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 },
                 BTreeSet::new(),
             )]),
@@ -7725,15 +8003,18 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: STATIC_ROOT + 1 + *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 },
                 BTreeSet::new(),
             )]),
             E::Field(value, field) => {
                 let through_drop = value.ty.has_user_drop(&self.module.types());
+                let non_record = !matches!(value.ty, Type::Record(..));
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(*field);
                     place.through_drop |= through_drop;
+                    place.non_record_step |= non_record;
                 }
                 Ok(places)
             }
@@ -7743,6 +8024,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 for (place, _) in &mut places {
                     place.fields.push(PAYLOAD);
                     place.through_drop |= through_drop;
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
@@ -7750,6 +8032,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 let mut places = self.place(value, live)?;
                 for (place, _) in &mut places {
                     place.fields.push(ELEMENT);
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
@@ -7773,10 +8056,11 @@ impl<'a, 'run> Checker<'a, 'run> {
                 for (place, _) in &mut places {
                     // Collection loans conservatively cover every element.
                     place.fields.push(ELEMENT);
+                    place.non_record_step = true;
                 }
                 Ok(places)
             }
-            E::Dereference(reference) => {
+            E::Dereference(reference) | E::ReferenceOperand(reference) => {
                 let value = self.eval(reference, Use::Read, live)?;
                 let mut places = Vec::new();
                 // A34 (`loopplace`): loans in `value.through` represent borrows stored into cells
@@ -7784,6 +8068,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 // the reference has direct pointer loans, skip `through` loans so dereferencing in
                 // a loop cannot nest fields onto stored cell loans without bound.
                 let has_direct = value.loans.iter().any(|id| !value.through.contains(id));
+                self.last_deref_all_through = !value.loans.is_empty() && !has_direct;
                 for id in &value.loans {
                     if has_direct && value.through.contains(id) {
                         continue;
@@ -8125,11 +8410,12 @@ impl<'a, 'run> Checker<'a, 'run> {
                         continue;
                     }
                     let place = loan.place.clone();
-                    if stored
-                        .loans
-                        .iter()
-                        .any(|id| *id != reference && self.loans[*id].place.overlaps(&place))
-                    {
+                    if stored.loans.iter().any(|id| {
+                        *id != reference
+                            && (self.loans[*id].place.overlaps(&place)
+                                || (!unmarked_fields(&place).is_empty()
+                                    && self.loans[*id].place.root == place.root))
+                    }) {
                         return Err(error(
                             DiagnosticKind::SelfReferentialStore,
                             "cannot store a reference inside its own owner",
@@ -10363,12 +10649,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                     let original = &self.loans[loan];
                     // A step that starts at a value whose type implements Drop, as `place` marks it.
                     let mut through_drop = original.place.through_drop;
+                    let mut non_record_step = original.place.non_record_step;
                     let mut current = target.cloned();
                     for &field in path {
                         let Some(ty) = current.take() else {
+                            non_record_step = true;
                             break;
                         };
                         through_drop |= ty.has_user_drop(&types);
+                        non_record_step |= !matches!(ty, Type::Record(..));
                         current = match ty {
                             Type::Record(id, arguments)
                                 if field < types.records[id].fields.len() =>
@@ -10395,6 +10684,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                             &orig_fields,
                             &fields,
                             through_drop,
+                            non_record_step,
                         ));
                     }
                     let copy = Loan {
@@ -10402,6 +10692,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                             root: orig_root,
                             fields,
                             through_drop,
+                            non_record_step,
                         },
                         mutable: false,
                         parents: narrowed_parents,
@@ -10433,6 +10724,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         orig_fields: &[usize],
         target_fields: &[usize],
         through_drop: bool,
+        non_record_step: bool,
     ) -> usize {
         let p = &self.loans[parent];
         let is_outer_same = !p.mutable
@@ -10451,6 +10743,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         let p_fields = p.place.fields.clone();
         let p_span = p.span;
         let p_through_drop = p.place.through_drop || through_drop;
+        let p_non_record_step = p.place.non_record_step || non_record_step;
         let grand_parents: Vec<usize> = p.parents.iter().copied().collect();
         let mut narrowed = BTreeSet::new();
         for gp in grand_parents {
@@ -10460,6 +10753,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 &p_fields,
                 target_fields,
                 p_through_drop,
+                p_non_record_step,
             ));
         }
         let copy = Loan {
@@ -10467,6 +10761,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root: orig_root,
                 fields: target_fields.to_vec(),
                 through_drop: p_through_drop,
+                non_record_step: p_non_record_step,
             },
             mutable: false,
             parents: narrowed,
@@ -10665,6 +10960,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                                 root: original.place.root,
                                 fields,
                                 through_drop: original.place.through_drop,
+                                non_record_step: true,
                             },
                             mutable: false,
                             parents,
@@ -12088,7 +12384,7 @@ impl<'a, 'run> Checker<'a, 'run> {
 
     fn is_place(expression: &TypedExpr) -> bool {
         match &expression.kind {
-            E::Local(_) | E::Dereference(_) => true,
+            E::Local(_) | E::Dereference(_) | E::ReferenceOperand(_) => true,
             E::Field(value, _) | E::ListTail(value, _) | E::UnionPayload { value, .. } => {
                 Self::is_place(value)
             }
@@ -12863,6 +13159,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 root: id,
                 fields: Vec::new(),
                 through_drop: false,
+                non_record_step: false,
             },
             false,
             BTreeSet::new(),
@@ -14044,6 +14341,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                     root: *id,
                     fields: Vec::new(),
                     through_drop: false,
+                    non_record_step: false,
                 };
                 self.state
                     .moved
@@ -14150,6 +14448,130 @@ impl<'a, 'run> Checker<'a, 'run> {
         })
     }
 
+    fn is_guardable_index_place(expr: &TypedExpr) -> bool {
+        match &expr.kind {
+            E::Local(_) => true,
+            E::Field(inner, _) | E::Dereference(inner) => Self::is_guardable_index_place(inner),
+            _ => false,
+        }
+    }
+
+    fn collect_mutable_chain_locals(&self, expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+        match &expr.kind {
+            E::Local(id) => {
+                if self.declarations.get(id).is_some_and(|local| local.mutable) {
+                    out.insert(*id);
+                }
+            }
+            E::Field(inner, _) | E::Dereference(inner) => {
+                self.collect_mutable_chain_locals(inner, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_d9_mutable_ref_roots(&self, base_arg: &TypedExpr, out: &mut BTreeSet<usize>) {
+        fn walk(checker: &Checker<'_, '_>, expr: &TypedExpr, out: &mut BTreeSet<usize>) {
+            match &expr.kind {
+                E::Field(inner, _) => walk(checker, inner, out),
+                E::Dereference(inner) => {
+                    checker.collect_mutable_chain_locals(inner, out);
+                    walk(checker, inner, out);
+                }
+                _ => {}
+            }
+        }
+        if let E::Borrow(raw_target, true) = &base_arg.kind {
+            walk(self, raw_target, out);
+        } else {
+            self.collect_mutable_chain_locals(base_arg, out);
+        }
+    }
+
+    fn index_base_guard(
+        &mut self,
+        index_method: crate::check::IndexMethodKind,
+        arguments: &[TypedExpr],
+        during: &BTreeSet<usize>,
+    ) -> Result<Option<Value>, Diagnostic> {
+        let key_is_const = match &arguments[0].kind {
+            E::BorrowOperand(inner) => inner.is_index_const(),
+            E::Borrow(inner, false) => matches!(inner.kind, E::Static(_)),
+            _ => false,
+        };
+        if key_is_const {
+            return Ok(None);
+        }
+        let base_arg = &arguments[index_method.base_param_index()];
+        match index_method {
+            crate::check::IndexMethodKind::Read { .. } => {
+                let (E::Borrow(base, false) | E::BorrowOperand(base)) = &base_arg.kind else {
+                    return Ok(None);
+                };
+                if matches!(base.kind, E::Local(id) if self.declarations.get(&id).is_some_and(|l| l.is_temp_index_base()))
+                    || !Self::is_guardable_index_place(base)
+                {
+                    return Ok(None);
+                }
+                let places = self.place(base, during)?;
+                let mut guard = Value::default();
+                for (place, via) in &places {
+                    self.access(place, via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place.clone(), false, via.clone(), base_arg.span));
+                }
+                Ok(Some(guard))
+            }
+            crate::check::IndexMethodKind::Write => {
+                let places = if let E::Borrow(raw_target, true) = &base_arg.kind {
+                    if !Self::is_guardable_index_place(raw_target) {
+                        return Ok(None);
+                    }
+                    self.shared_exclusive(raw_target, base_arg.span)?;
+                    self.exclusive_places(raw_target, during)?
+                } else {
+                    if !Self::is_guardable_index_place(base_arg) {
+                        return Ok(None);
+                    }
+                    let Some(inner_ty) = base_arg.ty.dereferenced() else {
+                        return Ok(None);
+                    };
+                    let deref_expr = TypedExpr {
+                        kind: E::Dereference(Box::new(base_arg.clone())),
+                        ty: inner_ty,
+                        span: base_arg.span,
+                    };
+                    self.shared_exclusive(&deref_expr, base_arg.span)?;
+                    self.exclusive_places(&deref_expr, during)?
+                };
+                let mut guard = Value::default();
+                for (place, via) in &places {
+                    self.access(place, via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place.clone(), false, via.clone(), base_arg.span));
+                }
+                let mut mut_ref_roots = BTreeSet::new();
+                self.collect_d9_mutable_ref_roots(base_arg, &mut mut_ref_roots);
+                for root in mut_ref_roots {
+                    let place = Place {
+                        root,
+                        fields: Vec::new(),
+                        through_drop: false,
+                        non_record_step: false,
+                    };
+                    let via = BTreeSet::new();
+                    self.access(&place, &via, Use::Borrow, base_arg.span)?;
+                    guard
+                        .loans
+                        .insert(self.loan(place, false, via, base_arg.span));
+                }
+                Ok(Some(guard))
+            }
+        }
+    }
+
     fn eval_call(
         &mut self,
         expression: &TypedExpr,
@@ -14231,12 +14653,48 @@ impl<'a, 'run> Checker<'a, 'run> {
         current.regions = region_sources.and_then(call_slots);
         self.held.push(value);
         for (index, argument) in arguments.iter().enumerate() {
+            // A38: while evaluating the key (`index == 0`) of an `Index` or `IndexMut` call,
+            // hold a shared guard on the base place so the key may read the base but cannot
+            // assign, move, or exclusively borrow it (`E1014`).
+            let index_guard = if index == 0
+                && let Some(id) = known
+                && let Some(index_method) = self.module.functions[id].origin.index_method
+                && arguments.len() > index_method.base_param_index()
+            {
+                self.index_base_guard(index_method, arguments, &during)?
+            } else {
+                None
+            };
+            if let Some(guard) = &index_guard {
+                self.held.push(guard.clone());
+            }
+            // A37/A38: a base-borrowing `Index` rejects a temporary base (`BorrowOperand` of a
+            // non-place, or a `$index.temp_base` local bound for evaluation order) unless the
+            // instance body is proven to return only contents behind `self` (`returns_contents(id, 1)`).
+            if index == 1
+                && let Some(id) = known
+                && self.module.functions[id]
+                    .origin
+                    .index_method
+                    .is_some_and(crate::check::IndexMethodKind::is_view)
+                && let E::BorrowOperand(inner) = &argument.kind
+                && (!Self::is_place(inner)
+                    || matches!(inner.kind, E::Local(lid) if self.declarations.get(&lid).is_some_and(|l| l.is_temp_index_base())))
+                && !self.facts.returns_contents(id, 1)
+            {
+                return Err(self.borrow_of_temporary(inner).with_help(
+                    "the result of 'x[k]' borrows 'x'; bind the value with 'let' first, as in 'let base = ...', and index 'base'",
+                ));
+            }
             let mark = self.events.as_ref().map_or(0, |events| events.len());
             // A31: an argument that the callee may drop, and the temporaries of the argument,
             // are reported at the call.
             let site = self.drop_site.replace(expression.span);
             let value = self.eval(argument, Use::Consume, &during);
             self.drop_site = site;
+            if index_guard.is_some() {
+                self.held.pop();
+            }
             let value = value?;
             self.event_targets(mark, argument.span, callee);
             // A34 (`sharetype`): passing a fresh local's `Rc`/`Arc` (or `dyn`) to a callee other
@@ -14378,9 +14836,15 @@ impl<'a, 'run> Checker<'a, 'run> {
             }
             match region_sources {
                 _ if owned_call && index == 0 => {}
-                Some(sources) => {
-                    self.argument_regions(sources, slots, index, argument, &value, &mut current)
-                }
+                Some(sources) => self.argument_regions(
+                    known,
+                    sources,
+                    slots,
+                    index,
+                    argument,
+                    &value,
+                    &mut current,
+                ),
                 // The reference of `OnceValue.get` points into the cell, never into what its
                 // initializer borrowed: that was checked above to stay out of the cell.
                 None if kept && index == 1 => {}
@@ -14474,6 +14938,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                         root: STATIC_ROOT,
                         fields: Vec::new(),
                         through_drop: false,
+                        non_record_step: false,
                     },
                     false,
                     BTreeSet::new(),
@@ -14531,6 +14996,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             Contract {
                 lends_mutable,
                 captures: captured,
+                field_borrows: self.field_borrows,
                 ..Contract::default()
             },
             self.recovered,
@@ -14708,12 +15174,17 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::Borrow(value, mutable) => {
                 // A31: whether the places of this borrow are the parts that it borrows.
                 let exact = self.exact_place(value);
+                self.last_deref_all_through = false;
                 let places = if *mutable {
                     self.shared_exclusive(value, expression.span)?;
                     self.exclusive_places(value, &during)?
                 } else {
                     self.place(value, &during)?
                 };
+                let reborrows_contents = self.checking_contents
+                    && !*mutable
+                    && matches!(value.kind, E::Dereference(_))
+                    && self.last_deref_all_through;
                 for (place, via) in places {
                     self.access(
                         &place,
@@ -14726,6 +15197,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                         expression.span,
                     )?;
                     self.borrow_event(&place, via.is_empty(), *mutable, expression.span);
+                    if reborrows_contents {
+                        for id in via {
+                            result.loans.insert(id);
+                            result.through.insert(id);
+                        }
+                        continue;
+                    }
                     // The place of an exact borrow is of the borrowed value's type, as far as
                     // `place_type` reads it (unwrapping `Rc`/`Arc`, A34 `rcgetpart`).
                     let expected_ty = {
@@ -15009,6 +15487,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::Parallel(operation, arguments) => {
                 let callback = operation.parallel_callback();
                 let scope = operation.is_scope();
+                let chunk_with = *operation == crate::check::Builtin::ParallelForEachChunkWith;
                 let input = if *operation == crate::check::Builtin::ParallelInit || scope {
                     None
                 } else {
@@ -15033,6 +15512,23 @@ impl<'a, 'run> Checker<'a, 'run> {
                         {
                             return Err(error(DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
                                 "Routine.scope can share only values with proven owned environments",
+                                argument.span,
+                            ));
+                        }
+                    } else if chunk_with && index == 1 {
+                        // NC15: plain shared borrows (`ref [f64]`, `Tensor.View`, tuples thereof)
+                        // live for the synchronous call; only function/closure environments must
+                        // be proven owned.
+                        let referent = argument
+                            .ty
+                            .dereferenced()
+                            .expect("Parallel.for_each_chunk_with shares a borrow");
+                        if referent.reaches_unproven_function(&self.module.types())
+                            && self.shares_borrowed_environment(argument, &value)
+                        {
+                            return Err(error(
+                                DiagnosticKind::TaskScopeSharesBorrowedEnvironment,
+                                "Parallel.for_each_chunk_with can share only values whose function environments are proven owned",
                                 argument.span,
                             ));
                         }
@@ -15087,7 +15583,21 @@ impl<'a, 'run> Checker<'a, 'run> {
                         },
                     };
                     let callee = Arg::of(Some(function), self.held[base + callback].clone());
-                    let sources = vec![Arg::of(None, others); arity];
+                    let sources = if chunk_with && arity == 3 && arguments.len() == 4 {
+                        vec![
+                            Arg::of(Some(&arguments[1]), self.held[base + 1].clone()),
+                            Arg::of(None, Value::default()),
+                            Arg::of(Some(&arguments[3]), self.held[base + 3].clone()),
+                        ]
+                    } else if chunk_with && arguments.len() > 1 {
+                        let shared_arg = Arg::of(Some(&arguments[1]), Value::default());
+                        let mut merged = Arg::of(None, others);
+                        merged.temporary |= shared_arg.temporary;
+                        merged.dying |= shared_arg.dying;
+                        vec![merged; arity]
+                    } else {
+                        vec![Arg::of(None, others); arity]
+                    };
                     self.apply_higher(&callee, &sources, expression.span, 0);
                 }
                 self.held.truncate(base);
@@ -15122,8 +15632,24 @@ impl<'a, 'run> Checker<'a, 'run> {
                 } else {
                     Use::Consume
                 };
+                let left_usage = if *operator == BinaryOp::Add
+                    && left.ty.is_string()
+                    && matches!(left.kind, E::ReferenceOperand(_))
+                {
+                    Use::Read
+                } else {
+                    usage
+                };
+                let right_usage = if *operator == BinaryOp::Add
+                    && right.ty.is_string()
+                    && matches!(right.kind, E::ReferenceOperand(_))
+                {
+                    Use::Read
+                } else {
+                    usage
+                };
                 let mark = self.events.as_ref().map_or(0, |events| events.len());
-                let value = self.eval(left, usage, &during)?;
+                let value = self.eval(left, left_usage, &during)?;
                 if *operator == BinaryOp::Pipe {
                     // `text |> consume` gives its argument to `consume`, as `consume text` does.
                     self.event_targets(mark, left.span, right);
@@ -15167,7 +15693,7 @@ impl<'a, 'run> Checker<'a, 'run> {
                 } else {
                     // A31: a function value read from a place is called where it is.
                     self.bound_next = Self::is_place(right);
-                    self.eval(right, usage, &during)?
+                    self.eval(right, right_usage, &during)?
                 };
                 self.held.pop();
                 if *operator == BinaryOp::Pipe && !owned_function && self.tracks_stores() {
@@ -15364,7 +15890,10 @@ impl<'a, 'run> Checker<'a, 'run> {
             {
                 self.eval(value, Use::Read, &during)?;
             }
-            E::Unary(_, value) | E::Cast(value) | E::SaturatingIndex(value) => {
+            E::Unary(_, value)
+            | E::Cast(value)
+            | E::SaturatingIndex(value)
+            | E::FromEnd { offset: value, .. } => {
                 self.eval(value, Use::Consume, &during)?;
             }
             E::Int(_)
@@ -15380,7 +15909,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             | E::GenericFloat(_)
             // A dispatch passes its parameters on; `closed` keeps its result tied to them (A14).
             | E::DynDispatch { .. } => {}
-            E::Local(_) | E::Dereference(_) | E::ListTail(..) => {
+            E::Local(_) | E::Dereference(_) | E::ReferenceOperand(_) | E::ListTail(..) => {
                 unreachable!("places handled above")
             }
             E::While { .. } | E::ForRange { .. } | E::ForEach { .. } | E::Match { .. } => {

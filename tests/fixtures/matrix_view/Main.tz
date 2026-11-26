@@ -368,3 +368,11 @@ fn mut_copy_trap =
     let mut window = MatrixView.of_array_mut 2 3 (ref mut data)
     MatrixView.copy_from (MatrixView.of_matrix (ref source)) (ref mut window)
     1
+
+// A37: chained MatrixView slice on a temporary MatrixView.
+export def a37_chained_matrix_view :: i64
+fn a37_chained_matrix_view =
+    let m = Matrix.init 3 3 (\r c -> r * 3 + c + 100)
+    let mv = ref m[(Slice.range 1 3, Slice.all())][(Slice.all(), Slice.at 2)]
+    mix (mv[(0, 0)]) (mv[(1, 0)])
+

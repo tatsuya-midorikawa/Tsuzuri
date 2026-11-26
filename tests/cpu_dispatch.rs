@@ -167,7 +167,7 @@ fn floats_and_wide_integers_keep_the_std_body() {
 
 #[test]
 fn equivalent_call_forms_share_one_kernel_call() {
-    let source = "def next :: i64 -> i64\nfn next state = state * 6364136223846793005 + 1442695040888963407\n\ndef data :: i64 -> [i32]\nfn data length = Array.init length (index -> (next (index + 1)) as i32)\n\ndef total :: Numeric<'a> => ref ['a] -> 'a\nfn total values = Array.sum values\n\nexport def forms :: i64\nfn forms =\n    let values = data 1000\n    let f = Array.sum\n    let a = Array.sum (ref values)\n    let b = total (ref values)\n    let c = f (ref values)\n    let d = Array.sum (ref values[3..997])\n    (a as i64) + (b as i64) + (c as i64) + (d as i64)\n";
+    let source = "def next :: i64 -> i64\nfn next state = state * 6364136223846793005 + 1442695040888963407\n\ndef data :: i64 -> [i32]\nfn data length = Array.init length (index -> (next (index + 1)) as i32)\n\ndef total :: Numeric<'a> => ref ['a] -> 'a\nfn total values = Array.sum values\n\nexport def forms :: i64\nfn forms =\n    let values = data 1000\n    let f = Array.sum\n    let a = Array.sum (ref values)\n    let b = total (ref values)\n    let c = f (ref values)\n    let d = Array.sum (ref values[3..<997])\n    (a as i64) + (b as i64) + (c as i64) + (d as i64)\n";
     let module = analyze(source).unwrap_or_else(|error| panic!("{error:?}"));
     let sources = sources(source);
     let ir = llvm::emit_native_build(&module, options(), &sources, None, false)

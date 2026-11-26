@@ -212,7 +212,7 @@ fn to_matrix view =
     else
         let mut out = new ['a](count, \_ -> view.data[view.offset])
         for i in 0i64 ..= (view.rows - 1) do
-            let target = ref mut out[i * view.cols .. i * view.cols + view.cols]
+            let target = ref mut out[i * view.cols ..< i * view.cols + view.cols]
             let base = view.offset + i * view.row_stride
             for j in 0i64 ..= (view.cols - 1) do
                 let value = view.data[base + j * view.col_stride]
@@ -317,7 +317,7 @@ def row_mut { r } :: own i64 -> ref mut { r } Mut<'a> { r } -> ref mut { r } ['a
 fn row_mut index view =
     assert (index >= 0 && index < view.rows && view.col_stride == 1)
     let start = view.offset + index * view.row_stride
-    ref mut view.data[start .. start + view.cols]
+    ref mut view.data[start ..< start + view.cols]
 
 /// A writable sub-window; the original cannot be used while it lives.
 ///
@@ -475,4 +475,111 @@ instance IndexMut<Mut<'a>, (i64 * i64), 'a> {
     fn index_mut coords value self =
         match coords with
         | (row, col) -> write row col value self
+}
+
+private def validate_2d_sel :: own i64 -> ref Slice.Sel -> (i64 * i64 * i64)
+fn validate_2d_sel len sel =
+    match sel with
+    | Slice.Sel.Rest ->
+        assert (len >= 0)
+        (0, len, 1)
+    | _ ->
+        match Slice.resolve_sel len sel with
+        | Slice.Resolved.Index pos -> (pos, 1, 1)
+        | Slice.Resolved.Slice (start, count, step) ->
+            assert (step > 0)
+            (start, count, step)
+        | Slice.Resolved.InsertAxis ->
+            assert false
+            (0, 0, 1)
+
+private def sel_layout_2d :: ref Slice.Sel -> ref Slice.Sel -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> (i64 * i64 * i64 * i64 * i64)
+fn sel_layout_2d row_sel col_sel offset rows cols row_stride col_stride =
+    match (row_sel, col_sel) with
+    | (Slice.Sel.Rest, Slice.Sel.Rest) -> assert false
+    | _ -> ()
+    let (r_start, new_rows, r_step) = validate_2d_sel rows row_sel
+    let (c_start, new_cols, c_step) = validate_2d_sel cols col_sel
+    if new_rows == 0 || new_cols == 0 then
+        (0, new_rows, new_cols, 1, 1)
+    else
+        let new_row_stride =
+            if new_rows == 1 then row_stride
+            else
+                match Int.checked_mul row_stride r_step with
+                | Maybe.Some s -> s
+                | Maybe.None ->
+                    assert false
+                    0
+        let new_col_stride =
+            if new_cols == 1 then col_stride
+            else
+                match Int.checked_mul col_stride c_step with
+                | Maybe.Some s -> s
+                | Maybe.None ->
+                    assert false
+                    0
+        let r_off = r_start * row_stride
+        let c_off = c_start * col_stride
+        (offset + r_off + c_off, new_rows, new_cols, new_row_stride, new_col_stride)
+
+private pure def resolve_2d_pos :: own i64 -> ref Slice.Pos -> i64
+fn resolve_2d_pos dim pos =
+    let idx: i128 =
+        match pos with
+        | Slice.Pos.Front i -> i as i128
+        | Slice.Pos.Back k -> (dim as i128) - 1i128 - (k as i128)
+    assert (idx >= 0i128 && idx < (dim as i128))
+    idx as i64
+
+instance Index<Matrix<'a>, (Slice.Sel * Slice.Sel), MatrixView<'a>> {
+    fn index sels self =
+        let mv = of_matrix self
+        match sels with
+        | (r_sel, c_sel) ->
+            match sel_layout_2d (ref r_sel) (ref c_sel) mv.offset mv.rows mv.cols mv.row_stride mv.col_stride with
+            | (off, nr, nc, rs, cs) -> strided off nr nc rs cs mv.data
+}
+
+instance Index<MatrixView<'a>, (Slice.Sel * Slice.Sel), MatrixView<'a>> {
+    fn index sels self =
+        match sels with
+        | (r_sel, c_sel) ->
+            match sel_layout_2d (ref r_sel) (ref c_sel) self.offset self.rows self.cols self.row_stride self.col_stride with
+            | (off, nr, nc, rs, cs) -> strided off nr nc rs cs self.data
+}
+
+instance Index<Mut<'a>, (Slice.Sel * Slice.Sel), MatrixView<'a>> {
+    fn index sels self =
+        match sels with
+        | (r_sel, c_sel) ->
+            match sel_layout_2d (ref r_sel) (ref c_sel) self.offset self.rows self.cols self.row_stride self.col_stride with
+            | (off, nr, nc, rs, cs) -> strided off nr nc rs cs (ref self.data[0 ..])
+}
+
+instance Copy<'a> => Index<Matrix<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (r_pos, c_pos) ->
+            let r = resolve_2d_pos (Matrix.rows self) (ref r_pos)
+            let c = resolve_2d_pos (Matrix.cols self) (ref c_pos)
+            deref (Matrix.at r c self)
+}
+
+instance Copy<'a> => Index<MatrixView<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (r_pos, c_pos) ->
+            let r = resolve_2d_pos self.rows (ref r_pos)
+            let c = resolve_2d_pos self.cols (ref c_pos)
+            deref (at r c (deref self))
+}
+
+instance IndexMut<Mut<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (r_pos, c_pos) ->
+            let r = resolve_2d_pos self.rows (ref r_pos)
+            let c = resolve_2d_pos self.cols (ref c_pos)
+            write r c value self
 }

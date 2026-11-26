@@ -1,0 +1,191 @@
+// NC18: Multi-axis bracket indexing (`t[i, j]`, `ref t[i, a..b, ..]`, `Slice.Sel`, and Phase 2 `^k` element reads).
+
+private def fold_arr :: ref [i64] -> i64 = \xs ->
+    let mut acc: i64 = 0
+    for v in xs do
+        acc = acc * 31 + v
+    acc
+
+private def fold_tv :: ref Tensor.View<i64> -> i64 = \v ->
+    Tensor.fold (\acc x -> acc * 31 + x) 0 v
+
+private def fold_mv { r } :: MatrixView<i64> { r } -> i64 = \mv ->
+    let mut acc: i64 = 0
+    for r in 0 ..< MatrixView.rows mv do
+        for c in 0 ..< MatrixView.cols mv do
+            acc = acc * 31 + mv[r, c]
+    acc
+
+private def grid3x4 :: Tensor<i64>
+fn grid3x4 = Tensor.init [3, 4] (\i -> i)
+
+private def mat3x4 :: Matrix<i64>
+fn mat3x4 = Matrix.of_array 3 4 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+// Specification §6: 2D Tensor table
+export def tensor_2d_element :: i64
+fn tensor_2d_element =
+    let t = grid3x4()
+    t[1, 2]
+
+export def tensor_2d_row :: i64
+fn tensor_2d_row =
+    let t = grid3x4()
+    fold_tv (ref t[1, ..])
+
+export def tensor_2d_col :: i64
+fn tensor_2d_col =
+    let t = grid3x4()
+    fold_tv (ref t[.., 0])
+
+export def tensor_2d_last_row :: i64
+fn tensor_2d_last_row =
+    let t = grid3x4()
+    fold_tv (ref t[^0, ..])
+
+export def tensor_2d_subblock :: i64
+fn tensor_2d_subblock =
+    let t = grid3x4()
+    let w = ref t[0..1, 1..<3]
+    let sh = Tensor.shape (ref w)
+    sh[0] * 100000 + sh[1] * 10000 + fold_tv (ref w)
+
+export def tensor_2d_open_start_tail :: i64
+fn tensor_2d_open_start_tail =
+    let t = grid3x4()
+    let w = ref t[1<.., ^1..]
+    let sh = Tensor.shape (ref w)
+    sh[0] * 100000 + sh[1] * 10000 + fold_tv (ref w)
+
+export def tensor_2d_rev_rows :: i64
+fn tensor_2d_rev_rows =
+    let t = grid3x4()
+    fold_tv (ref t[.. -1 .., ..])
+
+export def tensor_2d_even_cols :: i64
+fn tensor_2d_even_cols =
+    let t = grid3x4()
+    fold_tv (ref t[.., .. 2 ..])
+
+export def tensor_2d_rest_col0 :: i64
+fn tensor_2d_rest_col0 =
+    let t = grid3x4()
+    fold_tv (ref t[Slice.rest(), 0])
+
+export def tensor_2d_add_axis :: i64
+fn tensor_2d_add_axis =
+    let t = grid3x4()
+    let w = ref t[Slice.Sel.AddAxis, ..]
+    let sh = Tensor.shape (ref w)
+    sh[0] * 100 + sh[1] * 10 + sh[2]
+
+export def tensor_chained_windows :: i64
+fn tensor_chained_windows =
+    let t = grid3x4()
+    let w = ref t[1..2, ..][0, 1..2]
+    let e = (ref t[1..2, ..])[1, 2]
+    fold_tv (ref w) * 100 + e
+
+// Specification §6: Matrix table
+export def matrix_2d_element :: i64
+fn matrix_2d_element =
+    let m = mat3x4()
+    m[1, 2]
+
+export def matrix_2d_row_window :: i64
+fn matrix_2d_row_window =
+    let m = mat3x4()
+    let mv = ref m[1, ..]
+    MatrixView.rows mv * 1000000 + MatrixView.cols mv * 100000 + fold_mv mv
+
+export def matrix_2d_trailing_fill :: i64
+fn matrix_2d_trailing_fill =
+    let m = mat3x4()
+    let mv = ref m[0..<2]
+    MatrixView.rows mv * 100 + MatrixView.cols mv
+
+// Specification §7 (Phase 2): `^k` element reads & writes across 1D..5D Tensor and 2D Matrix
+export def phase2_from_end_elements :: i64
+fn phase2_from_end_elements =
+    let t = grid3x4()
+    let mut buf = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    let mut tm = Tensor.borrow_mut [3, 4] (ref mut buf)
+    tm[^0, ^0] = 99
+    tm[0, ^1] = 77
+    let mut mbuf = [10, 20, 30, 40, 50, 60]
+    let mut mm = MatrixView.of_array_mut 2 3 (ref mut mbuf)
+    mm[^0, ^1] = 88
+    let m = mat3x4()
+    let t5 = Tensor.init [2, 2, 2, 2, 2] (\i -> i)
+    t[^0, 0] * 1000000 + m[^0, ^0] * 10000 + buf[11] * 100 + buf[2] + mbuf[4] + t5[^0, 0, ^0, 0, ^0]
+
+// Traps (§6)
+export def trap_tensor_row_oob :: i64 -> i64 = \r ->
+    let t = grid3x4()
+    fold_tv (ref t[r, ..])
+
+export def trap_tensor_col_hi_oob :: i64 -> i64 = \hi ->
+    let t = grid3x4()
+    fold_tv (ref t[.., 0..hi])
+
+export def trap_tensor_too_many_axes :: i64 -> i64 = \k ->
+    let t = grid3x4()
+    fold_tv (ref t[0, .., k])
+
+export def trap_tensor_wrong_elem_rank_1 :: i64 -> i64 = \i ->
+    let t = grid3x4()
+    t[i]
+
+export def trap_tensor_wrong_elem_rank_3 :: i64 -> i64 = \i ->
+    let t = grid3x4()
+    t[i, 1, 2]
+
+export def trap_matrix_neg_step :: i64 -> i64 = \s ->
+    let m = mat3x4()
+    fold_mv (ref m[.., .. s ..])
+
+export def trap_matrix_add_axis :: i64
+fn trap_matrix_add_axis =
+    let m = mat3x4()
+    fold_mv (ref m[Slice.Sel.AddAxis, ..])
+
+export def trap_matrix_duplicate_rest :: i64
+fn trap_matrix_duplicate_rest =
+    let m = mat3x4()
+    fold_mv (ref m[Slice.rest(), Slice.rest()])
+
+export def trap_phase2_back_oob :: i64 -> i64 = \k ->
+    let t = grid3x4()
+    t[^k, 0]
+
+// Evaluation order (A38 & NC18 §5): base first, then components left-to-right (start, step, end inside ranges), RHS first on `=`.
+private def step_log :: ref mut i64 -> i64 -> i64 -> i64 = \log tag val ->
+    deref log = (deref log) * 10 + tag
+    val
+
+export def multi_axis_key_evaluates_base_then_components :: i64
+fn multi_axis_key_evaluates_base_then_components =
+    // 1. Element read `b[c1, c2]`: 1 -> 2 -> 3 == 123
+    let mut log1: i64 = 0
+    let t = grid3x4()
+    let v1 = ({ step_log (ref mut log1) 1 0; ref t })[step_log (ref mut log1) 2 1, step_log (ref mut log1) 3 2]
+    assert (v1 == 6)
+
+    // 2. Window `ref b[a..c, d]`: 1 -> 2 -> 3 -> 4 == 1234
+    let mut log2: i64 = 0
+    let w2 = ref ({ step_log (ref mut log2) 1 0; ref t })[(step_log (ref mut log2) 2 0) .. (step_log (ref mut log2) 3 1), step_log (ref mut log2) 4 2]
+    assert (w2[0] == 2 && w2[1] == 6)
+
+    // 3. Stepped range component `ref b[a .. s .. c, d]`: 1 (base) -> 2 (start) -> 3 (step) -> 4 (end) -> 5 (comp2) == 12345
+    let mut log3: i64 = 0
+    let w3 = ref ({ step_log (ref mut log3) 1 0; ref t })[(step_log (ref mut log3) 2 0) .. (step_log (ref mut log3) 3 2) .. (step_log (ref mut log3) 4 2), step_log (ref mut log3) 5 1]
+    assert (w3[0] == 1 && w3[1] == 9)
+
+    // 4. Assignment `b[c1, c2] = rhs`: 1 (rhs) -> 2 (base) -> 3 (c1) -> 4 (c2) == 1234
+    let mut log4: i64 = 0
+    let mut buf = [0, 0, 0, 0]
+    let mut tm = Tensor.borrow_mut [2, 2] (ref mut buf)
+    ({ step_log (ref mut log4) 2 0; ref mut tm })[step_log (ref mut log4) 3 1, step_log (ref mut log4) 4 0] = step_log (ref mut log4) 1 42
+    assert (buf[2] == 42)
+
+    log1 * 1000000000000 + log2 * 100000000 + log3 * 1000 + log4

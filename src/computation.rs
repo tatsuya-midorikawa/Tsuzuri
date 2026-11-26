@@ -238,6 +238,7 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         | ExprKind::Field(value, _)
         | ExprKind::Borrow(value, _, _)
         | ExprKind::Dereference(value, _)
+        | ExprKind::FromEnd(value)
         | ExprKind::NewLiteral(value)
         | ExprKind::Cast(value, _) => vec![value],
         ExprKind::Binary(_, left, right)
@@ -302,12 +303,26 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             values
         }
         ExprKind::Record { fields, .. } => fields.iter_mut().map(|(_, value)| value).collect(),
-        ExprKind::Slice {
-            value, start, end, ..
-        } => std::iter::once(value.as_mut())
-            .chain(start.iter_mut().map(Box::as_mut))
-            .chain(end.iter_mut().map(Box::as_mut))
+        ExprKind::Slice { value, range, .. } => std::iter::once(value.as_mut())
+            .chain(range.start.iter_mut().map(Box::as_mut))
+            .chain(range.step.iter_mut().map(Box::as_mut))
+            .chain(range.end.iter_mut().map(Box::as_mut))
             .collect(),
+        ExprKind::MultiIndex { value, keys, .. } => {
+            let mut sub = vec![value.as_mut()];
+            for key in keys {
+                match key {
+                    crate::syntax::IndexComponent::Expr(expr) => sub.push(expr),
+                    crate::syntax::IndexComponent::Range(range) => {
+                        sub.extend(range.start.iter_mut().map(Box::as_mut));
+                        sub.extend(range.step.iter_mut().map(Box::as_mut));
+                        sub.extend(range.end.iter_mut().map(Box::as_mut));
+                    }
+                    crate::syntax::IndexComponent::Whole(_) => {}
+                }
+            }
+            sub
+        }
         ExprKind::RecordUpdate { base, fields } => std::iter::once(base.as_mut())
             .chain(fields.iter_mut().map(|(_, value)| value))
             .collect(),

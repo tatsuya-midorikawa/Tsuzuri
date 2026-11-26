@@ -1,0 +1,10 @@
+let mut total = 0
+for i in 0 <.. 3 do
+    total = total * 10 + i
+for _j in 127i8 <.. 127i8 do
+    total = total + 1000
+total
+
+// rule: CTL-031
+// edition: 2028
+// expect: stdout "123\n"

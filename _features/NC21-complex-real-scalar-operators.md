@@ -5,7 +5,7 @@
 | ID | NC21 |
 | 優先度 | P2（`c * 2.0`・`2.0 - c`・`c / s` のような複素数と実数の式を、演算子のまま書けるようにする。今は `E1003` で、`Complex.scale` か `Complex.from_real` を経由する） |
 | 規模 | S（`std/Complex.tz` に 8 個のインスタンスを足し、一覧のテストとテスト・文書を直す。コンパイラの変更はない） |
-| 依存 | [NC19](NC19-operator-extension-instances.md)（OEI の宣言の形、演算子表、解決 (a)〜(d)、`dispatch_positions` の OEI の位置を使う。NC19 は [A37](A37-index-base-place-borrow.md) の手順 5 の後に入るので、`std_instances_with_open_dispatch_positions_are_listed` もある）。土台の [NC01](_completed/NC01-complex-and-extended-math.md) の `std/Complex.tz` は完了済み |
+| 依存 | [NC19](_completed/NC19-operator-extension-instances.md)（OEI の宣言の形、演算子表、解決 (a)〜(d)、`dispatch_positions` の OEI の位置を使う。NC19 は [A37](_completed/A37-index-base-place-borrow.md) の手順 5 の後に入るので、`std_instances_with_open_dispatch_positions_are_listed` もある）。土台の [NC01](_completed/NC01-complex-and-extended-math.md) の `std/Complex.tz` は完了済み |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の委任による決定。NC19 の D9 (iii) を分けた。HEAD `858a949c` で確認） |
@@ -31,8 +31,8 @@ NC19 は、組み込みの算術クラスに 3 引数のヘッダ（OEI）を開
 
 ### 着手条件
 
-- [NC19](NC19-operator-extension-instances.md) が done であること（OEI の宣言の形・演算子表・解決 (a)〜(d)・`dispatch_positions` の OEI の位置）。NC19 は A37 の手順 5 の後なので、A37 のテスト `std_instances_with_open_dispatch_positions_are_listed` と、`opt_in_modules_are_reached_only_through_their_names` を `dispatch_positions` のすべての位置で判定する改修もある。
-- NC19 の仕様 3 の 1（[NC19](NC19-operator-extension-instances.md) の「被演算子の検査とヒント」）が、次の 2 つの性質を持つこと。NC21 は `Complex` を OEI の頭にするので、この 2 つがないと今受理しているプログラムを拒否するか、スカラーが左の変数の形が書けない。
+- [NC19](_completed/NC19-operator-extension-instances.md) が done であること（OEI の宣言の形・演算子表・解決 (a)〜(d)・`dispatch_positions` の OEI の位置）。NC19 は A37 の手順 5 の後なので、A37 のテスト `std_instances_with_open_dispatch_positions_are_listed` と、`opt_in_modules_are_reached_only_through_their_names` を `dispatch_positions` のすべての位置で判定する改修もある。
+- NC19 の仕様 3 の 1（[NC19](_completed/NC19-operator-extension-instances.md) の「被演算子の検査とヒント」）が、次の 2 つの性質を持つこと。NC21 は `Complex` を OEI の頭にするので、この 2 つがないと今受理しているプログラムを拒否するか、スカラーが左の変数の形が書けない。
   - (i) NC19 の演算子のヒントは、今どおり `if`・`match`・ブロックの被演算子の中へ、その結果の式（各枝の値、ブロックの末尾）まで届く。柔らかいヒントは結果の式（値の式か呼び出し）ごとに試し、単一化できない結果の式でだけ捨てる。これらの形からヒントを取り上げない（C17）。
   - (ii) OEI を持つクラス C の被演算子のヒントの単一化の場所（`finish_expression`・`call_expression`）では、ヒントの種類（式の期待型か兄弟の型か。スカラーのヒントと型変数のヒントを含む）を問わず、ヒントの型の頭か、被演算子自身の型の頭（値の式の型、呼び出しの結果の型）が C の OEI の L か R に現れるなら、単一化を試し（`Inference::unifies`）、通るときだけ単一化する。通らなければヒントを捨てて (b)・(c) へ進む（C16）。
   - どちらも今の道が `E1003` を報告する場所でしか働かないので、受理しているプログラムは変わらない。NC19 がこの 2 つを持たずに done になっていたら、着手せずに NC19 へ報告する。
@@ -191,7 +191,7 @@ c ** 2.0                      // E1003（今のまま）
 
 ### 本体の書き方
 
-NC19 の OEI のメソッドは `ref L -> ref R -> O` なので、本体の被演算子は参照である。`Complex` の側はフィールドの読み出し（`left.re`）で読める（同じ型どうしのインスタンスと同じ）。実数の側 `ref 'a` を値の view で読むか `deref` で読むかは、NC19 の OEI のメソッドの引数の規約に従う（未確認。NC19 の実装の時点で `tsuzuri check` で確かめる）。[A40](A40-reference-operands.md) は参照先が型変数の被演算子に働かないので、A40 には頼らない。下の素案は `deref` で読む形である。
+NC19 の OEI のメソッドは `ref L -> ref R -> O` なので、本体の被演算子は参照である。`Complex` の側はフィールドの読み出し（`left.re`）で読める（同じ型どうしのインスタンスと同じ）。実数の側 `ref 'a` を値の view で読むか `deref` で読むかは、NC19 の OEI のメソッドの引数の規約に従う（未確認。NC19 の実装の時点で `tsuzuri check` で確かめる）。[A40](_completed/A40-reference-operands.md) は参照先が型変数の被演算子に働かないので、A40 には頼らない。下の素案は `deref` で読む形である。
 
 ```text
 instance (Float<'a>, Add<'a>, Copy<'a>) => Add<Complex<'a>, 'a, Complex<'a>> {
@@ -217,8 +217,8 @@ instance (Float<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, C
 
 ## 前提とする他チケットのインターフェース
 
-- [NC19](NC19-operator-extension-instances.md)（NC19 の D1・D2 の決定）: 3 引数のヘッダ `Add<L, R, O>` の宣言の形（メソッドは `ref L -> ref R -> O`）、1 つの演算子表、宣言の検査（頭の規則・被覆の規則・`overlapping_instance`）、解決の順 (a) リテラルの型・(b) 同じ型どうし・(c) 演算子表・(d) 今の道、`dispatch_positions` の OEI の位置（3 引数の L と R）。NC21 はこれらを変えない。
-- [A37](A37-index-base-place-borrow.md)（A37 の D4・D7 の決定）: テスト `std_instances_with_open_dispatch_positions_are_listed`、利用者と std のインスタンスの重なりを利用者の位置で報告すること、`docs/stability.md` の既知の例外「std への instance の追加」の 1 項、`opt_in_modules_are_reached_only_through_their_names` が `dispatch_positions` のすべての位置で、そのモジュールが宣言する頭を探すこと（8 個は L か R に `Complex` を持つので `std/Complex.tz` に置ける）。
+- [NC19](_completed/NC19-operator-extension-instances.md)（NC19 の D1・D2 の決定）: 3 引数のヘッダ `Add<L, R, O>` の宣言の形（メソッドは `ref L -> ref R -> O`）、1 つの演算子表、宣言の検査（頭の規則・被覆の規則・`overlapping_instance`）、解決の順 (a) リテラルの型・(b) 同じ型どうし・(c) 演算子表・(d) 今の道、`dispatch_positions` の OEI の位置（3 引数の L と R）。NC21 はこれらを変えない。
+- [A37](_completed/A37-index-base-place-borrow.md)（A37 の D4・D7 の決定）: テスト `std_instances_with_open_dispatch_positions_are_listed`、利用者と std のインスタンスの重なりを利用者の位置で報告すること、`docs/stability.md` の既知の例外「std への instance の追加」の 1 項、`opt_in_modules_are_reached_only_through_their_names` が `dispatch_positions` のすべての位置で、そのモジュールが宣言する頭を探すこと（8 個は L か R に `Complex` を持つので `std/Complex.tz` に置ける）。
 
 ## 他チケットへ提供するインターフェース
 

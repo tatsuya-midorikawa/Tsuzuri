@@ -206,7 +206,7 @@ Tsuzuri は、C/C++・Rust・Zig を上回る**超高速**な実行、**超省�
 | [D07](../_features/_completed/D07-string-interpolation.md) 文字列補間 | 書式指定で `numeric.ll` に関数を足すのは D07（要承認）、数値の表示・解析の高速化は PR04 |
 | [G18](../_features/_completed/G18-bench-coverage.md) 言語内ベンチマーク | 利用者向けの `tsuzuri bench` は G18、リポジトリの計測基盤は PX01–PX03 |
 | [A15](../_features/_completed/A15-copy-cost-visibility.md) 暗黙の複製の可視化 | 複製の除去そのものは PM07 |
-| [A17](../_features/_completed/A17-last-use-move.md) 最後の使用での移動 | A17 の X1（借用の根の局所を関数全体で移動しない）の精密化は PM10。[A39](../_features/A39-field-exclusive-borrow.md) のフィールドの排他借用と [NC20](../_features/NC20-compound-assignment-and-mutable-index-views.md) の `+=` などの対象の借用が作る借用の根も PM10 が扱う。A39・NC20 の構文と意味はそれぞれのチケット |
+| [A17](../_features/_completed/A17-last-use-move.md) 最後の使用での移動 | A17 の X1（借用の根の局所を関数全体で移動しない）の精密化は PM10。[A39](../_features/_completed/A39-field-exclusive-borrow.md) のフィールドの排他借用と [NC20](../_features/NC20-compound-assignment-and-mutable-index-views.md) の `+=` などの対象の借用が作る借用の根も PM10 が扱う。A39・NC20 の構文と意味はそれぞれのチケット |
 | [A16](../_features/_completed/A16-fixed-arrays.md) 固定長配列 | 値型の配列による確保の削減は A16、既存の型の配置は PM01 |
 | [D10](../_features/_completed/D10-f16-hardware.md) f16 のハードウェア経路 | 数値型の演算経路は D10 |
 

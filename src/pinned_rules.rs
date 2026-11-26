@@ -52,7 +52,8 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::ParallelMap
         | Builtin::ParallelMapRef
         | Builtin::ParallelReduce
-        | Builtin::ParallelForEachChunk => Position::Spawned,
+        | Builtin::ParallelForEachChunk
+        | Builtin::ParallelForEachChunkWith => Position::Spawned,
 
         Builtin::Sqrt
         | Builtin::Floor

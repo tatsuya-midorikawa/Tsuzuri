@@ -1,0 +1,77 @@
+record Foo { v: i64 }
+
+instance Index<Foo, i64, i64> {
+    fn index k self = self.v + deref k
+}
+
+instance IndexMut<Foo, i64, i64> {
+    fn index_mut _k x self = deref self = Foo { v: x }
+}
+
+instance Index<Foo, (i64 * i64), i64> {
+    fn index k self =
+        match k with
+        | (a, b) -> self.v + a + b
+}
+
+instance IndexMut<Foo, (i64 * i64), i64> {
+    fn index_mut _k x self = deref self = Foo { v: x }
+}
+
+def mark :: ref mut i64 -> i64 -> i64 -> i64 = \log tag value ->
+    deref log = deref log * 10 + tag
+    value
+
+def mk :: ref mut i64 -> Foo = \log ->
+    deref log = deref log * 10 + 1
+    Foo { v: 100 }
+
+def arr :: ref mut i64 -> [i64] = \log ->
+    deref log = deref log * 10 + 1
+    [10, 20, 30]
+
+def pick { r } :: ref mut { r } Foo -> ref mut i64 -> ref mut { r } Foo = \foo log ->
+    deref log = deref log * 10 + 1
+    foo
+
+def pick_array { r } :: ref mut { r } [i64] -> ref mut i64 -> ref mut { r } [i64] = \xs log ->
+    deref log = deref log * 10 + 1
+    xs
+
+test "class_read" =
+    let mut log = 0
+    let _v = (mk (ref mut log))[mark (ref mut log) 2 1]
+    Test.equal log 12
+
+test "array_read" =
+    let mut log = 0
+    let _v = (arr (ref mut log))[mark (ref mut log) 2 1]
+    Test.equal log 12
+
+test "class_assign" =
+    let mut log = 0
+    let mut foo = Foo { v: 100 }
+    (pick (ref mut foo) (ref mut log))[mark (ref mut log) 2 0] = mark (ref mut log) 3 7
+    Test.equal log 312
+
+test "array_assign" =
+    let mut log = 0
+    let mut xs = [10, 20, 30]
+    (deref (pick_array (ref mut xs) (ref mut log)))[mark (ref mut log) 2 0] = mark (ref mut log) 3 7
+    Test.equal log 312
+
+test "multi_axis_read" =
+    let mut log = 0
+    let _v = (mk (ref mut log))[mark (ref mut log) 2 1, mark (ref mut log) 3 2]
+    Test.equal log 123
+
+test "multi_axis_assign" =
+    let mut log = 0
+    let mut foo = Foo { v: 100 }
+    (pick (ref mut foo) (ref mut log))[mark (ref mut log) 2 0, mark (ref mut log) 3 1] = mark (ref mut log) 4 7
+    Test.equal log 4123
+
+0
+
+// rule: EVL-021
+// expect: tests-pass 6

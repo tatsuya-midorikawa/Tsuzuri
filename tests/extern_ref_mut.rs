@@ -96,7 +96,7 @@ def use_arr :: ref mut [i32] -> i32 = \buf -> fill_arr buf
 def main :: unit -> i32 = \() ->
     let mut u: [i16u] = [1i16u, 2i16u, 3i16u]
     let mut a: [i32] = [4i32, 5i32]
-    use_view (ref mut u[0..2]) + use_arr (ref mut a)
+    use_view (ref mut u[0..<2]) + use_arr (ref mut a)
 "#;
     let ir = emit_ir(source);
     assert!(ir.contains("declare i32 @c_fill_view(ptr, i64)"), "{ir}");

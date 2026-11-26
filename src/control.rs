@@ -216,6 +216,7 @@ impl Checker<'_> {
         &mut self,
         expression: &Expr,
         expected: Option<&Type>,
+        soft: Option<usize>,
     ) -> Result<TypedExpr, Diagnostic> {
         let kind = match &expression.kind {
             ExprKind::While { condition, body } => {
@@ -239,7 +240,7 @@ impl Checker<'_> {
                     finish,
                     counted: _,
                     descending,
-                    op,
+                    ends,
                 } = &source.kind
                 {
                     // Both forms count in any integer type; an unsuffixed literal counter is `i32`.
@@ -249,6 +250,8 @@ impl Checker<'_> {
                         self.expression(step, Some(&ty))?
                     } else {
                         // `downto` steps down by `1` (`descending`), so its step fits an unsigned type.
+                        self.require("Integer", ty.clone(), source.span)?;
+                        self.integer_literals.push(source.span);
                         let (kind, ty) = self.integer(1, None, Some(&ty), false, source.span)?;
                         value(kind, ty, source.span)
                     };
@@ -256,7 +259,14 @@ impl Checker<'_> {
                     self.require("Integer", ty.clone(), source.span)?;
                     (
                         None,
-                        Some((start, step, finish, *descending, *op == RangeOp::Open)),
+                        Some((
+                            start,
+                            step,
+                            finish,
+                            *descending,
+                            !ends.end_closed,
+                            ends.start_open,
+                        )),
                         self.inference.resolve(&ty),
                     )
                 } else {
@@ -335,7 +345,7 @@ impl Checker<'_> {
                 };
                 self.normal_loop_depth -= 1;
                 self.scopes.pop();
-                if let Some((start, step, finish, descending, exclusive)) = range {
+                if let Some((start, step, finish, descending, exclusive, start_open)) = range {
                     TypedExprKind::ForRange {
                         local,
                         start: Box::new(start),
@@ -344,6 +354,7 @@ impl Checker<'_> {
                         body: Box::new(body),
                         descending,
                         exclusive,
+                        start_open,
                     }
                 } else {
                     let source = source.unwrap();
@@ -370,12 +381,13 @@ impl Checker<'_> {
                 origin,
             } => {
                 let value = self.expression(value, None)?;
-                return self.match_value(
+                return self.match_value_with_soft(
                     value,
                     arms,
                     expected,
                     expression.span,
                     origin.checks_coverage().then_some(*origin),
+                    soft,
                 );
             }
             _ => unreachable!("control expression kinds checked by expression"),
@@ -820,6 +832,18 @@ impl Checker<'_> {
         span: Span,
         coverage: Option<MatchOrigin>,
     ) -> Result<TypedExpr, Diagnostic> {
+        self.match_value_with_soft(matched, arms, expected, span, coverage, None)
+    }
+
+    pub(super) fn match_value_with_soft(
+        &mut self,
+        matched: TypedExpr,
+        arms: &[MatchArm],
+        expected: Option<&Type>,
+        span: Span,
+        coverage: Option<MatchOrigin>,
+        soft: Option<usize>,
+    ) -> Result<TypedExpr, Diagnostic> {
         if matched.ty.contains_error() {
             return Ok(TypedExpr::error(span));
         }
@@ -841,7 +865,7 @@ impl Checker<'_> {
         let subject = self.match_subject(&matched, span);
         let mut checked = Vec::new();
         let mut result = expected.cloned();
-        for arm in arms {
+        for (arm_index, arm) in arms.iter().enumerate() {
             self.scopes.push(BTreeMap::new());
             let (alternatives, pattern) =
                 self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
@@ -986,6 +1010,9 @@ impl Checker<'_> {
                 .as_ref()
                 .map(|guard| self.expression(guard, Some(&Type::Bool)))
                 .transpose()?;
+            if arm_index == 0 {
+                self.soft_hint_class = soft;
+            }
             let mut body = self.expression(&arm.body, result.as_ref())?;
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();

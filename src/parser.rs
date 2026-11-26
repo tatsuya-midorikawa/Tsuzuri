@@ -5,14 +5,29 @@ use crate::syntax::*;
 /// An effect attribute before a declaration: its kind and the span of `@` and its name (A20).
 type EffectMark = (EffectKind, Span);
 
-/// The range operator that a token spells (A22).
-pub(super) fn range_op(kind: &TokenKind) -> RangeOp {
+/// The range operator that a token spells (A22 / NC17). Exhaustive over the five range tokens.
+pub(super) fn range_op(kind: &TokenKind) -> Option<RangeOp> {
     match kind {
-        TokenKind::DotDotEqual => RangeOp::Closed,
-        TokenKind::DotDotLess => RangeOp::Open,
-        _ => RangeOp::Bare,
+        TokenKind::DotDot => Some(RangeOp::Bare),
+        TokenKind::DotDotEqual => Some(RangeOp::Closed),
+        TokenKind::DotDotLess => Some(RangeOp::Open),
+        TokenKind::LessDotDot => Some(RangeOp::StartOpen),
+        TokenKind::LessDotDotLess => Some(RangeOp::BothOpen),
+        _ => None,
     }
 }
+
+pub(super) fn range_op_spelling(op: RangeOp) -> &'static str {
+    match op {
+        RangeOp::Bare => "..",
+        RangeOp::Closed => "..=",
+        RangeOp::Open => "..<",
+        RangeOp::StartOpen => "<..",
+        RangeOp::BothOpen => "<..<",
+    }
+}
+
+pub(super) const EDITION_2028_RANGE_HELP: &str = "set edition = \"2028\" in Tsuzuri.toml; 'tsuzuri fix --edition 2028' migrates the sources first";
 
 /// The attributes before a top-level declaration (D-53).
 #[derive(Default)]
@@ -263,6 +278,8 @@ struct Parser<'a> {
     edition: Edition,
     /// The noncanonical spellings found so far, in parse order (A22).
     noncanonical: Vec<Noncanonical>,
+    /// Next slot in `noncanonical` to inspect when replacing a warning with a rejected finding.
+    noncanonical_replace: usize,
     /// The unconsumed suffix of a compound type closer; lexer tokens stay shared.
     type_remainder: Option<Token>,
     position: usize,
@@ -313,6 +330,32 @@ struct Parser<'a> {
     in_ensures: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(super) struct DelimitedFlags {
+    pub(super) stop_at_arm: bool,
+    pub(super) stop_at_arrow: bool,
+    pub(super) slice_context: Option<bool>,
+    pub(super) stop_at_slice_dotdot: bool,
+}
+
+impl Parser<'_> {
+    pub(super) fn enter_delimited(&mut self) -> DelimitedFlags {
+        DelimitedFlags {
+            stop_at_arm: std::mem::replace(&mut self.stop_at_arm, false),
+            stop_at_arrow: std::mem::replace(&mut self.stop_at_arrow, false),
+            slice_context: self.slice_context.take(),
+            stop_at_slice_dotdot: std::mem::replace(&mut self.stop_at_slice_dotdot, false),
+        }
+    }
+
+    pub(super) fn leave_delimited(&mut self, outer: DelimitedFlags) {
+        self.stop_at_arm = outer.stop_at_arm;
+        self.stop_at_arrow = outer.stop_at_arrow;
+        self.slice_context = outer.slice_context;
+        self.stop_at_slice_dotdot = outer.stop_at_slice_dotdot;
+    }
+}
+
 impl<'a> Parser<'a> {
     fn new(source: &'a str, tokens: &'a [Token], edition: Edition) -> Self {
         Self {
@@ -320,6 +363,7 @@ impl<'a> Parser<'a> {
             tokens,
             edition,
             noncanonical: Vec::new(),
+            noncanonical_replace: 0,
             type_remainder: None,
             position: 0,
             previous_end: 0,
@@ -370,6 +414,7 @@ impl<'a> Parser<'a> {
             tokens: self.tokens,
             edition: self.edition,
             noncanonical: Vec::new(),
+            noncanonical_replace: 0,
             type_remainder: self.type_remainder.clone(),
             position: self.position,
             previous_end: self.previous_end,
@@ -912,23 +957,46 @@ impl Parser<'_> {
                 let constraints = self.constraints()?;
                 let class = self.qualified_ident()?;
                 let mut arguments = self.angle_list(Self::type_expr)?;
-                let (ty, extra_args) = if matches!(class.text.as_str(), "Index" | "IndexMut") {
-                    if arguments.len() != 3 {
-                        return Err(self.error_of(
-                            DiagnosticKind::ExpectedSingleTypeArgument,
-                            "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
-                        ));
+                let (ty, extra_args) = match class.text.as_str() {
+                    "Index" | "IndexMut" => {
+                        if arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
                     }
-                    let ty = arguments.remove(0);
-                    (ty, arguments)
-                } else {
-                    if arguments.len() != 1 {
-                        return Err(self.error_of(
-                            DiagnosticKind::ExpectedSingleTypeArgument,
-                            "expected exactly one type argument",
-                        ));
+                    "Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" => {
+                        if arguments.len() != 1 && arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Add, Sub, Mul, Div, Rem and Pow instances take one type argument, or three: Add<Left, Right, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
                     }
-                    (arguments.remove(0), Vec::new())
+                    "Neg" => {
+                        if arguments.len() != 1 && arguments.len() != 2 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "Neg instances take one type argument, or two: Neg<Self, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    _ => {
+                        if arguments.len() != 1 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "expected exactly one type argument",
+                            ));
+                        }
+                        (arguments.remove(0), Vec::new())
+                    }
                 };
                 self.expect(&TokenKind::LeftBrace, "'{' after the instance type")?;
                 let mut methods = Vec::new();
@@ -1236,11 +1304,11 @@ impl Parser<'_> {
                 break;
             }
         }
-        // A22: edition 2027 rejects every noncanonical spelling, each with its own `E0004`.
-        if self.edition.rejects_noncanonical() && diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
+        // Each noncanonical kind defines which editions reject it with `E0004` (NC17).
+        if diagnostics.len() < MAX_UNIQUE_DIAGNOSTICS {
             let room = MAX_UNIQUE_DIAGNOSTICS - diagnostics.len();
             diagnostics.extend(
-                crate::canonical::rejections(&self.noncanonical)
+                crate::canonical::rejections(&self.noncanonical, self.edition)
                     .into_iter()
                     .take(room),
             );
@@ -1630,10 +1698,7 @@ impl Parser<'_> {
 
     /// Whether the current token is a range operator: `..`, `..=` or `..<` (A22).
     pub(super) fn range_operator_ahead(&self) -> bool {
-        matches!(
-            self.current().kind,
-            TokenKind::DotDot | TokenKind::DotDotEqual | TokenKind::DotDotLess
-        )
+        range_op(&self.current().kind).is_some()
     }
 
     /// The effect attribute that starts at the current token, with the span of `@` and its name.
@@ -3133,8 +3198,7 @@ impl Parser<'_> {
     fn block(&mut self) -> Result<Expr, Diagnostic> {
         self.enter()?;
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer = self.enter_delimited();
         let result = if self.implicit_computation_ahead(None) {
             let mut body = self.implicit_computation(None, false)?;
             let end = self.expect(&TokenKind::RightBrace, "'}' after the computation")?;
@@ -3151,15 +3215,19 @@ impl Parser<'_> {
         {
             self.block_after_open(start, None)
         } else {
-            let first = self.expression(0, true)?;
-            if self.eat(&TokenKind::With) {
-                self.record_update(start, first)
-            } else {
-                self.block_after_open(start, Some(first))
+            let first = self.expression(0, true);
+            match first {
+                Ok(first) => {
+                    if self.eat(&TokenKind::With) {
+                        self.record_update(start, first)
+                    } else {
+                        self.block_after_open(start, Some(first))
+                    }
+                }
+                Err(err) => Err(err),
             }
         };
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
+        self.leave_delimited(outer);
         self.nesting -= 1;
         result
     }
@@ -3570,23 +3638,25 @@ impl Parser<'_> {
     fn record(&mut self, name: Ident) -> Result<Expr, Diagnostic> {
         let start = name.span;
         self.expect(&TokenKind::LeftBrace, "'{' after the record name")?;
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let mut fields = Vec::new();
-        if !self.at(&TokenKind::RightBrace) {
-            loop {
-                let field = self.ident()?;
-                self.expect(&TokenKind::Colon, "':' before a field value")?;
-                let value = self.expression(0, true)?;
-                fields.push((field, value));
-                if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RightBrace) {
-                    break;
+        let outer = self.enter_delimited();
+        let fields_res = (|| -> Result<(Vec<(Ident, Expr)>, Token), Diagnostic> {
+            let mut fields = Vec::new();
+            if !self.at(&TokenKind::RightBrace) {
+                loop {
+                    let field = self.ident()?;
+                    self.expect(&TokenKind::Colon, "':' before a field value")?;
+                    let value = self.expression(0, true)?;
+                    fields.push((field, value));
+                    if !self.eat(&TokenKind::Comma) || self.at(&TokenKind::RightBrace) {
+                        break;
+                    }
                 }
             }
-        }
-        let end = self.expect(&TokenKind::RightBrace, "'}'")?;
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
+            let end = self.expect(&TokenKind::RightBrace, "'}'")?;
+            Ok((fields, end))
+        })();
+        self.leave_delimited(outer);
+        let (fields, end) = fields_res?;
         let depth = fields
             .iter()
             .map(|(_, value)| value.depth)
@@ -3702,15 +3772,16 @@ impl Parser<'_> {
     fn computation_block(&mut self) -> Result<ComputationBlock, Diagnostic> {
         self.enter()?;
         let start = self.expect(&TokenKind::LeftBrace, "'{'")?.span;
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let mut body = self.computation_sequence(None, false)?;
-        let end = self.expect(&TokenKind::RightBrace, "'}' after the computation")?;
-        body.span = start.through(end.span);
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
+        let outer = self.enter_delimited();
+        let res = (|| -> Result<ComputationBlock, Diagnostic> {
+            let mut body = self.computation_sequence(None, false)?;
+            let end = self.expect(&TokenKind::RightBrace, "'}' after the computation")?;
+            body.span = start.through(end.span);
+            Ok(body)
+        })();
+        self.leave_delimited(outer);
         self.nesting -= 1;
-        Ok(body)
+        res
     }
 
     fn computation_body(&mut self) -> Result<ComputationBlock, Diagnostic> {
@@ -4391,48 +4462,55 @@ impl Parser<'_> {
         allow_record: bool,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
+        let outer_slice = self.slice_context.take();
         let mut arguments = Vec::new();
-        while self.space_argument() {
-            if self.at(&TokenKind::LeftParen) {
-                let start = self.take().span;
-                if self.eat(&TokenKind::RightParen) {
-                    arguments.push(self.make(
-                        ExprKind::Unit,
-                        start.through(self.tokens[self.position - 1].span),
-                        1,
-                    )?);
-                } else {
-                    let outer = self.stop_at_arm;
-                    let outer_arrow = self.stop_at_arrow;
-                    self.stop_at_arm = false;
-                    self.stop_at_arrow = false;
-                    let mut grouped = self.expressions(TokenKind::RightParen)?;
-                    self.stop_at_arm = outer;
-                    self.stop_at_arrow = outer_arrow;
-                    if grouped.len() == 1 {
-                        let mut argument = grouped.pop().unwrap();
-                        argument.span = start.through(self.tokens[self.position - 1].span);
-                        while !(stop_at_newline && self.newline_before_current())
-                            && (self.at(&TokenKind::Dot)
-                                || (matches!(
-                                    self.current().kind,
-                                    TokenKind::LeftParen | TokenKind::LeftBracket
-                                ) && self.tokens[self.position - 1].span.end
-                                    == self.current().span.start))
-                        {
-                            argument = self.postfix(argument)?;
-                        }
-                        arguments.push(argument);
+        let res = (|| -> Result<(), Diagnostic> {
+            while self.space_argument() {
+                if self.at(&TokenKind::LeftParen) {
+                    let start = self.take().span;
+                    if self.eat(&TokenKind::RightParen) {
+                        arguments.push(self.make(
+                            ExprKind::Unit,
+                            start.through(self.tokens[self.position - 1].span),
+                            1,
+                        )?);
                     } else {
-                        let span = start.through(self.tokens[self.position - 1].span);
-                        let depth = grouped.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
-                        arguments.push(self.make(ExprKind::Tuple(grouped), span, depth)?);
+                        let outer = self.stop_at_arm;
+                        let outer_arrow = self.stop_at_arrow;
+                        self.stop_at_arm = false;
+                        self.stop_at_arrow = false;
+                        let mut grouped = self.expressions(TokenKind::RightParen)?;
+                        self.stop_at_arm = outer;
+                        self.stop_at_arrow = outer_arrow;
+                        if grouped.len() == 1 {
+                            let mut argument = grouped.pop().unwrap();
+                            argument.span = start.through(self.tokens[self.position - 1].span);
+                            while !(stop_at_newline && self.newline_before_current())
+                                && (self.at(&TokenKind::Dot)
+                                    || (matches!(
+                                        self.current().kind,
+                                        TokenKind::LeftParen | TokenKind::LeftBracket
+                                    ) && self.tokens[self.position - 1].span.end
+                                        == self.current().span.start))
+                            {
+                                argument = self.postfix(argument)?;
+                            }
+                            arguments.push(argument);
+                        } else {
+                            let span = start.through(self.tokens[self.position - 1].span);
+                            let depth =
+                                grouped.iter().map(|value| value.depth).max().unwrap_or(0) + 1;
+                            arguments.push(self.make(ExprKind::Tuple(grouped), span, depth)?);
+                        }
                     }
+                } else {
+                    arguments.push(self.term(allow_record, stop_at_newline)?);
                 }
-            } else {
-                arguments.push(self.term(allow_record, stop_at_newline)?);
             }
-        }
+            Ok(())
+        })();
+        self.slice_context = outer_slice;
+        res?;
         let span = left.span.through(self.tokens[self.position - 1].span);
         let depth = arguments
             .iter()
@@ -4508,108 +4586,402 @@ impl Parser<'_> {
         }
     }
 
-    fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let borrowed = self.slice_context.take();
-        let outer_range = std::mem::replace(&mut self.stop_at_slice_dotdot, true);
+    fn parse_from_end(&mut self) -> Result<Expr, Diagnostic> {
+        let caret = self.take().span;
+        if !self.edition.range_family() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                "'^' (a position from the end) requires edition 2028",
+                caret,
+            )
+            .with_help(EDITION_2028_RANGE_HELP));
+        }
+        let inner = self.term(true, false)?;
+        if !matches!(
+            self.current().kind,
+            TokenKind::RightBracket | TokenKind::Comma
+        ) && !self.range_operator_ahead()
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::FromEndInExpression,
+                "'^' takes one term; parenthesize a computed offset, as in '^(k + 1)'",
+                self.current().span,
+            ));
+        }
+        let span = caret.through(inner.span);
+        let depth = inner.depth + 1;
+        self.make(ExprKind::FromEnd(Box::new(inner)), span, depth)
+    }
+
+    fn bound_in_brackets(&mut self) -> Result<Expr, Diagnostic> {
+        if self.at(&TokenKind::Caret) {
+            self.parse_from_end()
+        } else {
+            self.expression(0, true)
+        }
+    }
+
+    fn check_new_range_op_edition(&self, op: RangeOp, span: Span) -> Result<(), Diagnostic> {
+        if matches!(op, RangeOp::StartOpen | RangeOp::BothOpen) && !self.edition.range_family() {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                format!("'{}' requires edition 2028", range_op_spelling(op)),
+                span,
+            )
+            .with_help(EDITION_2028_RANGE_HELP));
+        }
+        Ok(())
+    }
+
+    /// Reads one bracket component (`Expr`, `Range`, or `Whole`), stopping before `]` or `,`
+    /// so `NC18` can reuse it across comma-separated multi-axis keys.
+    pub(super) fn index_component(&mut self) -> Result<IndexComponent, Diagnostic> {
         let first = if self.range_operator_ahead() {
             None
         } else {
-            Some(self.expression(0, true)?)
+            Some(self.bound_in_brackets()?)
         };
-        let operator = self.range_operator_ahead().then(|| self.take());
-        let slice = operator.is_some();
-        let op = operator
-            .as_ref()
-            .map_or(RangeOp::Bare, |token| range_op(&token.kind));
-        let last = if slice && !self.at(&TokenKind::RightBracket) {
-            Some(self.expression(0, true)?)
+        if !self.range_operator_ahead() {
+            return Ok(IndexComponent::Expr(
+                first.expect("a non-range component parsed its expression"),
+            ));
+        }
+        let op1_token = self.take();
+        let op1 = range_op(&op1_token.kind).expect("range operator checked");
+        self.check_new_range_op_edition(op1, op1_token.span)?;
+        if first.is_none() && matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen) {
+            let form = range_op_spelling(op1);
+            return Err(Diagnostic::of(
+                DiagnosticKind::StartOpenRangeNeedsStart,
+                format!(
+                    "'{form}' excludes its start, so it needs one; write '..b' or '..<b' to start at the first element"
+                ),
+                op1_token.span,
+            ));
+        }
+        let at_component_end = |parser: &Self| {
+            matches!(
+                parser.current().kind,
+                TokenKind::RightBracket | TokenKind::Comma
+            )
+        };
+        let second = if !at_component_end(self) && !self.range_operator_ahead() {
+            Some(self.bound_in_brackets()?)
         } else {
             None
         };
-        // A22: `..=` and `..<` need the end that they include or exclude.
-        if let Some(token) = &operator
-            && last.is_none()
-            && op != RangeOp::Bare
-        {
-            return Err(Diagnostic::of(
-                DiagnosticKind::SliceRangeNeedsEnd,
-                if op == RangeOp::Closed {
-                    "an inclusive slice needs an end bound; write 'ref xs[start..=end]', or 'ref xs[start..]' to slice to the end"
-                } else {
-                    "a half-open slice with '..<' needs an end bound; write 'ref xs[start..<end]', or 'ref xs[start..]' to slice to the end"
-                },
-                token.span,
-            ));
-        }
-        let end = self.expect(&TokenKind::RightBracket, "']'")?;
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
-        self.slice_context = borrowed;
-        self.stop_at_slice_dotdot = outer_range;
-        let span = left.span.through(end.span);
-        let depth = first
-            .iter()
-            .chain(&last)
-            .map(|value| value.depth)
-            .max()
-            .unwrap_or(0)
-            .max(left.depth)
-            + 1;
-        let kind = if slice {
-            let Some(mutable) = borrowed else {
+        let (step, end, end_op_token, end_op) = if self.range_operator_ahead() {
+            let Some(step_expr) = second else {
                 return Err(Diagnostic::of(
-                    DiagnosticKind::SliceMustBeBorrowed,
-                    "array slices must be borrows; write 'ref xs[start..end]' for a shared slice or 'ref mut xs[start..end]' for an exclusive slice",
-                    span,
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    self.current().span,
                 ));
             };
-            if first.is_none() && last.is_none() {
+            let op2_token = self.take();
+            let op2 = range_op(&op2_token.kind).expect("range operator checked");
+            self.check_new_range_op_edition(op2, op2_token.span)?;
+            if !self.edition.range_family() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeFormNeedsEdition2028,
+                    "a step inside brackets requires edition 2028",
+                    op2_token.span,
+                )
+                .with_help(EDITION_2028_RANGE_HELP));
+            }
+            if matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen) {
+                let form = range_op_spelling(op1);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op1_token.span,
+                ));
+            }
+            if matches!(op2, RangeOp::StartOpen | RangeOp::BothOpen) {
+                let form = range_op_spelling(op2);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op2_token.span,
+                ));
+            }
+            if op1 != RangeOp::Bare {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    op1_token.span,
+                ));
+            }
+            if matches!(step_expr.kind, ExprKind::FromEnd(_)) {
+                let caret_span = Span {
+                    start: step_expr.span.start,
+                    end: step_expr.span.start + 1,
+                    source: step_expr.span.source,
+                };
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndStep,
+                    "a step is a count, not a position; it cannot start with '^'",
+                    caret_span,
+                ));
+            }
+            let last = if !at_component_end(self) {
+                Some(self.bound_in_brackets()?)
+            } else {
+                None
+            };
+            if self.range_operator_ahead() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    self.current().span,
+                ));
+            }
+            let neg_literal_step = matches!(
+                &step_expr.kind,
+                ExprKind::Unary(UnaryOp::Negate, inner)
+                    if matches!(inner.kind, ExprKind::Integer(v, _) if v != 0)
+            );
+            if neg_literal_step && op2 == RangeOp::Open {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::SliceStepDownExcludesEnd,
+                    "a slice range that counts down cannot exclude its end; write its last index with '..' or leave the end out",
+                    op2_token.span,
+                ));
+            }
+            (Some(Box::new(step_expr)), last, op2_token, op2)
+        } else {
+            (None, second, op1_token, op1)
+        };
+
+        if end.is_none() && matches!(end_op, RangeOp::Closed | RangeOp::Open | RangeOp::BothOpen) {
+            let msg = match end_op {
+                RangeOp::Closed => {
+                    "an inclusive slice needs an end bound; write 'ref xs[start..=end]', or 'ref xs[start..]' to slice to the end"
+                }
+                RangeOp::Open => {
+                    "a half-open slice with '..<' needs an end bound; write 'ref xs[start..<end]', or 'ref xs[start..]' to slice to the end"
+                }
+                RangeOp::BothOpen => {
+                    "a slice with '<..<' needs an end bound; write 'ref xs[start<..<end]', or 'ref xs[start<..]' to slice to the end"
+                }
+                _ => unreachable!(),
+            };
+            return Err(Diagnostic::of(
+                DiagnosticKind::SliceRangeNeedsEnd,
+                msg,
+                end_op_token.span,
+            ));
+        }
+
+        if first.is_none() && end.is_none() && step.is_none() && end_op == RangeOp::Bare {
+            return Ok(IndexComponent::Whole(end_op_token.span));
+        }
+
+        let start_open = matches!(op1, RangeOp::StartOpen | RangeOp::BothOpen);
+        let end_closed = match end_op {
+            RangeOp::Closed | RangeOp::StartOpen => true,
+            RangeOp::Open | RangeOp::BothOpen => false,
+            RangeOp::Bare => self.edition.range_family(),
+        };
+        let key = RangeKey {
+            start: first.map(Box::new),
+            end: end.map(Box::new),
+            step,
+            ends: RangeEnds {
+                start_open,
+                end_closed,
+            },
+        };
+        if end_op == RangeOp::Bare {
+            self.record_slice_range(end_op_token.span, &key);
+        }
+        Ok(IndexComponent::Range(Box::new(key)))
+    }
+
+    fn require_window_borrow(
+        borrowed: Option<bool>,
+        multi_axis: bool,
+        span: Span,
+    ) -> Result<bool, Diagnostic> {
+        borrowed.ok_or_else(|| {
+            Diagnostic::of(
+                DiagnosticKind::SliceMustBeBorrowed,
+                if multi_axis {
+                    "index windows must be borrows; write 'ref t[...]' for a shared window"
+                } else {
+                    "array slices must be borrows; write 'ref xs[start..<end]' for a shared slice or 'ref mut xs[start..<end]' for an exclusive slice"
+                },
+                span,
+            )
+        })
+    }
+
+    fn component_depth(component: &IndexComponent) -> usize {
+        match component {
+            IndexComponent::Expr(expr) => expr.depth,
+            IndexComponent::Range(range) => range
+                .start
+                .iter()
+                .chain(&range.end)
+                .chain(&range.step)
+                .map(|value| value.depth)
+                .max()
+                .unwrap_or(0),
+            IndexComponent::Whole(_) => 0,
+        }
+    }
+
+    fn index_or_slice(&mut self, left: Expr) -> Result<Expr, Diagnostic> {
+        let outer = self.enter_delimited();
+        let borrowed = outer.slice_context;
+        let parsed = (|| -> Result<(Vec<(IndexComponent, Span)>, Token), Diagnostic> {
+            let mut components = Vec::new();
+            loop {
+                self.stop_at_arm = false;
+                self.stop_at_arrow = false;
+                self.stop_at_slice_dotdot = true;
+                self.slice_context = None;
+                let comp_start = self.current().span;
+                let component = self.index_component()?;
+                let comp_span = Span {
+                    start: comp_start.start,
+                    end: self.previous_end.max(comp_start.end),
+                    source: comp_start.source,
+                };
+                components.push((component, comp_span));
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                if self.at(&TokenKind::RightBracket) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExpectedToken,
+                        "expected an index component after ','; remove the trailing comma",
+                        self.current().span,
+                    ));
+                }
+            }
+            let end = self.expect(&TokenKind::RightBracket, "']'")?;
+            Ok((components, end))
+        })();
+        self.leave_delimited(outer);
+        let (mut components, end) = parsed?;
+        let span = left.span.through(end.span);
+        if components.len() == 1 {
+            let (component, _) = components.pop().expect("single component");
+            return match component {
+                IndexComponent::Expr(index) => {
+                    let depth = left.depth.max(index.depth) + 1;
+                    self.make(
+                        ExprKind::Index(Box::new(left), Box::new(index)),
+                        span,
+                        depth,
+                    )
+                }
+                IndexComponent::Whole(_) => {
+                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    Err(Diagnostic::of(
+                        DiagnosticKind::SliceWithoutBounds,
+                        if mutable {
+                            "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
+                        } else {
+                            "a slice needs at least one bound; borrow the whole array with 'ref xs'"
+                        },
+                        span,
+                    ))
+                }
+                IndexComponent::Range(range) => {
+                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    let depth = range
+                        .start
+                        .iter()
+                        .chain(&range.end)
+                        .chain(&range.step)
+                        .map(|value| value.depth)
+                        .max()
+                        .unwrap_or(0)
+                        .max(left.depth)
+                        + 1;
+                    self.make(
+                        ExprKind::Slice {
+                            value: Box::new(left),
+                            range,
+                            mutable,
+                        },
+                        span,
+                        depth,
+                    )
+                }
+            };
+        }
+
+        if !self.edition.range_family()
+            && let Some((_, range_span)) = components.iter().find(|(comp, _)| {
+                matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_))
+            })
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                "range components in a multi-axis key need edition 2028; set 'edition = \"2028\"' in Tsuzuri.toml",
+                *range_span,
+            ));
+        }
+
+        let has_range_or_whole = components
+            .iter()
+            .any(|(comp, _)| matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_)));
+        if has_range_or_whole {
+            Self::require_window_borrow(borrowed, true, span)?;
+            if components
+                .iter()
+                .all(|(comp, _)| matches!(comp, IndexComponent::Whole(_)))
+            {
                 return Err(Diagnostic::of(
                     DiagnosticKind::SliceWithoutBounds,
-                    if mutable {
-                        "a slice needs at least one bound; write 'ref mut xs[0..]' for an exclusive slice of the whole array"
-                    } else {
-                        "a slice needs at least one bound; borrow the whole array with 'ref xs'"
-                    },
+                    "a key made only of '..' selects everything; borrow the value itself with 'ref t'",
                     span,
                 ));
             }
-            ExprKind::Slice {
+        }
+
+        let max_key_depth = components
+            .iter()
+            .map(|(comp, _)| Self::component_depth(comp))
+            .max()
+            .unwrap_or(0);
+        let depth = left.depth.max(max_key_depth) + 1;
+        let keys: Box<[IndexComponent]> = components.into_iter().map(|(comp, _)| comp).collect();
+        self.make(
+            ExprKind::MultiIndex {
                 value: Box::new(left),
-                start: first.map(Box::new),
-                end: last.map(Box::new),
-                mutable,
-                op,
-            }
-        } else {
-            ExprKind::Index(
-                Box::new(left),
-                Box::new(first.expect("an index has one expression")),
-            )
-        };
-        self.make(kind, span, depth)
+                keys,
+                borrow: None,
+            },
+            span,
+            depth,
+        )
     }
 
     fn expressions(&mut self, end: TokenKind) -> Result<Vec<Expr>, Diagnostic> {
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let outer_slice = self.slice_context.take();
-        let mut values = Vec::new();
-        if !self.at(&end) {
-            loop {
-                values.push(self.expression(0, true)?);
-                if !self.eat(&TokenKind::Comma) || self.at(&end) {
-                    break;
+        let outer = self.enter_delimited();
+        let res = (|| -> Result<Vec<Expr>, Diagnostic> {
+            let mut values = Vec::new();
+            if !self.at(&end) {
+                loop {
+                    values.push(self.expression(0, true)?);
+                    if !self.eat(&TokenKind::Comma) || self.at(&end) {
+                        break;
+                    }
                 }
             }
-        }
-        self.expect(&end, "the closing delimiter")?;
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
-        self.slice_context = outer_slice;
-        Ok(values)
+            self.expect(&end, "the closing delimiter")?;
+            Ok(values)
+        })();
+        self.leave_delimited(outer);
+        res
     }
 
     fn new_collection(&mut self) -> Result<Expr, Diagnostic> {
@@ -4758,6 +5130,13 @@ impl Parser<'_> {
             TokenKind::Mut => {
                 return Err(self.error_of(DiagnosticKind::MutAsExpression,
                     "'mut' is not an expression; write 'ref mut x' to borrow exclusively, or 'let mut x = ...' for a mutable binding",
+                ));
+            }
+            TokenKind::Caret => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::FromEndOutsideIndex,
+                    "'^' counts from the end only at the start of an index or a slice bound, as in 'xs[^0]' or 'ref xs[1..^1]'",
+                    start,
                 ));
             }
             TokenKind::True | TokenKind::False => {
@@ -5205,18 +5584,30 @@ impl Parser<'_> {
         let mut_span = mutable.then(|| self.take().span);
         let borrow = (token.kind == TokenKind::Ampersand).then_some(mutable);
         let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
-        let value = if term {
+        let mut value = if term {
             self.term(allow_record, stop_at_newline)?
         } else {
             self.expression_inner(PREFIX, allow_record, stop_at_newline)?
         };
         self.slice_context = outer_slice;
         self.record_symbolic_prefix(&token, mut_span, term, &value);
-        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
-            return Ok(Expr {
-                span: token.span.through(value.span),
-                ..value
-            });
+        if let Some(mutable) = borrow {
+            match &mut value.kind {
+                ExprKind::Slice { .. } => {
+                    return Ok(Expr {
+                        span: token.span.through(value.span),
+                        ..value
+                    });
+                }
+                ExprKind::MultiIndex { borrow: slot, .. } => {
+                    *slot = Some(mutable);
+                    return Ok(Expr {
+                        span: token.span.through(value.span),
+                        ..value
+                    });
+                }
+                _ => {}
+            }
         }
         let span = token.span.through(value.span);
         self.prefix_node(&token.kind, value, mutable, span)
@@ -5265,7 +5656,7 @@ impl Parser<'_> {
         let mutable = token.kind == TokenKind::Ref && self.eat(&TokenKind::Mut);
         let borrow = (token.kind == TokenKind::Ref).then_some(mutable);
         let outer_slice = std::mem::replace(&mut self.slice_context, borrow);
-        let value = self.term(allow_record, stop_at_newline)?;
+        let mut value = self.term(allow_record, stop_at_newline)?;
         self.slice_context = outer_slice;
         if self.space_argument() {
             let keyword = if token.kind == TokenKind::Ref {
@@ -5284,8 +5675,17 @@ impl Parser<'_> {
             )));
         }
         let span = token.span.through(value.span);
-        if borrow.is_some() && matches!(value.kind, ExprKind::Slice { .. }) {
-            return Ok(Expr { span, ..value });
+        if let Some(mutable) = borrow {
+            match &mut value.kind {
+                ExprKind::Slice { .. } => {
+                    return Ok(Expr { span, ..value });
+                }
+                ExprKind::MultiIndex { borrow: slot, .. } => {
+                    *slot = Some(mutable);
+                    return Ok(Expr { span, ..value });
+                }
+                _ => {}
+            }
         }
         let depth = value.depth + 1;
         let value = Box::new(value);
@@ -5641,5 +6041,35 @@ mod tests {
             assert_eq!(parse(&flat).is_ok(), extra == 0, "flat depth {depth}");
             assert_eq!(parse(&nested).is_ok(), extra == 0, "nested depth {depth}");
         }
+    }
+
+    #[test]
+    fn for_range_inside_parentheses_in_brackets_parses() {
+        for snippet in [
+            "let xs = [10, 20, 30, 40, 50]\nxs[({ let mut a = 0; for i in 0 ..= 1 do { a = a + i; () }; a })]\n",
+            "let xs = [10, 20, 30]\nxs[{ let mut a = 0; for i in 0 ..< 2 do a = a + i; a }]\n",
+            "let xs = [10, 20, 30]\nlet id = \\n -> n\nxs[id (if true then { for _ in 0 ..= 1 do (); 1 } else 0)]\n",
+            "let xs = [10, 20, 30]\nxs[(\\( ) -> { for _ in 0 ..= 1 do (); 0 }) ()]\n",
+            "let xs = [10, 20, 30]\nxs[[{ for _ in 0 ..= 1 do (); 0 }][0]]\n",
+            "let xs = [10, 20, 30]\nlet s = $\"{for _ in 0 ..= 1 do ()}\"\nxs[s.length * 0]\n",
+            "let xs = [10, 20, 30]\nxs[$\"{for _ in 0 ..= 1 do ()}\".length * 0]\n",
+            "record R { n: i64 }\nlet xs = [10, 20, 30]\nxs[(R { n: { for _ in 0 ..= 1 do (); 1 } }).n]\n",
+            "let xs = [10, 20, 30]\nxs[try { for _ in 0 ..= 1 do (); 1 } with | _ -> 0]\n",
+        ] {
+            assert!(parse(snippet).is_ok(), "failed to parse:\n{snippet}");
+        }
+        // Undelimited `if` inside brackets still stops before `..` so `ref xs[if c then 1 else 2..3]` stays a slice.
+        let slice_if =
+            parse("let c = true\nlet xs = [1, 2, 3, 4]\nref xs[if c then 1 else 2..3]\n").unwrap();
+        let entry = slice_if.entry.expect("top-level expr");
+        let result = match &entry.kind {
+            ExprKind::Block { result, .. } => result.as_ref(),
+            _ => &entry,
+        };
+        assert!(
+            matches!(result.kind, ExprKind::Slice { .. }),
+            "expected Slice, got {:?}",
+            result.kind
+        );
     }
 }

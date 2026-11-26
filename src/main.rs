@@ -65,7 +65,7 @@ Usage:
                     [--profile-generate DIR|--profile-use PATH] [--json]
   tsuzuri repl [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--timeout SECONDS]
   tsuzuri script [-O0|-O1|-O2|-O3] [--cpu generic|native] [--no-cache] [--json] FILE [arguments...]
-  tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]
+  tsuzuri new directory [--namespace NAME] [--edition 2026|2027|2028] [--no-agent-files]
   tsuzuri fetch directory [--json]
   tsuzuri publish directory --git URL --rev COMMIT [--json]
   tsuzuri api-diff old new [--effective] [--json]
@@ -284,7 +284,8 @@ Build options:
     --deny-warnings        Fail check/build/run before code generation on warnings
     --warn implicit-copy   Report W1006 at implicit copies of arrays and lists
     --warn canonical       Report W1007 at spellings that have a canonical form, with their rewrites
-    --edition 2026|2027    Read the sources of a project without a Tsuzuri.toml with this edition
+    --edition 2026|2027|2028
+                         Read the sources of a project without a Tsuzuri.toml with this edition
     --warn untrusted-extern
                          Report W1010 at extern functions that are used but not marked '@trusted'
     --report parallel      check only: print the Array calls that Parallel can replace and whether the
@@ -2975,7 +2976,7 @@ fn new_project(arguments: &[OsString]) -> ExitCode {
         print_diagnostic(
             &Diagnostic::of(
                 DiagnosticKind::UsageError,
-                "usage: tsuzuri new directory [--namespace NAME] [--edition 2026|2027] [--no-agent-files]",
+                "usage: tsuzuri new directory [--namespace NAME] [--edition 2026|2027|2028] [--no-agent-files]",
                 Span::default(),
             ),
             Path::new("<command line>"),
@@ -4319,6 +4320,20 @@ fn cli(
     } else {
         Vec::new()
     };
+    let meaning_changed = if matches!(
+        arguments.action,
+        Action::Check | Action::Build | Action::Run | Action::Test
+    ) && !arguments.test_doc
+        && project.manifests.is_empty()
+        && arguments.edition.is_none()
+    {
+        tsuzuri::canonical::meaning_changed_notes(
+            &module.noncanonical,
+            tsuzuri::syntax::Edition::LATEST,
+        )
+    } else {
+        Vec::new()
+    };
     let untrusted = if arguments.warn_untrusted_extern {
         match project.untrusted_extern_warnings(&module) {
             Ok(warnings) => warnings,
@@ -4331,11 +4346,16 @@ fn cli(
     } else {
         Vec::new()
     };
+    let mut all_warnings: Vec<_> = module
+        .warnings
+        .iter()
+        .cloned()
+        .chain(meaning_changed)
+        .collect();
+    all_warnings.sort_by_key(|warning| (warning.span.source, warning.span.start));
     let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(
-        module
-            .warnings
-            .iter()
-            .cloned()
+        all_warnings
+            .into_iter()
             .chain(copies)
             .chain(canonical)
             .chain(untrusted),
@@ -6599,11 +6619,11 @@ mod tests {
         for (values, message) in [
             (
                 vec!["check", "Main.tz", "--edition"],
-                "--edition requires an edition year; supported editions: 2026, 2027",
+                "--edition requires an edition year; supported editions: 2026, 2027, 2028",
             ),
             (
                 vec!["check", "Main.tz", "--edition", "2030"],
-                "unsupported edition '2030' for --edition; supported editions: 2026, 2027",
+                "unsupported edition '2030' for --edition; supported editions: 2026, 2027, 2028",
             ),
             (
                 vec!["check", "Main.tz", "--edition", "2026", "--edition", "2027"],

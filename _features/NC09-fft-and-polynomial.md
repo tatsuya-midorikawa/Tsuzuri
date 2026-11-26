@@ -5,7 +5,7 @@
 | ID | NC09 |
 | 優先度 | P2（信号処理・スペクトル解析・多項式フィッティング） |
 | 規模 | L（2 Phase: Phase 1 `std/Fft.tz`、Phase 2 `std/Polynomial.tz`） |
-| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](NC15-parallel-borrowed-chunk-input.md)) |
+| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC08](NC08-linalg-core-and-einsum.md), ([NC15](_completed/NC15-parallel-borrowed-chunk-input.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
@@ -16,7 +16,7 @@
 ## 実装者向け早見
 
 - 範囲:
-  - **Phase 1（`std/Fft.tz`）**: 任意長 $N$ に対する $O(N \log N)$ 高速フーリエ変換（2 のべき乗は反復 Radix-2 Cooley-Tukey、一般合成数・素数長は Bluestein チャープ Z 変換）。`fft`, `ifft`, `rfft`, `irfft`, `hfft`, `ihfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfftn`, `irfftn`, `fftfreq`, `rfftfreq`, `fftshift`, `ifftshift`（正規化 `Backward | Ortho | Forward` 指定、軸指定対応）。1 回のバッチ／ND 呼び出し内では軸ごとに回転因子と Bluestein チャープ FFT を 1 回だけ事前計算して共有し、複数回の呼び出しを跨ぐ反復用途向けに不変計画 `Fft.Plan<'a>`（`plan` / `execute` / `execute_into`）を提供する。Phase 1b（実測ベース）として混合基数 `{2, 3, 5}`（直接変換および Bluestein 内部畳み込みの滑らかな長さ選択）と、[NC15](NC15-parallel-borrowed-chunk-input.md) 完了後の並列バッチ/ND FFT（`fft_parallel` / `fft2_parallel`）を段階追加する。
+  - **Phase 1（`std/Fft.tz`）**: 任意長 $N$ に対する $O(N \log N)$ 高速フーリエ変換（2 のべき乗は反復 Radix-2 Cooley-Tukey、一般合成数・素数長は Bluestein チャープ Z 変換）。`fft`, `ifft`, `rfft`, `irfft`, `hfft`, `ihfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfftn`, `irfftn`, `fftfreq`, `rfftfreq`, `fftshift`, `ifftshift`（正規化 `Backward | Ortho | Forward` 指定、軸指定対応）。1 回のバッチ／ND 呼び出し内では軸ごとに回転因子と Bluestein チャープ FFT を 1 回だけ事前計算して共有し、複数回の呼び出しを跨ぐ反復用途向けに不変計画 `Fft.Plan<'a>`（`plan` / `execute` / `execute_into`）を提供する。Phase 1b（実測ベース）として混合基数 `{2, 3, 5}`（直接変換および Bluestein 内部畳み込みの滑らかな長さ選択）と、[NC15](_completed/NC15-parallel-borrowed-chunk-input.md) 完了後の並列バッチ/ND FFT（`fft_parallel` / `fft2_parallel`）を段階追加する。
   - **Phase 2（`std/Polynomial.tz`）**: 標準べき基底（および Chebyshev・Legendre 基底）の多項式演算 `eval`（Horner 法）, `add`, `sub`, `mul`, `divmod`, `deriv`, `integ`, `fit`（Vandermonde + `Linalg.lstsq`）, `roots`（コンパニオン行列の `Linalg.eigvals`）。
 - 最初に読む: ① [NC01](_completed/NC01-complex-and-extended-math.md) の `Complex` 仕様 ② [NC08](NC08-linalg-core-and-einsum.md) の `lstsq`・`eigvals` ③ 仕様 1〜2。
 - 最初に書くテスト: `tests/fft.rs`（素朴 DFT 参照実装との比較: 長さ 1, 2, 7, 8, 15, 16, 100、Parseval の等式、`ifft (fft x) ≈ x`、`irfft (rfft x) ≈ x`、2D/3D）と `tests/polynomial.rs`（`fit`・`roots`・`deriv`/`integ`）。
@@ -69,7 +69,7 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 - 長さ 0 の軸は `Result.Error (EmptyAxis axis)` を返す（D2）。
 - Phase 1b（実測による段階追加）:
   - 混合基数 `{2, 3, 5}` バタフライを追加し、合成数長（例: `1000`）を直接処理するとともに、素数・大因数長の Bluestein 内部畳み込み長を最小 2 べき乗ではなく最小 `{2, 3, 5}` 滑らか数（例: $N = 1031$ に対し最小 $2N-1 = 2061$ を満たす $2160 = 2^4 \cdot 3^3 \cdot 5$、2 べきの $4096$ の約半分）から選ぶ（要求された変換長 $N$ 自体は変更しない）。
-  - [NC15](NC15-parallel-borrowed-chunk-input.md) 完了後、独立したバッチ／2D/ND スライスを `Parallel.for_each_chunk_with` で並列化する `fft_parallel`・`fft2_parallel`（非 `pure` の `Category::Task`、直列とビット完全一致）を追加する。
+  - [NC15](_completed/NC15-parallel-borrowed-chunk-input.md) 完了後、独立したバッチ／2D/ND スライスを `Parallel.for_each_chunk_with` で並列化する `fft_parallel`・`fft2_parallel`（非 `pure` の `Category::Task`、直列とビット完全一致）を追加する。
 
 ### 2. Phase 2: `std/Polynomial.tz`（opt-in）
 
@@ -92,7 +92,7 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 - [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<'a>`, `Math.cos`, `Math.sin`, `Math.pi`。
 - [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`。
 - [NC08](NC08-linalg-core-and-einsum.md): `Linalg.lstsq`, `Linalg.eigvals`（Phase 2 のみ）。
-- 弱い依存 [NC15](NC15-parallel-borrowed-chunk-input.md): `Parallel.for_each_chunk_with`（Phase 1b の並列バッチ/ND FFT 用）。
+- 弱い依存 [NC15](_completed/NC15-parallel-borrowed-chunk-input.md): `Parallel.for_each_chunk_with`（Phase 1b の並列バッチ/ND FFT 用）。
 
 ## 他チケットへ提供するインターフェース
 

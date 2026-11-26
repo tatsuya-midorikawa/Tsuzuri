@@ -7,7 +7,7 @@
 | 規模 | XL（Phase 1 = M、Phase 2 = L、Phase 3 = M） |
 | 依存 | – |
 | 後続 | [NC18](NC18-multi-axis-bracket-indexing.md)（`RangeKey`・`IndexComponent`・`ExprKind::FromEnd`・`Parser::index_component`・参照表 `tests/range-reference-cases.mjs`・文書の例の `edition=` を使う） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認） |
 | 承認 | 承認済み（D-66a〜c。利用者の決定 2026-11-25: 末尾からの位置は F# と同じ `^0` が最後、edition 2028 で `..` を一度に終端を含む意味へ変える、そのための [docs/stability.md](../docs/stability.md#edition) の edition 方針の例外を認める）。未決だった 3 つの質問は決定（D-66 の委任で決定、2026-11-25。D8・D9・D13）。決定事項はすべて承認済み・決定・既定案のどれか。新しい警告コード `W1013`・`W1014`、edition 2028、新しい字句は GUIDE D-55・D-15 に登録済み（2026-11-25 の統合）。`W1014` の kind `negative_literal_index` は D-55 の `W1014` の行に足した（D-66 の委任による決定の記録。新しい診断コードは要らない） |
 | 手本にする既存実装 | [A22](_completed/A22-edition-2027-canonical-forms.md)（`src/canonical.rs`・`src/parse_canonical.rs` の記録と `W1007`／`E0004`、`tests/edition_2027.rs::corpus_migrates_without_changing_the_ir`、suite `range_forms`）、`src/check.rs` の `slice`（`..=` の巻き戻る `+ 1`、16075〜16093 行付近）、`TypedExprKind::SaturatingIndex`（添字の位置だけに現れる包み。`src/llvm.rs:7942` 付近）、`src/llvm_control.rs` の `range_loop`／`half_open_last`、`tests/tensor-cases.mjs`（E2E の独立参照を別ファイルに置く形） |

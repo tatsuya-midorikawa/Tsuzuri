@@ -292,6 +292,10 @@ fn borrowed_comparisons_preserve_conflicts_and_source_borrow_rules() {
     );
     rejects(
         "record Named { text: string }\ninstance Eq<Named> { fn eq left right = left == right; fn ne left right = false }",
+        "E1019",
+    );
+    rejects(
+        "record Named { text: string }\ninstance Eq<Named> { fn eq left right = (&left) == (&right); fn ne left right = false }",
         "E1005",
     );
     rejects(
@@ -1058,6 +1062,70 @@ fn specializes_operators_for_every_numeric_representation() {
         "def bits :: 'a -> 'a -> 'a\nfn bits x y = Bits.ushr ((~~~x &&& y ||| x ^^^ y) <<< y >>> y) (y % x)\ndef answer :: i32\nfn answer = bits 42 2",
     );
     accepts(
-        "instance Add<[i32]> { fn add x y = Array.copy x }\ndef answer :: [i32]\nfn answer = [] + []",
+        "record IntVec { items: [i32] }\ninstance Add<IntVec> { fn add x _y = IntVec { items: Array.copy (ref x.items) } }\ndef answer :: IntVec\nfn answer = IntVec { items: [] } + IntVec { items: [] }",
+    );
+    let err = analyze("instance Add<[i32]> { fn add x _y = Array.copy x }\n0")
+        .unwrap_err()
+        .into_data();
+    assert_eq!((err.code, err.kind), ("E1016", Some("orphan_instance")));
+}
+
+#[test]
+fn arithmetic_instances_need_an_operand_type_of_this_program() {
+    let check_orphan = |sources: &[(&str, &str)]| {
+        let err = tsuzuri::analyze_modules(sources).unwrap_err().into_data();
+        assert_eq!(err.code, "E1016", "{sources:?}\n{}", err.message);
+        assert_eq!(err.kind, Some("orphan_instance"), "{sources:?}");
+        assert!(
+            err.message
+                .ends_with("needs a type declared in this program as its operand type"),
+            "{sources:?}\n{}",
+            err.message
+        );
+    };
+    for source in [
+        "instance Mul<Tensor<f64>> { fn mul _a _b = Tensor.init [2] (\\_ -> 0.0) }\n0",
+        "instance Add<Maybe<i64>> { fn add _a _b = Maybe.None }\n0",
+        "instance Add<(i64 * i64)> { fn add _a _b = (0, 0) }\n0",
+        "instance Add<[i32]> { fn add x _y = Array.copy x }\n0",
+        "instance Neg<i32u> { fn neg _x = 0i32u }\n0",
+        "instance Add<bool> { fn add a b = a || b }\n0",
+        "record Point { x: i64 }\ninstance Add<ref Point> { fn add a _b = deref a }\n0",
+    ] {
+        check_orphan(&[("Main.tz", source)]);
+    }
+    check_orphan(&[
+        ("C.tt", "class C<'a> {\n    def f :: ref 'a -> i64\n}\n"),
+        (
+            "Main.tz",
+            "record Box { v: i64 }\ninstance C.C<Box> { fn f b = b.v }\ninstance Add<dyn C.C> { fn add a _b = Dyn.of (Box { v: C.C.f a }) }\n0",
+        ),
+    ]);
+
+    for source in [
+        "instance Add<i32> { fn add _a _b = 0 }\n0",
+        "type Meters = f64\ninstance Add<Meters> { fn add _a _b = 0.0 }\n0",
+    ] {
+        let err = analyze(source).unwrap_err().into_data();
+        assert_eq!(
+            (err.code, err.kind),
+            ("E1016", Some("builtin_instance_override")),
+            "{source}"
+        );
+    }
+
+    accepts(
+        "record Point { x: i64 }\n\
+         record Pair<'a, 'b> { a: 'a, b: 'b }\n\
+         extern type copy Buf\n\
+         instance Add<Point> { fn add a b = Point { x: a.x + b.x } }\n\
+         instance Add<Pair<i64, i64>> { fn add a b = Pair { a: a.a + b.a, b: a.b + b.b } }\n\
+         instance Add<Buf> { fn add a _b = deref a }\n\
+         instance Index<Buf, i64, f64> { fn index _k _self = 0.0 }\n\
+         instance Eq<ref Point> {\n\
+             fn eq a b = (deref a).x == (deref b).x\n\
+             fn ne a b = (deref a).x != (deref b).x\n\
+         }\n\
+         0",
     );
 }

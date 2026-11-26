@@ -7,7 +7,7 @@
 | 優先度 | P1 |
 | 規模 | M（Phase 1 は std の本体の書き換え、Phase 2 は `src/last_use.rs` の X1 の精密化） |
 | 依存 | [A17](../_features/_completed/A17-last-use-move.md), [PM07](_completed/PM07-copy-elision.md)（どちらも完了） |
-| 関連 | [NC20](../_features/NC20-compound-assignment-and-mutable-index-views.md)（起票元の D13 (a)。`+=`・`IndexMut`・`IndexBorrowMut` の対象の借用の根）、[A39](../_features/A39-field-exclusive-borrow.md)（レコードのフィールドの排他借用。edition 2027 以降）、[NC06](../_features/NC06-tensor-ufuncs-and-elementwise.md)（`*_into` の出力先を `Tensor.update` で用意する計画）、[A15](../_features/_completed/A15-copy-cost-visibility.md)（`W1006`） |
+| 関連 | [NC20](../_features/NC20-compound-assignment-and-mutable-index-views.md)（起票元の D13 (a)。`+=`・`IndexMut`・`IndexBorrowMut` の対象の借用の根）、[A39](../_features/_completed/A39-field-exclusive-borrow.md)（レコードのフィールドの排他借用。edition 2027 以降）、[NC06](../_features/_completed/NC06-tensor-ufuncs-and-elementwise.md)（`*_into` の出力先を `Tensor.update` で用意する計画）、[A15](../_features/_completed/A15-copy-cost-visibility.md)（`W1006`） |
 | 状態 | todo |
 | 起票 | 2026-11-25（NC20 の D13 (a) の決定。[GUIDE D-66](../_features/GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` の dev バイナリで再測定した） |
 | 承認 | 決定（D-66 の委任で決定、2026-11-25）: 起票、範囲、Phase の分け方、型付き IR だけから借用の期間を求めること、文書を先に直すこと（D1・D3〜D7）。言語の意味・構文・診断コードは変えない |

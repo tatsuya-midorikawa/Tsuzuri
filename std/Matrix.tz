@@ -79,7 +79,7 @@ def row :: own i64 -> ref Matrix<'a> -> ref ['a]
 fn row index matrix =
     assert (index >= 0 && index < matrix.rows)
     let start = index * matrix.cols
-    ref matrix.data[start .. start + matrix.cols]
+    ref matrix.data[start ..< start + matrix.cols]
 
 /// Borrows all elements in row-major order.
 ///
@@ -155,6 +155,40 @@ fn add left right =
     assert (left.rows == right.rows && left.cols == right.cols)
     Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] + right.data[index]) }
 
+/// Element-wise difference (`left - right`); traps unless both shapes are equal.
+///
+/// ```tsuzuri run=[9,%2018,%2027,%2036]
+/// let a = Matrix.of_array 2 2 [10, 20, 30, 40]
+/// let b = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.to_array (Matrix.sub a b)
+/// ```
+def sub :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn sub left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] - right.data[index]) }
+
+/// Element-wise (Hadamard) product (`left * right`); traps unless both shapes are equal.
+///
+/// ```tsuzuri run=[10,%2040,%2090,%20160]
+/// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// let b = Matrix.of_array 2 2 [10, 20, 30, 40]
+/// Matrix.to_array (Matrix.hadamard a b)
+/// ```
+def hadamard :: Numeric<'a> => ref Matrix<'a> -> ref Matrix<'a> -> Matrix<'a>
+fn hadamard left right =
+    assert (left.rows == right.rows && left.cols == right.cols)
+    Matrix { rows: left.rows, cols: left.cols, data: new ['a](left.data.length, \index -> left.data[index] * right.data[index]) }
+
+/// Multiplies every element by `factor` (`factor * x`).
+///
+/// ```tsuzuri run=[3,%206,%209,%2012]
+/// let m = Matrix.of_array 2 2 [1, 2, 3, 4]
+/// Matrix.to_array (Matrix.scale 3 m)
+/// ```
+def scale :: Numeric<'a> => own 'a -> ref Matrix<'a> -> Matrix<'a>
+fn scale factor matrix =
+    Matrix { rows: matrix.rows, cols: matrix.cols, data: new ['a](matrix.data.length, \index -> factor * matrix.data[index]) }
+
 // Adds the product rows `first ..` into `out`, which holds whole output rows of `cols` elements and
 // starts at +0. Every element of `out` is updated only by `out + (a * b)` with k ascending, so its
 // sequence of roundings equals the textbook sum from +0 over k; only the order in which different
@@ -165,11 +199,11 @@ fn add left right =
 private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn multiply_rows left right inner cols first out =
     for r in 0i64 ..= (out.length / cols - 1) do
-        let row = ref mut out[r * cols .. r * cols + cols]
-        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        let row = ref mut out[r * cols ..< r * cols + cols]
+        let line = ref left[(first + r) * inner ..< (first + r) * inner + inner]
         for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
-            let source = ref right[k * cols .. k * cols + cols]
+            let source = ref right[k * cols ..< k * cols + cols]
             for j in 0i64 ..= (row.length - 1) do
                 let value = row[j] + a * source[j]
                 Array.write j value row
@@ -178,11 +212,11 @@ fn multiply_rows left right inner cols first out =
 private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn fma_rows left right inner cols first out =
     for r in 0i64 ..= (out.length / cols - 1) do
-        let row = ref mut out[r * cols .. r * cols + cols]
-        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        let row = ref mut out[r * cols ..< r * cols + cols]
+        let line = ref left[(first + r) * inner ..< (first + r) * inner + inner]
         for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
-            let source = ref right[k * cols .. k * cols + cols]
+            let source = ref right[k * cols ..< k * cols + cols]
             for j in 0i64 ..= (row.length - 1) do
                 let value = Math.fma a source[j] row[j]
                 Array.write j value row
@@ -232,7 +266,8 @@ fn mul_fma left right =
 /// `mul` computed by several threads. The rows are split into chunks that depend only on the shape,
 /// and every element is computed exactly as in `mul`, so the result has the same bits for any number
 /// of threads. A product of more than one chunk copies both operands once so that the threads can
-/// share them; a single chunk runs on the calling thread without copying.
+/// `mul` computed by several threads: disjoint row chunks of the output are written in parallel,
+/// sharing `left` and `right` directly without copying; a single chunk runs on the calling thread.
 ///
 /// ```tsuzuri run=[19,%2022,%2043,%2050]
 /// let a = Matrix.of_array 2 2 [1, 2, 3, 4]
@@ -249,12 +284,11 @@ fn mul_parallel left right =
     if count > 0 && inner > 0 then
         if left.rows <= rows_per_chunk inner cols then multiply_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
         else
-            let shared_left = Arc.new (Array.copy (ref left.data))
-            let shared_right = Arc.new (Array.copy (ref right.data))
-            Parallel.for_each_chunk (rows_per_chunk inner cols * cols) (\start chunk -> multiply_rows (Arc.get (ref shared_left)) (Arc.get (ref shared_right)) inner cols (start / cols) chunk) (ref mut out)
+            let inputs = (ref left.data, ref right.data, inner, cols)
+            Parallel.for_each_chunk_with (rows_per_chunk inner cols * cols) (ref inputs) (\shared start chunk -> match shared with | (la, rb, k, c) -> multiply_rows la rb k c (start / c) chunk) (ref mut out)
     Matrix { rows: left.rows, cols: cols, data: out }
 
-/// `mul_fma` computed by several threads, with the chunking and the sharing of `mul_parallel`.
+/// `mul_fma` computed by several threads, with the chunking and the zero-copy sharing of `mul_parallel`.
 ///
 /// ```tsuzuri run=[0.5,%201,%201.5,%202]
 /// let a = Matrix.of_array 2 2 [1.0, 2.0, 3.0, 4.0]
@@ -271,9 +305,8 @@ fn mul_fma_parallel left right =
     if count > 0 && inner > 0 then
         if left.rows <= rows_per_chunk inner cols then fma_rows (ref left.data) (ref right.data) inner cols 0 (ref mut out)
         else
-            let shared_left = Arc.new (Array.copy (ref left.data))
-            let shared_right = Arc.new (Array.copy (ref right.data))
-            Parallel.for_each_chunk (rows_per_chunk inner cols * cols) (\start chunk -> fma_rows (Arc.get (ref shared_left)) (Arc.get (ref shared_right)) inner cols (start / cols) chunk) (ref mut out)
+            let inputs = (ref left.data, ref right.data, inner, cols)
+            Parallel.for_each_chunk_with (rows_per_chunk inner cols * cols) (ref inputs) (\shared start chunk -> match shared with | (la, rb, k, c) -> fma_rows la rb k c (start / c) chunk) (ref mut out)
     Matrix { rows: left.rows, cols: cols, data: out }
 
 instance Copy<'a> => Index<Matrix<'a>, (i64 * i64), 'a> {

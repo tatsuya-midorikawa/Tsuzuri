@@ -7,7 +7,7 @@
 | 規模 | M（組み込み関数 1 つの追加: 型検査・所有権検査・並列 IR 生成・`Matrix.mul_parallel` 移行） |
 | 依存 | – |
 | 後続 | ([NC09](NC09-fft-and-polynomial.md)), ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)) |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `d4afc09b` で確認） |
 | 承認 | 要承認（新規組み込み関数 `Parallel.for_each_chunk_with` の追加。決定事項 D1 が要承認、ほかは既定案） |
 | 手本にする既存実装 | `src/check.rs:3726`（`Builtin::ParallelForEachChunk`）、`src/check.rs:4646`（`Builtin::RoutineScope`）、`src/ownership.rs:14495-14540`、`src/llvm_parallel.rs:215-270`、`std/Matrix.tz:240-275` |

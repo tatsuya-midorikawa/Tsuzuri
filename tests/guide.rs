@@ -69,6 +69,24 @@ fn editions() -> Vec<String> {
     Edition::SUPPORTED.iter().map(ToString::to_string).collect()
 }
 
+fn matches_edition_spec(spec: &str, edition: &str) -> bool {
+    if let Some(min) = spec.strip_prefix(">=") {
+        edition.parse::<u16>().unwrap() >= min.parse::<u16>().unwrap()
+    } else {
+        spec == edition
+    }
+}
+
+fn matching_editions(spec: Option<String>) -> Vec<String> {
+    match spec {
+        None => editions(),
+        Some(spec) => editions()
+            .into_iter()
+            .filter(|edition| matches_edition_spec(&spec, edition))
+            .collect(),
+    }
+}
+
 /// `text` as `edition` shows it: the blocks of other editions and the marker lines removed. A
 /// small reimplementation, so that the expected text does not come from the compiler.
 fn shown(text: &str, edition: &str) -> String {
@@ -76,7 +94,12 @@ fn shown(text: &str, edition: &str) -> String {
     let mut output = String::new();
     for line in text.replace("\r\n", "\n").split_inclusive('\n') {
         let bare = line.trim_end();
-        if let Some(year) = bare
+        if let Some(spec) = bare
+            .strip_prefix("<!--if edition>=")
+            .and_then(|rest| rest.strip_suffix("-->"))
+        {
+            keep = edition.parse::<u16>().unwrap() >= spec.parse::<u16>().unwrap();
+        } else if let Some(year) = bare
             .strip_prefix("<!--if edition=")
             .and_then(|rest| rest.strip_suffix("-->"))
         {
@@ -312,6 +335,11 @@ fn examples(text: &str) -> Vec<(Option<String>, String, String, String)> {
     for line in text.lines() {
         if open.is_none() {
             if let Some(year) = line
+                .strip_prefix("<!--if edition>=")
+                .and_then(|rest| rest.strip_suffix("-->"))
+            {
+                edition = Some(format!(">={year}"));
+            } else if let Some(year) = line
                 .strip_prefix("<!--if edition=")
                 .and_then(|rest| rest.strip_suffix("-->"))
             {
@@ -364,7 +392,7 @@ fn the_guide_examples_type_check() {
             card_examples = projects.len();
         }
         for ((edition, project), files) in projects {
-            for edition in edition.map_or_else(editions, |edition| vec![edition]) {
+            for edition in matching_editions(edition) {
                 let mut all: Vec<(&str, &str)> = files
                     .iter()
                     .map(|(file, body)| (file.as_str(), body.as_str()))
@@ -440,7 +468,7 @@ fn pitfall_claims_hold_and_appear_in_the_card() {
     let entries = pitfalls();
     assert!(entries.len() >= 25);
     for (id, snippet, codes, edition, source) in entries {
-        for edition in edition.map_or_else(editions, |edition| vec![edition]) {
+        for edition in matching_editions(edition) {
             let sources: Vec<String> = if source.contains("{word}") {
                 snippet
                     .split(' ')
@@ -533,7 +561,7 @@ fn the_checker_checks_the_project_of_each_edition_block() {
         let stderr = String::from_utf8(output.stderr).unwrap();
         assert!(output.status.success(), "{stderr}");
         let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(stdout.contains("Guide: 2 checked examples"), "{stdout}");
+        assert!(stdout.contains("Guide: 3 checked examples"), "{stdout}");
     }
 }
 

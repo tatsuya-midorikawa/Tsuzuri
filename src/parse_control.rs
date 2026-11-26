@@ -175,9 +175,62 @@ impl Parser<'_> {
         allow_record: bool,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
+        let op1_kind = super::range_op(&op1.kind).expect("range operator checked");
+        if matches!(op1_kind, RangeOp::StartOpen | RangeOp::BothOpen)
+            && !self.edition.range_family()
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::RangeFormNeedsEdition2028,
+                format!(
+                    "'{}' requires edition 2028",
+                    super::range_op_spelling(op1_kind)
+                ),
+                op1.span,
+            )
+            .with_help(super::EDITION_2028_RANGE_HELP));
+        }
         let next = self.expression_inner(1, allow_record, stop_at_newline)?;
-        let (step, finish, op2) = if op1.kind == TokenKind::DotDot && self.range_operator_ahead() {
+        let (step, finish, op2) = if self.range_operator_ahead() {
+            if matches!(op1_kind, RangeOp::StartOpen | RangeOp::BothOpen) {
+                let form = super::range_op_spelling(op1_kind);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op1.span,
+                ));
+            }
+            if op1_kind != RangeOp::Bare {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::RangeTakesOneStep,
+                    "a range takes at most one step; write 'start .. step ..= finish'",
+                    self.current().span,
+                ));
+            }
             let op2 = self.take();
+            let op2_kind = super::range_op(&op2.kind).expect("range operator checked");
+            if matches!(op2_kind, RangeOp::StartOpen | RangeOp::BothOpen) {
+                if !self.edition.range_family() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::RangeFormNeedsEdition2028,
+                        format!(
+                            "'{}' requires edition 2028",
+                            super::range_op_spelling(op2_kind)
+                        ),
+                        op2.span,
+                    )
+                    .with_help(super::EDITION_2028_RANGE_HELP));
+                }
+                let form = super::range_op_spelling(op2_kind);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::StartOpenRangeWithStep,
+                    format!(
+                        "'{form}' takes no step; start the range at its first value, as in 'first .. step .. last'"
+                    ),
+                    op2.span,
+                ));
+            }
             (
                 Some(Box::new(next)),
                 self.expression_inner(1, allow_record, stop_at_newline)?,
@@ -196,10 +249,14 @@ impl Parser<'_> {
                 self.current().span,
             ));
         }
-        let op = range_op(&op2.kind);
+        let op = super::range_op(&op2.kind).expect("range operator checked");
         if op == RangeOp::Bare {
             self.record_bare_range(op2.span);
         }
+        let ends = RangeEnds {
+            start_open: matches!(op, RangeOp::StartOpen | RangeOp::BothOpen),
+            end_closed: matches!(op, RangeOp::Bare | RangeOp::Closed | RangeOp::StartOpen),
+        };
         let span = first.span.through(finish.span);
         let depth = first
             .depth
@@ -213,7 +270,7 @@ impl Parser<'_> {
                 finish: Box::new(finish),
                 counted: false,
                 descending: false,
-                op,
+                ends,
             },
             span,
             depth,
@@ -223,13 +280,9 @@ impl Parser<'_> {
     /// `$"a{x}b"`: one expression per hole between the interpolation tokens.
     /// Each hole's expression counts toward the nesting limit as in a group.
     pub(super) fn interpolation(&mut self) -> Result<Expr, Diagnostic> {
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
-        let outer_slice = self.slice_context.take();
+        let outer = self.enter_delimited();
         let result = self.interpolation_holes();
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
-        self.slice_context = outer_slice;
+        self.leave_delimited(outer);
         result
     }
 
@@ -567,7 +620,10 @@ impl Parser<'_> {
                     finish: Box::new(finish),
                     counted: true,
                     descending,
-                    op: RangeOp::Closed,
+                    ends: RangeEnds {
+                        start_open: false,
+                        end_closed: true,
+                    },
                 },
                 span,
                 depth,
@@ -924,12 +980,10 @@ impl Parser<'_> {
         self.enter()?;
         let start = self.take().span;
         let indent = self.line_indent(start);
-        let outer_arm = std::mem::replace(&mut self.stop_at_arm, false);
-        let outer_arrow = std::mem::replace(&mut self.stop_at_arrow, false);
+        let outer = self.enter_delimited();
         let outer_handler = std::mem::replace(&mut self.in_handler, false);
         let body = self.body_expression();
-        self.stop_at_arm = outer_arm;
-        self.stop_at_arrow = outer_arrow;
+        self.leave_delimited(outer);
         let body = Self::direct(body?);
         self.expect(
             &TokenKind::With,
@@ -1726,13 +1780,10 @@ impl Parser<'_> {
     }
 
     fn pattern_expression_argument(&mut self, start: Span) -> Result<Pattern, Diagnostic> {
-        let outer = self.stop_at_arm;
-        let outer_arrow = self.stop_at_arrow;
-        self.stop_at_arm = false;
-        self.stop_at_arrow = false;
-        let expression = self.expression(0, true)?;
-        self.stop_at_arm = outer;
-        self.stop_at_arrow = outer_arrow;
+        let outer = self.enter_delimited();
+        let expression = self.expression(0, true);
+        self.leave_delimited(outer);
+        let expression = expression?;
         let end = self.expect(
             &TokenKind::RightParen,
             "')' after the active pattern argument",

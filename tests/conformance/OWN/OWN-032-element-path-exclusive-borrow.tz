@@ -1,0 +1,11 @@
+record Item { n: i64 }
+
+def bump :: ref mut i64 -> unit = \p ->
+    deref p = deref p + 1
+
+let mut arr = [Item { n: 1 }]
+bump (ref mut arr[0].n)
+0
+
+// rule: OWN-032
+// expect: check-error E1014 line=7 kind=mutate_immutable_value

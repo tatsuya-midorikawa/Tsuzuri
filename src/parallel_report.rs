@@ -200,6 +200,7 @@ fn inspect(
     match &expression.kind {
         TypedExprKind::Parallel(builtin, arguments) => {
             let callback = match builtin {
+                Builtin::ParallelForEachChunkWith => arguments.get(2)?,
                 Builtin::ParallelInit | Builtin::ParallelReduce | Builtin::ParallelForEachChunk => {
                     arguments.get(1)?
                 }
@@ -207,7 +208,10 @@ fn inspect(
                 _ => return None,
             };
             let call = builtin.name();
-            let chunk = *builtin == Builtin::ParallelForEachChunk;
+            let chunk = matches!(
+                builtin,
+                Builtin::ParallelForEachChunk | Builtin::ParallelForEachChunkWith
+            );
             let others = arguments
                 .iter()
                 .filter(|argument| !std::ptr::eq(*argument, callback));

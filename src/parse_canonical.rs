@@ -6,8 +6,24 @@ use super::*;
 
 impl Parser<'_> {
     fn push_noncanonical(&mut self, finding: Noncanonical) {
+        let rejected = finding.kind.rejected_in(self.edition);
+        if !rejected && !finding.kind.warned_in(self.edition) {
+            return;
+        }
         if self.noncanonical.len() < crate::canonical::MAX_FINDINGS {
             self.noncanonical.push(finding);
+            return;
+        }
+        if !rejected {
+            return;
+        }
+        while self.noncanonical_replace < self.noncanonical.len() {
+            let idx = self.noncanonical_replace;
+            self.noncanonical_replace += 1;
+            if !self.noncanonical[idx].kind.rejected_in(self.edition) {
+                self.noncanonical[idx] = finding;
+                return;
+            }
         }
     }
 
@@ -25,6 +41,37 @@ impl Parser<'_> {
                 text: "..=".into(),
             }],
         });
+    }
+
+    /// A bare `..` in a slice with an end bound (`ref xs[a..b]`, `ref xs[..b]`): `LegacyBareSliceRange`
+    /// in editions 2026/2027 (fix `..<`), or `BareSliceRangeMeaningChanged` in edition 2028+ (NC17).
+    #[inline(never)]
+    pub(super) fn record_slice_range(&mut self, span: Span, range: &RangeKey) {
+        if range.end.is_none() {
+            return;
+        }
+        if self.edition.range_family() {
+            self.push_noncanonical(Noncanonical {
+                kind: NoncanonicalKind::BareSliceRangeMeaningChanged,
+                span,
+                spelling: "..".into(),
+                canonical: "..=".into(),
+                level: FixLevel::Unavailable,
+                edits: Vec::new(),
+            });
+        } else {
+            self.push_noncanonical(Noncanonical {
+                kind: NoncanonicalKind::LegacyBareSliceRange,
+                span,
+                spelling: "..".into(),
+                canonical: "..<".into(),
+                level: FixLevel::Certain,
+                edits: vec![TextEdit {
+                    span,
+                    text: "..<".into(),
+                }],
+            });
+        }
     }
 
     /// A numeric literal with a short suffix (`86uy`): the type name says the same.
@@ -261,6 +308,11 @@ impl Parser<'_> {
             ExprKind::Field(base, _)
             | ExprKind::Index(base, _)
             | ExprKind::Slice { value: base, .. }
+            | ExprKind::MultiIndex {
+                value: base,
+                borrow: None,
+                ..
+            }
             | ExprKind::Borrow(base, ..)
             | ExprKind::Dereference(base, _) => {
                 self.is_group(expression) || self.is_term_shaped(base)
@@ -309,7 +361,8 @@ fn is_place_path(expression: &Expr) -> bool {
         ExprKind::Field(place, _)
         | ExprKind::Index(place, _)
         | ExprKind::Dereference(place, _)
-        | ExprKind::Slice { value: place, .. } => is_place_path(place),
+        | ExprKind::Slice { value: place, .. }
+        | ExprKind::MultiIndex { value: place, .. } => is_place_path(place),
         _ => false,
     }
 }

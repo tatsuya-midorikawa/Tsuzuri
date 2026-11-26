@@ -220,7 +220,7 @@ fn try_exactly_one values = if values.length == 1 then Maybe.Some values[0] else
 def sub :: Copy<'a> => own i64 -> own i64 -> ref ['a] -> ['a]
 fn sub start count values =
     assert (start >= 0 && start <= values.length && count >= 0 && count <= values.length - start)
-    let selected = ref values[start..start + count]
+    let selected = ref values[start..<start + count]
     deref selected
 
 /// A copy of every element but the first; traps when `values` is empty.
@@ -1435,7 +1435,7 @@ fn binary_search target values =
 ///
 /// ```tsuzuri run=[2,%203]
 /// let values = [1, 2, 3, 4]
-/// Array.copy (ref values[1..3])
+/// Array.copy (ref values[1..<3])
 /// ```
 def copy :: Copy<'a> => ref ['a] -> ['a]
 fn copy values = deref values

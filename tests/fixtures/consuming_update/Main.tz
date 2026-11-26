@@ -9,7 +9,7 @@ fn update_numbers count index value =
 export def update_snapshot :: i64
 fn update_snapshot =
     let values = new [1, 2, 3]
-    let borrowed = ref values[..2]
+    let borrowed = ref values[..<2]
     let updated = Array.swap 0 2 values
     borrowed[0] * 1000 + values[0] * 100 + updated[0] * 10 + updated[2]
 

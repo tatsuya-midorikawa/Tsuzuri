@@ -253,9 +253,11 @@ fn collect_locals<'a>(
         | Borrow(..)
         | BorrowOperand(_)
         | Dereference(_)
+        | ReferenceOperand(_)
         | Assign(..)
         | Cast(_)
         | SaturatingIndex(_)
+        | FromEnd { .. }
         | CaseConstructor { .. }
         | Construct { .. }
         | UnionTag(_)
@@ -668,7 +670,8 @@ impl TypeReferences<'_> {
             | NewLiteral(value)
             | Field(value, _)
             | Borrow(value, ..)
-            | Dereference(value, _) => self.expression(value),
+            | Dereference(value, _)
+            | FromEnd(value) => self.expression(value),
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
@@ -706,12 +709,34 @@ impl TypeReferences<'_> {
                 }
                 self.expression(finish);
             }
-            Slice {
-                value, start, end, ..
-            } => {
+            Slice { value, range, .. } => {
                 self.expression(value);
-                for bound in start.iter().chain(end.iter()) {
+                for bound in range
+                    .start
+                    .iter()
+                    .chain(range.step.iter())
+                    .chain(range.end.iter())
+                {
                     self.expression(bound);
+                }
+            }
+            MultiIndex { value, keys, .. } => {
+                self.expression(value);
+                for key in keys {
+                    match key {
+                        crate::syntax::IndexComponent::Expr(expr) => self.expression(expr),
+                        crate::syntax::IndexComponent::Range(range) => {
+                            for bound in range
+                                .start
+                                .iter()
+                                .chain(range.step.iter())
+                                .chain(range.end.iter())
+                            {
+                                self.expression(bound);
+                            }
+                        }
+                        crate::syntax::IndexComponent::Whole(_) => {}
+                    }
                 }
             }
             Array(values) | List(values) | Tuple(values) => {

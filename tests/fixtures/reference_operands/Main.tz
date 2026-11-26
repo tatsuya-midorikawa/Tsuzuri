@@ -1,0 +1,67 @@
+record Boxed { tag: string, n: i64 }
+
+instance Add<Boxed> {
+    fn add l r = Boxed { tag: ref l.tag + ref r.tag, n: l.n + r.n }
+}
+
+def join_and_measure :: string -> string -> i64 = \a b ->
+    let joined = a + b
+    let eq_bonus = if a == b then 1 else 0
+    joined.length + a.length + b.length + eq_bonus
+
+export def text_concat :: i64 =
+    let a = "hello"
+    let b = "world"
+    join_and_measure a b + join_and_measure a a + a.length + b.length
+
+def step_concat :: string -> string -> i64 = \a b ->
+    let s = a + b
+    if a == b then 0 else s.length
+
+export def text_concat_loop :: i64 -> i64 = \n ->
+    let left = "ab"
+    let right = "cde"
+    let mut acc = 0
+    for _ in 0 ..< n do
+        acc = acc + step_concat left right
+    acc + left.length + right.length
+
+def frame_measure :: string -> string -> i64 = \a b ->
+    let len_only = (a + b).length
+    let s = a + b
+    len_only + s.length + a.length + b.length
+
+export def text_concat_frame :: i64 =
+    let a = "hello"
+    let b = "world!"
+    frame_measure a b + a.length + b.length
+
+def big_calc :: BigInt -> BigInt -> BigInt = \a b ->
+    if a < b then a + b * a - b else a - b
+
+export def bigint_sum :: i64 =
+    let x = 10I
+    let y = 25I
+    let r = big_calc x y
+    if r == 235I && x == 10I && y == 25I then 235 else -1
+
+def combine_box :: Boxed -> Boxed -> i64 = \a b ->
+    let c = a + b
+    c.n + a.n + b.n + c.tag.length
+
+export def record_sum :: i64 =
+    let x = Boxed { tag: "hi", n: 7 }
+    let y = Boxed { tag: "!", n: 8 }
+    combine_box x y + x.n + y.n + x.tag.length + y.tag.length
+
+def calc_refs :: ref i64 -> ref i64 -> ref bool -> ref bool -> i64 = \a b p q ->
+    let arith = (a + b) * (a - b) + (-b)
+    let bits = (a &&& b) + (a <<< 1) + (~~~b)
+    if a > b && (p && !q) && (!q || p) then arith + bits else -1
+
+export def scalar_refs :: i64 =
+    let a = 6
+    let b = 2
+    let p = true
+    let q = false
+    calc_refs (ref a) (ref b) (ref p) (ref q)

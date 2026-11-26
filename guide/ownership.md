@@ -12,8 +12,8 @@ No GC: an owned value has one owner, a binding, and is freed when it leaves scop
 <!--if edition=2026-->
 - Edition 2026: a plain parameter `T` also moves. Use `ref T` to only read.
 <!--endif-->
-<!--if edition=2027-->
-- Edition 2027: a plain parameter of a heap type (`string`, array, `Vec`, record that needs freeing), a bare `'a` or a function borrows like `ref T`; numbers pass by value.
+<!--if edition>=2027-->
+- Edition 2027+: a plain parameter of a heap type (`string`, array, `Vec`, record that needs freeing), a bare `'a` or a function borrows like `ref T`; numbers pass by value.
 <!--endif-->
 - A move in one `if`/`match` branch, or in a loop body of an outer value, makes the next use E1012.
 - `let t = r.title` moves one field; the Copy fields of `r` stay readable. A non-Copy element cannot move out of `xs[i]`: use `ref xs[i]`. `{ r with f = v }` consumes a non-Copy `r`. A lambda that names a non-Copy local moves it in (a later use is E1012); a `ref mut` borrow, an `Atomic` or a `Mutex` cannot be captured (E1005).
@@ -22,7 +22,15 @@ No GC: an owned value has one owner, a binding, and is freed when it leaves scop
 ## Borrows
 - `ref x` reads; many may coexist. `ref mut x` writes, needs `let mut x` (else E1014), and excludes every other use of `x` until its last use (E1014). `deref r` reads, `deref r = v` writes.
 - Calls borrow for you: `f x` for a `ref T` parameter, or with `let mut x` for `ref mut T`.
-- Slices: `ref xs[a..b]` (half-open; `a..`, `..b`) is `ref [T]`. `ref mut xs[a..b]` (needs `let mut xs`) is `ref mut [T..]`, edited by `Array.write i v`, `Array.swap_in i j`, `Array.sort_in_place`, `Array.split_at_mut k`; passing `xs` gives the whole slice.
+<!--if edition=2026-->
+- Slices: `ref xs[a..<b]` (half-open; `a..`, `..<b`, `..=b`) is `ref [T]`. `ref mut xs[a..<b]` (needs `let mut xs`) is `ref mut [T..]`, edited by `Array.write i v`, `Array.swap_in i j`, `Array.sort_in_place`, `Array.split_at_mut k`; passing `xs` gives the whole slice.
+<!--endif-->
+<!--if edition=2027-->
+- Slices: `ref xs[a..<b]` (half-open; `a..`, `..<b`, `..=b`) is `ref [T]`. `ref mut xs[a..<b]` (needs `let mut xs`) is `ref mut [T..]`, edited by `Array.write i v`, `Array.swap_in i j`, `Array.sort_in_place`, `Array.split_at_mut k`; passing `xs` gives the whole slice.
+<!--endif-->
+<!--if edition>=2028-->
+- Slices: `ref xs[a..b]` includes `b` (`..<`/`<..`/`<..<` open ends; `xs[^0]` is last) and is `ref [T]`. `ref mut xs[a..b]` (needs `let mut xs`) is `ref mut [T..]`, edited by `Array.write i v`, `Array.swap_in i j`, `Array.sort_in_place`, `Array.split_at_mut k`.
+<!--endif-->
 - The subject is lent last: `Array.write 0 (xs[1] * 10) xs` works, `xs |> Array.write 0 (xs[1] * 10)` is E1014. So are moving or reassigning a borrowed owner and writing through `ref T`. A lambda cannot capture `ref mut` (E1005).
 - Non-Copy elements: `Array.mapr (\s -> s.length) names` and `Array.foldr` pass references.
 ```tsuzuri run=9%2030%2047
@@ -31,7 +39,7 @@ def bump :: ref mut i64 -> unit = \r -> deref r = deref r + 1
 
 def main :: unit -> i32 = \() ->
     let mut xs = [5, 3, 9, 1]
-    let mut n = total (ref xs[0..2])
+    let mut n = total (ref xs[0..<2])
     bump n
     Array.sort_in_place (ref mut xs[0..])
     Array.write 0 (xs[1] * 10) xs
@@ -41,8 +49,8 @@ def main :: unit -> i32 = \() ->
 <!--if edition=2026-->
 - Edition 2026: fields and elements are immutable (`p.x = v`, `xs[i] = v` are E1012): rebind `p = { p with x = v }`, `xs = Array.update_at i v xs`. `Array.map` and `fold` need Copy elements.
 <!--endif-->
-<!--if edition=2027-->
-- Edition 2027: through a `let mut` owner, a `ref mut T`, or a `mut T` parameter (it borrows to write), `p.x = v` and `xs[i] = v` assign in place. `Vec.push x v` mutates `v` and returns unit. `Array`/`List` `map`, `iter`, `fold` pass read views.
+<!--if edition>=2027-->
+- Edition 2027+: through a `let mut` owner, a `ref mut T`, or a `mut T` parameter (it borrows to write), `p.x = v` and `xs[i] = v` assign in place. `Vec.push x v` mutates `v` and returns unit. `Array`/`List` `map`, `iter`, `fold` pass read views.
 ```tsuzuri run=42
 record Counter { value: i64 }
 

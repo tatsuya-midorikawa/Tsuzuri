@@ -89,7 +89,7 @@ if left == right then 42 else 0
 
 `Eq<Box<T>>` を使うには `Eq<T>` が必要で、この条件は呼び出し元へ伝播します。`==` は値を共有借用するので、非 Copy の文字列も比較のあとで使えます。算術演算子（`Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg`）についても、ユーザー定義型や標準ライブラリの非 Copy 型（[`BigInt`](../built-in-types-and-modules/bigint.md)・[`Complex`](../built-in-types-and-modules/complex.md) など）のインスタンスは引数を共有借用（`ref`）で受け取り、被演算子を消費せずに繰り返し式で使えます。スカラー数値・SIMD・`string` 連結は既存の組み込み演算の契約を保ちます。
 
-同じクラスで head が単一化できるインスタンスは共存できません。汎用の `Eq<Box<'value>>` と具体的な `Eq<Box<i64>>` を両方書くと、具体的な方を優先せず `E1016`（overlapping instance）です。ファイルの順にも依存しません。型エイリアスは展開後の型で同一視されます。
+同じクラスで head が単一化できるインスタンスは共存できません。汎用の `Eq<Box<'value>>` と具体的な `Eq<Box<i64>>` を両方書くと、具体的な方を優先せず `E1016`（overlapping instance）です。算術演算子クラスでは、同じ型どうしの 1 引数インスタンスと後述の拡張インスタンス（OEI）も 1 つの演算子表の上で重なりを検査します。ファイルの順にも依存しません。型エイリアスは展開後の型で同一視されます。
 
 ある型 `T` で `C<T>` が成り立つなら、宣言されたスーパークラスも成り立っていなければなりません。`Ord<T>` は `Eq<T>` を要求します。
 
@@ -124,8 +124,8 @@ flowchart TD
 
 | クラス | 役割 |
 | --- | --- |
-| `Add` `Sub` `Mul` `Div` `Rem` `Pow` `Neg` | 算術演算。ユーザー・標準ライブラリ型のインスタンスは引数を共有借用し、非 Copy 型も消費せずに使える。`Add` は文字列連結も担う |
-| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[k] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装） |
+| `Add` `Sub` `Mul` `Div` `Rem` `Pow` `Neg` | 算術演算。1 引数の同じ型どうしの形に加え、異なる被演算子型・出力型を結ぶ拡張インスタンス `Add<L, R, O>`〜`Pow<L, R, O>` と `Neg<S, O>` を宣言できる。ユーザー・標準ライブラリ型のインスタンスは引数を共有借用し、非 Copy 型も消費せずに使える。`Add` は文字列連結も担う |
+| `Index` `IndexMut` | 組み込み 3 引数クラス `Index<Self, Key, Output>`（`fn index key self`）・`IndexMut<Self, Key, Value>`（`fn index_mut key value self`）。配列・リスト・`Vec`・固定長配列・文字列以外の型へ `x[k]`・`x[c1, c2]`・`ref x[c1, a..b]`・`x[c1, c2] = v` を開放する（[`Tensor`](../built-in-types-and-modules/tensor.md)・[`Matrix`](../built-in-types-and-modules/matrix.md)・[`MatrixView`](../built-in-types-and-modules/matrix-view.md)・[`Map`](../built-in-types-and-modules/map.md)・[`HashMap`](../built-in-types-and-modules/hashmap.md) が実装）。カンマ区切りのキーは要素モードではタプルまたは配列（`^k` を含むときは `Slice.Pos` のタプルまたは配列）、窓モードでは `[Slice.Sel]` または `Slice.Sel` のタプルへ脱糖される。結果が土台を借りる窓は `ref x[...]` と書き（ないと `E0002` または `E1042`）、借りない添字に `ref` は付けない（`E1003`）。候補が 2 つ以上残るときは `E1043`。`x[...]` は組み込みの添字と同じ順（土台、次にキーの成分を左から右）で評価し、`x[...] = v` は右辺を評価した後に土台、キーの成分の順で評価する |
 | `Rem` `Bits` `Integer` | 剰余とビット演算、整数の分類。`Integer` は印 |
 | `Neg` `Pow` | 符号反転、べき乗。`Pow` は整数と `f32` / `f64` |
 | `Eq` `Ord` | 共有借用による等値と比較。`Ord` は `Eq` を要求する |
@@ -153,7 +153,49 @@ flowchart TD
 
 `Format` も、このプログラムのレコードと共用体だけが実装できます。印クラスの意味は[制約 と 属性](./constraints.md)にまとめています。
 
-> 既知の不具合: 結果が土台を借りる添字（`t[[Slice.range 1 3]]`、`m[(Slice.range 0 2, Slice.all())]`、参照・関数・region を持つレコードなど借用を運ぶ型を返す利用者の `Index`）の土台に一時値を書くと、検査を通り、窓は解放した後のメモリを読みます。`(mk 100)[[Slice.range 1 3]]` ではなく、`let base = mk 100` と束縛してから `base[[Slice.range 1 3]]` と書いてください。また、`Tensor.Mut` など借用を持つ型に利用者が定義した `Index` の窓は、生きている間も土台への書き込みを止めません。修正は [A37](../../../_features/A37-index-base-place-borrow.md) です。
+結果が土台を借りる `Index`（`Output` が参照・関数・region を持つレコードなど、借用を運ぶ型）は、配列のスライスと同じく `ref x[k]` と書きます（`ref` は式に吸収され、型は `Output` そのものです。`ref` がないと `E1042`、`ref mut` で読み取り専用の窓を取ると `E1042`、土台を借りない添字に `ref` を付けると `E1003` です）。`ref x[k]` は `Index.index (ref k) (ref x)` と同じく土台の場所を借ります。土台が一時値なら、インスタンスが土台の中身だけを返すとき（標準ライブラリの `Tensor.View`・`MatrixView` の窓の窓 `ref t[[...]][[...]]`）を除いて `E1013` です。候補のインスタンスが 2 つ以上残るときは、先頭の候補を選ばず `E1043`（kind `ambiguous_instance_candidates`）になります。
+
+```tsuzuri run=8%20120%20110
+let t = Tensor.init [3, 4] (\i -> i * 10)
+let rows = ref t[[Slice.range 1 3]]
+let e = t[[1, 2]] + t[(1, 2)]
+let f = (ref t[[Slice.at 2]])[3]
+$"{Tensor.count rows} {e} {f}"
+```
+
+実行結果:
+
+```text
+8 120 110
+```
+
+<!-- rule: TYP-023 -->
+`Index`・`IndexMut` と算術演算子クラス（`Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow`・`Neg`）の利用者定義インスタンスには **orphan 規則**が適用されます。振り分けの位置（`Index`・`IndexMut` は `Self` と `Key`、1 引数の算術クラスは被演算子型 `T`、3 引数の拡張算術インスタンスは `L` と `R`、2 引数の `Neg<S, O>` は `S` で、出力型は数えません）のうち少なくとも 1 つの頭が、このプログラムで宣言した型（レコード・名前付きの共用体・`extern type`）でなければなりません。標準ライブラリの型、組み込みの型（数値・配列・タプルなど）、`ref`・`dyn`、型変数だけの頭は `E1016`（kind `orphan_instance`）になります（以前の版が受理していた標準ライブラリ型や組み込み型への算術インスタンスも `E1016` になります）。標準ライブラリの型に独自の演算を与えたいときは、`record Prices { t: Tensor<f64> }` のようにこのプログラムのレコードで包んで `instance Mul<Prices>` や `instance Mul<Prices, f64, Prices>` を定義します。
+
+## 演算子の拡張インスタンス（OEI）
+
+<!-- rule: TYP-025 -->組み込みの算術クラス `Add`・`Sub`・`Mul`・`Div`・`Rem`・`Pow` は 3 型引数 `Class<Left, Right, Output>`、`Neg` は 2 型引数 `Neg<Self, Output>` の拡張インスタンス（Operator Extension Instance; OEI）を宣言できます。メソッドは引数を共有借用で受け取ります（`add :: ref Left -> ref Right -> Output`、`neg :: ref Self -> Output`）。
+
+- **頭の規則と被覆の規則（`E1016`、`operator_instance_form`）**: `Left` と `Right`（`Neg` は `Self`）の少なくとも一方の先頭は、組み込みでない名前付き型（レコード・名前付き共用体・`extern type`）でなければなりません。`Add<Money, Money, Money>` のようにすべて同じ型を書くこともできません（`instance Add<Money>` と書きます）。さらに、一方の側が裸の型変数 `'a` である場合は、もう一方の側の型の中に `'a` が現れなければなりません（`Mul<Vec3<'a>, 'a, Vec3<'a>>` は受理、`Mul<Money, 'b, Money>` は `E1016`）。`Output` とインスタンス文脈の制約は、頭に現れる型変数だけを使えます（`E1027`）。
+- **1 つの演算子表と解決の順序**:<!-- rule: TYP-026 --> クラスごとに 1 引数のインスタンス（`(T, T) -> T`）と OEI をまとめた 1 つの表を持ちます。(a) 一方が接尾辞のない数値リテラルで、もう一方の先頭が名前付き型なら、表の候補からそのリテラルが取れる型が一意に決まるときにその型を期待型にし、2 つ以上なら `E1043`（`ambiguous_instance_candidates`）です。(b) 両辺が単一化でき、同じ型どうしのインスタンス（組み込み・構造的インスタンスを含む）の頭が合えば既存の経路を使います。(c) 合わず、少なくとも一方の先頭が名前付き型で両辺とも未解決の推論変数でなければ（総称関数の型変数 `'a` は既知の型として扱います）、表を引き、候補が 1 つなら呼び出しへ脱糖し、2 つ以上なら `E1043` です。(d) 0 個なら既存の診断（`E1003`・`E1005`）に戻ります。
+- **適用範囲**: OEI は演算子構文 `l + r`・`-s` にだけ効きます。型クラス制約（`Add<'a> =>`）、メソッド値（`Add.add`）、直接呼び出し（`Sub.sub a b`）の対象にはなりません。
+
+```tsuzuri run=750
+record Money { cents: i64 }
+
+instance Mul<Money, i64, Money> {
+    fn mul m k = Money { cents: m.cents * deref k }
+}
+
+let price = Money { cents: 250 }
+(price * 3).cents
+```
+
+実行結果:
+
+```text
+750
+```
 
 ## deriving
 

@@ -1,0 +1,4 @@
+// rule: EDN-012
+// cli: new $DIR/app
+// expect: exit 0
+// expect: file-has app/Tsuzuri.toml "edition = \"2028\""

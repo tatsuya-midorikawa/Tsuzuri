@@ -1,0 +1,10 @@
+let xs = [10, 20, 30]
+let f = \() -> (ref xs[..-1]).length + xs[-1]
+let _ = f
+0
+
+// rule: DIA-012
+// edition: 2028
+// expect: check-warning W1014 line=2 kind=negative_literal_range_bound
+// expect: check-warning W1014 line=2 kind=negative_literal_index
+// expect: stdout "0\n"

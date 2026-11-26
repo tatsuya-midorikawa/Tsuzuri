@@ -11,7 +11,7 @@ Each line is a wrong form, the code that `tsuzuri check` reports, and the right 
 <!--if edition=2026-->
 - `p.x = 1` and `xs[i] = v` are E1012 (fields and elements are immutable): `{ p with x = 1 }`, `xs = Array.update_at i v xs`.
 <!--endif-->
-<!--if edition=2027-->
+<!--if edition>=2027-->
 - `p.x = 1` and `xs[i] = v` need a `let mut` owner or a `mut T` parameter (else E1014).
 <!--endif-->
 - `for i in 0 ..= xs.length` compiles, then traps: `..=` includes the end. Use `0 ..< xs.length`.

@@ -1,0 +1,20 @@
+record Money { cents: i64 }
+
+instance Mul<Money, i64, Money> {
+    fn mul m k = Money { cents: m.cents * deref k }
+}
+
+test "oei_resolves_mixed_operands_and_literals" =
+    let price = Money { cents: 250 }
+    Test.equal 750 (price * 3).cents
+
+    let a = Tensor.of_array [4] [10.0, 20.0, 30.0, 40.0]
+    let d = ref a[1..] - ref a[..^1]
+    let y = 2.0 * d + 5.0
+    Test.equal 25.0 y[0]
+    Test.equal 25.0 y[2]
+
+0
+
+// rule: TYP-026
+// expect: tests-pass 1

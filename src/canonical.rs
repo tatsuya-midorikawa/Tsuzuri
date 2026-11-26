@@ -5,13 +5,13 @@
 
 use crate::check::CheckedModule;
 use crate::diagnostic::{Applicability, Diagnostic, DiagnosticKind, Edit};
-use crate::syntax::{FixLevel, Noncanonical, NoncanonicalKind};
+use crate::syntax::{Edition, FixLevel, Noncanonical, NoncanonicalKind};
 
 /// The most findings that one source records; later ones are not recorded.
 pub const MAX_FINDINGS: usize = 65_536;
 
-/// The kinds of `W1007` and `E0004`, with their codes.
-pub const KINDS: [(&str, &str); 12] = [
+/// The kinds of `W1007`, `W1013`, and `E0004`, with their codes.
+pub const KINDS: [(&str, &str); 14] = [
     ("bare_range_in_for", "W1007"),
     ("short_literal_suffix", "W1007"),
     ("symbolic_borrow", "W1007"),
@@ -24,6 +24,8 @@ pub const KINDS: [(&str, &str); 12] = [
     ("symbolic_deref_rejected", "E0004"),
     ("symbolic_reference_type_rejected", "E0004"),
     ("legacy_lambda_rejected", "E0004"),
+    ("legacy_bare_slice_range", "W1013"),
+    ("bare_slice_range_meaning_changed", "W1013"),
 ];
 
 fn diagnostic_kind(kind: NoncanonicalKind, rejected: bool) -> DiagnosticKind {
@@ -35,19 +37,24 @@ fn diagnostic_kind(kind: NoncanonicalKind, rejected: bool) -> DiagnosticKind {
         (K::SymbolicDeref, false) => DiagnosticKind::SymbolicDeref,
         (K::SymbolicReferenceType, false) => DiagnosticKind::SymbolicReferenceType,
         (K::LegacyLambda, false) => DiagnosticKind::LegacyLambda,
+        (K::LegacyBareSliceRange, false) => DiagnosticKind::LegacyBareSliceRange,
+        (K::BareSliceRangeMeaningChanged, false) => DiagnosticKind::BareSliceRangeMeaningChanged,
         (K::BareRange, true) => DiagnosticKind::BareRangeInForRejected,
         (K::ShortSuffix, true) => DiagnosticKind::ShortLiteralSuffixRejected,
         (K::SymbolicBorrow, true) => DiagnosticKind::SymbolicBorrowRejected,
         (K::SymbolicDeref, true) => DiagnosticKind::SymbolicDerefRejected,
         (K::SymbolicReferenceType, true) => DiagnosticKind::SymbolicReferenceTypeRejected,
         (K::LegacyLambda, true) => DiagnosticKind::LegacyLambdaRejected,
+        (K::LegacyBareSliceRange | K::BareSliceRangeMeaningChanged, true) => {
+            unreachable!("W1013 slice kinds are never rejected")
+        }
     }
 }
 
-fn message(finding: &Noncanonical, rejected: bool) -> String {
+fn message(finding: &Noncanonical, rejected_edition: Option<Edition>) -> String {
     let (spelling, canonical) = (&finding.spelling, &finding.canonical);
-    if rejected {
-        format!("'{spelling}' is not allowed in edition 2027; write '{canonical}'")
+    if let Some(edition) = rejected_edition {
+        format!("'{spelling}' is not allowed in edition {edition}; write '{canonical}'")
     } else {
         format!("'{spelling}' is not canonical; write '{canonical}'")
     }
@@ -78,6 +85,12 @@ fn help(finding: &Noncanonical) -> String {
         NoncanonicalKind::LegacyLambda => {
             "start the lambda with a backslash, as in '\\x y -> body'".into()
         }
+        NoncanonicalKind::LegacyBareSliceRange => {
+            "write '..<' to keep excluding the end in every edition, or '..=' to include it".into()
+        }
+        NoncanonicalKind::BareSliceRangeMeaningChanged => {
+            "write '..<' to exclude the end as before edition 2028, or '..=' to state that it is included; set the edition in Tsuzuri.toml or pass '--edition' to silence this note".into()
+        }
     }
 }
 
@@ -101,10 +114,11 @@ pub fn warnings(module: &CheckedModule) -> Vec<Diagnostic> {
     module
         .noncanonical
         .iter()
+        .filter(|finding| finding.kind.code() == "W1007")
         .map(|finding| {
             let diagnostic = Diagnostic::of(
                 diagnostic_kind(finding.kind, false),
-                message(finding, false),
+                message(finding, None),
                 finding.span,
             )
             .with_help(help(finding));
@@ -126,15 +140,70 @@ pub fn warnings(module: &CheckedModule) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// `E0004` for each noncanonical spelling of a source that an edition from 2027 on reads, in
-/// parse order. They carry no rewrite: the migration rewrites with `W1007` first (D9).
-pub(crate) fn rejections(findings: &[Noncanonical]) -> Vec<Diagnostic> {
+/// Default-enabled `W1013` (`legacy_bare_slice_range`) warnings on root-package user sources
+/// read with editions 2026 or 2027, each carrying its `certain` fix to `..<` (NC17).
+pub fn default_warnings(
+    findings: &[Noncanonical],
+    edition_of_source: impl Fn(Option<usize>) -> Edition,
+) -> Vec<Diagnostic> {
     findings
         .iter()
+        .filter(|finding| finding.kind == NoncanonicalKind::LegacyBareSliceRange)
+        .map(|finding| {
+            let edition = edition_of_source(finding.span.source);
+            let edits = finding
+                .edits
+                .iter()
+                .map(|edit| Edit {
+                    span: edit.span,
+                    text: edit.text.clone(),
+                })
+                .collect();
+            Diagnostic::of(
+                DiagnosticKind::LegacyBareSliceRange,
+                format!(
+                    "'..' in this slice excludes its end in edition {edition}; from edition 2028 it includes the end"
+                ),
+                finding.span,
+            )
+            .with_help(help(finding))
+            .fix(title(finding), Applicability::Certain, edits)
+        })
+        .collect()
+}
+
+/// Phase 3 `W1013` (`bare_slice_range_meaning_changed`) notice for manifest-less sources read
+/// with `Edition::LATEST` (2028 or later).
+pub fn meaning_changed_notes(findings: &[Noncanonical], edition: Edition) -> Vec<Diagnostic> {
+    if !edition.range_family() {
+        return Vec::new();
+    }
+    findings
+        .iter()
+        .filter(|finding| finding.kind == NoncanonicalKind::BareSliceRangeMeaningChanged)
+        .map(|finding| {
+            Diagnostic::of(
+                DiagnosticKind::BareSliceRangeMeaningChanged,
+                format!(
+                    "'..' in this slice includes its end: a source without a Tsuzuri.toml is read with edition {edition}"
+                ),
+                finding.span,
+            )
+            .with_help(help(finding))
+        })
+        .collect()
+}
+
+/// `E0004` for each noncanonical spelling that `edition` rejects, in parse order.
+/// They carry no rewrite: the migration rewrites with `W1007` first (D9).
+pub(crate) fn rejections(findings: &[Noncanonical], edition: Edition) -> Vec<Diagnostic> {
+    findings
+        .iter()
+        .filter(|finding| finding.kind.rejected_in(edition))
         .map(|finding| {
             Diagnostic::of(
                 diagnostic_kind(finding.kind, true),
-                message(finding, true),
+                message(finding, Some(edition)),
                 finding.span,
             )
             .with_help(help(finding))
@@ -158,7 +227,7 @@ mod tests {
                         .bytes()
                         .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
             );
-            assert!(matches!(code, "W1007" | "E0004"));
+            assert!(matches!(code, "W1007" | "W1013" | "E0004"));
         }
         for kind in [
             NoncanonicalKind::BareRange,
@@ -177,6 +246,17 @@ mod tests {
                 );
             }
         }
+        for kind in [
+            NoncanonicalKind::LegacyBareSliceRange,
+            NoncanonicalKind::BareSliceRangeMeaningChanged,
+        ] {
+            let registered = diagnostic_kind(kind, false);
+            assert!(
+                KINDS.contains(&(registered.id(), registered.code())),
+                "{}",
+                registered.id()
+            );
+        }
     }
 
     #[test]
@@ -190,11 +270,11 @@ mod tests {
             edits: Vec::new(),
         };
         assert_eq!(
-            message(&finding, false),
+            message(&finding, None),
             "'86uy' is not canonical; write '86i8u'"
         );
         assert_eq!(
-            message(&finding, true),
+            message(&finding, Some(Edition::E2027)),
             "'86uy' is not allowed in edition 2027; write '86i8u'"
         );
         assert_eq!(title(&finding), "Replace the suffix 'uy' with 'i8u'");

@@ -44,6 +44,7 @@ const HELPER: &str = "[package]\nname = \"helper\"\nversion = \"0.1.0\"\n";
 fn edition_names_parse_exactly() {
     assert_eq!(Edition::parse("2026"), Some(Edition::E2026));
     assert_eq!(Edition::parse("2027"), Some(Edition::E2027));
+    assert_eq!(Edition::parse("2028"), Some(Edition::E2028));
     for text in [
         "",
         " 2026",
@@ -56,8 +57,12 @@ fn edition_names_parse_exactly() {
         assert_eq!(Edition::parse(text), None, "{text:?}");
     }
     assert_eq!(Edition::E2026.to_string(), "2026");
-    assert_eq!(Edition::SUPPORTED, [Edition::E2026, Edition::E2027]);
-    assert_eq!(Edition::LATEST, Edition::E2027);
+    assert_eq!(Edition::E2028.to_string(), "2028");
+    assert_eq!(
+        Edition::SUPPORTED,
+        [Edition::E2026, Edition::E2027, Edition::E2028]
+    );
+    assert_eq!(Edition::LATEST, Edition::E2028);
     assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
     // A manifest without `edition` keeps meaning what it meant, whatever the latest edition is.
     assert_eq!(Edition::MANIFEST_DEFAULT, Edition::E2026);
@@ -165,11 +170,11 @@ fn rejects_unknown_and_unsupported_editions() {
     for (keys, message) in [
         (
             "edition = \"2030\"\n",
-            "unsupported edition '2030'; supported editions: 2026, 2027",
+            "unsupported edition '2030'; supported editions: 2026, 2027, 2028",
         ),
         (
             "edition = \"latest\"\n",
-            "unsupported edition 'latest'; supported editions: 2026, 2027",
+            "unsupported edition 'latest'; supported editions: 2026, 2027, 2028",
         ),
         ("edition = 2026\n", "expected '\"'"),
         (
@@ -307,16 +312,82 @@ fn fmt_uses_the_manifest_edition() {
 }
 
 #[test]
-fn new_projects_declare_edition_2027() {
+fn noncanonical_kinds_have_edition_ranges() {
+    use tsuzuri::syntax::NoncanonicalKind::*;
+    for (kind, w26, r26, w27, r27, w28, r28, code) in [
+        (BareRange, true, false, false, true, false, false, "W1007"),
+        (ShortSuffix, true, false, false, true, false, true, "W1007"),
+        (
+            SymbolicBorrow,
+            true,
+            false,
+            false,
+            true,
+            false,
+            true,
+            "W1007",
+        ),
+        (
+            SymbolicDeref,
+            true,
+            false,
+            false,
+            true,
+            false,
+            true,
+            "W1007",
+        ),
+        (
+            SymbolicReferenceType,
+            true,
+            false,
+            false,
+            true,
+            false,
+            true,
+            "W1007",
+        ),
+        (LegacyLambda, true, false, false, true, false, true, "W1007"),
+        (
+            LegacyBareSliceRange,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false,
+            "W1013",
+        ),
+        (
+            BareSliceRangeMeaningChanged,
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            "W1013",
+        ),
+    ] {
+        assert_eq!(kind.warned_in(Edition::E2026), w26, "{kind:?} w26");
+        assert_eq!(kind.rejected_in(Edition::E2026), r26, "{kind:?} r26");
+        assert_eq!(kind.warned_in(Edition::E2027), w27, "{kind:?} w27");
+        assert_eq!(kind.rejected_in(Edition::E2027), r27, "{kind:?} r27");
+        assert_eq!(kind.warned_in(Edition::E2028), w28, "{kind:?} w28");
+        assert_eq!(kind.rejected_in(Edition::E2028), r28, "{kind:?} r28");
+        assert_eq!(kind.code(), code, "{kind:?} code");
+    }
+}
+
+#[test]
+fn new_projects_declare_edition_2028() {
     let root = root("new", &[]);
     let project = root.join("hello-world");
     let (status, _, stderr) = tsuzuri(&["new".as_ref(), project.as_os_str()]);
     assert_eq!(status, Some(0), "{stderr}");
     let manifest = std::fs::read_to_string(project.join("Tsuzuri.toml")).unwrap();
-    assert!(
-        manifest.contains(&format!("edition = \"{}\"\n", Edition::NEW_PROJECT)),
-        "{manifest}"
-    );
+    assert_eq!(Edition::NEW_PROJECT, Edition::E2028);
+    assert!(manifest.contains("edition = \"2028\"\n"), "{manifest}");
     let (status, _, stderr) = tsuzuri(&["check".as_ref(), project.as_os_str()]);
     assert_eq!(status, Some(0), "{stderr}");
     std::fs::remove_dir_all(root).unwrap();
@@ -360,8 +431,11 @@ fn the_edition_key_changes_no_generated_code() {
     for target in ["native", "wasm32"] {
         let explicit = build("explicit", "edition = \"2026\"\n", target);
         let implicit = build("implicit", "", target);
+        let e2027 = build("e2027", "edition = \"2027\"\n", target);
+        let e2028 = build("e2028", "edition = \"2028\"\n", target);
         assert!(explicit.contains("define"), "{target}");
         assert_eq!(explicit, implicit, "{target}");
+        assert_eq!(e2027, e2028, "{target}");
     }
 }
 
@@ -386,11 +460,11 @@ fn cli_edition_reads_a_project_without_a_manifest() {
     for (arguments, message) in [
         (
             vec!["--edition", "2030"],
-            "unsupported edition '2030' for --edition; supported editions: 2026, 2027",
+            "unsupported edition '2030' for --edition; supported editions: 2026, 2027, 2028",
         ),
         (
             vec!["--edition"],
-            "--edition requires an edition year; supported editions: 2026, 2027",
+            "--edition requires an edition year; supported editions: 2026, 2027, 2028",
         ),
         (
             vec!["--edition", "2026", "--edition", "2027"],
@@ -491,4 +565,65 @@ fn new_project_edition_can_be_chosen() {
     );
     assert!(!root.join("other").exists());
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn multi_axis_bracket_indexing_follows_the_edition_matrix() {
+    use tsuzuri::syntax::Edition;
+
+    // Expression-only multi-axis keys (`t[i, j]`, `ref t[Slice.rest(), 0]`) work in every edition.
+    for ed in [Edition::E2026, Edition::E2027, Edition::E2028] {
+        tsuzuri::analyze_with_edition(
+            "let t = Tensor.zeros [3, 4]\n\
+             let x: f64 = t[1, 2]\n\
+             let w = ref t[Slice.rest(), 0]\n\
+             x + w[0]\n",
+            ed,
+        )
+        .unwrap_or_else(|e| panic!("{ed:?}: {e:?}"));
+
+        // Built-in array `ref xs[1..<3]` stays accepted in every edition.
+        tsuzuri::analyze_with_edition(
+            "let xs = [10, 20, 30, 40]\n\
+             (ref xs[1..<3]).length\n",
+            ed,
+        )
+        .unwrap_or_else(|e| panic!("{ed:?} array slice: {e:?}"));
+    }
+
+    // Range, `..`, and `^k` components in multi-axis keys require edition 2028 (`E0002` in 2026/2027).
+    for src in [
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[1..<3, 0]\nw[0]\n",
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[.., 0]\nw[0]\n",
+        "let t: Tensor<i64> = Tensor.zeros [3, 4]\nlet w = ref t[^0, ..]\nw[0]\n",
+    ] {
+        for ed in [Edition::E2026, Edition::E2027] {
+            let err = tsuzuri::analyze_with_edition(src, ed).unwrap_err();
+            assert_eq!(err.code, "E0002", "{ed:?}: {src} -> {err:?}");
+            assert_eq!(
+                err.kind,
+                Some("range_form_needs_edition_2028"),
+                "{ed:?}: {err:?}"
+            );
+        }
+        tsuzuri::analyze_with_edition(src, Edition::E2028)
+            .unwrap_or_else(|e| panic!("2028: {src} -> {e:?}"));
+    }
+
+    // One-component non-array range window `ref t[1..<3]` requires edition 2028 (`E1005` in 2026/2027).
+    let one_comp = "let t: Tensor<i64> = Tensor.zeros [5]\nlet w = ref t[1..<3]\nw[0]\n";
+    for ed in [Edition::E2026, Edition::E2027] {
+        let err = tsuzuri::analyze_with_edition(one_comp, ed).unwrap_err();
+        assert_eq!(err.code, "E1005", "{ed:?}: {err:?}");
+        assert_eq!(err.kind, Some("slice_non_array"), "{ed:?}: {err:?}");
+        assert!(
+            err.into_data()
+                .help
+                .as_deref()
+                .unwrap_or("")
+                .contains("in edition 2028"),
+            "{ed:?} help missing"
+        );
+    }
+    tsuzuri::analyze_with_edition(one_comp, Edition::E2028).unwrap();
 }

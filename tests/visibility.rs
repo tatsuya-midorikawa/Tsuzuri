@@ -317,3 +317,22 @@ fn private_records_do_not_make_unqualified_names_ambiguous() {
     assert!(error.message.contains("Left.Value or Right.Value"));
     assert!(!error.message.contains("Hidden.Value"));
 }
+
+#[test]
+fn orphan_rule_is_program_wide() {
+    accepts(&[
+        ("Types", "record Money { cents: i64 }"),
+        (
+            "Ops",
+            "instance Add<Types.Money> {\n\
+                 fn add a b = Types.Money { cents: a.cents + b.cents }\n\
+             }",
+        ),
+        (
+            "Main",
+            "let x = Types.Money { cents: 10 }\n\
+             let y = Types.Money { cents: 32 }\n\
+             (x + y).cents",
+        ),
+    ]);
+}

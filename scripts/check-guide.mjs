@@ -18,23 +18,34 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiler = resolve(process.env.TSUZURI_BIN ?? join(root, 'target/release/tsuzuri'));
 const guide = resolve(process.env.TSUZURI_GUIDE_EXAMPLES ?? join(root, 'guide'));
 const temporary = mkdtempSync(join(tmpdir(), 'tsuzuri-guide-'));
-const EDITIONS = ['2026', '2027'];
+const EDITIONS = ['2026', '2027', '2028'];
 const LIMITS = { card: 6000, language: 8500, ownership: 4500, pitfalls: 4000, workflow: 2990 };
 let examples = 0;
 let executions = 0;
 let tests = 0;
 
-/// The parts of `source` with the edition each is limited to (`null` for every edition).
+function matchingEditions(spec, label) {
+  if (spec === null) return EDITIONS;
+  if (spec.startsWith('>=')) {
+    const min = spec.slice(2);
+    assert.ok(EDITIONS.includes(min), `${label}: unsupported edition ${min}`);
+    return EDITIONS.filter(e => Number(e) >= Number(min));
+  }
+  assert.ok(EDITIONS.includes(spec), `${label}: unsupported edition ${spec}`);
+  return [spec];
+}
+
+/// The parts of `source` with the edition spec each is limited to (`null` for every edition).
 function editionParts(source, label) {
   const parts = [];
   let edition = null;
   let text = '';
   for (const line of source.split(/(?<=\n)/)) {
-    const open = line.match(/^<!--if edition=(\d+)-->\n?$/);
+    const open = line.match(/^<!--if edition(>=\d+|=\d+)-->\n?$/);
     if (open || /^<!--endif-->\n?$/.test(line)) {
       assert.ok(open ? edition === null : edition !== null, `${label}: unbalanced edition block`);
       parts.push({ edition, text });
-      edition = open ? open[1] : null;
+      edition = open ? (open[1].startsWith('>=') ? open[1] : open[1].slice(1)) : null;
       text = '';
     } else text += line;
   }
@@ -98,7 +109,7 @@ try {
       }
     }
     for (const entry of projects.values()) {
-      for (const edition of entry.edition ? [entry.edition] : EDITIONS) {
+      for (const edition of matchingEditions(entry.edition, label)) {
         const context = `${label} (${entry.name}, edition ${edition})`;
         const directory = project(entry.files, edition);
         compile(['check', directory], context);

@@ -1,0 +1,13 @@
+record Boxed { n: i64, xs: [i64] }
+
+def bump :: ref mut i64 -> unit = \p ->
+    deref p = deref p + 10
+
+let mut b = Boxed { n: 2, xs: [10, 20] }
+let s = ref mut b.xs[0..]
+Array.write 0 30 s
+bump (ref mut b.n)
+$"{b.n}:{b.xs[0]}"
+
+// rule: OWN-032
+// expect: stdout "12:30\n"

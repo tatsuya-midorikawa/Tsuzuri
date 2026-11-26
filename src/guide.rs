@@ -249,23 +249,35 @@ pub fn prepare(text: &str, edition: Edition) -> Result<String, String> {
     expand_generated(&text, &generator)
 }
 
-/// Keeps the lines between `<!--if edition=YYYY-->` and `<!--endif-->` when `YYYY` is `edition`,
-/// and removes the other blocks; the marker lines are removed. Blocks do not nest.
+/// Keeps the lines between `<!--if edition=YYYY-->` (or `<!--if edition>=YYYY-->`) and
+/// `<!--endif-->` when `edition` matches the condition, and removes the other blocks; the marker
+/// lines are removed. Blocks do not nest.
 pub fn filter_edition(text: &str, edition: Edition) -> Result<String, String> {
     let mut output = String::with_capacity(text.len());
     let mut block: Option<bool> = None;
     for (number, line) in text.split_inclusive('\n').enumerate() {
         let trimmed = line.trim_end_matches('\n');
-        if let Some(year) = trimmed
-            .strip_prefix("<!--if edition=")
+        if let Some((at_least, year)) = trimmed
+            .strip_prefix("<!--if edition>=")
             .and_then(|rest| rest.strip_suffix("-->"))
+            .map(|year| (true, year))
+            .or_else(|| {
+                trimmed
+                    .strip_prefix("<!--if edition=")
+                    .and_then(|rest| rest.strip_suffix("-->"))
+                    .map(|year| (false, year))
+            })
         {
             if block.is_some() {
                 return Err(format!("line {}: nested edition block", number + 1));
             }
             let year = Edition::parse(year)
                 .ok_or_else(|| format!("line {}: unsupported edition '{year}'", number + 1))?;
-            block = Some(year == edition);
+            block = Some(if at_least {
+                edition >= year
+            } else {
+                edition == year
+            });
             continue;
         }
         if trimmed == "<!--endif-->" {

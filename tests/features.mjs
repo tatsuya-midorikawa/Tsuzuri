@@ -12,6 +12,8 @@ import { cases as unicodeV8 } from "./unicode-v8.mjs";
 import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matrix-cases.mjs";
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
+import { cases as tensorOperatorCases, traps as tensorOperatorTraps } from "./tensor-operator-cases.mjs";
+import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
@@ -944,6 +946,9 @@ const suites = {
         const last = count - 1n;
         return ["target_owned", [count], (last % 2n === 0n ? 6n : 5n) * 100000n + BigInt(String(last * 1000n).length)];
       }),
+      // A39:xs=[10,90,40] -> sum=140 -> n=145 -> "updated-145" (len 11) + 42 + 7 = 205; "inside-42" len 9 -> 909.
+      ["a39_field_slice_and_disjoint", [], 205n],
+      ["a39_arena_frame_escape", [], 309n],
     ],
   },
   iteration_protocol: {
@@ -3080,6 +3085,88 @@ const suites = {
     trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Tensor\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // A38: Index / IndexMut evaluation order matches built-in indexing (base before key; RHS first on `=`).
+  index_order: {
+    cases: [
+      ["class_read", [0n], 12n],
+      ["array_read", [0n], 12n],
+      ["class_assign", [0n], 312n],
+      ["array_assign", [0n], 312n],
+      ["early_exit_temp_base", [5n, 1n], -1n],
+      ["early_exit_rhs_value", [5n, 1n], -1n],
+      ["chained_view_order", [0n], 12312n],
+    ],
+  },
+  // A40: reference operands on operators (`string`, `BigInt`, non-Copy records, and explicit scalar/bool refs).
+  reference_operands: {
+    cases: [
+      ["text_concat", [], 51n],
+      ["text_concat_loop", [0n], 5n],
+      ["text_concat_loop", [1n], 10n],
+      ["text_concat_loop", [10000n], 50005n],
+      ["text_concat_frame", [], 44n],
+      ["bigint_sum", [], 235n],
+      ["record_sum", [], 51n],
+      ["scalar_refs", [], 41n],
+    ],
+  },
+  // NC17 / NC18: edition 2028 inclusive range family, `^k`, and 1D Tensor slices against BigInt reference.
+  range_reference: {
+    cases: rangeReferenceCases,
+    traps: rangeReferenceTraps,
+    trapKind: "index out of bounds",
+    inspect(ir) {
+      const match = ir.match(/^define [^\n]*@tz\.fn\.Main\.array_closed_i64\([^\n]*\{([\s\S]*?)^\}/m);
+      assert.ok(match, "array_closed_i64 is emitted");
+      assert.match(match[1], /add i64 %[\w.]+, 1/);
+    },
+  },
+  // NC18: multi-axis bracket indexing (`t[i, j]`, `ref t[i, a..b, ..]`, `Slice.Sel`, Phase 2 `^k`, A38 order).
+  multi_index: {
+    cases: (() => {
+      const fold = (vals) => vals.reduce((acc, v) => acc * 31n + BigInt(v), 0n);
+      return [
+        ["tensor_2d_element", [], 6n],
+        ["tensor_2d_row", [], fold([4, 5, 6, 7])],
+        ["tensor_2d_col", [], fold([0, 4, 8])],
+        ["tensor_2d_last_row", [], fold([8, 9, 10, 11])],
+        ["tensor_2d_subblock", [], 2n * 100000n + 2n * 10000n + fold([1, 2, 5, 6])],
+        ["tensor_2d_open_start_tail", [], 1n * 100000n + 2n * 10000n + fold([10, 11])],
+        ["tensor_2d_rev_rows", [], fold([8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3])],
+        ["tensor_2d_even_cols", [], fold([0, 2, 4, 6, 8, 10])],
+        ["tensor_2d_rest_col0", [], fold([0, 4, 8])],
+        ["tensor_2d_add_axis", [], 134n],
+        ["tensor_chained_windows", [], fold([5, 6]) * 100n + 10n],
+        ["matrix_2d_element", [], 6n],
+        ["matrix_2d_row_window", [], 1000000n + 400000n + fold([4, 5, 6, 7])],
+        ["matrix_2d_trailing_fill", [], 204n],
+        ["phase2_from_end_elements", [], 8n * 1000000n + 11n * 10000n + 99n * 100n + 77n + 88n + 21n],
+        ["multi_axis_key_evaluates_base_then_components", [], 123n * 1000000000000n + 1234n * 100000000n + 12345n * 1000n + 1234n],
+      ];
+    })(),
+    traps: [
+      ["trap_tensor_row_oob", [3n]],
+      ["trap_tensor_col_hi_oob", [4n]],
+      ["trap_tensor_too_many_axes", [1n]],
+      ["trap_tensor_wrong_elem_rank_1", [0n]],
+      ["trap_tensor_wrong_elem_rank_3", [0n]],
+      ["trap_matrix_neg_step", [-1n]],
+      ["trap_matrix_add_axis", []],
+      ["trap_matrix_duplicate_rest", []],
+      ["trap_phase2_back_oob", [3n]],
+    ],
+    trapKind: "assertion failed",
+  },
+  // NC19: 43 Tensor operator extension instances (View/Tensor/Scalar +, -, *, /, %, **, unary -).
+  tensor_operators: {
+    cases: tensorOperatorCases,
+    traps: tensorOperatorTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Tensor\.\$instance\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },

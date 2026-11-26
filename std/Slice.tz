@@ -183,3 +183,111 @@ fn resolve len axis =
     | Axis.To stop -> resolve_step len Maybe.None (Maybe.Some stop) 1
     | Axis.Step (start_opt, stop_opt, stride) -> resolve_step len start_opt stop_opt stride
     | Axis.NewAxis -> Resolved.InsertAxis
+
+/// A strict position on one axis of length `n`: `Front i` is `i` (`0` is the first), and
+/// `Back k` is `n - 1 - k` (`^k`; `Back 0` is the last). Neither wraps nor clamps; a position
+/// outside `[0, n)` traps.
+union Pos =
+    | Front of i64
+    | Back of i64
+    deriving (Eq)
+
+/// One endpoint of a strict `Span`: unbounded (the edge of the axis in the step's direction),
+/// or a `Pos` that the span includes or excludes.
+union Bound =
+    | Unbounded
+    | Included of Pos
+    | Excluded of Pos
+    deriving (Eq)
+
+/// A strict selector for one component of a bracket key such as `ref t[i, a..b, ..]`.
+union Sel =
+    | Item of Pos
+    | Span of (Bound * Bound * i64)
+    | Whole
+    | Rest
+    | AddAxis
+    deriving (Eq)
+
+/// Expands to as many full-axis `All` selectors as needed to match the input rank (`...` in NumPy).
+/// At most one `Rest` may appear in a bracket key.
+///
+/// ```tsuzuri run=true
+/// Slice.rest() == Slice.Sel.Rest
+/// ```
+pure def rest :: Sel
+fn rest = Sel.Rest
+
+private pure def pos_128 :: own i64 -> ref Pos -> i128
+fn pos_128 len pos =
+    match pos with
+    | Pos.Front i -> i as i128
+    | Pos.Back k -> (len as i128) - 1i128 - (k as i128)
+
+/// Strictly resolves one `Slice.Sel` against an axis of extent `len >= 0` using the D-66 boundary
+/// model without clamping or negative wraparound. `Sel.Rest` must be expanded by the caller first
+/// and traps if passed directly.
+///
+/// ```tsuzuri run=true
+/// let sel = Slice.Sel.Span (Slice.Bound.Included (Slice.Pos.Front 1), Slice.Bound.Included (Slice.Pos.Back 1), 1)
+/// Slice.resolve_sel 5 (ref sel) == Slice.Resolved.Slice (1, 3, 1)
+/// ```
+pure def resolve_sel :: own i64 -> ref Sel -> Resolved
+fn resolve_sel len sel =
+    assert (len >= 0)
+    let len128 = len as i128
+    match sel with
+    | Sel.Item p ->
+        let idx = pos_128 len (ref p)
+        assert (idx >= 0i128 && idx < len128)
+        Resolved.Index (idx as i64)
+    | Sel.Span (b_start, b_end, s) ->
+        assert (s != 0)
+        if s > 0 then
+            let lo: i128 =
+                match b_start with
+                | Bound.Unbounded -> 0i128
+                | Bound.Included p -> pos_128 len (ref p)
+                | Bound.Excluded p -> pos_128 len (ref p) + 1i128
+            let hi: i128 =
+                match b_end with
+                | Bound.Unbounded -> len128
+                | Bound.Included q -> pos_128 len (ref q) + 1i128
+                | Bound.Excluded q -> pos_128 len (ref q)
+            assert (0i128 <= lo && lo <= hi && hi <= len128)
+            if hi == lo then
+                Resolved.Slice (lo as i64, 0, s)
+            else
+                let dist = (hi - lo - 1i128) as i64u
+                let count = (dist / (s as i64u) + 1i64u) as i64
+                Resolved.Slice (lo as i64, count, s)
+        else
+            let last128 = len128 - 1i128
+            let p: i128 =
+                match b_start with
+                | Bound.Unbounded -> last128
+                | Bound.Included pos -> pos_128 len (ref pos)
+                | Bound.Excluded _ ->
+                    assert false
+                    0i128
+            let q: i128 =
+                match b_end with
+                | Bound.Unbounded -> 0i128
+                | Bound.Included pos -> pos_128 len (ref pos)
+                | Bound.Excluded _ ->
+                    assert false
+                    0i128
+            assert (p <= last128 && 0i128 <= q && q <= p + 1i128)
+            if p < q then
+                let start_i64 = if p < 0i128 then 0 else p as i64
+                Resolved.Slice (start_i64, 0, s)
+            else
+                let dist = (p - q) as i64u
+                let abs_s = 0i64u - (s as i64u)
+                let count = (dist / abs_s + 1i64u) as i64
+                Resolved.Slice (p as i64, count, s)
+    | Sel.Whole -> Resolved.Slice (0, len, 1)
+    | Sel.AddAxis -> Resolved.InsertAxis
+    | Sel.Rest ->
+        assert false
+        Resolved.InsertAxis

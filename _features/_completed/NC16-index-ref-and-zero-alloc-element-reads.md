@@ -7,7 +7,7 @@
 | 規模 | M（型検査での `ref` の吸収と診断 3 種、`resolve_index` の候補の試行と `E1043`、`std/Tensor.tz` の添字インスタンスの書き直しとタプルのキー、既存の利用箇所と文書の移行） |
 | 依存 | [A37](A37-index-base-place-borrow.md), [A38](A38-index-evaluation-order.md)（どちらも手順 4 以降の依存。手順 1〜3 は並行してよい。着手条件） |
 | 後続 | [NC18](NC18-multi-axis-bracket-indexing.md), ([NC19](NC19-operator-extension-instances.md)), [NC20](NC20-compound-assignment-and-mutable-index-views.md)（Phase 3） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認） |
 | 承認 | `ref` 必須は承認済み（D-66d、決定事項 D1）。添字の評価順（D8）は決定（D-66 の委任で決定、2026-11-25）で、A38 が実装する。ほかは既定案（D2〜D7） |
 | 手本にする既存実装 | `src/parser.rs` 5215・5287 行付近（`ref xs[a..b]` の `ref` を `ExprKind::Slice` に吸収する）、`std/Matrix.tz:277`（タプルのキーで確保なしに要素を読む `Index`）、`src/polymorph.rs:720` 付近の `Inference::unifies`（A32。単一化を試して巻き戻す）、`E1041` の注入の曖昧さ（[A24](_completed/A24-anonymous-unions.md)。既定を選ばず候補を並べる） |

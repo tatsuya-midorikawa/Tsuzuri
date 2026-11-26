@@ -248,6 +248,7 @@ impl Analysis<'_> {
             Unary(_, value)
             | Cast(value)
             | SaturatingIndex(value)
+            | FromEnd { offset: value, .. }
             | Checked(value)
             | Construct {
                 payload: Some(value),
@@ -261,6 +262,7 @@ impl Analysis<'_> {
             | UnionPayload { .. }
             | ListTail(..)
             | Dereference(_)
+            | ReferenceOperand(_)
             | Index(..) => self.opaque(expression, live, depth),
             Binary(BinaryOp::And | BinaryOp::Or, a, b) => {
                 let mut conditional = live.clone();

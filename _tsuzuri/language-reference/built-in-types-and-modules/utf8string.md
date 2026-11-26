@@ -156,7 +156,7 @@ UTF-16 から来る文字列は、先に `String.is_well_formed` を見るか、
 ## 注意点
 
 > [!NOTE]
-> 添字 `bytes[index]` は `ubyte` です。スカラーが欲しいときは `decode_at` か `chars` を使います。途中バイトを `decode_at` に渡すとトラップし、`slice` に渡すと `None` です。
+> 添字 `bytes[index]` は `ubyte` です（edition 2028 では末尾のバイトを `bytes[^0]` とも書け、負の整数リテラルの添字 `bytes[-1]` はトラップし警告 `W1014` が出ます）。スカラーが欲しいときは `decode_at` か `chars` を使います。途中バイトを `decode_at` に渡すとトラップし、`slice` に渡すと `None` です。
 
 ### 引数の順序
 
