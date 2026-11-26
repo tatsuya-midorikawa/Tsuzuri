@@ -1097,9 +1097,11 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 }
             }
             "native" => {
-                const FORM: &str = "expected [native] keys link, libraries or search, each an array of strings on one line";
-                if !matches!(key.as_str(), "link" | "libraries" | "search")
-                    || !native_keys.insert(key.clone())
+                const FORM: &str = "expected [native] keys link, libraries, search, frameworks, framework_search or rpath, each an array of strings on one line";
+                if !matches!(
+                    key.as_str(),
+                    "link" | "libraries" | "search" | "frameworks" | "framework_search" | "rpath"
+                ) || !native_keys.insert(key.clone())
                 {
                     return Err(at_key(DiagnosticKind::InvalidNativeSection, FORM));
                 }
@@ -1121,6 +1123,36 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                         }
                         inputs.libraries = values.into_iter().map(|(name, _)| name).collect();
                     }
+                    "frameworks" => {
+                        if let Some((message, span)) = values.iter().find_map(|(name, span)| {
+                            crate::driver::framework_name_error(name).map(|message| {
+                                (
+                                    message
+                                        .replace("--framework AppKit", "frameworks = [\"AppKit\"]"),
+                                    *span,
+                                )
+                            })
+                        }) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InvalidNativeFrameworkName,
+                                message,
+                                span,
+                            ));
+                        }
+                        inputs.frameworks = values.into_iter().map(|(name, _)| name).collect();
+                    }
+                    "rpath" => {
+                        if let Some((message, span)) = values.iter().find_map(|(value, span)| {
+                            crate::driver::rpath_error(value).map(|message| (message, *span))
+                        }) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::InvalidNativeRpath,
+                                message,
+                                span,
+                            ));
+                        }
+                        inputs.rpaths = values.into_iter().map(|(value, _)| value).collect();
+                    }
                     _ => {
                         let paths = values
                             .into_iter()
@@ -1128,16 +1160,21 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                                 relative_path(value).ok_or_else(|| {
                                     Diagnostic::of(
                                         DiagnosticKind::InvalidNativePath,
-                                        "link and search paths must be nonempty relative paths",
+                                        if key == "framework_search" {
+                                            "link, search and framework_search paths must be nonempty relative paths"
+                                        } else {
+                                            "link and search paths must be nonempty relative paths"
+                                        },
                                         span,
                                     )
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?;
-                        if key == "link" {
-                            inputs.paths = paths;
-                        } else {
-                            inputs.search = paths;
+                        match key.as_str() {
+                            "link" => inputs.paths = paths,
+                            "search" => inputs.search = paths,
+                            "framework_search" => inputs.framework_search = paths,
+                            _ => unreachable!(),
                         }
                     }
                 }
@@ -2098,8 +2135,39 @@ mod tests {
     }
 
     #[test]
+    fn native_frameworks_and_rpaths_parse_and_validate() {
+        let source = format!(
+            "{PACKAGE}[native]\nframeworks = [\"AppKit\", \"Metal\"]\nframework_search = [\"vendor/Frameworks\"]\nrpath = [\"@executable_path/../Frameworks\"]\n"
+        );
+        let (inputs, _) = parse_manifest(&source, 0).unwrap().native.unwrap();
+        assert_eq!(inputs.frameworks, ["AppKit", "Metal"]);
+        assert_eq!(
+            inputs.framework_search,
+            [PathBuf::from("vendor/Frameworks")]
+        );
+        assert_eq!(inputs.rpaths, ["@executable_path/../Frameworks"]);
+
+        let bad_fw = parse_manifest(
+            &format!("{PACKAGE}[native]\nframeworks = [\"AppKit.framework\"]\n"),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(
+            bad_fw.kind,
+            Some(DiagnosticKind::InvalidNativeFrameworkName.id())
+        );
+
+        let bad_rpath =
+            parse_manifest(&format!("{PACKAGE}[native]\nrpath = [\"./rel\"]\n"), 0).unwrap_err();
+        assert_eq!(
+            bad_rpath.kind,
+            Some(DiagnosticKind::InvalidNativeRpath.id())
+        );
+    }
+
+    #[test]
     fn rejects_malformed_native_link_section() {
-        let form = "expected [native] keys link, libraries or search, each an array of strings on one line";
+        let form = "expected [native] keys link, libraries, search, frameworks, framework_search or rpath, each an array of strings on one line";
         for (suffix, message) in [
             ("[native]\nlink = \"host.o\"", form),
             ("[native]\nlink = [\"a\"\n", form),

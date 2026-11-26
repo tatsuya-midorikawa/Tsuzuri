@@ -401,6 +401,8 @@ pub struct ExternUse {
     pub trusted: Option<u8>,
     /// W17: library from `@link("name")`, if any.
     pub link: Option<String>,
+    /// M20: framework from `@link(framework = "name")`, if any.
+    pub framework: Option<String>,
     /// The references from functions that are not extern, by source and start, without repeats.
     pub uses: Vec<Span>,
 }
@@ -928,6 +930,7 @@ pub fn analyze_with_limits(
             span: function.span,
             trusted: function.origin.trusted,
             link: import.library.clone(),
+            framework: import.framework.clone(),
             uses,
         });
     }
@@ -1161,6 +1164,7 @@ pub struct ExternReport {
     pub column: usize,
     pub trusted: Option<u8>,
     pub link: Option<String>,
+    pub framework: Option<String>,
     pub used: usize,
 }
 
@@ -1308,6 +1312,7 @@ impl Report {
                     column,
                     trusted: extern_use.trusted,
                     link: extern_use.link.clone(),
+                    framework: extern_use.framework.clone(),
                     used: extern_use.uses.len(),
                 }
             })
@@ -1446,9 +1451,10 @@ impl Report {
                         (None, Some(dir)) => format!("view {}", dir.as_str()),
                         (None, None) => format!("\"{}\"", extern_report.symbol),
                     };
-                    let link_suffix = match &extern_report.link {
-                        Some(lib) => format!("  link {lib}"),
-                        None => String::new(),
+                    let link_suffix = match (&extern_report.link, &extern_report.framework) {
+                        (Some(lib), _) => format!("  link {lib}"),
+                        (None, Some(fw)) => format!("  link framework {fw}"),
+                        (None, None) => String::new(),
                     };
                     out.push_str(&format!(
                         "    {} -> {target}  {}:{}:{}  {trust}{link_suffix}\n",
@@ -1566,9 +1572,10 @@ impl Report {
                 (None, Some(dir)) => format!("null,\"view\":{}", json_string(dir.as_str())),
                 (None, None) => json_string(&extern_report.symbol),
             };
-            let link_json = match &extern_report.link {
-                Some(lib) => format!(",\"link\":{}", json_string(lib)),
-                None => String::new(),
+            let link_json = match (&extern_report.link, &extern_report.framework) {
+                (Some(lib), _) => format!(",\"link\":{}", json_string(lib)),
+                (None, Some(fw)) => format!(",\"framework\":{}", json_string(fw)),
+                (None, None) => String::new(),
             };
             out.push_str(&format!(
                 "{{\"type\":\"extern\",\"package\":{},\"name\":{},\"symbol\":{symbol_and_view},\"path\":{},\"line\":{},\"column\":{},\"trusted\":{},\"properties\":{},\"used\":{}{link_json}}}\n",

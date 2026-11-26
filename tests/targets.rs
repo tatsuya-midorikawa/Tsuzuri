@@ -915,3 +915,54 @@ fn a_different_triple_or_sysroot_never_reuses_a_cached_build() {
     assert_eq!(build(first, "/a"), 6);
     fs::remove_dir_all(setup.root).unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn manifest_macos_frameworks_appear_only_on_mach_o_links() {
+    use fake_toolchain::{setup, text};
+    let setup = setup("m20-manifest", "def main :: unit -> i32 = \\() -> 0i32\n");
+    fs::write(
+        setup.root.join("Tsuzuri.toml"),
+        "[package]\nname = \"fwapp\"\nversion = \"0.1.0\"\n[native]\nframeworks = [\"AppKit\"]\nrpath = [\"@executable_path/../Frameworks\"]\n",
+    )
+    .unwrap();
+
+    // Linux target silently ignores manifest `[native] frameworks` and `rpath`.
+    let linux_out = setup
+        .command(&[
+            "build",
+            "--no-cache",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "-o",
+            setup.root.join("linux-bin").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(linux_out.status.success(), "{}", text(&linux_out).1);
+    let linux_log = setup.log();
+    assert!(!linux_log.contains("-framework"), "{linux_log}");
+    assert!(!linux_log.contains("-rpath"), "{linux_log}");
+
+    // macOS target emits `-framework AppKit` and `-Wl,-rpath,...`.
+    fs::remove_file(&setup.log).unwrap();
+    let mac_out = setup
+        .command(&[
+            "build",
+            "--no-cache",
+            "--target",
+            "aarch64-apple-darwin",
+            "-o",
+            setup.root.join("mac-bin").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(mac_out.status.success(), "{}", text(&mac_out).1);
+    let mac_log = setup.log();
+    assert!(mac_log.contains("-framework AppKit"), "{mac_log}");
+    assert!(
+        mac_log.contains("-Wl,-rpath,@executable_path/../Frameworks"),
+        "{mac_log}"
+    );
+    fs::remove_dir_all(setup.root).unwrap();
+}

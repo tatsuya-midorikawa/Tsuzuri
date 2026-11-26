@@ -1064,9 +1064,27 @@ fn git_packages_reject_path_dependencies() {
         "git and registry packages cannot declare [native] link settings; move them to the application manifest",
     );
 
-    // W17: a git package MAY declare `@link("m")` on an explicit extern function.
-    let point_with_link =
-        format!("{POINT}\n@trusted @link(\"m\")\nextern \"cos\" def c_cos :: f64 -> f64\n");
+    // A git package cannot declare [native] frameworks either.
+    let manifest = format!("{GEOMETRY}[native]\nframeworks = [\"AppKit\"]\n");
+    let sha256 = offline_project(
+        &scratch,
+        url,
+        &[("Tsuzuri.toml", &manifest), ("Point.tz", POINT)],
+    );
+    scratch.write(
+        "app/Tsuzuri.lock",
+        &lock_text(&[("geometry-core", url, REV, &sha256)]),
+    );
+    assert_error(
+        &scratch.tsuzuri(&["check", scratch.path("app").to_str().unwrap()]),
+        "E2000",
+        "git and registry packages cannot declare [native] link settings; move them to the application manifest",
+    );
+
+    // W17 / M20: a git package MAY declare `@link("m")` and `@link(framework = "AppKit")` on explicit externs.
+    let point_with_link = format!(
+        "{POINT}\n@trusted @link(\"m\")\nextern \"cos\" def c_cos :: f64 -> f64\n@trusted @link(framework = \"AppKit\")\nextern \"NSApplicationLoad\" def app_load :: unit -> unit\n"
+    );
     let sha256 = offline_project(
         &scratch,
         url,

@@ -4309,6 +4309,15 @@ pub(crate) fn validate_wasm_externs(
                 function.span,
             ));
         }
+        if let Some(fw) = &import.framework {
+            return Err(Diagnostic::of(
+                DiagnosticKind::LinkAttributeWasm,
+                format!(
+                    "'@link(framework = \"{fw}\")' asks the native macOS linker for a framework, which wasm output cannot link; build for a macOS target"
+                ),
+                function.span,
+            ));
+        }
         if let Some(data) = &import.data {
             return Err(Diagnostic::of(
                 DiagnosticKind::AbiNativeOnly,

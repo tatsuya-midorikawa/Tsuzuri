@@ -323,10 +323,13 @@ search = ["libs"]
 - `link`: リンクする C ソースやオブジェクトの相対パス。
 - `libraries`: システムライブラリ名（`-l` に相当）。`lib` 接頭辞や拡張子は付けません。`libm` は `E0002` です。
 - `search`: 探索ディレクトリの相対パス（`-L` に相当）。
+- `frameworks`: macOS の framework 名（`--framework` に相当。パスや `.framework` は付けません）。macOS 以外の target では無視されます。
+- `framework_search`: framework 探索ディレクトリの相対パス（`-F` に相当。macOS 以外の target では無視されます）。
+- `rpath`: macOS の実行時探索パス（`--rpath` に相当。絶対パスまたは `@executable_path`・`@loader_path` で始まる値。macOS 以外の target では無視されます）。
 
-git 依存や registry 依存のパッケージは `[native]` を持てませんが、明示のリンク名を持つ `extern` 関数には [`@link("名前")`](../compiler/native-interop.md#extern-ごとのライブラリlink) を書けます（パスを持ち込まず、到達した `extern` を呼ぶパッケージには権限 `ffi` の検査が効き、`tsuzuri audit` で確認できます）。
+git 依存や registry 依存のパッケージは `[native]` を持てませんが、明示のリンク名を持つ `extern` には [`@link("名前")` / `@link(framework = "名前")`](../compiler/native-interop.md#extern-ごとのライブラリと-frameworklink) を書けます（パスを持ち込まず、到達した `extern` を呼ぶパッケージには権限 `ffi` の検査が効き、`tsuzuri audit` で確認できます）。
 
-ルートの入力が先、`native = true` の依存があとです。`link`、`libraries`、`search` を合わせて 256 個までです。超えると `E2000` です。絶対パスは拒否されます。
+ルートの入力が先、`native = true` の依存があとです。6 つのキー（および CLI と `@link` の分）を合わせて 256 個までです。超えると `E2000` です。`link`・`search`・`framework_search` の絶対パスは拒否されます。
 
 ### [windows] セクション
 

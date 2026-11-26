@@ -319,3 +319,158 @@ fn main() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn framework_link_attribute_parses_and_checks_names() {
+    let ok = "\
+extern type copy CFString
+
+@trusted @link(framework = \"AppKit\")
+extern \"NSApplicationLoad\" def app_load :: unit -> unit
+
+@trusted @link(framework = \"Foundation\")
+extern \"NSDefaultRunLoopMode\" view def run_loop_mode :: unit -> CFString
+
+def main :: unit -> i32 = \\() -> 0i32
+";
+    let module = analyze(ok).expect("valid @link(framework = ...) declarations must check");
+    assert_eq!(
+        module
+            .link_frameworks
+            .get("NSApplicationLoad")
+            .map(|s| s.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["AppKit"])
+    );
+    assert_eq!(
+        module
+            .link_frameworks
+            .get("NSDefaultRunLoopMode")
+            .map(|s| s.iter().map(String::as_str).collect::<Vec<_>>()),
+        Some(vec!["Foundation"])
+    );
+    let formatted = formatter::format_source("Main.tz", ok, SourceKind::Code)
+        .expect("format ok")
+        .formatted;
+    assert_eq!(formatted, ok);
+
+    for bad_syntax in [
+        "@link(framework)\nextern \"f\" def f :: unit -> i32\n0\n",
+        "@link(framework = AppKit)\nextern \"f\" def f :: unit -> i32\n0\n",
+        "@link(frameworks = \"AppKit\")\nextern \"f\" def f :: unit -> i32\n0\n",
+    ] {
+        let err = check_err(bad_syntax);
+        assert_eq!(err.code, "E0002", "{bad_syntax}: {err:?}");
+        assert_eq!(
+            err.kind,
+            Some(DiagnosticKind::LinkAttributeSyntax.id()),
+            "{bad_syntax}: {err:?}"
+        );
+    }
+
+    for bad_name in ["\"AppKit.framework\"", "\"../AppKit\"", "\"\""] {
+        let src = format!("@link(framework = {bad_name})\nextern \"f\" def f :: unit -> i32\n0\n");
+        let err = check_err(&src);
+        assert_eq!(err.code, "E1008", "{src}: {err:?}");
+        assert_eq!(
+            err.kind,
+            Some(DiagnosticKind::LinkInvalidName.id()),
+            "{src}: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn only_reached_symbols_add_frameworks_and_macos_only() {
+    let source = "\
+extern type copy CFString
+
+@trusted @link(framework = \"AppKit\")
+extern \"NSApplicationLoad\" def app_load :: unit -> unit
+
+@trusted @link(framework = \"Metal\")
+extern \"MTLCreateSystemDefaultDevice\" def mtl_dev :: unit -> i64
+
+@trusted @link(framework = \"Foundation\")
+extern \"NSDefaultRunLoopMode\" view def run_loop_mode :: unit -> CFString
+
+@trusted
+extern \"CFStringGetLength\" def cf_len :: CFString -> i64
+
+def main :: unit -> i32 = \\() ->
+    app_load ()
+    cf_len (run_loop_mode ()) as i32
+";
+    let module = analyze(source).unwrap();
+    {
+        let _guard = PlatformScope::enter(Platform::new(Some(Triple::Aarch64AppleDarwin)));
+        let ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+        assert_eq!(
+            tsuzuri::driver::system_frameworks(&module, &ir, &LinkInputs::default()),
+            vec!["AppKit".to_owned(), "Foundation".to_owned()]
+        );
+        let explicit = LinkInputs {
+            frameworks: vec!["AppKit".into()],
+            ..LinkInputs::default()
+        };
+        assert_eq!(
+            tsuzuri::driver::system_frameworks(&module, &ir, &explicit),
+            vec!["Foundation".to_owned()]
+        );
+    }
+
+    // Wasm rejects reached `@link(framework = ...)`, while unreached succeeds.
+    let unreached = "\
+@trusted @link(framework = \"AppKit\")
+extern \"NSApplicationLoad\" def app_load :: unit -> unit
+export def ok :: i32 -> i32 = \\x -> x + 1i32
+";
+    let m_unreached = analyze(unreached).unwrap();
+    assert!(llvm::emit_target(&m_unreached, llvm::Entry::Library, true).is_ok());
+
+    let reached_wasm = "\
+@trusted @link(framework = \"AppKit\")
+extern \"NSApplicationLoad\" def app_load :: unit -> unit
+export def bad :: i32 -> i32 = \\x -> { app_load (); x }
+";
+    let m_reached = analyze(reached_wasm).unwrap();
+    let wasm_err = llvm::emit_target(&m_reached, llvm::Entry::Library, true).unwrap_err();
+    assert_eq!(wasm_err.code, "E2000");
+    assert_eq!(wasm_err.kind, Some(DiagnosticKind::LinkAttributeWasm.id()));
+
+    // Non-Mach-O native build rejects reached `@link(framework = ...)` with `link_framework_target`.
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root: PathBuf = std::env::temp_dir().join(format!(
+        "tsuzuri-m20-fwtarget-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let src_file = root.join("Main.tz");
+    fs::write(
+        &src_file,
+        "@trusted @link(framework = \"AppKit\")\nextern \"NSApplicationLoad\" def app_load :: unit -> unit\ndef main :: unit -> i32 = \\() -> { app_load (); 0i32 }\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args([
+            "build",
+            "--json",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            src_file.to_str().unwrap(),
+            "-o",
+            root.join("app").to_str().unwrap(),
+        ])
+        .env("TSUZURI_CACHE_DIR", "")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("\"kind\":\"link_framework_target\""),
+        "{stderr}"
+    );
+    let _ = fs::remove_dir_all(root);
+}

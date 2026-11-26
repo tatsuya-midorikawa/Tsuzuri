@@ -5115,6 +5115,8 @@ pub struct CheckedModule {
     pub extern_abis: BTreeMap<String, crate::abi::CSignature>,
     /// W17: explicit extern symbols annotated with `@link("name")` -> system library names.
     pub link_libraries: BTreeMap<String, BTreeSet<String>>,
+    /// M20: explicit extern symbols annotated with `@link(framework = "name")` -> macOS framework names.
+    pub link_frameworks: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5518,6 +5520,8 @@ pub struct HostImport {
     pub data: Option<DataSymbol>,
     /// W17: system library name from `@link("name")`.
     pub library: Option<String>,
+    /// M20: macOS framework name from `@link(framework = "name")`.
+    pub framework: Option<String>,
 }
 
 impl HostImport {
@@ -8800,6 +8804,7 @@ fn check_modules_collect(
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
     let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
     let mut link_libraries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut link_frameworks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
@@ -8828,6 +8833,7 @@ fn check_modules_collect(
                         access,
                     }),
                     library: None,
+                    framework: None,
                 }
             } else if external.view {
                 HostImport {
@@ -8840,6 +8846,7 @@ fn check_modules_collect(
                     view: Some(crate::syntax::ViewDirection::Read),
                     data: None,
                     library: None,
+                    framework: None,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8858,6 +8865,7 @@ fn check_modules_collect(
                     view: None,
                     data: None,
                     library: None,
+                    framework: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -8878,6 +8886,7 @@ fn check_modules_collect(
                     view: None,
                     data: None,
                     library: None,
+                    framework: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8898,21 +8907,42 @@ fn check_modules_collect(
                         link_attr.span,
                     ));
                 };
-                if crate::driver::library_name_error(&link_attr.library).is_some() {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::LinkInvalidName,
-                        format!(
-                            "invalid library name '{}' in '@link'; write the name without a path, the 'lib' prefix or an extension, for example @link(\"user32\")",
-                            link_attr.library
-                        ),
-                        link_attr.name_span,
-                    ));
+                match link_attr.kind {
+                    crate::syntax::LinkKind::Library => {
+                        if crate::driver::library_name_error(&link_attr.library).is_some() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::LinkInvalidName,
+                                format!(
+                                    "invalid library name '{}' in '@link'; write the name without a path, the 'lib' prefix or an extension, for example @link(\"user32\")",
+                                    link_attr.library
+                                ),
+                                link_attr.name_span,
+                            ));
+                        }
+                        link_libraries
+                            .entry(sym)
+                            .or_default()
+                            .insert(link_attr.library.clone());
+                        import.library = Some(link_attr.library.clone());
+                    }
+                    crate::syntax::LinkKind::Framework => {
+                        if crate::driver::framework_name_error(&link_attr.library).is_some() {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::LinkInvalidName,
+                                format!(
+                                    "invalid framework name '{}' in '@link'; write the name without a path or the '.framework' suffix, for example @link(framework = \"AppKit\")",
+                                    link_attr.library
+                                ),
+                                link_attr.name_span,
+                            ));
+                        }
+                        link_frameworks
+                            .entry(sym)
+                            .or_default()
+                            .insert(link_attr.library.clone());
+                        import.framework = Some(link_attr.library.clone());
+                    }
                 }
-                link_libraries
-                    .entry(sym)
-                    .or_default()
-                    .insert(link_attr.library.clone());
-                import.library = Some(link_attr.library.clone());
             }
             // E15: the `@trusted` mark of this declaration. An extern type may share the name, so
             // the mark is matched by the position of the declared name.
@@ -10806,6 +10836,7 @@ fn check_modules_collect(
         generic_declarations: Vec::new(),
         extern_abis,
         link_libraries,
+        link_frameworks,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -11579,6 +11610,7 @@ fn recovery_module(
         generic_declarations: Vec::new(),
         extern_abis: BTreeMap::new(),
         link_libraries: BTreeMap::new(),
+        link_frameworks: BTreeMap::new(),
     }
 }
 

@@ -390,19 +390,34 @@ tsuzuri build Main.tz --link host.o -L vendor -l sqlite3 -o shop
 link = ["host.o", "vendor/libutil.a"]
 libraries = ["sqlite3", "m"]
 search = ["vendor"]
+frameworks = ["AppKit"]
+framework_search = ["vendor/Frameworks"]
+rpath = ["@executable_path/../Frameworks"]
 ```
 
-### extern ごとのライブラリ（`@link`）
+### macOS の framework と rpath
 
-明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）の直前には、`@link("名前")` を 1 つ書けます（`@trusted` などの属性と任意の順序・同じ行可）。その宣言のシンボルが最終の IR に現れた（到達した）ときだけ、Tsuzuri がリンクするビルド（`build --emit exe`・`shared`、`run`、ネイティブの `test`・`bench`）のリンク行で、利用者のリンク入力の後ろに `-l<名前>` を自動で追加します（`-l` や `[native] libraries` に同じ名前があれば重複させず 1 つにまとめ、合計 256 の上限には数えます）。名前の規則は `-l` と同じで、パスや `lib` 接頭辞・拡張子は書けません（違反は `E1008` `link_invalid_name`）。
+macOS の target（`aarch64-apple-darwin`、または macOS ホストでの `--target native`）では、`--framework NAME`・`-F DIR`・`--rpath PATH` と、`Tsuzuri.toml` の `[native]` の `frameworks`・`framework_search`・`rpath` でシステムや同梱の framework をリンクできます。
+
+- リンク行での順序は `-L` → `-F` →（同梱ツールチェーンの SDK の `-F`・`-L`）→ `--link` → `-l` →（`@link` の `-l`）→ `-framework` →（`@link(framework = ...)` の `-framework`）→ `-Wl,-rpath,...` です。
+- コマンドラインで `--framework`・`-F`・`--rpath` を macOS 以外の target に渡すと `E2000`（`option_unsupported_platform`）になりますが、`Tsuzuri.toml` の `[native]` に書いた `frameworks`・`framework_search`・`rpath` は macOS 以外の target では黙って無視されるため、共通マニフェストのまま Linux・Windows 向けにビルドできます。
+- 同梱ツールチェーン（`tsuzuri-clang`）で framework をリンクするときは、`xcrun --show-sdk-path` から macOS SDK の `-F`・`-L` を自動で補います（Xcode Command Line Tools が見つからなければ `E2002` `macos_sdk_not_found`）。
+
+### extern ごとのライブラリと framework（`@link`）
+
+明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）や C データシンボルの直前には、`@link("名前")` または macOS 向けの `@link(framework = "名前")` を 1 つ書けます（`@trusted` などの属性と任意の順序・同じ行可）。その宣言のシンボルが最終の IR に現れた（到達した）ときだけ、Tsuzuri がリンクするビルド（`build --emit exe`・`shared`、`run`、ネイティブの `test`・`bench`）のリンク行で、利用者のリンク入力の後ろに `-l<名前>` または `-framework <名前>` を自動で追加します（`-l` / `--framework` や `[native]` に同じ名前があれば重複させず 1 つにまとめ、合計 256 の上限には数えます）。名前の規則は `-l` / `--framework` と同じです（違反は `E1008` `link_invalid_name`）。
 
 ```tsuzuri
 @trusted @link("gdi32")
 extern "GdiFlush" def gdi_flush :: unit -> bool
+
+@trusted @link(framework = "AppKit")
+extern "NSApplicationLoad" def application_load :: unit -> unit
 ```
 
-- **Windows の `dllimport`**: Windows ターゲットでは、`@link` が付いたシンボルの宣言がすべて `declare dllimport ...` になり、IAT 経由の直接呼び出しになります。
-- **キャッシュとパッケージ**: `@link` はソースと IR に含まれるためビルドキャッシュを止めません。パスを持ち込まないため、`native = true` のない依存パッケージや git・registry パッケージにも記述でき、実際にその `extern` を呼ぶパッケージには権限 `ffi` の検査が効きます。`tsuzuri audit` は各 `extern` 行に `link <名前>`（JSON では `"link"` キー）を表示します。
+- **Windows の `dllimport`**: Windows ターゲットでは、`@link("名前")` が付いたシンボルの宣言がすべて `declare dllimport ...` になり、IAT 経由の直接呼び出しになります。
+- **macOS の `@link(framework = "...")`**: 到達したシンボルに `@link(framework = ...)` がある場合、macOS 以外のネイティブターゲットでは `E2000`（`link_framework_target`）、WebAssembly では `E2000`（`link_attribute_wasm`）になります（未到達の宣言と `check` は成功します）。
+- **キャッシュとパッケージ**: `@link` はソースと IR に含まれるためビルドキャッシュを止めません。パスを持ち込まないため、`native = true` のない依存パッケージや git・registry パッケージにも記述でき、実際にその `extern` を呼ぶパッケージには権限 `ffi` の検査が効きます。`tsuzuri audit` は各 `extern` 行に `link <名前>` または `link framework <名前>`（JSON では `"link"` / `"framework"` キー）を表示します。
 - **リンクしない出力と WebAssembly**: `--emit object`・`llvm`・`bitcode`・`header` では目的ファイルに要求を埋め込まないため、リンクするホスト側が `-l` を指定します。WebAssembly のビルドで `@link` の付いたシンボルに到達すると `E2000`（`link_attribute_wasm`）になります（到達しない宣言と `check` は成功します）。オブジェクトのパスや静的ライブラリの厳密な順序が必要な場合は `[native]` を使います。
 
 ## 所有バッファと tsuzuri_alloc

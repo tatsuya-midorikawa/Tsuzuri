@@ -41,6 +41,7 @@ struct Attributes {
 }
 
 struct LinkMark {
+    kind: LinkKind,
     library: String,
     span: Span,
     name_span: Span,
@@ -921,6 +922,7 @@ impl Parser<'_> {
                         if let Some(mark) = link {
                             program.links.push(LinkAttribute {
                                 target: signature.name.clone(),
+                                kind: mark.kind,
                                 library: mark.library,
                                 span: mark.span,
                                 name_span: mark.name_span,
@@ -1706,7 +1708,7 @@ impl Parser<'_> {
         let syntax_err = |span: Span| {
             Diagnostic::of(
                 DiagnosticKind::LinkAttributeSyntax,
-                "'@link' takes one library name in parentheses, for example @link(\"user32\")",
+                "'@link' takes a library name or 'framework = \"name\"' in parentheses, for example @link(\"user32\") or @link(framework = \"AppKit\")",
                 span,
             )
         };
@@ -1714,6 +1716,17 @@ impl Parser<'_> {
             return Err(syntax_err(span));
         }
         span = span.through(self.take().span);
+        let kind = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "framework")
+        {
+            span = span.through(self.take().span);
+            if !self.at(&TokenKind::Equal) {
+                return Err(syntax_err(span.through(self.current().span)));
+            }
+            span = span.through(self.take().span);
+            LinkKind::Framework
+        } else {
+            LinkKind::Library
+        };
         let name_span = self.current().span;
         let library = match &self.current().kind {
             TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16_lossy(units),
@@ -1726,6 +1739,7 @@ impl Parser<'_> {
         }
         span = span.through(self.take().span);
         Ok(Some(LinkMark {
+            kind,
             library,
             span,
             name_span,

@@ -280,6 +280,7 @@ unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
 unit_enum!(HandleKind { Owned, Copy, Local });
 unit_enum!(DataAccess { Read, Address });
+unit_enum!(LinkKind { Library, Framework });
 unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(FixLevel {
     Certain,
@@ -797,11 +798,13 @@ impl Wire for LinkAttribute {
     fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
         let LinkAttribute {
             target,
+            kind,
             library,
             span,
             name_span,
         } = self;
         target.put(out)?;
+        kind.put(out)?;
         library.put(out)?;
         span.put(out)?;
         name_span.put(out)
@@ -809,11 +812,13 @@ impl Wire for LinkAttribute {
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         let target = Ident::get(input)?;
+        let kind = LinkKind::get(input)?;
         let library = String::get(input)?;
         let span = Span::get(input)?;
         let name_span = Span::get(input)?;
         Ok(LinkAttribute {
             target,
+            kind,
             library,
             span,
             name_span,

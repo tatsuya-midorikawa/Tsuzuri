@@ -524,10 +524,18 @@ pub struct CLayoutAttribute {
     pub span: Span,
 }
 
-/// `@link("name")` before an `extern` declaration with a link name (W17).
+/// Kind of `@link` input: a system library (`@link("name")`) or a macOS framework (`@link(framework = "name")`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkKind {
+    Library,
+    Framework,
+}
+
+/// `@link("name")` or `@link(framework = "name")` before an `extern` declaration with a link name (W17 / M20).
 #[derive(Clone, Debug)]
 pub struct LinkAttribute {
     pub target: Ident,
+    pub kind: LinkKind,
     pub library: String,
     pub span: Span,
     pub name_span: Span,

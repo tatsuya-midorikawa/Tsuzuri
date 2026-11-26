@@ -7659,6 +7659,7 @@ pub(super) fn specialize(
         generic_declarations,
         extern_abis: module.extern_abis,
         link_libraries: module.link_libraries,
+        link_frameworks: module.link_frameworks,
     })
 }
 

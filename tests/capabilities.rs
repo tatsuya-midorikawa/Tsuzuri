@@ -787,7 +787,7 @@ fn audit_reports_link_attribute_without_changing_unannotated_externs() {
     write(
         &root,
         "Main.tz",
-        "@trusted @link(\"gdi32\")\nextern \"GdiFlush\" def gdi_flush :: unit -> bool\n@trusted\nextern \"abs\" def c_abs :: i32 -> i32\ndef main :: unit -> i32 = \\() -> if gdi_flush () then c_abs (-7i32) else 0i32\n",
+        "@trusted @link(\"gdi32\")\nextern \"GdiFlush\" def gdi_flush :: unit -> bool\n@trusted @link(framework = \"AppKit\")\nextern \"NSApplicationLoad\" def app_load :: unit -> unit\n@trusted\nextern \"abs\" def c_abs :: i32 -> i32\ndef main :: unit -> i32 = \\() -> { app_load (); if gdi_flush () then c_abs (-7i32) else 0i32 }\n",
     );
     let text_out = tsuzuri(&["audit", "."], &root);
     assert!(text_out.status.success());
@@ -797,7 +797,13 @@ fn audit_reports_link_attribute_without_changing_unannotated_externs() {
         "{text}"
     );
     assert!(
-        text.contains("    c_abs -> \"abs\"  Main.tz:4:18  trusted\n"),
+        text.contains(
+            "    app_load -> \"NSApplicationLoad\"  Main.tz:4:32  trusted  link framework AppKit\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("    c_abs -> \"abs\"  Main.tz:6:18  trusted\n"),
         "{text}"
     );
 
@@ -809,7 +815,11 @@ fn audit_reports_link_attribute_without_changing_unannotated_externs() {
         "{json}"
     );
     assert!(
-        json.contains("\"name\":\"c_abs\",\"symbol\":\"abs\",\"path\":\"Main.tz\",\"line\":4,\"column\":18,\"trusted\":true,\"properties\":[],\"used\":1}"),
+        json.contains("\"name\":\"app_load\",\"symbol\":\"NSApplicationLoad\",\"path\":\"Main.tz\",\"line\":4,\"column\":32,\"trusted\":true,\"properties\":[],\"used\":1,\"framework\":\"AppKit\"}"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"name\":\"c_abs\",\"symbol\":\"abs\",\"path\":\"Main.tz\",\"line\":6,\"column\":18,\"trusted\":true,\"properties\":[],\"used\":1}"),
         "{json}"
     );
     let _ = std::fs::remove_dir_all(root);

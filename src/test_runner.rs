@@ -135,10 +135,16 @@ fn run_with_timeout(
         if options.target.is_wasm() {
             return Err(driver_error_of(
                 DiagnosticKind::OptionRequiresBuild,
-                "link inputs require a native executable; remove --link, -l and -L or build the native target with --emit exe",
+                links.requires_build_message(),
             ));
         }
         links.check_shape()?;
+        if links.has_macos_inputs() && !options.platform().mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them",
+            ));
+        }
         links.check_readable()?;
     }
     if !options.target.is_wasm()
@@ -492,6 +498,18 @@ pub fn build_debug_runner(
         text = llvm::with_codeview(text);
     }
     let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
+    let sdk_link_args = crate::driver::prepare_link_extras(
+        platform,
+        &tool("TSUZURI_CLANG", "clang"),
+        links,
+        &sys_frameworks,
+    )?;
+    let link_extras = crate::driver::LinkExtras {
+        system_libraries: &sys_libraries,
+        system_frameworks: &sys_frameworks,
+        sdk: &sdk_link_args,
+    };
     let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
     let object = temporary.path.join("tests.o");
@@ -571,7 +589,7 @@ pub fn build_debug_runner(
             link.arg("-lbcrypt");
         }
     }
-    links.add_to(&mut link, &sys_libraries)?;
+    links.add_to(&mut link, link_extras)?;
     let staged_pdb = temporary.path.join("tests.pdb");
     if let Some(pdb) = &pdb {
         link.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
@@ -980,6 +998,18 @@ fn compile_native_runner(
         text = llvm::windows_abi(text, module, true);
     }
     let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
+    let sdk_link_args = crate::driver::prepare_link_extras(
+        platform,
+        &tool("TSUZURI_CLANG", "clang"),
+        links,
+        &sys_frameworks,
+    )?;
+    let link_extras = crate::driver::LinkExtras {
+        system_libraries: &sys_libraries,
+        system_frameworks: &sys_frameworks,
+        sdk: &sdk_link_args,
+    };
     // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c,
     // which a native DataChannel waits on too (TZ12).
     let tzroutine_runtime = text.contains("@tsuzuri_tz_") || text.contains("@tsuzuri_channel_");
@@ -1093,7 +1123,7 @@ fn compile_native_runner(
     if os_runtime && platform.windows() {
         clang.arg("-lbcrypt");
     }
-    links.add_to(&mut clang, &sys_libraries)?;
+    links.add_to(&mut clang, link_extras)?;
     collect_message(
         messages,
         run_tool(&mut clang, &cross_hint(platform, runner.tools_hint))?,

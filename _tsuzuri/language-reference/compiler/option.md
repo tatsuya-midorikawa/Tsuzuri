@@ -57,7 +57,7 @@
 | `--wasm-host` | | ○ | | | | | | | |
 | `--wasm-max-memory` | | ○ | | ○ | | | | | |
 | `--wasm-stack-size` | | ○ | | ○ | | | | | |
-| `--link` / `-l` / `-L` | | ○ | ○ | ○ | ○ | | | | ○ |
+| `--link` / `-l` / `-L` / `--framework` / `-F` / `--rpath` | | ○ | ○ | ○ | ○ | | | | ○ |
 | `--list` / `--filter` / `--index` | | | | ○ | ○ | | | | |
 | `--coverage PATH` | | | | ○ | | | | | |
 | `--seed N` | | | | ○ | | | | | |
@@ -72,7 +72,7 @@
 
 `--deny-warnings` と `--warn` は、ヘルプでは `check` / `build` / `run` が中心です。実装では警告の表示が `doc` と `test` の前にも走るので、この 2 つでも効きます。`fmt` は明示的に拒否します。
 
-同じオプションを 2 回以上指定すると `E2000` になります。複数回の指定が許可されているのは `--link`、`-l`、`-L`、`--index`、および異なる機能名を指定した `--wasm-feature` のみです。`--link`、`-l`、`-L` の合計は最大 256 個までです。
+同じオプションを 2 回以上指定すると `E2000` になります。複数回の指定が許可されているのは `--link`、`-l`、`-L`、`--framework`、`-F`、`--rpath`、`--index`、および異なる機能名を指定した `--wasm-feature` のみです。`--link`、`-l`、`-L`、`--framework`、`-F`、`--rpath`（および `[native]` と `@link` の分）の合計は最大 256 個までです。
 
 <!-- rule: CLI-001 -->
 未知のフラグは `unknown option '...'; use --help` です。値を取り忘れると `--output needs a value` のように、そのフラグの名前で止まります。
@@ -433,6 +433,9 @@ tzroutine を起動する wasm32 のプログラムは、`.wasm` と `--emit bin
 | `--link PATH` | なし | ホストのオブジェクトか静的ライブラリ。繰り返せる |
 | `-l NAME` | なし | システムライブラリ名。例は `-l sqlite3`。`lib` や拡張子は付けない |
 | `-L DIR` | なし | `-l` の探索ディレクトリ |
+| `--framework NAME` | なし | macOS の framework 名（`-framework NAME`）。例は `--framework AppKit`。パスや `.framework` は付けない。繰り返せる |
+| `-F DIR` | なし | `--framework` の探索ディレクトリ（macOS）。繰り返せる |
+| `--rpath PATH` | なし | macOS の実行時探索パス（`-Wl,-rpath,PATH` / `LC_RPATH`）。絶対パスか `@executable_path`・`@loader_path` で始まり `,` を含まない値。繰り返せる |
 | `--allocator system\|host\|counting\|small` | `system` | `object`、`bitcode`、`llvm`、`header`、WASM のヒープ。`shared` は `counting` と `small` まで。`counting` と `small` は実行ファイルにも使えます。`run`・`test` は `counting` だけを受けます |
 | `--allocs` | オフ | `bench` の時間測定後、別の counting 実行器で 1 反復あたりの `alloc_calls`・`alloc_bytes` を報告します（[Bench](../built-in-types-and-modules/bench.md#確保数を測る)） |
 | `--freestanding` | オフ | C ライブラリ不要の native `object` / `llvm` / `header`。`--allocator host` が必須 |
@@ -473,6 +476,7 @@ link inputs require a native executable; remove --link, -l and -L or build the n
 | `--report parallel` と `--contracts prove`（どちらも標準出力に書くため） | `--report parallel cannot be combined with --contracts prove; run them separately` |
 | `--report` の値がない・`parallel` でない | `--report requires a report name; supported: parallel`、`unknown report 'X' for --report; supported: parallel` |
 | `--report parallel` を 2 回付ける | `report parallel specified more than once` |
+| macOS 以外の target に `--framework`・`-F`・`--rpath` を付ける | `--framework, -F and --rpath apply only to macOS targets; build for aarch64-apple-darwin or on a Mac, or remove them` |
 | `--overflow-report` を `check`・`bench`・`doc`・`fmt` に付ける | `--overflow-report is only valid with build, run, or test` |
 | `--overflow-report` と `--emit header`・カーネル・バインディング | `--overflow-report is not valid for header, kernel, or bindings output` |
 | `--overflow-report` と `--freestanding` | `--overflow-report cannot be combined with --freestanding: the report is written through the C library` |

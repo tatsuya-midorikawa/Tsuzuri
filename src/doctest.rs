@@ -796,11 +796,16 @@ fn run_one(
         match &example.expectation {
             Expectation::Check | Expectation::Fails(_) | Expectation::Ignore => None,
             Expectation::Run(expected) => {
+                let native_links = if crate::target::Platform::HOST.mach_o() {
+                    built.native.clone()
+                } else {
+                    built.native.clone().without_macos_inputs()
+                };
                 match driver::run_captured_quiet(
                     &module,
                     &built,
                     options.build,
-                    &built.native,
+                    &native_links,
                     Some(EXAMPLE_TIMEOUT),
                 ) {
                     Ok((notices, stdout)) => {
@@ -840,7 +845,12 @@ fn run_one(
                     }),
                     ..Default::default()
                 };
-                match driver::run_tests_linked(&module, &test_options, &built.native) {
+                let native_links = if crate::target::Platform::HOST.mach_o() {
+                    built.native.clone()
+                } else {
+                    built.native.clone().without_macos_inputs()
+                };
+                match driver::run_tests_linked(&module, &test_options, &native_links) {
                     Ok(test_report) => {
                         messages.extend(test_report.messages);
                         if let Some(failed) = test_report

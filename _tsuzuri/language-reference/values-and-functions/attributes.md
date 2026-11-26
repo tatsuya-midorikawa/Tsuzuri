@@ -45,7 +45,7 @@ flowchart TD
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
 | `@count` | `extern` 関数の宣言の直前（`@trusted` と任意の順序） | バッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
-| `@link` | リンク名付き `extern` 関数の宣言の直前（`@trusted`・`@count` と任意の順序） | 到達時に `-l<名前>` をリンクし、Windows では `dllimport` を付与 | [ネイティブ連携](../compiler/native-interop.md#extern-ごとのライブラリlink) |
+| `@link` | リンク名付き `extern` 関数・データシンボルの直前（`@trusted`・`@count` と任意の順序） | 到達時に `-l<名前>` または macOS の `-framework <名前>` をリンクし、Windows では `dllimport` を付与 | [ネイティブ連携](../compiler/native-interop.md#extern-ごとのライブラリと-frameworklink) |
 | `@c_layout` | `record` の宣言の直前（`private` より前）。引数は省略か `(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`） | フィールドを宣言順に C の標準アライメントで並べ、C の構造体と同じ配置にする | [ネイティブ連携](../compiler/native-interop.md#c-レイアウトレコードc_layout) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
@@ -309,18 +309,21 @@ extern "GetWindowTextW" def get_window_text :: Hwnd -> ref mut [i16u..] -> i32
 - `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
 - WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` の関数以外の宣言（`extern type`・`extern view`・データシンボルなど）に付けると `E0002`（`misplaced_count_attribute`）になります。
 
-## @link (extern のシステムライブラリ)
+## @link (extern のシステムライブラリと framework)
 
-`@link("名前")` は、明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）の直前に 1 つだけ置き、そのシンボルが最終の IR に到達したときだけ Tsuzuri のリンク行へ `-l<名前>` を追加します。Windows ターゲットでは `declare dllimport` になります。
+`@link("名前")` または `@link(framework = "名前")` は、明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）や C データシンボルの直前に 1 つだけ置き、そのシンボルが最終の IR に到達したときだけ Tsuzuri のリンク行へ `-l<名前>` または macOS の `-framework <名前>` を追加します。Windows ターゲットでは `@link("名前")` の宣言が `declare dllimport` になります。
 
 ```tsuzuri
 @trusted @link("gdi32")
 extern "GdiFlush" def gdi_flush :: unit -> bool
+
+@trusted @link(framework = "AppKit")
+extern "NSApplicationLoad" def application_load :: unit -> unit
 ```
 
-- 名前は `-l` と同じ規則で、パス・`lib` 接頭辞・拡張子は書けません（違反は `E1008` `link_invalid_name`）。
-- 括弧や文字列の構文誤りは `E0002`（`link_attribute_syntax`）、`extern ... def` 以外（`def`・`export def`・`extern type`・`extern view def` など）への付与は `E0002`（`misplaced_link_attribute`）です。
-- リンク名のない `extern def` に付けると `E1008`（`link_needs_symbol`）、1 つの宣言に 2 回書くと `E1008`（`link_repeated`）、WebAssembly のビルドで到達すると `E2000`（`link_attribute_wasm`）になります。
+- ライブラリ名は `-l` と同じ規則、framework 名は `--framework` と同じ規則（パスや `.framework` 接尾辞なし）です（違反は `E1008` `link_invalid_name`）。
+- 括弧や文字列の構文誤りは `E0002`（`link_attribute_syntax`）、対象外の宣言（`def`・`export def`・`extern type`・アドレスを取る `extern view def` など）への付与は `E0002`（`misplaced_link_attribute`）です。
+- リンク名のない `extern def` に付けると `E1008`（`link_needs_symbol`）、1 つの宣言に 2 回書くと `E1008`（`link_repeated`）、`@link(framework = ...)` に macOS 以外のネイティブターゲットで到達すると `E2000`（`link_framework_target`）、WebAssembly のビルドで到達すると `E2000`（`link_attribute_wasm`）になります。
 
 ## @c_layout (C の配置のレコード)
 

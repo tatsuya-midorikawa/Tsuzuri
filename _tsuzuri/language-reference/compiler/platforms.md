@@ -95,7 +95,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 **同梱ツールチェーン。** 配布物の `tsuzuri-clang` は、`--target` を Zig の target に写します。クロスリンクできるのは、Linux の glibc と musl（各 x64・Arm64）、MinGW の Windows（x64・Arm64）、macOS Arm64 の 7 個です。
 
 - Windows 以外のホストで MSVC の target をリンクしようとすると、`E2002` で `pc-windows-gnu` を勧めます。Windows の launcher は従来どおり MSVC の指定を MinGW でリンクします。Windows Arm64 の配布物は、Zig ではなく同梱 LLVM-MinGW を使います。
-- `TSUZURI_SYSROOT` は受け付けず、`E2002` です。同梱ツールチェーンが自分の C ライブラリを持つからです。
+- `TSUZURI_SYSROOT` は受け付けず、`E2002` です。同梱ツールチェーンが自分の C ライブラリを持つからです。ただし macOS で framework（`--framework`・`[native] frameworks`・`@link(framework = ...)`）をリンクするビルドでは、`xcrun --show-sdk-path` から macOS SDK（Xcode Command Line Tools）を探して framework とシステムライブラリの探索パスを補います（見つからない場合は `E2002` `macos_sdk_not_found`）。
 - `--target native` は Linux で musl の静的リンクです。`*-unknown-linux-gnu` を名指しすると glibc の動的リンクで、glibc の版は同梱の Zig が決めます。
 
 **システムの Clang と `TSUZURI_SYSROOT`。** 名前を付けた target のランタイムの C のコンパイルとリンクへ渡します。Linux と MinGW は `--sysroot=DIR`、macOS は `-isysroot DIR` です。`--target native` は読みません。
@@ -156,6 +156,7 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 | `E2000` | ホストにない dsymutil か MSVC のリンカーが要る `-g` | `--debug-info for <triple> needs a macOS host: ...` / `... needs a Windows host: ...` |
 | `E2002` | Windows 以外で同梱ツールチェーンに MSVC を指定 | `the bundled toolchain links MinGW, not the MSVC runtime of <value>; build <arch>-pc-windows-gnu instead` |
 | `E2002` | 同梱ツールチェーンに sysroot を指定 | `the bundled toolchain brings its own C library and cannot use a sysroot; ...` |
+| `E2002` | 同梱ツールチェーンでの framework リンク時に macOS SDK が見つからない | `linking the macOS framework '<name>' with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; ...` |
 | `E2002` | Windows の target で、tzroutine・CPU カーネル・IO・`Net`・OS API のランタイムを埋め込む `--emit object` | `Windows COFF objects with embedded tzroutine, CPU, IO, Net, or operating-system runtime are not supported; emit LLVM and link the runtime once, or build an executable` |
 
 引数の誤りは終了コード 2、ビルドや実行中の失敗は 1 です。実行ファイルに入るのは、入口・`export def`・`Drop` から到達する関数だけです。`--emit object` は公開関数をすべて出すので、未使用の公開関数だけが IO や OS API を使っても、Windows の COFF の object は上の `E2002` です（[出力とターゲット](option.md#出力とターゲット)）。

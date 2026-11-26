@@ -147,6 +147,13 @@ jobs:
           export TSUZURI_CROSS_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
           if [ "$RUNNER_OS" = Linux ]; then export TSUZURI_CROSS_EXECUTE=1; fi
           node tests/targets.mjs target/release/tsuzuri
+      - name: macOS framework link inputs (M20)
+        if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
+          node tests/macos_link_inputs.mjs target/release/tsuzuri
+          node tests/data_symbols.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
