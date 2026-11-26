@@ -102,13 +102,21 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
     for record in record_types(module) {
         visit(&record, module, &types, &mut names, &mut seen_records);
     }
-    names
+    // Each behind a guard of its own: the headers of two libraries that pass the same handle then
+    // define it once in a translation unit (C11 and C++ accept a second identical typedef, C99 does not).
+    let mut output: String = names
         .iter()
         .map(|name| {
             let c_name = handle_c_name(name);
-            format!("typedef struct {c_name}_s *{c_name};\n")
+            format!(
+                "#ifndef TSUZURI_HANDLE_{c_name}\n#define TSUZURI_HANDLE_{c_name}\ntypedef struct {c_name}_s *{c_name};\n#endif\n"
+            )
         })
-        .collect()
+        .collect();
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output
 }
 
 /// Whether the header contains any `@c_layout` struct definition (W21).
@@ -377,54 +385,108 @@ fn record_field_type(ty: &Type, module: &CheckedModule) -> String {
     }
 }
 
+/// The version of `common_declarations`. Raise it whenever their text changes, so that headers of an
+/// earlier shape and of the new one stop with `#error` in one translation unit instead of
+/// disagreeing about a type that crosses every library boundary.
+pub(super) const COMMON_DECLARATIONS_VERSION: u32 = 1;
+
+/// The buffer descriptors that a header can name (`Buffer::of`), in the order of `Buffer`.
+const HEADER_BUFFERS: [Buffer; 5] = [
+    Buffer::I64,
+    Buffer::F64,
+    Buffer::UByte,
+    Buffer::String,
+    Buffer::Utf8String,
+];
+
+/// The declarations that every header of the host ABI or of `--trap-mode return` shares, whatever
+/// its module uses: the buffer descriptors and `tsuzuri_trap_info`. They are the same bytes in
+/// every header of one version and stand behind one guard, so the headers of several libraries can
+/// be included in one C or C++ translation unit. Each struct has a tag, so a type is one type
+/// however many headers name it (two untagged `typedef struct { ... }` of the same shape are two
+/// types, and a second one is an error in C and C++).
+///
+/// Headers of two versions in one translation unit are an error (`#error`): their types would carry
+/// the same names with different shapes, which no compiler accepts, and silently keeping the first
+/// would give the other library's prototypes the wrong layout. The version changes only with the
+/// text, so headers of compilers that agree on it mix freely. `TSUZURI_TRAP_INFO_DEFINED` stays
+/// inside, as the runtime's `trap.c` defines the same type under that guard.
+///
+/// The prototypes of `tsuzuri_alloc` and `tsuzuri_free` stay outside (`header_types`): a header
+/// declares them only when its library defines them, and C and C++ accept the same function
+/// declared again. `tsuzuri_allocation_stats` keeps its own guard, as only `--allocator counting`
+/// has it.
+pub(super) fn common_declarations() -> String {
+    let version = COMMON_DECLARATIONS_VERSION;
+    let mut output = format!(
+        "/* Shared by every Tsuzuri header (version {version}), so that the headers of several libraries can be\n   included in one translation unit. Headers with another version of these declarations stop with #error. */\n\
+         #ifndef TSUZURI_COMMON_DECLARATIONS_{version}\n\
+         #ifdef TSUZURI_COMMON_DECLARATIONS_VERSION\n\
+         #error \"Tsuzuri headers with different versions of the common declarations cannot be included together; generate them with the same Tsuzuri release\"\n\
+         #else\n\
+         #define TSUZURI_COMMON_DECLARATIONS_{version}\n\
+         #define TSUZURI_COMMON_DECLARATIONS_VERSION {version}\n"
+    );
+    for buffer in HEADER_BUFFERS {
+        let (name, element) = (buffer.name(), buffer.c_element());
+        let _ = writeln!(
+            output,
+            "typedef struct tsuzuri_{name}_slice {{ const {element} *ptr; int64_t len; }} tsuzuri_{name}_slice;\n\
+             typedef struct tsuzuri_{name}_buffer {{ {element} *ptr; int64_t len; }} tsuzuri_{name}_buffer;"
+        );
+    }
+    output.push_str(
+        "/* What --trap-mode return reports of a trap: `site` is an id of <output>.trap.json, `kind` a trap kind. */\n\
+         #ifndef TSUZURI_TRAP_INFO_DEFINED\n\
+         #define TSUZURI_TRAP_INFO_DEFINED\n\
+         typedef struct tsuzuri_trap_info {\n    uint32_t site;\n    uint32_t kind;\n} tsuzuri_trap_info;\n\
+         #endif\n\
+         #endif\n\
+         #endif\n\n",
+    );
+    output
+}
+
+/// `definition` behind a guard named after the record, so that the headers of two libraries that
+/// export the same record (a module of a shared dependency) define it once. The guard's value
+/// identifies the definition's text: a header whose record of that name has other fields (two
+/// versions of the module, or two modules of one name such as each library's `Main`) stops with
+/// `#error` instead of giving one library's functions the other's layout.
+fn guarded_record(output: &mut String, rname: &str, definition: &str) {
+    let mut hash = crate::cache::Sha256::new();
+    hash.update(definition.as_bytes());
+    let layout: String = hash.finalize()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let _ = write!(
+        output,
+        "#ifndef TSUZURI_LAYOUT_{rname}\n#define TSUZURI_LAYOUT_{rname} 0x{layout}\n{definition}\
+         #elif TSUZURI_LAYOUT_{rname} != 0x{layout}\n\
+         #error \"{rname} has other fields in another Tsuzuri header: two libraries export different records of this name\"\n\
+         #endif\n"
+    );
+}
+
+/// The record structs of the header, each behind its guard (`guarded_record`), and the prototypes
+/// of the allocator. The buffer descriptors are in `common_declarations`.
 pub(super) fn header_types(module: &CheckedModule) -> String {
     if !uses_host_abi(module) {
         return String::new();
     }
-    let mut buffers = BTreeSet::new();
-    for function in module
-        .functions
-        .iter()
-        .filter(|function| host_function(function))
-    {
-        for ty in function
-            .signature
-            .parameters
-            .iter()
-            .chain([&function.signature.result])
-        {
-            let ty = if let Type::Reference(inner, false) = ty {
-                inner
-            } else {
-                ty
-            };
-            if let Some(buffer) = Buffer::of(ty) {
-                buffers.insert(buffer);
-            }
-        }
-    }
     let mut output = String::new();
-    for buffer in buffers {
-        let _ = writeln!(
-            output,
-            "typedef struct {{ const {} *ptr; int64_t len; }} tsuzuri_{}_slice;\ntypedef struct {{ {} *ptr; int64_t len; }} tsuzuri_{}_buffer;",
-            buffer.c_element(),
-            buffer.name(),
-            buffer.c_element(),
-            buffer.name()
-        );
-    }
     for ty in record_types(module) {
         let Type::Record(id, arguments) = &ty else {
             unreachable!()
         };
         let rname = record_name(&ty, module);
+        let mut definition = String::new();
         if let Some((cfields, total_size, _)) = c_layout_fields(&ty, module) {
             let pack = module.records[*id].c_layout.and_then(|c| c.pack);
             if let Some(n) = pack {
-                let _ = writeln!(output, "#pragma pack(push, {n})");
+                let _ = writeln!(definition, "#pragma pack(push, {n})");
             }
-            output.push_str("typedef struct {\n");
+            let _ = writeln!(definition, "typedef struct {rname} {{");
             for ((name, _), field) in module.records[*id]
                 .fields
                 .iter()
@@ -432,50 +494,56 @@ pub(super) fn header_types(module: &CheckedModule) -> String {
             {
                 let cname = field_name(name);
                 let declaration = c_layout_c_field(&field, &cname, module);
-                let _ = writeln!(output, "    {declaration};");
+                let _ = writeln!(definition, "    {declaration};");
             }
-            let _ = writeln!(output, "}} {rname};");
+            let _ = writeln!(definition, "}} {rname};");
             if pack.is_some() {
-                output.push_str("#pragma pack(pop)\n");
+                definition.push_str("#pragma pack(pop)\n");
             }
             let _ = writeln!(
-                output,
+                definition,
                 "typedef char {rname}__size[(sizeof({rname}) == {total_size}) ? 1 : -1];"
             );
             for ((name, _), cfield) in module.records[*id].fields.iter().zip(&cfields) {
                 let cname = field_name(name);
                 let _ = writeln!(
-                    output,
+                    definition,
                     "typedef char {rname}__f_{cname}[(offsetof({rname}, {cname}) == {}) ? 1 : -1];",
                     cfield.offset
                 );
             }
-            continue;
+        } else {
+            let _ = writeln!(definition, "typedef struct {rname} {{");
+            if module.records[*id].fields.is_empty() {
+                definition.push_str("    uint8_t tz_empty;\n");
+            }
+            for ((name, _), field) in module.records[*id]
+                .fields
+                .iter()
+                .zip(module.types().record_fields(*id, arguments))
+            {
+                let declaration = match &field {
+                    Type::Record(..) => {
+                        format!("{} {}", record_name(&field, module), field_name(name))
+                    }
+                    Type::FixedArray(element, _) => format!(
+                        "{} {}[{}]",
+                        c_type(element),
+                        field_name(name),
+                        fixed_length(&field)
+                    ),
+                    _ => format!("{} {}", c_type(&field), field_name(name)),
+                };
+                let _ = writeln!(definition, "    {declaration};");
+            }
+            let _ = writeln!(definition, "}} {rname};");
         }
-        output.push_str("typedef struct {\n");
-        if module.records[*id].fields.is_empty() {
-            output.push_str("    uint8_t tz_empty;\n");
-        }
-        for ((name, _), field) in module.records[*id]
-            .fields
-            .iter()
-            .zip(module.types().record_fields(*id, arguments))
-        {
-            let declaration = match &field {
-                Type::Record(..) => format!("{} {}", record_name(&field, module), field_name(name)),
-                Type::FixedArray(element, _) => format!(
-                    "{} {}[{}]",
-                    c_type(element),
-                    field_name(name),
-                    fixed_length(&field)
-                ),
-                _ => format!("{} {}", c_type(&field), field_name(name)),
-            };
-            let _ = writeln!(output, "    {declaration};");
-        }
-        let _ = writeln!(output, "}} {rname};");
+        guarded_record(&mut output, &rname, &definition);
     }
-    output.push_str("\nvoid *tsuzuri_alloc(int64_t size);\nvoid tsuzuri_free(void *ptr);\n\n");
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    output.push_str("void *tsuzuri_alloc(int64_t size);\nvoid tsuzuri_free(void *ptr);\n\n");
     output
 }
 
@@ -744,11 +812,12 @@ void *tsuzuri_host_alloc(uint64_t size, uint64_t align);\n\
 void tsuzuri_host_free(void *ptr, uint64_t size, uint64_t align);\n\
 void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint64_t align);\n";
 
-/// The statistics of `--allocator counting` (F13 Phase 2).
+/// The statistics of `--allocator counting` (F13 Phase 2). The headers of several such libraries
+/// share the struct by its guard alone, so a new shape renames the guard (`llvm.rs` pins the text).
 pub(super) const ALLOCATION_STATS_PROTOTYPE: &str = "\n/* --allocator counting: allocations and frees since the start, and the requested bytes\n   that are live now and were live at most. */\n\
 #ifndef TSUZURI_ALLOCATION_STATS_DEFINED\n\
 #define TSUZURI_ALLOCATION_STATS_DEFINED\n\
-typedef struct {\n    uint64_t allocations;\n    uint64_t frees;\n    uint64_t live_bytes;\n    uint64_t peak_bytes;\n} tsuzuri_allocation_stats;\n\
+typedef struct tsuzuri_allocation_stats {\n    uint64_t allocations;\n    uint64_t frees;\n    uint64_t live_bytes;\n    uint64_t peak_bytes;\n} tsuzuri_allocation_stats;\n\
 #endif\n\
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);\n";
 

@@ -484,7 +484,7 @@ Tsuzuri コード内でハンドル型の値を直接構築するリテラル構
 スコープ終了時にリソースを確実に自動クローズさせたい場合は、修飾のないハンドル値を record 型でラップしたうえで `instance Drop` を実装し、その `drop` メソッド内部から借用参照を受け取るクローズ用 extern 関数を呼び出す設計パターンを採用してください（詳細は [利用者定義の解放](#利用者定義の解放drop) 参照）。
 
 C 言語 ABI においてハンドル型を配置できる場所は、extern 関数（値 `H`、共有借用 `ref H`、ネイティブの `Maybe<H>`・`Maybe<ref H>`、およびネイティブの `extern type copy` ハンドルに対する `ref mut CopyH`）、`export def` 関数、およびコールバック関数の引数位置（値 `H` または共有借用 `ref H`。さらにネイティブのコールバック関数の引数では `Maybe<H>`・`Maybe<ref H>`）、ならびに extern 関数および `export def` 関数の戻り値位置（値 `H`。さらにネイティブの extern 関数の戻り値では `Maybe<H>`）に限定されます。ABI 境界のレコードのフィールド型、バッファの要素型、あるいは `copy` でないハンドルの可変借用 `ref mut H` として配置した場合は `E1008` エラーとなります。なお、ABI 境界以外の通常の Tsuzuri コード内であれば、レコード、union、配列、`Maybe` の内部へ自由に格納可能です。
-ネイティブ環境におけるハンドル値（`H` および `ref H`）は**常に非 Null ポインタ**（LLVM `ptr != null`）であるという不変条件を持ちます。非 `Maybe` の `H` を返す `extern def` に C 側が `NULL` を返した場合、ならびに `export def` や静的コールバックの非 `Maybe` 引数 `H`・`ref H` にホスト側が `NULL` を渡した場合は、境界で即座に `null extern handle`（`TrapKind::NullHandle`）でトラップします（`--trap-mode return` ではステータス `1` として返り、C#・Python・C++ の生成バインディングでも呼び出し前後に `0`／`None`／`nullptr` を例外で拒否します）。この非 Null 不変条件により、ネイティブ環境での `Maybe<H>`（および同じ形の 2 ケース共用体）はタグを持たない単一の `ptr`（`Niche::NullPointer`、`None` = `null`、`Some h` = `h`、8 バイト）として表現され、`Some(NULL)` が生じることはありません。一方、wasm32／wasm64 環境ではハンドルはホスト側のテーブル番号（JavaScript 上では `0` も有効値となり得る整数）であるため、非 Null 検査も NULL niche も行われず従来どおりタグ付き共用体として扱われます。`ref H` の場合であっても、ポインタへのポインタではなくハンドル値そのものがホストへ受け渡されます。生成される C ヘッダーには、プロトタイプ宣言に先立って `typedef struct tz_handle_<長さ付き修飾名>_s *tz_handle_<…>;` という型定義が 1 回だけ出力されます。
+ネイティブ環境におけるハンドル値（`H` および `ref H`）は**常に非 Null ポインタ**（LLVM `ptr != null`）であるという不変条件を持ちます。非 `Maybe` の `H` を返す `extern def` に C 側が `NULL` を返した場合、ならびに `export def` や静的コールバックの非 `Maybe` 引数 `H`・`ref H` にホスト側が `NULL` を渡した場合は、境界で即座に `null extern handle`（`TrapKind::NullHandle`）でトラップします（`--trap-mode return` ではステータス `1` として返り、C#・Python・C++ の生成バインディングでも呼び出し前後に `0`／`None`／`nullptr` を例外で拒否します）。この非 Null 不変条件により、ネイティブ環境での `Maybe<H>`（および同じ形の 2 ケース共用体）はタグを持たない単一の `ptr`（`Niche::NullPointer`、`None` = `null`、`Some h` = `h`、8 バイト）として表現され、`Some(NULL)` が生じることはありません。一方、wasm32／wasm64 環境ではハンドルはホスト側のテーブル番号（JavaScript 上では `0` も有効値となり得る整数）であるため、非 Null 検査も NULL niche も行われず従来どおりタグ付き共用体として扱われます。`ref H` の場合であっても、ポインタへのポインタではなくハンドル値そのものがホストへ受け渡されます。生成される C ヘッダーには、プロトタイプ宣言に先立って `typedef struct tz_handle_<長さ付き修飾名>_s *tz_handle_<…>;` という型定義が、ガード `TSUZURI_HANDLE_tz_handle_<…>` の中に 1 回だけ出力されます（同じハンドルを使う複数のライブラリのヘッダーを一緒に読んでも、定義は翻訳単位に 1 つです）。
 
 #### コールバック
 
@@ -4913,6 +4913,8 @@ wasm64 においては、すべてのポインタ値（`tsuzuri_alloc` の戻り
 レコード内の `bool` や狭小な整数フィールドも C 言語側では 32-bit 幅へと正規化されるため、コンパイラ内部の LLVM レイアウトや C コンパイラごとの構造体値渡し規約の差異に左右されることはありません。
 生成される C 言語の typedef 名はモジュール名の長さプレフィックスと型引数のエンコーディングによって一意に識別され、C/C++ の予約語と衝突するフィールド名には自動的に接頭辞 `tz_` が付与されます（名前変換後にシンボルが衝突した場合は `E1008` エラーとなります）。
 
+別々にビルドした複数のライブラリの C ヘッダーは、1 つの C・C++ の翻訳単位で一緒に include できます。ホスト ABI か `--trap-mode return` を使うヘッダーは、どれも同じ内容の共通の宣言（`tsuzuri_i64`・`f64`・`ubyte`・`string`・`utf8string` の `_slice`／`_buffer` と `tsuzuri_trap_info`）を、版の付いた 1 つのガード `TSUZURI_COMMON_DECLARATIONS_<版>` の中に持ちます（現在の版は 1。モジュールが使わない種類も含めてすべて出し、スカラーだけのヘッダーには出しません）。生成するすべての struct には typedef と同じ名前の tag が付きます（tag のない `typedef struct { ... }` は同じ形でも別の型になり、2 回目の定義は C でも C++ でもエラーになるため）。版は宣言の形が変わったときだけ上がり、版の違うヘッダーを一緒に読むと、ガードの中の `#error`（`Tsuzuri headers with different versions of the common declarations cannot be included together; ...`）で止まります。同じ名前の型が違う形を持つことになり、黙って片方を残すと他方のライブラリの関数へ違う配置を渡すことになるからです。レコードの struct は `TSUZURI_LAYOUT_<typedef 名>` のガードの中にあり、その値は定義の文字列の SHA-256 の先頭 64 bit です。2 つのライブラリが同じモジュール（共通の依存パッケージなど）のレコードを export すれば 2 つめの定義は読み飛ばされ、同じ typedef 名でフィールドが違えば `#error "<typedef 名> has other fields in another Tsuzuri header: ..."` で止まります。ハンドルの typedef は `TSUZURI_HANDLE_<typedef 名>` のガードの中にあります。関数のプロトタイプ（`tsuzuri_alloc`・`tsuzuri_free` を含む）はガードの外で、同じ宣言の繰り返しは C・C++ とも有効です。`tz_<name>` はライブラリをまたいで区別されないので、同じ名前を export する 2 つのライブラリは一緒に使えません。
+
 ホスト側から渡された借用バッファは、Tsuzuri 関数の実行期間中のみ読み取りアクセスされ、Tsuzuri 側で勝手に複製されたり解放されたりすることはありません。ホスト側は自然なアライメントと、指定された要素数分の有効なメモリ領域を保証する責任を持ち、Tsuzuri 関数の呼び出し中にそのバッファを変更したり解放したりしてはなりません。
 負の長さ、バッファサイズのオーバーフロー、不正な null ポインタ、およびアライメント違反は、Tsuzuri 内部の処理を開始する前に安全にトラップします（なお、null ポインタと長さ 0 の組み合わせは正当な空バッファとして受理されます）。
 WASM 環境では、渡されたポインタが現在の線形メモリの有効範囲内に完全に収まっているかも厳密に検証されます（なおネイティブ環境においては、任意の生ポインタの物理的妥当性を完全に自動検証することは不可能なため、正当なポインタを引き渡すことはホスト側の責任となります）。
@@ -4994,7 +4996,7 @@ void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint
 `--allocator counting` は `system` の allocator を同じ 16 バイトのヘッダーで包み、確保回数・解放回数・現在の要求バイト数・その最大値を数えます（原子的に更新します）。ホストは次の関数で値を読みます。WASM では `tsuzuri_alloc_stats`・`tsuzuri_alloc`・`tsuzuri_free`・`memory` を export するので、`tsuzuri_alloc(32)` で確保した 8 バイト境界の領域を渡します（この確保も数に入ります）。
 
 ```c
-typedef struct {
+typedef struct tsuzuri_allocation_stats {
     uint64_t allocations;
     uint64_t frees;
     uint64_t live_bytes;
@@ -5002,6 +5004,8 @@ typedef struct {
 } tsuzuri_allocation_stats;
 void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 ```
+
+ヘッダーでは、この struct は `TSUZURI_ALLOCATION_STATS_DEFINED` のガードの中にあり、`--allocator counting` の 2 つのライブラリのヘッダーを一緒に読んでも 1 回だけ定義されます。
 
 `Alloc` は opt-in の標準モジュールで、`Stats { allocs: i64, reallocs: i64, frees: i64, bytes: i64 }`、`snapshot :: unit -> Stats`、`since :: Stats -> Stats`、`measure :: (unit -> 'a) -> Stats * 'a` を提供します。
 `snapshot` は累計、`since` は以前の snapshot との差、`measure` は callback 1 回分の `(差分, 結果)` です。読み取り自体は確保せず、窓は入れ子にできます。`since` の対象 `Stats` は最後の引数です。

@@ -72,16 +72,20 @@ function checkRun(result, table) {
 }
 
 try {
-  // The header gains the trap record and the try_ prototypes only in trap mode.
+  // The header gains the try_ prototypes only in trap mode. The trap record is one of the
+  // declarations that every header of the host ABI shares behind one guard, so both have it.
   const plainHeader = join(root, "plain.h");
   build(fixture, ["--emit", "header"], plainHeader);
-  assert.doesNotMatch(readFileSync(plainHeader, "utf8"), /tsuzuri_try_|tsuzuri_trap_info/);
+  const plainText = readFileSync(plainHeader, "utf8");
+  assert.doesNotMatch(plainText, /tsuzuri_try_/);
   const headers = join(root, "include");
   mkdirSync(headers);
   const header = join(headers, "trap_return.h");
   build(fixture, ["--emit", "header", "--trap-mode", "return"], header);
   const text = readFileSync(header, "utf8");
-  assert.match(text, /typedef struct \{\n {4}uint32_t site;\n {4}uint32_t kind;\n\} tsuzuri_trap_info;/);
+  const trapRecord = /#ifndef TSUZURI_TRAP_INFO_DEFINED\n#define TSUZURI_TRAP_INFO_DEFINED\ntypedef struct tsuzuri_trap_info \{\n {4}uint32_t site;\n {4}uint32_t kind;\n\} tsuzuri_trap_info;\n#endif\n/;
+  assert.match(text, trapRecord);
+  assert.match(plainText, trapRecord);
   assert.match(text, /int32_t tsuzuri_try_div\(tsuzuri_trap_info \*trap, int64_t \*result, int64_t arg0, int64_t arg1\);/);
   assert.match(text, /int32_t tsuzuri_try_make\(tsuzuri_trap_info \*trap, tsuzuri_i64_buffer \*out, int64_t arg0\);/);
   assert.match(text, /int32_t tsuzuri_try_noop\(tsuzuri_trap_info \*trap, int64_t \*result\);/);
