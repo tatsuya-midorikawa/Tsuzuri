@@ -59,8 +59,8 @@ namespace = "GeometryTools"
 
 `edition` は、そのパッケージのソースを読む規則の版です。`2026`・`2027`・`2028` に対応します。
 値を省略したマニフェストは、新しい edition ができても `2026` のままです。
-2027 は現在の最新で、通常の関数の引数を既定で共有借用にします。また、同じ意味の書き方が複数あった表記を正準形に絞ります（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、`x -> e` の旧ラムダは `E0004`。[診断](../compiler/diagnostics.md)）。2028 は 2027 の引数規約を引き継ぎつつ、終端を含むスライスの素の `..`、`for` の素の `..`、`<..`・`<..<`、末尾からの位置 `^k` などの範囲の構文の族を導入します。manifest のない CLI 入力・script・REPL、
-新規プロジェクトは現在の最新の 2027 です（`tsuzuri new --edition 2028` で 2028 を選べます。manifest のない入力も `--edition 2026|2027|2028` でその edition として読めます）。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
+2028 は現在の最新で、2027 の引数規約（通常の関数の引数を既定で共有借用にし、短い接尾辞・`&x`・`*r`・`&T`・旧ラムダ `x -> e` を `E0004` にする。[診断](../compiler/diagnostics.md)）を引き継ぎつつ、終端を含むスライスの素の `..`、`for` の素の `..`、`<..`・`<..<`、末尾からの位置 `^k` などの範囲の構文の族を導入します。manifest のない CLI 入力・script・REPL、
+新規プロジェクトも 2028 です（`tsuzuri new --edition 2026|2027` で旧版を選べます。manifest のない入力も `--edition 2026|2027|2028` でその edition として読めます）。`own T` は旧版の値渡し、`mut T` は排他借用を明示します。
 旧ソースは [`fix --edition 2027 --from 2026` や `fix --edition 2028 --from 2027`](../compiler/usage.md#fix) で契約とスライスの意味を保って移行できます。
 詳しくは[引数の所有権](../values-and-functions/functions.md#引数の所有権own-と-edition-2027)を参照してください。
 
@@ -419,7 +419,7 @@ my-app/
 [package]
 name = "my-app"
 version = "0.1.0"
-edition = "2027"
+edition = "2028"
 namespace = "MyApp"
 ```
 

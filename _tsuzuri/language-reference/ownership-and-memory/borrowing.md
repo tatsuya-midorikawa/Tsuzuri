@@ -314,11 +314,11 @@ read (n as i64) + read (-5) + read (if flag then 10 else 20) + read (match n wit
 
 ### 共有スライス（ref [T]）
 
-共有スライスは `ref values[start..end]` の構文で作成し、型は `ref [T]` です。
+共有スライスは `ref values[start..<end]`（終端を含まない半開区間）または `ref values[start..end]`（edition 2028 では終端を含む閉区間）の構文で作成し、型は `ref [T]` です。
 
 ```tsuzuri run=50
 let values = [10, 20, 30, 40]
-let part = ref values[1..3]
+let part = ref values[1..<3]
 part[0] + part[1]
 ```
 
@@ -328,17 +328,17 @@ part[0] + part[1]
 50
 ```
 
-範囲は `start..end`（`end` は含まない半開区間）、`start..`（末尾まで）、`..end`（先頭から）が指定できます。スライス自身も `.length` の取得やインデックスアクセス `part[i]`、`for` ループによる走査が可能です。
+範囲は `start..<end`（`end` は含まない半開区間）、`start..=end`（`end` を含む閉区間。edition 2028 では素の `start..end` も同じ）、`start..`（末尾まで）、`..<end`・`..=end`（先頭から）や edition 2028 の `<..`・`<..<`・`^k` が指定できます。スライス自身も `.length` の取得やインデックスアクセス `part[i]`、`for` ループによる走査が可能です。
 
 `Tensor`・`Matrix`・`MatrixView` などの `Index` クラスで土台を借りる窓を取る添字も、配列のスライスと同じく `ref t[[Slice.range 1 3]]`・`ref m[(Slice.range 0 2, Slice.all())]` のように `ref` を付けて書きます（`ref` は添字に吸収され、式の型は `Tensor.View<T>` や `MatrixView<T>` です。省くと `E1042`、値を返す添字に `ref` を付けると `E1003` です）。
 
 ### 可変スライス（ref mut [T..]）
 
-配列の要素をその場で置き換えるには、可変スライスを使います。構文は `ref mut values[start..end]` で、型は `ref mut [T..]` です。終端を含めるときは `ref mut values[start..=end]` です。元の配列は `let mut` で束縛した名前か、すでに持っている排他参照である必要があります。一時値への可変スライスは `E1014` です。
+配列の要素をその場で置き換えるには、可変スライスを使います。構文は `ref mut values[start..<end]`（半開区間）や `ref mut values[start..=end]`（閉区間、edition 2028 では `ref mut values[start..end]` も閉区間）で、型は `ref mut [T..]` です。元の配列は `let mut` で束縛した名前か、すでに持っている排他参照である必要があります。一時値への可変スライスは `E1014` です。
 
 ```tsuzuri run=99
 let mut values = [1, 2, 3]
-let part = ref mut values[0..2]
+let part = ref mut values[0..<2]
 Array.write 0 99 part
 values[0]
 ```

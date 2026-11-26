@@ -142,7 +142,7 @@ test "reading an array allocates nothing" =
 test "a slice borrows: no allocation" =
     let xs = new [i64](100, \i -> i)
     let start = Alloc.snapshot ()
-    let part = ref xs[10..20]
+    let part = ref xs[10..<20]
     let total = Array.sum part
     let used = Alloc.since start
     expect "slice" 0 0 0 0 used

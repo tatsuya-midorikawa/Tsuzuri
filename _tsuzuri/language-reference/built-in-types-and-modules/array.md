@@ -352,7 +352,7 @@ $"sliced={copied} sum={Array.sum middle}"
 sliced=[20, 30] sum=50
 ```
 
-```tsuzuri edition=2028 run=inc%3D%5B20%2C%2030%2C%2040%5D%20init%3D%5B10%2C%2020%2C%2030%2C%2040%5D%20last%3D50
+```tsuzuri run=inc%3D%5B20%2C%2030%2C%2040%5D%20init%3D%5B10%2C%2020%2C%2030%2C%2040%5D%20last%3D50
 let xs = [10, 20, 30, 40, 50]
 let inc: [i32] = deref (ref xs[1..3])
 let init: [i32] = deref (ref xs[..^1])

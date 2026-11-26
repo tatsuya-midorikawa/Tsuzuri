@@ -72,7 +72,7 @@ fn fixed_nested =
 export def fixed_slice :: i64
 fn fixed_slice =
     let v: [i64; 5] = [1, 2, 3, 4, 5]
-    probe v + probe (ref v[1..4])
+    probe v + probe (ref v[1..<4])
 
 export def fixed_record :: i64
 fn fixed_record =
@@ -134,4 +134,4 @@ fn trap_constant =
 export def trap_slice :: i64
 fn trap_slice =
     let v: [i64; 5] = [1, 2, 3, 4, 5]
-    probe (ref v[3..6])
+    probe (ref v[3..<6])

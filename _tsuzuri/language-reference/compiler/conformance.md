@@ -78,8 +78,8 @@ node scripts/check-spec.mjs --coverage
 | CLI | 10 | 0 | 10 | 11 | 10 |
 | ABI | 13 | 0 | 13 | 14 | 13 |
 | STD | 10 | 0 | 10 | 10 | 10 |
-| EDN | 11 | 0 | 11 | 11 | 11 |
-| Total | 254 | 11 | 254 | 257 | 254 |
+| EDN | 11 | 1 | 11 | 11 | 11 |
+| Total | 254 | 12 | 254 | 257 | 254 |
 <!-- /generated:spec-coverage -->
 
 ## 限界

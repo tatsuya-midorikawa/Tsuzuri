@@ -257,3 +257,105 @@ fn corpus_2027_migrates_to_2028_without_changing_the_ir() {
     assert!(manifest.contains("edition = \"2028\""), "{manifest}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn manifest_less_sources_note_the_meaning_change() {
+    use std::io::Cursor;
+
+    let root = scratch("meaning-changed");
+    let cache = root.join("cache");
+    write(
+        &root,
+        "loose/Main.tz",
+        "let xs = [10, 20, 30, 40]\nlet sub = ref xs[1..2]\nsub.length\n",
+    );
+
+    let chk = tsuzuri(&["check", "loose", "--json"], &root, &cache);
+    assert!(
+        chk.status.success(),
+        "{}",
+        String::from_utf8_lossy(&chk.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&chk.stderr);
+    assert!(stderr.contains("\"code\":\"W1013\""), "{stderr}");
+    assert!(
+        stderr.contains("\"kind\":\"bare_slice_range_meaning_changed\""),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("\"fixes\""), "{stderr}");
+
+    let run = tsuzuri(&["run", "loose"], &root, &cache);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "2");
+    assert!(String::from_utf8_lossy(&run.stderr).contains("warning[W1013]"));
+
+    let script = tsuzuri(&["script", "loose/Main.tz"], &root, &cache);
+    assert!(
+        script.status.success(),
+        "{}",
+        String::from_utf8_lossy(&script.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&script.stdout).trim(), "2");
+    assert!(String::from_utf8_lossy(&script.stderr).contains("warning[W1013]"));
+
+    let explicit_flag = tsuzuri(&["check", "loose", "--edition", "2028"], &root, &cache);
+    assert!(explicit_flag.status.success());
+    assert!(
+        explicit_flag.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&explicit_flag.stderr)
+    );
+
+    write(
+        &root,
+        "explicit/Main.tz",
+        "let xs = [10, 20, 30, 40]\n(ref xs[1..=2]).length + (ref xs[1..<2]).length\n",
+    );
+    let explicit_ops = tsuzuri(&["check", "explicit"], &root, &cache);
+    assert!(explicit_ops.status.success());
+    assert!(
+        explicit_ops.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&explicit_ops.stderr)
+    );
+
+    write(
+        &root,
+        "loose/Tsuzuri.toml",
+        "[package]\nname = \"loose\"\nversion = \"0.1.0\"\nedition = \"2028\"\n",
+    );
+    let with_manifest = tsuzuri(&["check", "loose"], &root, &cache);
+    assert!(with_manifest.status.success());
+    assert!(
+        with_manifest.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&with_manifest.stderr)
+    );
+
+    let (mut repl_out, mut repl_err) = (Vec::new(), Vec::new());
+    tsuzuri::repl::run(
+        tsuzuri::repl::ReplOptions::default(),
+        Cursor::new(
+            "let xs = [10, 20, 30, 40]\n(ref xs[1..2]).length\n(ref xs[1..<2]).length\n:quit\n",
+        ),
+        &mut repl_out,
+        &mut repl_err,
+        false,
+    )
+    .unwrap();
+    let repl_stdout = String::from_utf8(repl_out).unwrap();
+    let repl_stderr = String::from_utf8(repl_err).unwrap();
+    assert!(repl_stdout.contains("it: i64 = 2"), "{repl_stdout}");
+    assert!(repl_stdout.contains("it: i64 = 1"), "{repl_stdout}");
+    assert_eq!(
+        repl_stderr.matches("warning[W1013]").count(),
+        1,
+        "{repl_stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

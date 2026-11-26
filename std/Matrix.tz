@@ -79,7 +79,7 @@ def row :: own i64 -> ref Matrix<'a> -> ref ['a]
 fn row index matrix =
     assert (index >= 0 && index < matrix.rows)
     let start = index * matrix.cols
-    ref matrix.data[start .. start + matrix.cols]
+    ref matrix.data[start ..< start + matrix.cols]
 
 /// Borrows all elements in row-major order.
 ///
@@ -199,11 +199,11 @@ fn scale factor matrix =
 private def multiply_rows :: Numeric<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn multiply_rows left right inner cols first out =
     for r in 0i64 ..= (out.length / cols - 1) do
-        let row = ref mut out[r * cols .. r * cols + cols]
-        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        let row = ref mut out[r * cols ..< r * cols + cols]
+        let line = ref left[(first + r) * inner ..< (first + r) * inner + inner]
         for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
-            let source = ref right[k * cols .. k * cols + cols]
+            let source = ref right[k * cols ..< k * cols + cols]
             for j in 0i64 ..= (row.length - 1) do
                 let value = row[j] + a * source[j]
                 Array.write j value row
@@ -212,11 +212,11 @@ fn multiply_rows left right inner cols first out =
 private def fma_rows :: Float<'a> => ref ['a] -> ref ['a] -> own i64 -> own i64 -> own i64 -> ref mut ['a..] -> unit
 fn fma_rows left right inner cols first out =
     for r in 0i64 ..= (out.length / cols - 1) do
-        let row = ref mut out[r * cols .. r * cols + cols]
-        let line = ref left[(first + r) * inner .. (first + r) * inner + inner]
+        let row = ref mut out[r * cols ..< r * cols + cols]
+        let line = ref left[(first + r) * inner ..< (first + r) * inner + inner]
         for k in 0i64 ..= (line.length - 1) do
             let a = line[k]
-            let source = ref right[k * cols .. k * cols + cols]
+            let source = ref right[k * cols ..< k * cols + cols]
             for j in 0i64 ..= (row.length - 1) do
                 let value = Math.fma a source[j] row[j]
                 Array.write j value row

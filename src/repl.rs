@@ -1179,6 +1179,16 @@ impl Repl {
             }
         };
         if accepted {
+            for note in crate::canonical::meaning_changed_notes(
+                &program.noncanonical,
+                crate::syntax::Edition::LATEST,
+            ) {
+                writeln!(
+                    errors,
+                    "{}",
+                    note.render_with_severity("warning", path, text.as_str())
+                )?;
+            }
             self.session = self.session.merged(&input);
         }
         Ok(())

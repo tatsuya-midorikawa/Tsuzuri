@@ -321,7 +321,7 @@ geometry-core = { path = "../geometry-core" }
 |---|---|
 | `edition` を書いたマニフェストのパッケージ | その値 |
 | `edition` のないマニフェストのパッケージ | `2026` |
-| マニフェストのないプロジェクト、単独のファイル、`script`、`repl` | 最新の edition（現在は `2027`） |
+| マニフェストのないプロジェクト、単独のファイル、`script`、`repl` | 最新の edition（現在は `2028`） |
 | 標準ライブラリ | 最新の edition（全 edition で 1 つのコピーを共有する） |
 | `tsuzuri fmt` の入力 | 入力のディレクトリ（ファイルなら親）の `Tsuzuri.toml` の `edition`。上位は探さず、なければ最新の edition |
 

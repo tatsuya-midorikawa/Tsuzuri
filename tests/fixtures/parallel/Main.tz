@@ -14,7 +14,7 @@ fn parallel_subtract count =
 export def parallel_slice :: i64
 fn parallel_slice =
     let values = [1, 2, 3, 4, 5]
-    let mapped = Parallel.map (\value -> value * 2) (ref values[1..4])
+    let mapped = Parallel.map (\value -> value * 2) (ref values[1..<4])
     Array.sum (ref mapped) + values[0]
 
 export def parallel_strings :: own i64 -> i64

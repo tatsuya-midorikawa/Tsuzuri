@@ -707,8 +707,8 @@ def as_slice_mut { r } :: ref mut { r } Mut<'a> { r } -> ref mut { r } ['a..]
 fn as_slice_mut view =
     assert (is_contiguous_mut (ref view))
     let total = volume (ref view.shape)
-    if total == 0 then ref mut view.data[0 .. 0]
-    else ref mut view.data[view.offset .. view.offset + total]
+    if total == 0 then ref mut view.data[0 ..< 0]
+    else ref mut view.data[view.offset ..< view.offset + total]
 
 /// Writes `value` at `index`; traps unless `index` has one entry per axis inside its extent.
 ///

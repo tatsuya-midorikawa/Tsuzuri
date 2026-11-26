@@ -36,7 +36,7 @@ fn checksum measure values =
     for offset in 0i64 ..= 3i64 do
         for length in 0i64 ..= 4097i64 do
             if length <= 70 || (length >= 127 && length <= 129) || (length >= 255 && length <= 257) || length >= 4095 then
-                total = total * 1000003 + measure (ref values[offset..offset + length])
+                total = total * 1000003 + measure (ref values[offset..<offset + length])
     total
 
 /// The minimum (`smallest`) or maximum of the values, or 0 when they are empty.
@@ -178,5 +178,5 @@ fn forms =
     let a = Array.sum (ref values)
     let b = total (ref values)
     let c = f (ref values)
-    let d = Array.sum (ref values[3..997])
+    let d = Array.sum (ref values[3..<997])
     (a as i64) + (b as i64) + (c as i64) + (d as i64)

@@ -62,7 +62,7 @@ fn edition_names_parse_exactly() {
         Edition::SUPPORTED,
         [Edition::E2026, Edition::E2027, Edition::E2028]
     );
-    assert_eq!(Edition::LATEST, Edition::E2027);
+    assert_eq!(Edition::LATEST, Edition::E2028);
     assert!(Edition::SUPPORTED.contains(&Edition::LATEST));
     // A manifest without `edition` keeps meaning what it meant, whatever the latest edition is.
     assert_eq!(Edition::MANIFEST_DEFAULT, Edition::E2026);
@@ -380,16 +380,14 @@ fn noncanonical_kinds_have_edition_ranges() {
 }
 
 #[test]
-fn new_projects_declare_edition_2027() {
+fn new_projects_declare_edition_2028() {
     let root = root("new", &[]);
     let project = root.join("hello-world");
     let (status, _, stderr) = tsuzuri(&["new".as_ref(), project.as_os_str()]);
     assert_eq!(status, Some(0), "{stderr}");
     let manifest = std::fs::read_to_string(project.join("Tsuzuri.toml")).unwrap();
-    assert!(
-        manifest.contains(&format!("edition = \"{}\"\n", Edition::NEW_PROJECT)),
-        "{manifest}"
-    );
+    assert_eq!(Edition::NEW_PROJECT, Edition::E2028);
+    assert!(manifest.contains("edition = \"2028\"\n"), "{manifest}");
     let (status, _, stderr) = tsuzuri(&["check".as_ref(), project.as_os_str()]);
     assert_eq!(status, Some(0), "{stderr}");
     std::fs::remove_dir_all(root).unwrap();

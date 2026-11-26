@@ -56,7 +56,7 @@ fn length_holes n =
     let xs = [1, 2, 3]
     let rs = ref s
     let rx = ref xs
-    let part = ref xs[1..3]
+    let part = ref xs[1..<3]
     let text = $"{s.length}|{xs.length}|{rs.length}|{rx.length}|{part.length}|{n}"
     digest (ref text)
 

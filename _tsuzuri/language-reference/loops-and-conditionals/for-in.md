@@ -123,7 +123,7 @@ total
 > [!NOTE]
 > 素の `..`（`for i in 1 .. 4`）は終端を含む閉区間で、edition 2028 では正準形です（edition 2027 では `E0004`、edition 2026 では受理して `--warn canonical` で `W1007` を出します）。スライスの素の `ref xs[a..b]` も edition 2028 では終端を含む閉区間になり、editions 2026・2027 では半開区間で `W1013` が出ます（どの edition でも同じ半開区間は `ref xs[a..<b]` と書きます）。`<..`・`<..<` は刻みを取らず、組み合わせると `E0002` です。固定長配列 `[T; N]` も直接は反復できず、`E1005`（`a fixed-length array is not enumerable`）になります。添字の範囲で回して要素を読んでください。
 
-```tsuzuri edition=2028 run=10%205
+```tsuzuri run=10%205
 let mut closed = 0
 for i in 1 .. 4 do
     closed = closed + i

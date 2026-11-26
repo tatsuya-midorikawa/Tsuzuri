@@ -212,7 +212,7 @@ fn to_matrix view =
     else
         let mut out = new ['a](count, \_ -> view.data[view.offset])
         for i in 0i64 ..= (view.rows - 1) do
-            let target = ref mut out[i * view.cols .. i * view.cols + view.cols]
+            let target = ref mut out[i * view.cols ..< i * view.cols + view.cols]
             let base = view.offset + i * view.row_stride
             for j in 0i64 ..= (view.cols - 1) do
                 let value = view.data[base + j * view.col_stride]
@@ -317,7 +317,7 @@ def row_mut { r } :: own i64 -> ref mut { r } Mut<'a> { r } -> ref mut { r } ['a
 fn row_mut index view =
     assert (index >= 0 && index < view.rows && view.col_stride == 1)
     let start = view.offset + index * view.row_stride
-    ref mut view.data[start .. start + view.cols]
+    ref mut view.data[start ..< start + view.cols]
 
 /// A writable sub-window; the original cannot be used while it lives.
 ///

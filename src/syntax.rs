@@ -33,13 +33,13 @@ impl Edition {
     pub const E2028: Self = Self(2028);
     /// What CLI projects without a manifest and the embedded standard library are read with.
     /// Rust's source-only compatibility APIs retain E2026; explicit inputs choose their edition.
-    pub const LATEST: Self = Self::E2027;
+    pub const LATEST: Self = Self::E2028;
     /// What a manifest without `edition` means. It never changes, or a compiler update would
     /// give the manifests that already exist new reserved words.
     pub const MANIFEST_DEFAULT: Self = Self::E2026;
     pub const SUPPORTED: &'static [Self] = &[Self::E2026, Self::E2027, Self::E2028];
-    /// What `tsuzuri new` writes into a new manifest (A22).
-    pub const NEW_PROJECT: Self = Self::E2027;
+    /// What `tsuzuri new` writes into a new manifest (NC17 Phase 3).
+    pub const NEW_PROJECT: Self = Self::E2028;
 
     pub fn borrows_parameters(self) -> bool {
         self >= Self::E2027

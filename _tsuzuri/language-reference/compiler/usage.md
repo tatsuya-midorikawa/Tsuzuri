@@ -206,14 +206,14 @@ Created demo/llms.txt
 
 `AGENTS.md` は、プロジェクトで作業する AI エージェントへの指示（まず `tsuzuri guide` を読む、編集のたびに `tsuzuri check . --json`、守る規則、よくある誤り）で、`llms.txt` は <https://llmstxt.org> の形の索引です。どちらも英語で、プロジェクトの名前・名前空間・edition・コンパイラの版が入ります。`--no-agent-files` を付けると、この 2 つを作らず、出力は最初の 3 行だけです。
 
-<!-- rule: EDN-005 -->
-`Tsuzuri.toml` は名前、版、言語版（`edition`。既定は 2027 で、`--edition 2026` で選べます）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
+<!-- rule: EDN-012 -->
+`Tsuzuri.toml` は名前、版、言語版（`edition`。既定は 2028 で、`--edition 2026|2027` で選べます）、名前空間を持ちます。`--namespace` を省略すると、フォルダー名から名前空間を導きます。導けない名前のときは、自分で渡してください。
 
 ```toml
 [package]
 name = "demo"
 version = "0.1.0"
-edition = "2027"
+edition = "2028"
 namespace = "Acme::Demo"
 ```
 

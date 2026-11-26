@@ -3,4 +3,4 @@
 // rule: EDN-003
 // cli: check $DIR --json
 // expect: exit 1
-// expect: stderr-has "\"code\":\"E0002\",\"message\":\"unsupported edition '2030'; supported editions: 2026, 2027\""
+// expect: stderr-has "\"code\":\"E0002\",\"message\":\"unsupported edition '2030'; supported editions: 2026, 2027, 2028\""

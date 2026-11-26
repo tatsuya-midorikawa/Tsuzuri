@@ -4306,6 +4306,20 @@ fn cli(
     } else {
         Vec::new()
     };
+    let meaning_changed = if matches!(
+        arguments.action,
+        Action::Check | Action::Build | Action::Run | Action::Test
+    ) && !arguments.test_doc
+        && project.manifests.is_empty()
+        && arguments.edition.is_none()
+    {
+        tsuzuri::canonical::meaning_changed_notes(
+            &module.noncanonical,
+            tsuzuri::syntax::Edition::LATEST,
+        )
+    } else {
+        Vec::new()
+    };
     let untrusted = if arguments.warn_untrusted_extern {
         match project.untrusted_extern_warnings(&module) {
             Ok(warnings) => warnings,
@@ -4318,11 +4332,16 @@ fn cli(
     } else {
         Vec::new()
     };
+    let mut all_warnings: Vec<_> = module
+        .warnings
+        .iter()
+        .cloned()
+        .chain(meaning_changed)
+        .collect();
+    all_warnings.sort_by_key(|warning| (warning.span.source, warning.span.start));
     let warnings = tsuzuri::diagnostic::DiagnosticSet::from_diagnostics(
-        module
-            .warnings
-            .iter()
-            .cloned()
+        all_warnings
+            .into_iter()
             .chain(copies)
             .chain(canonical)
             .chain(untrusted),

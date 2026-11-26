@@ -99,7 +99,7 @@ fn mask_storage =
 export def simd_load :: own i64 -> i64
 fn simd_load index =
     let data = [1i32, 2i32, 3i32, 4i32, 5i32, 6i32, 7i32, 8i32]
-    let vector: i32x4 = Simd.load (ref data[0..8]) index
+    let vector: i32x4 = Simd.load (ref data[0..<8]) index
     (Simd.sum_lanes vector) as i64
 
 export def simd_extract_trap :: own i64 -> i64

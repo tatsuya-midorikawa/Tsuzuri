@@ -54,7 +54,7 @@ def table_of :: own unit -> ref [i64]
 fn table_of _ = ref Primes
 
 def window_of :: own i64 -> ref [i64]
-fn window_of count = ref Squares[0..count]
+fn window_of count = ref Squares[0..<count]
 
 def view_of :: own unit -> View
 fn view_of _ = View { data: ref Primes }
@@ -74,7 +74,7 @@ export def squares_at :: own i64 -> i64
 fn squares_at index = Squares[index]
 
 export def squares_sum :: own i64 -> i64
-fn squares_sum count = sum_of (ref Squares[0..count])
+fn squares_sum count = sum_of (ref Squares[0..<count])
 
 export def squares_window :: own i64 -> i64
 fn squares_window count = sum_of (window_of count)
