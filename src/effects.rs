@@ -550,8 +550,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineWithLockedThread => {
             facts(Some(Effect::Task), false, false, false, true, false, None)
         }
-        // W22: `FnPtr.of` and W20: `ZString.literal` produce static addresses without side effects or allocation.
-        FnPtrOf | ZStringLiteral => facts(None, false, false, false, false, false, None),
+        // W22: `FnPtr.of`, W20: `ZString.literal`, and M06: `ZUtf8String.literal` produce static addresses without side effects or allocation.
+        FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => {
+            facts(None, false, false, false, false, false, None)
+        }
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
         AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
         AnchorRead | AnchorUpdate => {
@@ -1322,8 +1324,16 @@ impl<'s, 'a> Scan<'s, 'a> {
     fn host_call_here(&mut self, callee: usize, span: Span) {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind {
-            if import.view.is_some() {
-                self.source(Effect::Trap, span, "extern-view-address");
+            if import.lowers_inline() {
+                self.source(
+                    Effect::Trap,
+                    span,
+                    if import.data.is_some() {
+                        "data-symbol"
+                    } else {
+                        "extern-view-address"
+                    },
+                );
             }
             if import.callbacks {
                 if takes_string(function) {
@@ -1822,10 +1832,10 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::HostCall(import, _) => {
-                if import.view.is_some() {
-                    // W24: an extern view does not allocate, deep-copy, or diverge, so it satisfies
-                    // `@no_alloc`, `@no_copy`, and `@terminates` automatically, while remaining an
-                    // `extern` and `trap` source (null/alignment guard) for `pure` and `@no_trap`.
+                if import.lowers_inline() {
+                    // W24 / M06: an extern view or data symbol does not allocate, deep-copy, or diverge,
+                    // so it satisfies `@no_alloc`, `@no_copy`, and `@terminates` automatically, while
+                    // remaining an `extern` and `trap` source for `pure` and `@no_trap`.
                     let compiler_vouched = self.state.options.trusted.is_some_and(|bit| {
                         let guaranteed = crate::syntax::trusted_property_bit("no_alloc")
                             .unwrap_or(0)
@@ -1834,9 +1844,25 @@ impl<'s, 'a> Scan<'s, 'a> {
                         bit & guaranteed != 0
                     });
                     if !compiler_vouched {
-                        self.source(Effect::Extern, span, "extern-view");
+                        self.source(
+                            Effect::Extern,
+                            span,
+                            if import.data.is_some() {
+                                "data-symbol"
+                            } else {
+                                "extern-view"
+                            },
+                        );
                     }
-                    self.source(Effect::Trap, span, "extern-view-address");
+                    self.source(
+                        Effect::Trap,
+                        span,
+                        if import.data.is_some() {
+                            "data-symbol"
+                        } else {
+                            "extern-view-address"
+                        },
+                    );
                     return false;
                 }
                 // E15: a person vouched for this property of the extern function.
@@ -3440,7 +3466,7 @@ pub fn validate(
 /// which forbid `extern`: each needs its own summary (E15, D14, W24).
 pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
     let has_view = module.functions.iter().any(|function| {
-        matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.view.is_some())
+        matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.lowers_inline())
     });
     EffectKind::ALL
         .into_iter()
@@ -3839,10 +3865,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 376);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
+        assert_eq!(Builtin::ALL.len(), 377);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 170);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 206);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 207);
     }
 
     #[test]

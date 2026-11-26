@@ -168,6 +168,7 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::AnchorCreate
         | Builtin::AnchorRelease
         | Builtin::ZStringLiteral
+        | Builtin::ZUtf8StringLiteral
         | Builtin::ListCons
         | Builtin::ListTail
         | Builtin::ArrayConcat

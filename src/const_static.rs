@@ -290,6 +290,52 @@ pub(in super::super) fn intern_zstring(
     Ok(id)
 }
 
+/// M06 Phase 2: appends a synthetic `ZUtf8String.literal` static entry (deduplicated by `bytes_with_nul`)
+/// while enforcing the module-wide `MAX_STATIC_BYTES` ceiling.
+pub(in super::super) fn intern_zutf8string(
+    statics: &mut BTreeMap<usize, StaticData>,
+    dedup: &mut BTreeMap<Vec<u8>, usize>,
+    next_id: &mut usize,
+    total_bytes: &mut usize,
+    zutf8string_record_id: usize,
+    bytes_with_nul: Vec<u8>,
+    span: Span,
+) -> Result<usize, Diagnostic> {
+    if let Some(&id) = dedup.get(&bytes_with_nul) {
+        return Ok(id);
+    }
+    let added = bytes_with_nul.len().saturating_add(16);
+    *total_bytes = total_bytes.saturating_add(added);
+    if *total_bytes > MAX_STATIC_BYTES {
+        return Err(too_big(span));
+    }
+    let id = *next_id;
+    *next_id += 1;
+    let u8_ty = Type::Integer(8, false);
+    let arr_expr = TypedExpr {
+        kind: TypedExprKind::Array(
+            bytes_with_nul
+                .iter()
+                .map(|&byte| TypedExpr {
+                    kind: TypedExprKind::Int(u128::from(byte)),
+                    ty: u8_ty.clone(),
+                    span,
+                })
+                .collect(),
+        ),
+        ty: Type::Array(Box::new(u8_ty)),
+        span,
+    };
+    let zutf8_expr = TypedExpr {
+        kind: TypedExprKind::Record(vec![(0, arr_expr)]),
+        ty: Type::Record(zutf8string_record_id, Box::default()),
+        span,
+    };
+    statics.insert(id, StaticData { value: zutf8_expr });
+    dedup.insert(bytes_with_nul, id);
+    Ok(id)
+}
+
 pub(in super::super) fn total_static_bytes(
     statics: &BTreeMap<usize, StaticData>,
     types: &TypeContext<'_>,

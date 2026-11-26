@@ -86,6 +86,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Vec", 68),
     ("WaitGroup", 1),
     ("ZString", 2),
+    ("ZUtf8String", 2),
 ];
 
 /// Public functions that need no example, with the reason.

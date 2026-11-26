@@ -450,7 +450,7 @@ def reveal :: i64 -> i64 = \n -> (token n).value
 
 `extern def now :: unit -> i64` のように記述することで、関数本体を持たない同期的な外部ホスト関数を宣言できます。`.tz` および `.tc` 内に配置可能であり、モジュール内限定の `private extern def` とすることも可能です。
 同名の通常 `def`／`fn` との重複は `E1001`、`export` との併用や不正な C ABI 型の使用は `E1008`、多相型（型引数を含む型）の指定は `E1015` エラーとなります。型クラス制約、名前付き region、可変参照（`ref mut`）、List などを引数や戻り値に指定することはできず、関数型の引数は後述するコールバック関数に限定されます。
-引数として許容される型は、スカラー型、`unit`、extern ハンドル型（値または共有借用）、ネイティブ環境での `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`H` は extern ハンドル、`R` はスカラーレコード。`None` は C の `NULL`）、共有バッファ／文字列（`ref [T]`、`string`、`utf8string`）、スカラーレコード型（値または共有借用）、およびコールバック関数です。戻り値として許容される型は、スカラー型、`unit`、ハンドル型、ネイティブ環境での `Maybe<H>`（`NULL` は `None`）、所有権付きバッファ／文字列、およびスカラーレコード型です（それ以外の `std::Maybe` の形は `E1008` の `abi_nullable_payload`、WebAssembly で到達した場合は `E1008` の `abi_native_only` となります）。
+引数として許容される型は、スカラー型、`unit`、extern ハンドル型（値または共有借用）、ネイティブ環境での `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`H` は extern ハンドル、`R` はスカラーレコード。`None` は C の `NULL`）、ネイティブ環境での NUL 終端文字列参照 `ref ZString`・`Maybe<ref ZString>`・`ref ZUtf8String`・`Maybe<ref ZUtf8String>`、共有バッファ／文字列（`ref [T]`、`string`、`utf8string`）、スカラーレコード型および `@c_layout` レコード型（値または共有借用）、ならびにコールバック関数と `FnPtr<F>` です。戻り値として許容される型は、スカラー型、`unit`、ハンドル型、ネイティブ環境での `Maybe<H>`（`NULL` は `None`）および `Maybe<ZUtf8String>`（`const char *` を写して UTF-8 検査を行い、不正な UTF-8 は `Encoding` トラップ）、所有権付きバッファ／文字列、および双方向スカラー／`@c_layout` レコード型です（それ以外の `std::Maybe` の形は `E1008` の `abi_nullable_payload`、WebAssembly で到達した場合は `E1008` の `abi_native_only` となります）。
 `unit` 引数は C 言語の ABI からは省略され、`unit` 戻り値は C の `void` となります。`bool` および狭幅整数は 32-bit 幅へと正規化されて受け渡されます。
 
 ネイティブ環境におけるシンボル名は `tsuzuri_host_<module>_<name>` となり、モジュール名に含まれるドットはアンダースコアへ変換されます（変換後のシンボル名が衝突した場合は `E1001`）。
@@ -473,6 +473,7 @@ WASM 環境では、モジュール名が `tsuzuri`、関数名が `<Module>.<na
 <!-- rule: ABI-012 --><!-- rule: ABI-013 -->
 同一のシンボル名を複数の extern 宣言（異なるモジュール間を含む）で別の Tsuzuri 名として宣言できます。ネイティブ環境では、WASM インポートモジュール名、下げた C の引数の個数、およびすべての引数位置と戻り値の C ABI 分類（`I32`: 8〜32-bit 整数と `bool`、`Word64`: `i64`・`i64u`・ポインタ（ハンドル・`ref` レコード・バッファ先頭・コールバック・out 結果）、`F32`: `f32`、`F64`: `f64`、`Void`: `unit` および out 結果）が一致すれば受理され、どれかが異なる場合は最初の宣言位置を伴う `E1008`（`conflicting_extern_declaration`）となります。LLVM IR の外部 `declare` 命令はシンボルごとに 1 行へ正規化され（`ptr` と `i64` が混在する位置は `i64` に統一され、呼び出し側で `ptrtoint`／`inttoptr` が挿入されます。単一宣言や同一 LLVM 型の宣言群では変換は生じません）、WebAssembly ターゲット（および `--emit bindings-js`）では到達する宣言間で Tsuzuri の関数型自体が異なる場合に `E1008` となります。
 明示的なリンク名を指定した extern 関数のプロトタイプ宣言は、ホスト環境側（システムヘッダーなど）で提供されることを前提としているため、コンパイラが生成する C ヘッダーファイルには出力されません。
+また、macOS および Linux ターゲットでは、単一のリンク名文字列に続けて `extern "sym" view def f :: unit -> T`（大域データシンボルのその時点の値を読む。`T` は C スカラー、`extern type copy H`、`Maybe<H>`、またはビューレコード）および `extern "sym" address def f :: unit -> H`（シンボルのアドレス自体を `extern type copy H` として得る。`address` はリンク名直後のみの文脈キーワード）を宣言できます（M06）。これらは `()` を与えた直接呼び出しでのみ使用でき、シンボルごとに 1 行の `@sym = external global [0 x i8]` へ下がります（同じシンボルの値読み取り宣言は `T` が一致すれば共存でき、値読み取りとアドレス取得も共存できますが、関数の `extern` や生成 `declare` とは `conflicting_extern_declaration` で衝突します。Windows で到達した場合は `E1008` `data_symbol_target`、WASM では `abi_native_only` となります）。アドレスを受け取る通常の `extern view def`（`i64 -> R` / `i64 -> ref R -> unit`）にリンク名を書いた場合は `E0002`（`extern_view_link_name`）となります。
 
 #### 不透明ハンドル
 

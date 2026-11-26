@@ -46,7 +46,7 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
-        | FnPtrOf | ZStringLiteral => None,
+        | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }

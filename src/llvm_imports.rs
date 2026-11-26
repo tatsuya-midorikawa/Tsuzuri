@@ -8,8 +8,8 @@ pub(super) fn header(module: &CheckedModule) -> String {
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
-        // An explicit symbol belongs to the host; an extern view links no symbol.
-        if import.explicit || import.view.is_some() {
+        // An explicit symbol belongs to the host; an extern view or data symbol links no generated prototype.
+        if import.explicit || import.lowers_inline() {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
@@ -57,6 +57,46 @@ pub(super) fn extern_declare(
 }
 
 impl FunctionEmitter<'_, '_> {
+    /// M06: lowers `extern "sym" view def` (`load` from `@sym`) and `extern "sym" address def` (`@sym`).
+    pub(super) fn data_symbol(
+        &mut self,
+        data: &crate::check::DataSymbol,
+        arguments: &[TypedExpr],
+        result: &Type,
+        decl_span: Span,
+    ) -> String {
+        if let Some(arg) = arguments.first() {
+            let _ = self.expression(arg);
+        }
+        self.globals
+            .data_symbols
+            .entry(data.symbol.clone())
+            .or_insert(decl_span);
+        let global = format!("@{}", data.symbol);
+        match data.access {
+            crate::syntax::DataAccess::Address => global,
+            crate::syntax::DataAccess::Read => match result {
+                Type::Integer(bits, _) => {
+                    let align = usize::from(*bits) / 8;
+                    self.value(format!("load i{bits}, ptr {global}, align {align}"))
+                }
+                Type::Binary(32) => self.value(format!("load float, ptr {global}, align 4")),
+                Type::Binary(64) => self.value(format!("load double, ptr {global}, align 8")),
+                Type::Handle(..) => {
+                    let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                    let valid = self.value(format!("icmp ne ptr {raw}, null"));
+                    self.guard(&valid, TrapKind::NullHandle);
+                    raw
+                }
+                Type::Record(..) => self.read_host_record(result, &global),
+                _ => {
+                    let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                    self.nullable_from_c(result, &raw)
+                }
+            },
+        }
+    }
+
     /// W24: lowers `extern view def` inline at the call site: validates non-null and C alignment
     /// via `host_pointer` (trapping at the call site with `BoundsCheck`), then reads or writes
     /// the record field-by-field using the C struct layout.
@@ -169,6 +209,7 @@ impl FunctionEmitter<'_, '_> {
                     nullable,
                     crate::abi::Nullable::BorrowedRecord(_)
                         | crate::abi::Nullable::BorrowedZString(_)
+                        | crate::abi::Nullable::BorrowedZUtf8String(_)
                 ) {
                     deferred_nullable_records.push((values.len(), argument.ty.clone(), value));
                     values.push(String::new());
@@ -179,7 +220,7 @@ impl FunctionEmitter<'_, '_> {
                 continue;
             }
             if let Type::Reference(inner, false) = &argument.ty
-                && crate::abi::zstring(inner, &self.module.types())
+                && crate::abi::any_zstring(inner, &self.module.types())
             {
                 let rec = self.value(format!("load {}, ptr {value}", self.ty(inner)));
                 let arr = self.value(format!("extractvalue {} {rec}, 0", self.ty(inner)));

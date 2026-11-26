@@ -126,7 +126,8 @@ Tensor      Slice       Atomic      Mutex       Channel     Alloc
 Text        RegexText   Domain      Monoid      Monoids     Routine
 DataChannel SendOnly    ReceiveOnly Timer       Ticker      WaitGroup
 Once        OnceValue   RwMutex     Cond        Semaphore   SyncMap
-Context     ErrGroup    FnPtr       Anchor      ZString     Complex
+Context     ErrGroup    FnPtr       Anchor      ZString     ZUtf8String
+Complex
 ```
 
 `Int`、`Simd`、`FixedArray`、`Dyn`、`Rc`、`Arc`、`Routine`、`FnPtr` は、対応するソースが無くても予約です（組み込みの関数と型だけを持ちます）。次の位置に使うと `E1011` です。

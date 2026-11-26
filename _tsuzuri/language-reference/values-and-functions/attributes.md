@@ -286,7 +286,7 @@ def main :: unit -> i32 = \() -> distance 3 7
 
 ### 書ける位置とエラー
 
-- `extern` の関数（`extern "sym" def`・`extern "mod" "sym" def`・`extern def`）と `extern type` の直前だけです。`private` より前に書きます。`extern type` には性質を付けられません。
+- `extern` の関数（`extern "sym" def`・`extern "mod" "sym" def`・`extern def`）、`extern view def`、C データシンボル（`extern "sym" view def`・`address def`）、および `extern type` の直前だけです。`private` より前に書きます。`extern type`・`extern view def`・データシンボルには性質を付けられません（`trusted_type_property`・`trusted_view_property`）。
 - 誤りはすべて `E1037` です: `extern` でない宣言への `@trusted`（`trusted_wrong_target`）、未知の性質（`trusted_unknown_property`）、同じ性質を 2 回（`trusted_duplicate_property`）、`extern type` の性質（`trusted_type_property`）、1 つの宣言に `@trusted` を 2 回（`trusted_repeated`）。
 - `trusted` と性質の名前は予約語ではありません。`@trusted` の直後の同じ行だけで性質として読みます。
 - `@trusted` は権限を変えません。`extern` の呼び出しは、印があってもなくても権限 `ffi` を使います（[パッケージ](../organizing-tsuzuri/packages.md#権限capabilities)）。`tsuzuri api-diff` は `@trusted` を API の変更として扱いません。
@@ -307,7 +307,7 @@ extern "GetWindowTextW" def get_window_text :: Hwnd -> ref mut [i16u..] -> i32
 - 位置は Tsuzuri の `extern` シグネチャの 1 始まりの番号で、対象がバッファ引数でないとき、範囲外のとき、同じ位置に 2 回付けたときは `E1008` です。
 - `i32`（上限 `2^31 - 1`）や `i32u`（上限 `2^32 - 1`）を指定したバッファの長さが上限を超えた場合は、呼び出し前に境界検査でトラップするため、`@no_trap` の検査では `trap` の源になります。
 - `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
-- WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` 以外の宣言に付けると `E0002`（`misplaced_count_attribute`）になります。
+- WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` の関数以外の宣言（`extern type`・`extern view`・データシンボルなど）に付けると `E0002`（`misplaced_count_attribute`）になります。
 
 ## @link (extern のシステムライブラリ)
 

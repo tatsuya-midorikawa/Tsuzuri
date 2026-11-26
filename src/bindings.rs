@@ -103,7 +103,7 @@ fn reached_imports(module: &CheckedModule) -> Vec<(&HostImport, &CheckedFunction
         .filter_map(|id| {
             let function = &module.functions[id];
             match &function.body.kind {
-                TypedExprKind::HostCall(import, _) if import.view.is_none() => {
+                TypedExprKind::HostCall(import, _) if !import.lowers_inline() => {
                     Some((import.as_ref(), function))
                 }
                 _ => None,
@@ -181,7 +181,7 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
         match viewed.as_ref() {
             Type::Reference(inner, _) => visit(inner, module, records),
             ty @ Type::Record(id, arguments)
-                if !crate::abi::zstring(ty, &module.types())
+                if !crate::abi::any_zstring(ty, &module.types())
                     && records
                         .insert(record_name(ty, module), ty.clone())
                         .is_none() =>

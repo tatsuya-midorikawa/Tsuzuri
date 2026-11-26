@@ -393,6 +393,7 @@ pub struct ExternUse {
     pub name: String,
     pub symbol: String,
     pub view: Option<crate::syntax::ViewDirection>,
+    pub data: Option<crate::syntax::DataAccess>,
     pub package: Option<PackageId>,
     /// The name of the declaration.
     pub span: Span,
@@ -917,8 +918,12 @@ pub fn analyze_with_limits(
         extern_uses.push(ExternUse {
             function: id,
             name: function.name.clone(),
-            symbol: import.native_symbol.clone(),
+            symbol: import
+                .data
+                .as_ref()
+                .map_or_else(|| import.native_symbol.clone(), |data| data.symbol.clone()),
             view: import.view,
+            data: import.data.as_ref().map(|data| data.access),
             package: source_of(id).and_then(|source| source.package.clone()),
             span: function.span,
             trusted: function.origin.trusted,
@@ -1150,6 +1155,7 @@ pub struct ExternReport {
     pub name: String,
     pub symbol: String,
     pub view: Option<crate::syntax::ViewDirection>,
+    pub data: Option<crate::syntax::DataAccess>,
     pub path: String,
     pub line: usize,
     pub column: usize,
@@ -1296,6 +1302,7 @@ impl Report {
                     name: extern_use.name.clone(),
                     symbol: extern_use.symbol.clone(),
                     view: extern_use.view,
+                    data: extern_use.data,
                     path,
                     line,
                     column,
@@ -1432,9 +1439,12 @@ impl Report {
                             .collect::<Vec<_>>()
                             .join(" "),
                     };
-                    let target = match extern_report.view {
-                        Some(dir) => format!("view {}", dir.as_str()),
-                        None => format!("\"{}\"", extern_report.symbol),
+                    let target = match (extern_report.data, extern_report.view) {
+                        (Some(access), _) => {
+                            format!("\"{}\" data {}", extern_report.symbol, access.as_str())
+                        }
+                        (None, Some(dir)) => format!("view {}", dir.as_str()),
+                        (None, None) => format!("\"{}\"", extern_report.symbol),
                     };
                     let link_suffix = match &extern_report.link {
                         Some(lib) => format!("  link {lib}"),
@@ -1547,9 +1557,14 @@ impl Report {
             ));
         }
         for extern_report in &self.externs {
-            let symbol_and_view = match extern_report.view {
-                Some(dir) => format!("null,\"view\":{}", json_string(dir.as_str())),
-                None => json_string(&extern_report.symbol),
+            let symbol_and_view = match (extern_report.data, extern_report.view) {
+                (Some(access), _) => format!(
+                    "{},\"data\":{}",
+                    json_string(&extern_report.symbol),
+                    json_string(access.as_str())
+                ),
+                (None, Some(dir)) => format!("null,\"view\":{}", json_string(dir.as_str())),
+                (None, None) => json_string(&extern_report.symbol),
             };
             let link_json = match &extern_report.link {
                 Some(lib) => format!(",\"link\":{}", json_string(lib)),

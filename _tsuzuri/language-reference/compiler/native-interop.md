@@ -284,9 +284,10 @@ Win32 GDI の `HDC`、OpenGL のコンテキスト、COM の STA ポインタの
 - **可変スライスバッファ**: `ref mut [T]` と `ref mut [T..]`（要素型 `T` は `i64`・`f64`・`ubyte`（`i8u`）・`i16u`・`i32`・`i32u`）は、排他借用によって一意性が保証されるためゼロコピーで要素ポインタと長さを渡します。長さ 0 のスライスは書き込み不可の `NULL` ではなく有効なダミーアドレスを渡します。
 - **`@count(pos, kind)`**: 1 始まりの引数番号 `pos` のバッファ引数（スライスバッファおよび `ref string`・`ref utf8string`）に対し、直後に渡す長さ引数の型を `i32`・`i32u`・`i64`（既定）・`i64u` から選ぶか、`none` で長さ引数を省略できます（[属性](../values-and-functions/attributes.md#count-extern-バッファの長さ引数)）。
 
-### NUL 終端文字列（ZString）
+### NUL 終端文字列（ZString・ZUtf8String）
 
-Win32 の `*W` 系 API のように NUL 終端 UTF-16 ポインタ（`const uint16_t *` / `LPCWSTR`）を取るネイティブ `extern` には、[ZString](../built-in-types-and-modules/zstring.md) の共有借用 `ref ZString` または省略可能な `Maybe<ref ZString>`（`None` が `NULL`）を渡せます。文字列リテラルからは `ZString.literal "..."` で静的データからヒープ確保なしに作れます。
+- **UTF-16（`LPCWSTR`）**: Win32 の `*W` 系 API のように NUL 終端 UTF-16 ポインタ（`const uint16_t *` / `LPCWSTR`）を取るネイティブ `extern` には、[ZString](../built-in-types-and-modules/zstring.md) の共有借用 `ref ZString` または省略可能な `Maybe<ref ZString>`（`None` が `NULL`）を渡せます。文字列リテラルからは `ZString.literal "..."` で静的データからヒープ確保なしに作れます。
+- **UTF-8（`const char *`）**: POSIX や Objective-C ランタイムの C API のように NUL 終端 UTF-8 ポインタ（`const char *`）を取るネイティブ `extern` には、[ZUtf8String](../built-in-types-and-modules/zutf8string.md) の共有借用 `ref ZUtf8String` または `Maybe<ref ZUtf8String>`（`None` が `NULL`）を渡せます（`ZUtf8String.literal "..."` は静的データ）。また、`const char *` を返すネイティブ `extern` の戻り値は `Maybe<ZUtf8String>` で受け取れます（`NULL` は `Maybe.None`、非 `NULL` は最初の NUL までを写し、不正な UTF-8 なら `Encoding` でトラップします）。
 
 #### NULL を渡す・受ける（Maybe）
 
@@ -315,7 +316,7 @@ extern "GetModuleHandleW" def module_handle :: Maybe<ModuleName> -> Maybe<Module
 C や Win32 API の構造体とバイト単位で一致する配置が必要なレコードには、宣言の前に `@c_layout` または `@c_layout(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`）を付けます。
 
 - フィールドは宣言順に C の標準アライメント（`pack = N` があるときは各葉のアライメントを `N` 以下に丸めた値）と明示パディングで配置され、`#pragma pack(push, N)` と `_Static_assert`（サイズ・各フィールドオフセット検証）を含む C/C++ ヘッダーが生成されます。
-- 許可されるフィールド型は固定幅の数値、固定長配列 `[T; N]`、入れ子の `@c_layout` レコード、`extern type copy` ハンドル、`Maybe<Handle>`、`FnPtr<F>`、`ref ZString`、`Maybe<ref ZString>`（入力専用）です。
+- 許可されるフィールド型は固定幅の数値、固定長配列 `[T; N]`、入れ子の `@c_layout` レコード、`extern type copy` ハンドル、`Maybe<Handle>`、`FnPtr<F>`、`ref ZString`、`Maybe<ref ZString>`、`ref ZUtf8String`、`Maybe<ref ZUtf8String>`（文字列参照と `FnPtr` は入力専用）です。
 - ネイティブと WASM（ポインタ幅フィールドを含まないもの）の双方、および C#/Python/C++/JS バインディングに対応します。
 
 ### ホストメモリの読み書きビュー（`extern view`）
@@ -332,9 +333,31 @@ extern view def read_point :: i64 -> Point
 extern view def write_point :: i64 -> ref Point -> unit
 ```
 
-- 読み取りビューは `i64 -> R`、書き込みビューは `i64 -> ref R -> unit` の 2 形のみ（`R` は `@c_layout` レコードまたは通常のレコード）で、直接全引数適用でのみ呼べます。
+- 読み取りビューは `i64 -> R`、書き込みビューは `i64 -> ref R -> unit` の 2 形のみ（`R` は `@c_layout` レコードまたは通常のレコード）で、直接全引数適用でのみ呼べます。アドレスを受け取るこれらの形にはリンク名文字列は書けません（`E0002` `extern_view_link_name`）。
 - 呼び出し位置にインライン展開され、NULL ポインタおよび型の要求アライメント違反は実行時トラップ（`BoundsCheck`）で即座に停止します。書き込み時はパディングバイトを上書きしません。
 - 効果解析では `@no_alloc`・`@no_copy`・`@terminates` が自動的に満たされ、`pure` と `@no_trap` は拒否されます。`tsuzuri audit` は外部シンボルではなく `-> view read` / `-> view write` として報告します。
+
+### C の大域データシンボル（`view def`・`address def`）
+
+macOS や Linux の C ライブラリが公開する大域変数（`NSDefaultRunLoopMode`・`kCFAllocatorDefault`・`_dispatch_main_q` など）は、C シンボル名付きの `view def`（値を読む形）または `address def`（シンボルのアドレス自体を取る形）で宣言できます。
+
+```tsuzuri
+extern type copy CFString
+extern type copy CFAllocator
+extern type copy Queue
+
+@trusted
+extern "NSDefaultRunLoopMode" view def default_run_loop_mode :: unit -> CFString
+@trusted
+extern "kCFAllocatorDefault" view def allocator_default :: unit -> Maybe<CFAllocator>
+@trusted
+extern "_dispatch_main_q" address def main_queue :: unit -> Queue
+```
+
+- **値を読む形（`extern "sym" view def f :: unit -> T`）**: 呼ぶたびに `@sym` からその時点の値 `T` を読みます（書き換えられる変数のため定数畳み込みはしません）。`T` には固定幅の数値（`i8`〜`i64`・`i8u`〜`i64u`・`f32`・`f64`。8/16-bit も変数の幅のまま読みます）、`extern type copy H`（値が `NULL` なら `NullHandle` トラップ）、`Maybe<H>`（`H` は `copy`、`NULL` は `Maybe.None`）、および `extern view` と同じビューレコードを書けます（`bool` や所有ハンドルは `E1008` `data_symbol_signature`）。
+- **アドレスを取る形（`extern "sym" address def f :: unit -> H`）**: シンボル自身のアドレスを `extern type copy H` として返します（`address` はリンク名の直後だけの文脈キーワードで、通常の識別子名としてもそのまま使えます）。
+- 呼び出しは `()` を与えた直接呼び出しのみです（関数値にはできません）。効果と `@trusted` の扱いは `extern view` と同じで、スレッドローカル（TLS）変数は宣言から見分けられないため対象外です。`tsuzuri audit` は `"sym" data read` / `"sym" data address`（JSON では `"data":"read"` / `"address"`）として報告します。
+- 対応ターゲットは macOS と Linux です。到達した宣言は Windows では `E1008`（`data_symbol_target`）、WebAssembly では `E1008`（`abi_native_only`）になります（未到達の宣言は共通パッケージに置けます）。
 
 ### 信頼の印（@trusted）
 

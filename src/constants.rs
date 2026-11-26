@@ -9,7 +9,7 @@ mod machine;
 mod rules;
 #[path = "const_static.rs"]
 mod statics;
-pub(super) use statics::{intern_zstring, total_static_bytes};
+pub(super) use statics::{intern_zstring, intern_zutf8string, total_static_bytes};
 
 use machine::{Machine, Value};
 pub(super) use rules::check_signature;

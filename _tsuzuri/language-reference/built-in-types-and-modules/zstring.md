@@ -75,4 +75,5 @@ def set_default_title :: Hwnd -> i32 = \hwnd ->
 ## 関連項目
 
 - [String](string.md)
+- [ZUtf8String](zutf8string.md)
 - [ネイティブ連携 (C ABI)](../compiler/native-interop.md)

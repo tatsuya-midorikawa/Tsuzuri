@@ -21,7 +21,7 @@
 | [Array](./array.md)、[List](./list.md)、[Vec](./vec.md) | 配列、リスト、`Vec` | `Array.sub 1 2 xs`、`Vec.add 1 v` |
 | [Map](./map.md)、[Set](./set.md)、[HashMap](./hashmap.md)、[HashSet](./hashset.md) | マップ、集合 | `Map.insert key value map`、`Set.contains key set` |
 | [Arena](./arena.md) | アリーナ | `Arena.insert value arena`、`Arena.get handle arena` |
-| [String](./string.md)、[ZString](./zstring.md)、[Utf8String](./utf8string.md)、[Text](./text.md)、[Unicode](./unicode.md)、[Regex](./regex.md) | 文字列（`Regex` では調べる文字列で、正規表現は先に取ります） | `String.slice first last text`、`ZString.of text`、`Text.find needle text`、`Regex.find_at re start text` |
+| [String](./string.md)、[ZString](./zstring.md)、[Utf8String](./utf8string.md)、[ZUtf8String](./zutf8string.md)、[Text](./text.md)、[Unicode](./unicode.md)、[Regex](./regex.md) | 文字列（`Regex` では調べる文字列で、正規表現は先に取ります） | `String.slice first last text`、`ZString.of text`、`ZUtf8String.of text`、`Text.find needle text`、`Regex.find_at re start text` |
 | [Anchor](./anchor.md) | スロットのトークン `i64`（`read`・`update`） | `token |> Anchor.read (\s -> s.count)`、`Anchor.update f token` |
 | [Matrix](./matrix.md)、[MatrixView](./matrix-view.md)、[Tensor](./tensor.md)、[Slice](./slice.md) | 行列、窓、テンソルの view・可変ビュー、スライス指定 | `Matrix.get row col m`、`MatrixView.write row col value window`、`Slice.resolve 5 axis` |
 | [Maybe](./maybe.md)、[Result](./result.md)、[IO](./io.md) | `Maybe`、`Result`、`IO` の値 | `Maybe.bind f maybe`、`IO.bind f action` |

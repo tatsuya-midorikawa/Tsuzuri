@@ -210,7 +210,7 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
-        | FnPtrOf | ZStringLiteral => None,
+        | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }
@@ -932,10 +932,15 @@ impl<'a> Scanner<'a> {
             } else {
                 use TypedExprKind as K;
                 match &expression.kind {
-                    K::HostCall(import, _) => Some(Effect::Host(match import.view {
-                        Some(dir) => format!("view {}", dir.as_str()),
-                        None => import.native_symbol.clone(),
-                    })),
+                    K::HostCall(import, _) => {
+                        Some(Effect::Host(if let Some(data) = &import.data {
+                            format!("data {}", data.name)
+                        } else if let Some(dir) = import.view {
+                            format!("view {}", dir.as_str())
+                        } else {
+                            import.native_symbol.clone()
+                        }))
+                    }
                     // Spawning outlives the call, unlike the closed task operations (TZ02).
                     K::RoutineGo(_) => Some(Effect::Builtin(Builtin::RoutineGo, Category::Task)),
                     // A select waits on channels (TZ04), as Channel.recv does.

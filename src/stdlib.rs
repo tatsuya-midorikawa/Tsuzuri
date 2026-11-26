@@ -74,6 +74,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/RegexText.tt", include_str!("../std/RegexText.tt")),
     ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
+    ("std/ZUtf8String.tz", include_str!("../std/ZUtf8String.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
 ];
 
@@ -164,6 +165,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Anchor",
     // W20: NUL-terminated UTF-16 strings for C / Win32 APIs.
     "ZString",
+    // M06: NUL-terminated UTF-8 strings for C / POSIX / Objective-C APIs.
+    "ZUtf8String",
     "Complex",
 ];
 
@@ -230,6 +233,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ErrGroup.ErrGroup"
             | "Anchor.Anchor"
             | "ZString.ZString"
+            | "ZUtf8String.ZUtf8String"
     )
 }
 
@@ -473,6 +477,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "ZString",
         names: &["ZString"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "ZUtf8String",
+        names: &["ZUtf8String"],
         aliases: &[],
         uses: &[],
     },
@@ -980,7 +990,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 78);
+        assert_eq!(RESERVED_MODULES.len(), 79);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

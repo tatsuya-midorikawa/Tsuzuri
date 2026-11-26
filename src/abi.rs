@@ -260,7 +260,7 @@ pub fn host_record(ty: &Type, types: &TypeContext<'_>) -> bool {
 }
 
 /// W21: whether a `@c_layout` record contains any pointer-width field (`Handle`, `Maybe<H>`,
-/// `FnPtr`, `ref ZString`, or `Maybe<ref ZString>`) that is native-only on WASM.
+/// `FnPtr`, `ref ZString`, `ref ZUtf8String`, or `Maybe` of one) that is native-only on WASM.
 pub fn c_layout_has_pointer_field(ty: &Type, types: &TypeContext<'_>) -> bool {
     fn visit(ty: &Type, types: &TypeContext<'_>, depth: usize) -> bool {
         if depth >= crate::syntax::MAX_NESTING {
@@ -277,18 +277,23 @@ pub fn c_layout_has_pointer_field(ty: &Type, types: &TypeContext<'_>) -> bool {
             .iter()
             .any(|field| match field {
                 Type::Handle(..) | Type::FnPtr(_) => true,
-                Type::Reference(inner, false) if zstring(inner, types) => true,
+                Type::Reference(inner, false) if any_zstring(inner, types) => true,
                 Type::Record(..) => visit(field, types, depth + 1),
                 _ => matches!(
                     nullable(field, types),
-                    Some(Nullable::Handle(_) | Nullable::BorrowedZString(_))
+                    Some(
+                        Nullable::Handle(_)
+                            | Nullable::BorrowedZString(_)
+                            | Nullable::BorrowedZUtf8String(_)
+                    )
                 ),
             })
     }
     visit(ty, types, 0)
 }
 
-/// W21 Phase 2: whether a `@c_layout` record contains a `ref ZString` or `Maybe<ref ZString>` field.
+/// W21 Phase 2 / M06 Phase 2: whether a `@c_layout` record contains a borrowed `ZString` or
+/// `ZUtf8String` field (directly or inside `Maybe`).
 pub fn c_layout_has_zstring_field(ty: &Type, types: &TypeContext<'_>) -> bool {
     fn visit(ty: &Type, types: &TypeContext<'_>, depth: usize) -> bool {
         if depth >= crate::syntax::MAX_NESTING {
@@ -304,9 +309,12 @@ pub fn c_layout_has_zstring_field(ty: &Type, types: &TypeContext<'_>) -> bool {
             .record_fields(*id, arguments)
             .iter()
             .any(|field| match field {
-                Type::Reference(inner, false) if zstring(inner, types) => true,
+                Type::Reference(inner, false) if any_zstring(inner, types) => true,
                 Type::Record(..) => visit(field, types, depth + 1),
-                _ => matches!(nullable(field, types), Some(Nullable::BorrowedZString(_))),
+                _ => matches!(
+                    nullable(field, types),
+                    Some(Nullable::BorrowedZString(_) | Nullable::BorrowedZUtf8String(_))
+                ),
             })
     }
     visit(ty, types, 0)
@@ -428,6 +436,16 @@ pub fn view_record(ty: &Type, types: &TypeContext<'_>, view_name: &str) -> Resul
     let Type::Record(id, _) = ty else {
         return Err(format!("extern view '{view_name}' must copy a record type"));
     };
+    if any_zstring(ty, types) {
+        let short = types.records[*id]
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(&types.records[*id].name);
+        return Err(format!(
+            "extern view '{view_name}' copies the record '{short}', which is an opaque NUL-terminated string rather than a C struct"
+        ));
+    }
     let rec = &types.records[*id];
     let short = rec.name.rsplit('.').next().unwrap_or(&rec.name);
     if rec.c_layout.is_some() {
@@ -505,13 +523,52 @@ pub fn zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
     )
 }
 
-/// W15 / W20: a `std::Maybe<P>` whose `None` passes as a C null pointer on native targets.
+/// M06 Phase 2: whether `ty` is the standard `ZUtf8String` opaque record.
+pub fn zutf8string(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Record(id, args)
+            if args.is_empty()
+                && types.records[*id].origin == crate::check::ModuleOrigin::Std
+                && types.records[*id].name == "ZUtf8String.ZUtf8String"
+    )
+}
+
+/// Whether `ty` is either `ZString` or `ZUtf8String`.
+pub fn any_zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
+    zstring(ty, types) || zutf8string(ty, types)
+}
+
+/// M06: whether `ty` is allowed as the read result `T` of `extern "sym" view def f :: unit -> T`.
+pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> bool {
+    match ty {
+        Type::Integer(8 | 16 | 32 | 64, _) | Type::Binary(32 | 64) => true,
+        Type::Handle(_, crate::syntax::HandleKind::Copy) => true,
+        Type::Record(..) => view_record(ty, types, name).is_ok(),
+        _ => matches!(
+            nullable(ty, types),
+            Some(Nullable::Handle(Type::Handle(
+                _,
+                crate::syntax::HandleKind::Copy
+            )))
+        ),
+    }
+}
+
+/// M06: whether `ty` is allowed as the result `H` of `extern "sym" address def f :: unit -> H`.
+pub fn data_symbol_address_type(ty: &Type) -> bool {
+    matches!(ty, Type::Handle(_, crate::syntax::HandleKind::Copy))
+}
+
+/// W15 / W20 / M06: a `std::Maybe<P>` whose `None` passes or returns as a C null pointer on native targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nullable<'a> {
     Handle(&'a Type),
     BorrowedHandle(&'a Type),
     BorrowedRecord(&'a Type),
     BorrowedZString(&'a Type),
+    BorrowedZUtf8String(&'a Type),
+    OwnedZUtf8String(&'a Type),
 }
 
 pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a>> {
@@ -522,24 +579,32 @@ pub fn nullable<'a>(ty: &'a Type, types: &TypeContext<'_>) -> Option<Nullable<'a
         Type::Reference(inner, false) if zstring(inner, types) => {
             Some(Nullable::BorrowedZString(inner))
         }
+        Type::Reference(inner, false) if zutf8string(inner, types) => {
+            Some(Nullable::BorrowedZUtf8String(inner))
+        }
         Type::Reference(inner, false) if host_record(inner, types) => {
             Some(Nullable::BorrowedRecord(inner))
         }
+        _ if zutf8string(payload, types) => Some(Nullable::OwnedZUtf8String(payload)),
         _ => None,
     }
 }
 
 /// The type as the C side sees it: `Maybe<H>` -> `H`, `Maybe<ref H>` -> `ref H`,
-/// `Maybe<ref R>` -> `ref R`, `Maybe<ref ZString>` -> `ref ZString`, and any other type unchanged.
+/// `Maybe<ref R>` -> `ref R`, `Maybe<ref ZString>` -> `ref ZString`,
+/// `Maybe<ref ZUtf8String>` / `Maybe<ZUtf8String>` -> `ref ZUtf8String`, and any other type unchanged.
 pub fn c_view<'a>(ty: &'a Type, types: &TypeContext<'_>) -> std::borrow::Cow<'a, Type> {
     match nullable(ty, types) {
         Some(Nullable::Handle(handle)) => std::borrow::Cow::Borrowed(handle),
         Some(Nullable::BorrowedHandle(handle)) => {
             std::borrow::Cow::Owned(Type::Reference(Box::new(handle.clone()), false))
         }
-        Some(Nullable::BorrowedRecord(record) | Nullable::BorrowedZString(record)) => {
-            std::borrow::Cow::Owned(Type::Reference(Box::new(record.clone()), false))
-        }
+        Some(
+            Nullable::BorrowedRecord(record)
+            | Nullable::BorrowedZString(record)
+            | Nullable::BorrowedZUtf8String(record)
+            | Nullable::OwnedZUtf8String(record),
+        ) => std::borrow::Cow::Owned(Type::Reference(Box::new(record.clone()), false)),
         None => std::borrow::Cow::Borrowed(ty),
     }
 }
@@ -577,8 +642,8 @@ pub fn extern_buffer_parameter(ty: &Type) -> Option<(Buffer, bool)> {
     }
 }
 
-/// W13 / W20: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers,
-/// `ref ZString`, or `@count`.
+/// W13 / W20 / M06: whether an `extern` uses native-only `ref mut`, `[i16u]`/`[i32]`/`[i32u]` buffers,
+/// `ref ZString`, `ref ZUtf8String`, or `@count`.
 pub fn uses_w13_native_only(
     parameters: &[Type],
     counts: &[(usize, crate::syntax::CountLength)],
@@ -588,7 +653,7 @@ pub fn uses_w13_native_only(
         || parameters.iter().any(|ty| match ty {
             Type::Reference(_, true) => true,
             Type::Reference(inner, false) => {
-                zstring(inner, types)
+                any_zstring(inner, types)
                     || matches!(
                         Buffer::of_extern(inner),
                         Some(Buffer::I16U | Buffer::I32 | Buffer::I32U)
@@ -606,9 +671,13 @@ pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
         || matches!(ty, Type::Reference(inner, false) if c_layout_record(inner, types))
         || matches!(
             nullable(ty, types),
-            Some(Nullable::BorrowedRecord(_) | Nullable::BorrowedZString(_))
+            Some(
+                Nullable::BorrowedRecord(_)
+                    | Nullable::BorrowedZString(_)
+                    | Nullable::BorrowedZUtf8String(_)
+            )
         )
-        || matches!(ty, Type::Reference(inner, false) if zstring(inner, types))
+        || matches!(ty, Type::Reference(inner, false) if any_zstring(inner, types))
         || extern_buffer_parameter(ty).is_some()
         || matches!(
             ty,
@@ -618,7 +687,11 @@ pub fn extern_parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
 }
 
 pub fn extern_result(ty: &Type, types: &TypeContext<'_>) -> bool {
-    result(ty, types) || matches!(nullable(ty, types), Some(Nullable::Handle(_)))
+    result(ty, types)
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::Handle(_) | Nullable::OwnedZUtf8String(_))
+        )
 }
 
 /// Whether an `extern` signature uses `std::Maybe` in an unsupported ABI position or payload (W15).
@@ -798,7 +871,11 @@ fn c_scalar(ty: &Type) -> CType {
         Type::Binary(32) => CType::F32,
         Type::Binary(64) => CType::F64,
         Type::Handle(..) | Type::FnPtr(_) => CType::Ptr,
-        Type::Reference(inner, false) if is_handle(inner) => CType::Ptr,
+        Type::Reference(inner, false)
+            if is_handle(inner) || matches!(inner.as_ref(), Type::Record(..)) =>
+        {
+            CType::Ptr
+        }
         _ => unreachable!("checked ABI scalar: {ty:?}"),
     }
 }

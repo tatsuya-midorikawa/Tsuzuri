@@ -279,6 +279,7 @@ unit_enum!(SourceKind {
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
 unit_enum!(HandleKind { Owned, Copy, Local });
+unit_enum!(DataAccess { Read, Address });
 unit_enum!(ContractKind { Requires, Ensures });
 unit_enum!(FixLevel {
     Certain,
@@ -1183,6 +1184,7 @@ impl Wire for SignatureDecl {
             constraints,
             link,
             view,
+            data,
         } = self;
         put_doc(doc, out)?;
         name.put(out)?;
@@ -1196,7 +1198,8 @@ impl Wire for SignatureDecl {
         result.put(out)?;
         constraints.put(out)?;
         link.put(out)?;
-        view.put(out)
+        view.put(out)?;
+        data.put(out)
     }
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
@@ -1214,6 +1217,7 @@ impl Wire for SignatureDecl {
             constraints: Vec::get(input)?,
             link: Option::get(input)?,
             view: bool::get(input)?,
+            data: Option::get(input)?,
         })
     }
 }

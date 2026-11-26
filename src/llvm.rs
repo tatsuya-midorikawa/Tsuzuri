@@ -1803,7 +1803,7 @@ fn extern_symbols(module: &CheckedModule) -> BTreeSet<String> {
         .functions
         .iter()
         .filter_map(|function| match &function.body.kind {
-            TypedExprKind::HostCall(import, _) if import.view.is_none() => {
+            TypedExprKind::HostCall(import, _) if !import.lowers_inline() => {
                 Some(import.native_symbol.clone())
             }
             _ => None,
@@ -2005,6 +2005,8 @@ fn emit_program_in(
     let (roots, reachable) = program_reach(module, roots.as_deref(), entry == Entry::BenchRunner);
     if wasm {
         validate_wasm_externs(module, &reachable)?;
+    } else {
+        validate_native_externs(module, &reachable)?;
     }
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
@@ -2149,9 +2151,9 @@ fn emit_program_in(
     };
     for id in order {
         let function = &module.functions[id];
-        // A callback extern or extern view has no standalone function body: calls are lowered inline.
+        // A callback extern, extern view, or C data symbol has no standalone function body: calls are lowered inline.
         if !emitted[id]
-            || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks || import.view.is_some())
+            || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.callbacks || import.lowers_inline())
         {
             continue;
         }
@@ -2322,6 +2324,9 @@ entry:\n\
     }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
+    }
+    for sym in globals.data_symbols.keys() {
+        let _ = writeln!(output, "@{sym} = external global [0 x i8]");
     }
     if let Some(io_wrapper) = io_wrapper {
         output.push_str(&debug::wrapper(
@@ -2736,7 +2741,30 @@ entry:\n\
     if globals.overflow.is_some() && !wasm && !output.contains("declare i64 @write(") {
         output.push_str("declare i64 @write(i32, ptr, i64)\n");
     }
+    check_data_symbol_declares(&output, &globals.data_symbols)?;
     Ok((facts::reuse_pure_calls(module, output), globals.traps))
+}
+
+/// Rejects any reached C data symbol whose name also appears as a `declare` in generated IR (M06 §4).
+pub fn check_data_symbol_declares(
+    ir: &str,
+    data_symbols: &BTreeMap<String, Span>,
+) -> Result<(), Diagnostic> {
+    if data_symbols.is_empty() {
+        return Ok(());
+    }
+    for declared in ir.lines().filter_map(declared_symbol) {
+        if let Some(&span) = data_symbols.get(declared) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ConflictingExternDeclaration,
+                format!(
+                    "data symbol '{declared}' conflicts with runtime function declaration '@{declared}'; rename or wrap the C symbol"
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The symbol that a `declare` line names, from the first `@` to the next `(`. Other lines and
@@ -2968,6 +2996,8 @@ struct Globals {
     user_drops: std::rc::Rc<BTreeMap<Type, usize>>,
     /// User functions the program hands to the host as C function pointers.
     callbacks: BTreeSet<usize>,
+    /// M06: C global data symbols read or addressed by the emitted code, with their first declaration span.
+    data_symbols: BTreeMap<String, Span>,
     /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
     guard_callbacks_after_main: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -3032,6 +3062,7 @@ impl Default for Globals {
             anchor_types: BTreeSet::new(),
             user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
+            data_symbols: BTreeMap::new(),
             guard_callbacks_after_main: false,
             coverage: None,
             seed: None,
@@ -3526,6 +3557,9 @@ fn c_type(ty: &Type) -> String {
         Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => {
             c_type(inner)
         }
+        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Record(..)) => {
+            "const char *".into()
+        }
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -3697,6 +3731,30 @@ fn static_definition(id: usize, value: &TypedExpr, module: &CheckedModule) -> Op
         let rec_ty = llvm_type(&value.ty, module);
         return Some(format!(
             "@tz.static.{id}.data = private unnamed_addr constant [{len} x i16] [{items}], align 2\n\
+             @tz.static.{id} = private unnamed_addr constant {rec_ty} {{ %tz.array {{ ptr @tz.static.{id}.data, i64 {len} }} }}"
+        ));
+    }
+    if crate::abi::zutf8string(&value.ty, &module.types())
+        && let TypedExprKind::Record(fields) = &value.kind
+        && let [(_, array_expr)] = fields.as_slice()
+        && let TypedExprKind::Array(elements) = &array_expr.kind
+    {
+        let mut escaped = String::new();
+        for el in elements {
+            let TypedExprKind::Int(n) = el.kind else {
+                unreachable!("ZUtf8String literal elements are u8");
+            };
+            let byte = n as u8;
+            if (0x20..=0x7E).contains(&byte) && byte != b'"' && byte != b'\\' {
+                escaped.push(byte as char);
+            } else {
+                let _ = write!(escaped, "\\{byte:02X}");
+            }
+        }
+        let len = elements.len();
+        let rec_ty = llvm_type(&value.ty, module);
+        return Some(format!(
+            "@tz.static.{id}.data = private unnamed_addr constant [{len} x i8] c\"{escaped}\", align 1\n\
              @tz.static.{id} = private unnamed_addr constant {rec_ty} {{ %tz.array {{ ptr @tz.static.{id}.data, i64 {len} }} }}"
         ));
     }
@@ -4157,6 +4215,31 @@ pub(crate) fn reachable_functions(
 }
 
 /// W14: WebAssembly imports one signature per name, so reached explicit symbols must agree on their
+fn validate_native_externs(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+) -> Result<(), Diagnostic> {
+    if !crate::target::current_platform().windows() {
+        return Ok(());
+    }
+    for &id in reachable {
+        let function = &module.functions[id];
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind
+            && let Some(data) = &import.data
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::DataSymbolTarget,
+                format!(
+                    "data symbol '{}' is supported on macOS and Linux; a DLL's data needs dllimport, which data symbols do not emit",
+                    data.symbol
+                ),
+                function.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Tsuzuri signature. Unreached declarations do not become imports and are ignored.
 pub(crate) fn validate_wasm_externs(
     module: &CheckedModule,
@@ -4222,6 +4305,16 @@ pub(crate) fn validate_wasm_externs(
                 DiagnosticKind::LinkAttributeWasm,
                 format!(
                     "'@link(\"{lib}\")' asks the native linker for a system library, which wasm output cannot link; build for a native target"
+                ),
+                function.span,
+            ));
+        }
+        if let Some(data) = &import.data {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                format!(
+                    "data symbol '{}' reads native host memory and is supported only on native targets; build for a native target",
+                    data.symbol
                 ),
                 function.span,
             ));
@@ -4741,7 +4834,11 @@ fn abi_type(ty: &Type) -> String {
         Type::Binary(64) => "double".into(),
         Type::Unit => "void".into(),
         Type::Handle(..) | Type::FnPtr(_) => "ptr".into(),
-        Type::Reference(inner, false) if matches!(inner.as_ref(), Type::Handle(..)) => "ptr".into(),
+        Type::Reference(inner, false)
+            if matches!(inner.as_ref(), Type::Handle(..) | Type::Record(..)) =>
+        {
+            "ptr".into()
+        }
         _ => unreachable!("the type checker enforces scalar exports"),
     }
 }
@@ -7616,6 +7713,14 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
         if let TypedExprKind::Function(FunctionRef::User(id)) = callee.kind
             && let TypedExprKind::HostCall(import, _) = &self.module.functions[id].body.kind
         {
+            if let Some(data) = &import.data {
+                return self.data_symbol(
+                    data,
+                    arguments,
+                    &self.module.functions[id].signature.result,
+                    self.module.functions[id].span,
+                );
+            }
             if let Some(direction) = import.view {
                 return self.extern_view(
                     direction,

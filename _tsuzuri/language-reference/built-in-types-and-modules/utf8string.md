@@ -194,6 +194,7 @@ letter=い twice=いい bytes=6
 - [Text](text.md) — `string` と `utf8string` に同じ名前で呼べる共通の操作（型クラス）
 - [文字列](../literals-and-strings/strings.md)
 - [String](string.md)
+- [ZUtf8String](zutf8string.md) — NUL 終端 UTF-8 文字列（`const char *` 連携）
 - [Utf8Char](utf8char.md)
 - [Format](format.md)
 - [言語リファレンスの目次](../index.md)

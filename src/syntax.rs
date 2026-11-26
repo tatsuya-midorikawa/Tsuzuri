@@ -757,6 +757,22 @@ impl ViewDirection {
     }
 }
 
+/// How an `extern "sym" view def` or `extern "sym" address def` accesses a C data symbol (M06).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DataAccess {
+    Read,
+    Address,
+}
+
+impl DataAccess {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Address => "address",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SignatureDecl {
     pub doc: Option<Documentation>,
@@ -772,8 +788,10 @@ pub struct SignatureDecl {
     pub result: TypeExpr,
     pub constraints: Vec<ConstraintExpr>,
     pub link: Option<Box<LinkName>>,
-    /// Declared as `extern view def` (W24).
+    /// Declared as `extern view def` (W24) or `extern "sym" view def` (M06).
     pub view: bool,
+    /// Declared as a C data symbol (`extern "sym" view def` or `extern "sym" address def`, M06).
+    pub data: Option<DataAccess>,
 }
 
 /// The strings of `extern "symbol" def` or `extern "module" "symbol" def`.

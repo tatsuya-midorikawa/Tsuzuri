@@ -857,7 +857,24 @@ impl Parser<'_> {
                         program.extern_types.push(declaration)
                     }
                     ExternDeclaration::Function(signature) => {
-                        if signature.view {
+                        if let Some(_access) = signature.data {
+                            if let Some(count) = counts.first() {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedCountAttribute,
+                                    "'@count' applies to an 'extern' function declaration, not a data symbol",
+                                    count.span,
+                                ));
+                            }
+                            if let Some(mark) = &trusted
+                                && let Some(first) = mark.first
+                            {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::TrustedViewProperty,
+                                    "'@trusted' on a data symbol takes no properties; the compiler knows its effects",
+                                    first,
+                                ));
+                            }
+                        } else if signature.view {
                             if let Some(mark) = &link {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedLinkAttribute,
@@ -885,7 +902,11 @@ impl Parser<'_> {
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
                                 target: signature.name.clone(),
-                                properties: if signature.view { 0 } else { mark.properties },
+                                properties: if signature.view || signature.data.is_some() {
+                                    0
+                                } else {
+                                    mark.properties
+                                },
                                 span: mark.span,
                             });
                         }
@@ -2637,6 +2658,7 @@ impl Parser<'_> {
             constraints,
             link: None,
             view: false,
+            data: None,
         })
     }
 
@@ -5337,21 +5359,32 @@ impl Parser<'_> {
                 self.current().span,
             ));
         }
-        let view = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "view") {
+        let (view, mut data) = if matches!(&self.current().kind, TokenKind::Ident(word) if word == "view")
+        {
             self.take();
-            if let Some(link) = &link {
-                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+            self.expect(&TokenKind::Def, "'def' after 'extern view'")?;
+            (true, None)
+        } else if matches!(&self.current().kind, TokenKind::Ident(word) if word == "address") {
+            let word_span = self.take().span;
+            let Some(link) = &link else {
                 return Err(Diagnostic::of(
-                    DiagnosticKind::ExternViewLinkName,
-                    "an extern view copies memory and links no symbol; remove the string",
-                    first,
+                    DiagnosticKind::DataSymbolNeedsLinkName,
+                    "'address' takes the address of a C data symbol; write extern \"symbol\" address def",
+                    word_span,
+                ));
+            };
+            if let Some((_, mod_span)) = &link.module {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DataSymbolModuleName,
+                    "a data symbol has one link name, its C symbol; remove the module string",
+                    *mod_span,
                 ));
             }
-            self.expect(&TokenKind::Def, "'def' after 'extern view'")?;
-            true
+            self.expect(&TokenKind::Def, "'def' after 'extern \"...\" address'")?;
+            (false, Some(DataAccess::Address))
         } else {
             self.expect(&TokenKind::Def, "'def' after extern")?;
-            false
+            (false, None)
         };
         let name = self.ident()?;
         if taken(&name.text) {
@@ -5366,10 +5399,39 @@ impl Parser<'_> {
         let signature = self.signature(name, false, column, false);
         self.extern_signature = outer;
         let mut signature = signature?;
+        if view && let Some(link) = &link {
+            let takes_unit = matches!(
+                signature.parameters.as_slice(),
+                [TypeExpr {
+                    kind: TypeExprKind::Named(word),
+                    ..
+                }] if word == "unit"
+            );
+            if !takes_unit {
+                let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ExternViewLinkName,
+                    format!(
+                        "an extern view that takes an address links no symbol; remove the string, or declare 'unit -> T' to read the data symbol '{}'",
+                        link.symbol
+                    ),
+                    first,
+                ));
+            }
+            if let Some((_, mod_span)) = &link.module {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::DataSymbolModuleName,
+                    "a data symbol has one link name, its C symbol; remove the module string",
+                    *mod_span,
+                ));
+            }
+            data = Some(DataAccess::Read);
+        }
         signature.doc = doc;
         signature.visibility = visibility;
         signature.link = link;
         signature.view = view;
+        signature.data = data;
         Ok(ExternDeclaration::Function(signature))
     }
 

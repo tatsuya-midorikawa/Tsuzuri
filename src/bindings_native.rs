@@ -1035,7 +1035,7 @@ fn python_ctype(shape: &Shape) -> String {
 fn is_borrowed_zstring(ty: &Type, types: &crate::check::TypeContext<'_>) -> bool {
     matches!(
         crate::abi::c_view(ty, types).as_ref(),
-        Type::Reference(inner, false) if crate::abi::zstring(inner, types)
+        Type::Reference(inner, false) if crate::abi::any_zstring(inner, types)
     )
 }
 
@@ -1073,7 +1073,9 @@ fn python_lower(ty: &Type, module: &CheckedModule, value: &str, at: &str, exact:
     }
     if matches!(
         crate::abi::nullable(ty, &types),
-        Some(crate::abi::Nullable::BorrowedZString(_))
+        Some(
+            crate::abi::Nullable::BorrowedZString(_) | crate::abi::Nullable::BorrowedZUtf8String(_)
+        )
     ) {
         return format!(
             "(None if {value} is None else _integer({value}, 1, _POINTER_MAX, \"ZString\", {at}))"
@@ -1217,7 +1219,10 @@ pub fn python(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 }
                 _ if matches!(
                     crate::abi::nullable(field_type, &types),
-                    Some(crate::abi::Nullable::BorrowedZString(_))
+                    Some(
+                        crate::abi::Nullable::BorrowedZString(_)
+                            | crate::abi::Nullable::BorrowedZUtf8String(_)
+                    )
                 ) =>
                 {
                     "int | None".to_owned()

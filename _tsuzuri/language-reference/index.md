@@ -96,6 +96,7 @@
 - [String](./built-in-types-and-modules/string.md)
 - [ZString](./built-in-types-and-modules/zstring.md) — NUL 終端 UTF-16 文字列（`LPCWSTR` 連携）
 - [Utf8String](./built-in-types-and-modules/utf8string.md)
+- [ZUtf8String](./built-in-types-and-modules/zutf8string.md) — NUL 終端 UTF-8 文字列（`const char *` 連携）
 - [Char](./built-in-types-and-modules/char.md)
 - [Utf8Char](./built-in-types-and-modules/utf8char.md)
 - [Text](./built-in-types-and-modules/text.md)
