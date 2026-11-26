@@ -1,0 +1,22 @@
+extern type copy Hwnd
+
+record Point { x: f64, y: f64 }
+
+export def keep :: Hwnd -> Hwnd = \h -> h
+
+export def norm :: ref Point -> f64 = \p -> p.x + p.y
+
+export def greet :: ref string -> string = \name -> clone_string name
+
+0
+
+// rule: ABI-014
+// cli: build $DIR --emit header -o $DIR/out.h
+// expect: exit 0
+// expect: file-has out.h "#ifndef TSUZURI_COMMON_DECLARATIONS_1\n"
+// expect: file-has out.h "typedef struct tsuzuri_string_slice { const uint16_t *ptr; int64_t len; } tsuzuri_string_slice;"
+// expect: file-has out.h "typedef struct tsuzuri_trap_info {"
+// expect: file-has out.h "#ifndef TSUZURI_LAYOUT_tz_record_4Main_5Point\n"
+// expect: file-has out.h "typedef struct tz_record_4Main_5Point {"
+// expect: file-has out.h "#ifndef TSUZURI_HANDLE_tz_handle_4Main_4Hwnd\n"
+// expect: file-lacks out.h "typedef struct {"

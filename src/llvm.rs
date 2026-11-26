@@ -10190,6 +10190,23 @@ mod tests {
     }
 
     #[test]
+    fn allocation_stats_declaration_changes_only_with_its_guard() {
+        // The headers of two `--allocator counting` libraries skip each other's copy of the struct
+        // by its guard alone, so its text is a contract too: a new shape renames the guard (the
+        // two shapes then clash instead of one library reading the other's layout) and updates this.
+        let text = host_abi::ALLOCATION_STATS_PROTOTYPE;
+        let start = text.find("#ifndef ").unwrap();
+        let end = start + text[start..].find("#endif\n").unwrap();
+        let mut hash = crate::cache::Sha256::new();
+        hash.update(&text.as_bytes()[start..end]);
+        assert_eq!(
+            hash.hex(),
+            "f387c925f041a7d096eeba0f45f8bb7877675a7bc1ef494c23b938ae934daf02",
+            "tsuzuri_allocation_stats changed: rename TSUZURI_ALLOCATION_STATS_DEFINED"
+        );
+    }
+
+    #[test]
     fn net_imports_name_only_the_declared_primitives() {
         let ir = "declare i64 @tsuzuri_net_open(ptr, i32, i64, i64, i64, i64)\n\
                   declare void @tsuzuri_net_unwatch(i64)\n\

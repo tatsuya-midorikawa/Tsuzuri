@@ -119,6 +119,7 @@ AArch64 向けに出した IR は、`f16` の演算に LLVM の `half` 命令を
 
 ### 複数のライブラリのヘッダーを一緒に読む
 
+<!-- rule: ABI-014 -->
 別々にビルドした Tsuzuri のライブラリのヘッダーを、1 つの C・C++ の翻訳単位で並べて include できます。C11・C99・C++17 で確かめています。
 
 ```c
@@ -151,9 +152,9 @@ typedef struct tsuzuri_trap_info {
 
 struct にはどれも tag が付いています。tag のない `typedef struct { ... } T;` は、同じ形でも書くたびに別の型になり、2 回目は C でも C++ でもエラーだからです。
 
-ガードの名前の末尾の数字は、共通の宣言の版です。宣言の形が変わったときだけ上がり、同じ版のヘッダーどうしは、どの版のコンパイラが出したものでも一緒に読めます。版の違うヘッダーを一緒に読むと、上の `#error` で止まります。同じ名前の型が違う形を持つことになり、黙って片方を選ぶと、もう一方のライブラリの関数に違う配置を渡してしまうからです。この仕組みより前のコンパイラが出したヘッダーにはガードがないので、作り直してください。
+ガードの名前の末尾の数字は、共通の宣言の版です。宣言の形が変わったときだけ上がるので、別のリリースのコンパイラが出したヘッダーどうしでも、版が同じなら共通の宣言は 1 つにまとまります。版の違うヘッダーを一緒に読むと、上の `#error` で止まります。同じ名前の型が違う形を持つことになり、黙って片方を選ぶと、もう一方のライブラリの関数に違う配置を渡してしまうからです。この仕組みより前のコンパイラが出したヘッダーにはガードがないので、作り直してください。
 
-2 つのライブラリが同じモジュールのレコードやハンドルを export することもあります。たとえば、どちらも同じパッケージに依存しているときです。レコードの struct は、その名前のガード `TSUZURI_LAYOUT_<typedef 名>` の中にあり、ガードの値はフィールドの並びから決まる 64 bit の値です。同じフィールドなら 2 つめの定義は読み飛ばされ、フィールドが違えば（依存の版が違う、どちらのライブラリにも `Main` の `Point` があるなど）`#error "<typedef 名> has other fields in another Tsuzuri header: two libraries export different records of this name"` で止まります。ハンドルの `typedef` も `TSUZURI_HANDLE_<typedef 名>` のガードの中にあります。
+2 つのライブラリが同じモジュールのレコードやハンドルを export することもあります。たとえば、どちらも同じパッケージに依存しているときです。レコードの struct は、その名前のガード `TSUZURI_LAYOUT_<typedef 名>` の中にあり、ガードの値は、struct の定義の文字列（フィールドの名前・型・並びと、`@c_layout` の詰め方）から決まる 64 bit の値です。同じフィールドなら 2 つめの定義は読み飛ばされ、フィールドが違えば（依存の版が違う、どちらのライブラリにも `Main` の `Point` があるなど）`#error "<typedef 名> has other fields in another Tsuzuri header: two libraries export different records of this name"` で止まります。ハンドルの `typedef` も `TSUZURI_HANDLE_<typedef 名>` のガードの中にあります。
 
 ```c
 #ifndef TSUZURI_LAYOUT_tz_record_6Common_3Geo_5Point

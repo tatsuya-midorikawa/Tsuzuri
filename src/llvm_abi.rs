@@ -812,7 +812,8 @@ void *tsuzuri_host_alloc(uint64_t size, uint64_t align);\n\
 void tsuzuri_host_free(void *ptr, uint64_t size, uint64_t align);\n\
 void *tsuzuri_host_realloc(void *ptr, uint64_t old_size, uint64_t new_size, uint64_t align);\n";
 
-/// The statistics of `--allocator counting` (F13 Phase 2).
+/// The statistics of `--allocator counting` (F13 Phase 2). The headers of several such libraries
+/// share the struct by its guard alone, so a new shape renames the guard (`llvm.rs` pins the text).
 pub(super) const ALLOCATION_STATS_PROTOTYPE: &str = "\n/* --allocator counting: allocations and frees since the start, and the requested bytes\n   that are live now and were live at most. */\n\
 #ifndef TSUZURI_ALLOCATION_STATS_DEFINED\n\
 #define TSUZURI_ALLOCATION_STATS_DEFINED\n\
