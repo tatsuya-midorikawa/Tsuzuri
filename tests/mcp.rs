@@ -1079,6 +1079,36 @@ fn tz_check_on_a_library_file_and_a_missing_main() {
     assert!(!message.contains(root.to_str().unwrap()), "{message}");
 }
 
+/// A project that does not load is reported at the line and column of the cause in the file that
+/// the error names (here the subsystem value on line 6 of `Tsuzuri.toml`), as `check --json` does.
+#[test]
+fn tz_check_reports_a_manifest_error_at_its_line_and_column() {
+    let manifest =
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[windows]\nsubsystem = \"bogus\"\n";
+    let root = temporary_root(&[("Main.tz", WARN), ("Tsuzuri.toml", manifest)]);
+    let client = Client::project(&root);
+    client.initialize("2025-06-18");
+    let answer = client.call(1, "tz_check", json!({}));
+    let structured = &answer["result"]["structuredContent"];
+    assert_eq!(structured["ok"], false);
+    let diagnostic = &structured["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "E0002");
+    assert_eq!(diagnostic["path"], "Tsuzuri.toml");
+    assert_eq!(
+        diagnostic["span"],
+        json!({"start": 64, "end": 71, "line": 6, "column": 13, "end_line": 6, "end_column": 20})
+    );
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("Tsuzuri.toml:6:13: error[E0002]: subsystem must be"),
+        "{text}"
+    );
+    assert!(text.contains("\n  6 | subsystem = \"bogus\"\n"), "{text}");
+    let output = tsuzuri(&root, &["check", ".", "--json"]);
+    let expected: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(diagnostic["span"], expected["span"]);
+}
+
 #[test]
 fn tz_check_output_is_deterministic() {
     let root = temporary_root(&[("Main.tz", BAD)]);
