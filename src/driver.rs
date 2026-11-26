@@ -148,8 +148,17 @@ impl LinkInputs {
         Ok(())
     }
 
-    /// Adds the inputs to a clang link line: `-L` directories, then paths, then `-l` libraries.
-    fn add_to(&self, clang: &mut Command) {
+    /// Adds the inputs to a clang link line: `-L` directories, then paths, then `-l` libraries,
+    /// followed by `@link` system libraries not already in `self.libraries`.
+    fn add_to(&self, clang: &mut Command, system_libraries: &[String]) -> Result<(), Diagnostic> {
+        if self.paths.len() + self.libraries.len() + self.search.len() + system_libraries.len()
+            > MAX_LINK_INPUTS
+        {
+            return Err(driver_error_of(
+                DiagnosticKind::LinkInputLimit,
+                format!("too many link inputs; at most {MAX_LINK_INPUTS} are supported"),
+            ));
+        }
         for directory in &self.search {
             let mut option = OsString::from("-L");
             option.push(directory);
@@ -162,7 +171,42 @@ impl LinkInputs {
         for name in &self.libraries {
             clang.arg(format!("-l{name}"));
         }
+        for name in system_libraries {
+            clang.arg(format!("-l{name}"));
+        }
+        Ok(())
     }
+}
+
+/// W17: system libraries requested by `@link("name")` on extern symbols referenced in `ir`,
+/// sorted and excluding libraries already listed in `links.libraries`.
+pub fn system_libraries(module: &CheckedModule, ir: &str, links: &LinkInputs) -> Vec<String> {
+    if module.link_libraries.is_empty() {
+        return Vec::new();
+    }
+    let symbols = crate::runtime_cache::RuntimeSymbols::collect(ir);
+    system_libraries_from_symbols(module, &symbols, links)
+}
+
+pub(crate) fn system_libraries_from_symbols(
+    module: &CheckedModule,
+    symbols: &crate::runtime_cache::RuntimeSymbols,
+    links: &LinkInputs,
+) -> Vec<String> {
+    if module.link_libraries.is_empty() {
+        return Vec::new();
+    }
+    let mut found = BTreeSet::new();
+    for (symbol, libs) in &module.link_libraries {
+        if symbols.contains(symbol) {
+            for lib in libs {
+                if !links.libraries.iter().any(|existing| existing == lib) {
+                    found.insert(lib.clone());
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
 }
 
 /// Refuses an output that would replace a link input.
@@ -4256,6 +4300,7 @@ fn build_complete(
         llvm::duplicate_declarations(&text)
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
+    let sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
     // tzroutine (TZ02): src/runtime/tzroutine.c is linked when the IR names one of its symbols. A
     // native DataChannel waits on its scheduler too (TZ12).
     let tzroutine_symbols = runtime_symbols.prefix("tsuzuri_tz_");
@@ -5362,7 +5407,7 @@ fn build_complete(
             }
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
-            links.add_to(&mut clang);
+            links.add_to(&mut clang, &sys_libraries)?;
         }
         if let Some(pdb) = &pdb {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
@@ -5412,6 +5457,7 @@ fn build_complete(
                 symbols,
                 options,
                 links,
+                &sys_libraries,
                 (&object, native_runtime.then_some(runtime_object.as_path())),
                 (&artifact, output),
                 &temporary.path,
@@ -5462,7 +5508,7 @@ fn build_complete(
             if backtrace_runtime {
                 linker.arg(&backtrace_object);
             }
-            links.add_to(&mut linker);
+            links.add_to(&mut linker, &sys_libraries)?;
             linker.arg("-o").arg(&artifact);
             let linked = run_tool(
                 &mut linker,
@@ -5754,10 +5800,12 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
 
 /// Links the object of `--emit shared` (E13 Phase 2) into a shared library that exports only the
 /// public C ABI and resolves every symbol at link time, like an executable.
+#[allow(clippy::too_many_arguments)]
 fn link_shared(
     symbols: &[String],
     options: BuildOptions,
     links: &LinkInputs,
+    sys_libraries: &[String],
     (object, runtime): (&Path, Option<&Path>),
     (artifact, output): (&Path, &Path),
     temporary: &Path,
@@ -5815,7 +5863,7 @@ fn link_shared(
         }
     }
     linker.arg("-lm");
-    links.add_to(&mut linker);
+    links.add_to(&mut linker, sys_libraries)?;
     linker.arg("-o").arg(artifact);
     collect_message(
         messages,
@@ -8591,7 +8639,7 @@ mod tests {
         for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
             let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
             clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
-            links.add_to(&mut clang);
+            links.add_to(&mut clang, &[]).unwrap();
             // A dry run shows the linker line without needing the Windows SDK; without Clang there is nothing to check.
             let Ok(output) = clang.output() else { return };
             let log = String::from_utf8_lossy(&output.stderr);
@@ -8601,6 +8649,23 @@ mod tests {
             assert!(log.contains("-libpath:libs"), "{target}: {log}");
             assert!(log.contains("\"sqlite3.lib\""), "{target}: {log}");
             assert!(log.contains("host.obj"), "{target}: {log}");
+        }
+    }
+
+    #[test]
+    fn link_attribute_libraries_reach_the_msvc_linker() {
+        let links = LinkInputs::default();
+        let sys = vec!["user32".to_owned()];
+        for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+            let mut clang = Command::new(tool("TSUZURI_CLANG", "clang"));
+            clang.args(["-###", &format!("--target={target}"), "-o", "a.exe"]);
+            links.add_to(&mut clang, &sys).unwrap();
+            let Ok(output) = clang.output() else { return };
+            let log = String::from_utf8_lossy(&output.stderr);
+            if !log.contains("link.exe") && !log.contains("lld-link") {
+                return;
+            }
+            assert!(log.contains("\"user32.lib\""), "{target}: {log}");
         }
     }
 

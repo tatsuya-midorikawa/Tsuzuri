@@ -7658,6 +7658,7 @@ pub(super) fn specialize(
         noncanonical: module.noncanonical,
         generic_declarations,
         extern_abis: module.extern_abis,
+        link_libraries: module.link_libraries,
     })
 }
 

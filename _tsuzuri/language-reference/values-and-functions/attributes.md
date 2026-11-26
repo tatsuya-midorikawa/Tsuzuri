@@ -1,18 +1,19 @@
 # 属性
 
-`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、`extern` のバッファに添える長さ引数、C の構造体と同じ配置のレコード、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
+`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、`extern` のバッファに添える長さ引数、`extern` ごとのシステムライブラリ、C の構造体と同じ配置のレコード、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、12 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
+このページでは、13 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` の 12 個です。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@link`、`@c_layout`、`@json`、`@alias` の 13 個です。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` はトップレベル関数の `def` の前に付け、「確保しない」「暗黙に複製しない」「論理のトラップをしない」「停止する」をコンパイラに検査させます。生成コードは変わりません。
 - `@trusted` は `extern` の宣言の前に付け、人がその外部関数の契約を確かめたことを記録します。コンパイラは確かめず、生成コードも変わりません。性質（`pure` など）を添えると、`pure def` や効果の表明から呼べます。
 - `@count(位置, 型)` は `extern` 関数の前に付け、バッファ引数に添えて C へ渡す長さ引数の整数型を決めます（`none` なら渡しません）。
+- `@link("名前")` はリンク名付きの `extern` 関数の前に付け、到達したときにシステムライブラリ `-l<名前>` をリンクします（Windows では `dllimport` になります）。
 - `@c_layout` は `record` の前に付け、フィールドを C の構造体と同じ配置にします。`@c_layout(pack = N)` は `#pragma pack(N)` と同じ詰め方です。
 - `@json "名前"` はレコードのフィールドや共用体の case の前に付け、導出した `Encode` / `Decode` が使う JSON の名前を変えます。
 - `@alias 名前` は `.tc` のトップレベルに書き、`名前 { ... }` でそのビルダーを呼べるようにします。標準のビルダーは別名を宣言していません。
@@ -29,6 +30,7 @@ flowchart TD
     at --> effects["@no_alloc / @no_copy<br/>@no_trap / @terminates<br/>効果の表明"]
     at --> trusted["@trusted<br/>extern の信頼の印"]
     at --> count["@count<br/>extern のバッファの長さ引数"]
+    at --> link["@link<br/>extern のシステムライブラリ"]
     at --> clayout["@c_layout<br/>C の配置のレコード"]
     at --> json["@json<br/>JSON での名前"]
     at --> alias["@alias<br/>ビルダーの別名"]
@@ -43,6 +45,7 @@ flowchart TD
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
 | `@count` | `extern` 関数の宣言の直前（`@trusted` と任意の順序） | バッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
+| `@link` | リンク名付き `extern` 関数の宣言の直前（`@trusted`・`@count` と任意の順序） | 到達時に `-l<名前>` をリンクし、Windows では `dllimport` を付与 | [ネイティブ連携](../compiler/native-interop.md#extern-ごとのライブラリlink) |
 | `@c_layout` | `record` の宣言の直前（`private` より前）。引数は省略か `(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`） | フィールドを宣言順に C の標準アライメントで並べ、C の構造体と同じ配置にする | [ネイティブ連携](../compiler/native-interop.md#c-レイアウトレコードc_layout) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
@@ -306,6 +309,19 @@ extern "GetWindowTextW" def get_window_text :: Hwnd -> ref mut [i16u..] -> i32
 - `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
 - WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` 以外の宣言に付けると `E0002`（`misplaced_count_attribute`）になります。
 
+## @link (extern のシステムライブラリ)
+
+`@link("名前")` は、明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）の直前に 1 つだけ置き、そのシンボルが最終の IR に到達したときだけ Tsuzuri のリンク行へ `-l<名前>` を追加します。Windows ターゲットでは `declare dllimport` になります。
+
+```tsuzuri
+@trusted @link("gdi32")
+extern "GdiFlush" def gdi_flush :: unit -> bool
+```
+
+- 名前は `-l` と同じ規則で、パス・`lib` 接頭辞・拡張子は書けません（違反は `E1008` `link_invalid_name`）。
+- 括弧や文字列の構文誤りは `E0002`（`link_attribute_syntax`）、`extern ... def` 以外（`def`・`export def`・`extern type`・`extern view def` など）への付与は `E0002`（`misplaced_link_attribute`）です。
+- リンク名のない `extern def` に付けると `E1008`（`link_needs_symbol`）、1 つの宣言に 2 回書くと `E1008`（`link_repeated`）、WebAssembly のビルドで到達すると `E2000`（`link_attribute_wasm`）になります。
+
 ## @c_layout (C の配置のレコード)
 
 `@c_layout` は、`record` の宣言の前に置き、そのレコードを C や Win32 API の構造体とバイト単位で同じ配置にします。フィールドは宣言順に C の標準アライメントで並び、パディングは明示されます。`@c_layout(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`）は、各フィールドのアライメントを `N` 以下に丸めます（C の `#pragma pack(N)` と同じ）。
@@ -382,11 +398,11 @@ fn Return value = value
 
 ## ユーザー定義の属性はない
 
-Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
+Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@link`、`@c_layout`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
 
 ## まとめ
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` の 12 個です。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@link`、`@c_layout`、`@json`、`@alias` の 13 個です。
 - `@'a : 制約` は制約行であり、属性ではありません。
 - ユーザー定義の属性はありません。
 - `@literal` は `const` と同じコンパイル時定数です。
@@ -395,6 +411,7 @@ Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@lite
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` は推論した効果を検査する表明で、違反は `E1031`、置き場の誤りは `E1032` です。生成コードは変わりません。
 - `@trusted` は人が確かめた `extern` の印で、誤りは `E1037` です。性質は `pure def` と効果の表明に効きます。
 - `@count` は `extern` のバッファ引数に添える長さ引数の型を決めます。
+- `@link` はリンク名付き `extern` が必要とするシステムライブラリを指定します。
 - `@c_layout` はレコードを C の構造体と同じ配置にします。
 - `@json` は導出した `Encode` / `Decode` が使うフィールドや case の名前を変えます。
 - `@alias` は `.tc` のビルダーに小文字の別名を足し、`identity { ... }` のような書き方を可能にします。

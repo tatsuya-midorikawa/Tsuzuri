@@ -37,6 +37,13 @@ struct Attributes {
     trusted: Option<TrustedMark>,
     counts: Vec<CountMark>,
     c_layout: Option<CLayoutMark>,
+    link: Option<LinkMark>,
+}
+
+struct LinkMark {
+    library: String,
+    span: Span,
+    name_span: Span,
 }
 
 struct CountMark {
@@ -627,6 +634,7 @@ impl Parser<'_> {
             trusted: Vec::new(),
             extern_counts: Vec::new(),
             c_layouts: Vec::new(),
+            links: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -693,6 +701,7 @@ impl Parser<'_> {
                     trusted,
                     counts,
                     c_layout,
+                    link,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -702,6 +711,15 @@ impl Parser<'_> {
                     return Err(Diagnostic::of(
                         DiagnosticKind::MisplacedCLayoutAttribute,
                         "'@c_layout' applies to a record declaration",
+                        mark.span,
+                    ));
+                }
+                if let Some(mark) = &link
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedLinkAttribute,
+                        "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
                         mark.span,
                     ));
                 }
@@ -808,6 +826,13 @@ impl Parser<'_> {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
                     ExternDeclaration::Type(declaration) => {
+                        if let Some(mark) = &link {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedLinkAttribute,
+                                "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                                mark.span,
+                            ));
+                        }
                         if let Some(count) = counts.first() {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::MisplacedCountAttribute,
@@ -833,6 +858,13 @@ impl Parser<'_> {
                     }
                     ExternDeclaration::Function(signature) => {
                         if signature.view {
+                            if let Some(mark) = &link {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLinkAttribute,
+                                    "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                                    mark.span,
+                                ));
+                            }
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedCountAttribute,
@@ -863,6 +895,14 @@ impl Parser<'_> {
                                 position: count.position,
                                 length: count.length,
                                 span: count.span,
+                            });
+                        }
+                        if let Some(mark) = link {
+                            program.links.push(LinkAttribute {
+                                target: signature.name.clone(),
+                                library: mark.library,
+                                span: mark.span,
+                                name_span: mark.name_span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1507,6 +1547,15 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.c_layout = Some(c_layout);
+            } else if let Some(link) = self.link_attribute()? {
+                if attributes.link.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LinkRepeated,
+                        "'@link' appears twice on one declaration; an extern function comes from one library",
+                        link.span,
+                    ));
+                }
+                attributes.link = Some(link);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1618,6 +1667,48 @@ impl Parser<'_> {
             None
         };
         Ok(Some(CLayoutMark { pack, span, at }))
+    }
+
+    /// `@link("name")` before an `extern` declaration with a link name (W17).
+    fn link_attribute(&mut self) -> Result<Option<LinkMark>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "link"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        let syntax_err = |span: Span| {
+            Diagnostic::of(
+                DiagnosticKind::LinkAttributeSyntax,
+                "'@link' takes one library name in parentheses, for example @link(\"user32\")",
+                span,
+            )
+        };
+        if !self.at(&TokenKind::LeftParen) {
+            return Err(syntax_err(span));
+        }
+        span = span.through(self.take().span);
+        let name_span = self.current().span;
+        let library = match &self.current().kind {
+            TokenKind::String(StringLiteral::Utf16(units)) => String::from_utf16_lossy(units),
+            TokenKind::String(StringLiteral::Utf8(text)) => text.clone(),
+            _ => return Err(syntax_err(span.through(name_span))),
+        };
+        span = span.through(self.take().span);
+        if !self.at(&TokenKind::RightParen) {
+            return Err(syntax_err(span.through(self.current().span)));
+        }
+        span = span.through(self.take().span);
+        Ok(Some(LinkMark {
+            library,
+            span,
+            name_span,
+        }))
     }
 
     /// `@count(position, length)` before an `extern` function declaration (W13).

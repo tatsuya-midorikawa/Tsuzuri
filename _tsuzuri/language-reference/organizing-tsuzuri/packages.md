@@ -324,6 +324,8 @@ search = ["libs"]
 - `libraries`: システムライブラリ名（`-l` に相当）。`lib` 接頭辞や拡張子は付けません。`libm` は `E0002` です。
 - `search`: 探索ディレクトリの相対パス（`-L` に相当）。
 
+git 依存や registry 依存のパッケージは `[native]` を持てませんが、明示のリンク名を持つ `extern` 関数には [`@link("名前")`](../compiler/native-interop.md#extern-ごとのライブラリlink) を書けます（パスを持ち込まず、到達した `extern` を呼ぶパッケージには権限 `ffi` の検査が効き、`tsuzuri audit` で確認できます）。
+
 ルートの入力が先、`native = true` の依存があとです。`link`、`libraries`、`search` を合わせて 256 個までです。超えると `E2000` です。絶対パスは拒否されます。
 
 ### [windows] セクション

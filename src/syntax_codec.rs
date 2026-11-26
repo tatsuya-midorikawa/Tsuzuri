@@ -575,6 +575,7 @@ impl Wire for Program {
             trusted,
             extern_counts,
             c_layouts,
+            links,
             noncanonical,
             aliases,
             declaration_starts,
@@ -606,6 +607,7 @@ impl Wire for Program {
         trusted.put(out)?;
         extern_counts.put(out)?;
         c_layouts.put(out)?;
+        links.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -640,6 +642,7 @@ impl Wire for Program {
             trusted: Vec::get(input)?,
             extern_counts: Vec::get(input)?,
             c_layouts: Vec::get(input)?,
+            links: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -785,6 +788,34 @@ impl Wire for CLayoutAttribute {
             target,
             pack,
             span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for LinkAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let LinkAttribute {
+            target,
+            library,
+            span,
+            name_span,
+        } = self;
+        target.put(out)?;
+        library.put(out)?;
+        span.put(out)?;
+        name_span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        let target = Ident::get(input)?;
+        let library = String::get(input)?;
+        let span = Span::get(input)?;
+        let name_span = Span::get(input)?;
+        Ok(LinkAttribute {
+            target,
+            library,
+            span,
+            name_span,
         })
     }
 }

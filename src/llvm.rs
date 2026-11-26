@@ -4217,6 +4217,15 @@ pub(crate) fn validate_wasm_externs(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if let Some(lib) = &import.library {
+            return Err(Diagnostic::of(
+                DiagnosticKind::LinkAttributeWasm,
+                format!(
+                    "'@link(\"{lib}\")' asks the native linker for a system library, which wasm output cannot link; build for a native target"
+                ),
+                function.span,
+            ));
+        }
         if import.view.is_some() {
             return Err(Diagnostic::of(
                 DiagnosticKind::AbiNativeOnly,

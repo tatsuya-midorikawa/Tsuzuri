@@ -5097,6 +5097,8 @@ pub struct CheckedModule {
     /// W14: canonical C signatures for explicit extern symbols declared with mixed `ptr`/`i64`
     /// positions; empty when every symbol's declarations share one LLVM signature.
     pub extern_abis: BTreeMap<String, crate::abi::CSignature>,
+    /// W17: explicit extern symbols annotated with `@link("name")` -> system library names.
+    pub link_libraries: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5488,6 +5490,8 @@ pub struct HostImport {
     pub counts: Vec<(usize, crate::syntax::CountLength)>,
     /// W24: `Some(Read | Write)` when declared as `extern view def`.
     pub view: Option<crate::syntax::ViewDirection>,
+    /// W17: system library name from `@link("name")`.
+    pub library: Option<String>,
 }
 
 impl HostImport {
@@ -8753,13 +8757,14 @@ fn check_modules_collect(
     let mut external_functions = BTreeMap::new();
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
     let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
+    let mut link_libraries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
             for ty in external.parameters.iter().chain([&external.result]) {
                 regions::reject_local(ty)?;
             }
-            let import = if external.view {
+            let mut import = if external.view {
                 HostImport {
                     native_symbol: String::new(),
                     wasm_module: String::new(),
@@ -8768,6 +8773,7 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: Some(crate::syntax::ViewDirection::Read),
+                    library: None,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8784,6 +8790,7 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: None,
+                    library: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -8802,6 +8809,7 @@ fn check_modules_collect(
                     callbacks: false,
                     counts: Vec::new(),
                     view: None,
+                    library: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8810,6 +8818,33 @@ fn check_modules_collect(
                     "extern declarations cannot have constraints or named regions",
                     external.name.span,
                 ));
+            }
+            if let Some(link_attr) = module.program.links.iter().find(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            }) {
+                if !import.explicit {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LinkNeedsSymbol,
+                        "'@link' needs an explicit symbol; write extern \"symbol\" def, because the generated tsuzuri_host_ symbols belong to the host",
+                        link_attr.span,
+                    ));
+                }
+                if crate::driver::library_name_error(&link_attr.library).is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LinkInvalidName,
+                        format!(
+                            "invalid library name '{}' in '@link'; write the name without a path, the 'lib' prefix or an extension, for example @link(\"user32\")",
+                            link_attr.library
+                        ),
+                        link_attr.name_span,
+                    ));
+                }
+                link_libraries
+                    .entry(import.native_symbol.clone())
+                    .or_default()
+                    .insert(link_attr.library.clone());
+                import.library = Some(link_attr.library.clone());
             }
             // E15: the `@trusted` mark of this declaration. An extern type may share the name, so
             // the mark is matched by the position of the declared name.
@@ -10596,6 +10631,7 @@ fn check_modules_collect(
         noncanonical,
         generic_declarations: Vec::new(),
         extern_abis,
+        link_libraries,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -11217,6 +11253,7 @@ fn recovery_module(
         noncanonical: Vec::new(),
         generic_declarations: Vec::new(),
         extern_abis: BTreeMap::new(),
+        link_libraries: BTreeMap::new(),
     }
 }
 

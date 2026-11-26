@@ -369,6 +369,19 @@ libraries = ["sqlite3", "m"]
 search = ["vendor"]
 ```
 
+### extern ごとのライブラリ（`@link`）
+
+明示のリンク名を持つ `extern "symbol" def`（および `extern "module" "symbol" def`）の直前には、`@link("名前")` を 1 つ書けます（`@trusted` などの属性と任意の順序・同じ行可）。その宣言のシンボルが最終の IR に現れた（到達した）ときだけ、Tsuzuri がリンクするビルド（`build --emit exe`・`shared`、`run`、ネイティブの `test`・`bench`）のリンク行で、利用者のリンク入力の後ろに `-l<名前>` を自動で追加します（`-l` や `[native] libraries` に同じ名前があれば重複させず 1 つにまとめ、合計 256 の上限には数えます）。名前の規則は `-l` と同じで、パスや `lib` 接頭辞・拡張子は書けません（違反は `E1008` `link_invalid_name`）。
+
+```tsuzuri
+@trusted @link("gdi32")
+extern "GdiFlush" def gdi_flush :: unit -> bool
+```
+
+- **Windows の `dllimport`**: Windows ターゲットでは、`@link` が付いたシンボルの宣言がすべて `declare dllimport ...` になり、IAT 経由の直接呼び出しになります。
+- **キャッシュとパッケージ**: `@link` はソースと IR に含まれるためビルドキャッシュを止めません。パスを持ち込まないため、`native = true` のない依存パッケージや git・registry パッケージにも記述でき、実際にその `extern` を呼ぶパッケージには権限 `ffi` の検査が効きます。`tsuzuri audit` は各 `extern` 行に `link <名前>`（JSON では `"link"` キー）を表示します。
+- **リンクしない出力と WebAssembly**: `--emit object`・`llvm`・`bitcode`・`header` では目的ファイルに要求を埋め込まないため、リンクするホスト側が `-l` を指定します。WebAssembly のビルドで `@link` の付いたシンボルに到達すると `E2000`（`link_attribute_wasm`）になります（到達しない宣言と `check` は成功します）。オブジェクトのパスや静的ライブラリの厳密な順序が必要な場合は `[native]` を使います。
+
 ## 所有バッファと tsuzuri_alloc
 
 所有して返す `[ubyte]` は、先頭の out 引数へ `{ ptr, len }` を書きます。ホストは使い終わったら `tsuzuri_free(tag.ptr)` を 1 回呼びます。`tsuzuri_free(NULL)` は何もしません。`tsuzuri_alloc(0)` は、少なくとも 1 バイトの一意なアドレスを返します。負のサイズや確保失敗はトラップです。

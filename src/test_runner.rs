@@ -491,6 +491,7 @@ pub fn build_debug_runner(
     if pdb.is_some() {
         text = llvm::with_codeview(text);
     }
+    let sys_libraries = crate::driver::system_libraries(module, &text, links);
     let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
     let object = temporary.path.join("tests.o");
@@ -570,7 +571,7 @@ pub fn build_debug_runner(
             link.arg("-lbcrypt");
         }
     }
-    links.add_to(&mut link);
+    links.add_to(&mut link, &sys_libraries)?;
     let staged_pdb = temporary.path.join("tests.pdb");
     if let Some(pdb) = &pdb {
         link.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
@@ -978,6 +979,7 @@ fn compile_native_runner(
     if platform.windows() {
         text = llvm::windows_abi(text, module, true);
     }
+    let sys_libraries = crate::driver::system_libraries(module, &text, links);
     // TZ02: a test that spawns waits for its tzroutines in the scheduler of src/runtime/tzroutine.c,
     // which a native DataChannel waits on too (TZ12).
     let tzroutine_runtime = text.contains("@tsuzuri_tz_") || text.contains("@tsuzuri_channel_");
@@ -1091,7 +1093,7 @@ fn compile_native_runner(
     if os_runtime && platform.windows() {
         clang.arg("-lbcrypt");
     }
-    links.add_to(&mut clang);
+    links.add_to(&mut clang, &sys_libraries)?;
     collect_message(
         messages,
         run_tool(&mut clang, &cross_hint(platform, runner.tools_hint))?,

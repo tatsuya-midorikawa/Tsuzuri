@@ -1063,6 +1063,21 @@ fn git_packages_reject_path_dependencies() {
         "E2000",
         "git and registry packages cannot declare [native] link settings; move them to the application manifest",
     );
+
+    // W17: a git package MAY declare `@link("m")` on an explicit extern function.
+    let point_with_link =
+        format!("{POINT}\n@trusted @link(\"m\")\nextern \"cos\" def c_cos :: f64 -> f64\n");
+    let sha256 = offline_project(
+        &scratch,
+        url,
+        &[("Tsuzuri.toml", GEOMETRY), ("Point.tz", &point_with_link)],
+    );
+    scratch.write(
+        "app/Tsuzuri.lock",
+        &lock_text(&[("geometry-core", url, REV, &sha256)]),
+    );
+    let ok = scratch.tsuzuri(&["check", scratch.path("app").to_str().unwrap()]);
+    assert!(ok.status.success(), "{}", stderr(&ok));
 }
 
 /// `geometry-core` and `other` repositories as in `tests/modules.rs`, and an app

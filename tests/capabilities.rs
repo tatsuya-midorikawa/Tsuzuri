@@ -775,3 +775,42 @@ fn a_dependency_key_after_native_must_be_capabilities() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn audit_reports_link_attribute_without_changing_unannotated_externs() {
+    let root = scratch("w17-link-audit");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"w17audit\"\nversion = \"0.1.0\"\n",
+    );
+    write(
+        &root,
+        "Main.tz",
+        "@trusted @link(\"gdi32\")\nextern \"GdiFlush\" def gdi_flush :: unit -> bool\n@trusted\nextern \"abs\" def c_abs :: i32 -> i32\ndef main :: unit -> i32 = \\() -> if gdi_flush () then c_abs (-7i32) else 0i32\n",
+    );
+    let text_out = tsuzuri(&["audit", "."], &root);
+    assert!(text_out.status.success());
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    assert!(
+        text.contains("    gdi_flush -> \"GdiFlush\"  Main.tz:2:23  trusted  link gdi32\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    c_abs -> \"abs\"  Main.tz:4:18  trusted\n"),
+        "{text}"
+    );
+
+    let json_out = tsuzuri(&["audit", ".", "--json"], &root);
+    assert!(json_out.status.success());
+    let json = String::from_utf8_lossy(&json_out.stdout);
+    assert!(
+        json.contains("\"name\":\"gdi_flush\",\"symbol\":\"GdiFlush\",\"path\":\"Main.tz\",\"line\":2,\"column\":23,\"trusted\":true,\"properties\":[],\"used\":1,\"link\":\"gdi32\"}"),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"name\":\"c_abs\",\"symbol\":\"abs\",\"path\":\"Main.tz\",\"line\":4,\"column\":18,\"trusted\":true,\"properties\":[],\"used\":1}"),
+        "{json}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

@@ -28,6 +28,34 @@ pub(super) fn header(module: &CheckedModule) -> String {
     output
 }
 
+pub(super) fn extern_declare(
+    module: &CheckedModule,
+    wasm: bool,
+    wasm_module: &str,
+    wasm_name: &str,
+    symbol: &str,
+    output: &str,
+    types: &[String],
+) -> String {
+    let dllimport = if !wasm
+        && crate::target::current_platform().windows()
+        && module.link_libraries.contains_key(symbol)
+    {
+        "dllimport "
+    } else {
+        ""
+    };
+    let attributes = if wasm {
+        format!(" \"wasm-import-module\"=\"{wasm_module}\" \"wasm-import-name\"=\"{wasm_name}\"")
+    } else {
+        String::new()
+    };
+    format!(
+        "declare {dllimport}{output} @{symbol}({}){attributes}",
+        types.join(", ")
+    )
+}
+
 impl FunctionEmitter<'_, '_> {
     /// W24: lowers `extern view def` inline at the call site: validates non-null and C alignment
     /// via `host_pointer` (trapping at the call site with `BoundsCheck`), then reads or writes
@@ -366,18 +394,14 @@ impl FunctionEmitter<'_, '_> {
                 convert_ptr_result = true;
             }
         }
-        let attributes = if self.globals.wasm {
-            format!(
-                " \"wasm-import-module\"=\"{}\" \"wasm-import-name\"=\"{}\"",
-                import.wasm_module, import.wasm_name
-            )
-        } else {
-            String::new()
-        };
-        self.intrinsics.insert(format!(
-            "declare {output} @{}({}){attributes}",
-            import.native_symbol,
-            types.join(", ")
+        self.intrinsics.insert(extern_declare(
+            self.module,
+            self.globals.wasm,
+            &import.wasm_module,
+            &import.wasm_name,
+            &import.native_symbol,
+            &output,
+            &types,
         ));
         let call = format!(
             "call {output} @{}({})",

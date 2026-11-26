@@ -1470,6 +1470,7 @@ fn add_items(
         trusted: _,
         extern_counts,
         c_layouts,
+        links: _,
         noncanonical: _,
         aliases,
         declaration_starts: _,
