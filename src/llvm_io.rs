@@ -82,6 +82,7 @@ impl FunctionEmitter<'_, '_> {
         let (name, parameters) = match builtin {
             Builtin::OsRead => ("read", "ptr, i32, ptr, i64"),
             Builtin::OsArgs => ("args", "ptr"),
+            Builtin::OsVersion => ("version", "ptr"),
             Builtin::OsWrite => ("write", "i32, ptr, i64, ptr, i64"),
             Builtin::OsRandom => ("random", "ptr, i64"),
             Builtin::OsClock => ("clock", "i32"),
@@ -98,6 +99,7 @@ impl FunctionEmitter<'_, '_> {
             builtin,
             Builtin::OsRead
                 | Builtin::OsArgs
+                | Builtin::OsVersion
                 | Builtin::OsRandom
                 | Builtin::OsHandle
                 | Builtin::OsSpawn
@@ -122,6 +124,12 @@ impl FunctionEmitter<'_, '_> {
                 self.intrinsics
                     .insert("declare void @tsuzuri_os_set_args(i32, ptr)".to_owned());
                 format!("call i64 @tsuzuri_os_args(ptr {})", slot.as_ref().unwrap())
+            }
+            Builtin::OsVersion => {
+                format!(
+                    "call i64 @tsuzuri_os_version(ptr {})",
+                    slot.as_ref().unwrap()
+                )
             }
             Builtin::OsRandom => format!(
                 "call i64 @tsuzuri_os_random(ptr {}, i64 %arg0)",

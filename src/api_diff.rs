@@ -1471,6 +1471,7 @@ fn add_items(
         extern_counts,
         c_layouts,
         links: _,
+        weaks: _,
         noncanonical: _,
         aliases,
         declaration_starts: _,

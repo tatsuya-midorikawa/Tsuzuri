@@ -578,6 +578,7 @@ impl Wire for Program {
             extern_counts,
             c_layouts,
             links,
+            weaks,
             noncanonical,
             aliases,
             declaration_starts,
@@ -610,6 +611,7 @@ impl Wire for Program {
         extern_counts.put(out)?;
         c_layouts.put(out)?;
         links.put(out)?;
+        weaks.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -645,6 +647,7 @@ impl Wire for Program {
             extern_counts: Vec::get(input)?,
             c_layouts: Vec::get(input)?,
             links: Vec::get(input)?,
+            weaks: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -822,6 +825,21 @@ impl Wire for LinkAttribute {
             library,
             span,
             name_span,
+        })
+    }
+}
+
+impl Wire for WeakAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let WeakAttribute { target, span } = self;
+        target.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(WeakAttribute {
+            target: Ident::get(input)?,
+            span: Span::get(input)?,
         })
     }
 }

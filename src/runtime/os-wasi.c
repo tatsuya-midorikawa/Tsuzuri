@@ -871,6 +871,13 @@ int32_t tsuzuri_io_write(int32_t destination, const unsigned char *data, int64_t
     return tz_write_all((uint32_t)destination, data, length) == 0 ? 0 : 1;
 }
 
+#ifdef TZ_OS_VERSION
+int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
+    tz_clear(output);
+    return tz_status(TZ_OS_OTHER, TZ_WASI_NOSYS);
+}
+#endif
+
 #ifdef TZ_WASI_START
 extern int32_t tsuzuri_main(void);
 

@@ -970,4 +970,30 @@ TZ_OS_API int64_t tsuzuri_os_sleep(int64_t milliseconds) {
     }
     return 0;
 }
+
+#if defined(TZ_OS_VERSION)
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
+    tz_os_clear(output);
+    char buf[128];
+    size_t len = sizeof buf;
+    if (sysctlbyname("kern.osproductversion", buf, &len, NULL, 0) != 0) {
+        return tz_os_error(errno);
+    }
+    buf[sizeof buf - 1] = '\0';
+    size_t n = strlen(buf);
+    return tz_os_deliver(output, (const unsigned char *)buf, n);
+}
+#else
+#include <sys/utsname.h>
+TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
+    tz_os_clear(output);
+    struct utsname info;
+    if (uname(&info) != 0) return tz_os_error(errno);
+    size_t n = strlen(info.release);
+    return tz_os_deliver(output, (const unsigned char *)info.release, n);
+}
+#endif
+#endif
 #endif

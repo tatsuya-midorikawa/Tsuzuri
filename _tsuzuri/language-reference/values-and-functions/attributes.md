@@ -46,6 +46,7 @@ flowchart TD
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
 | `@count` | `extern` 関数の宣言の直前（`@trusted` と任意の順序） | バッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
 | `@link` | リンク名付き `extern` 関数・データシンボルの直前（`@trusted`・`@count` と任意の順序） | 到達時に `-l<名前>` または macOS の `-framework <名前>` をリンクし、Windows では `dllimport` を付与 | [ネイティブ連携](../compiler/native-interop.md#extern-ごとのライブラリと-frameworklink) |
+| `@weak` | リンク名付き `extern` 関数・データシンボルの直前（`@trusted`・`@link` と任意の順序） | Apple ターゲットで Mach-O の weak import にし、不在の関数呼び出し時に報告してトラップ（データシンボルは `Maybe.None`） | [@weak（弱い import）](#weak-弱い-import) |
 | `@c_layout` | `record` の宣言の直前（`private` より前）。引数は省略か `(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`） | フィールドを宣言順に C の標準アライメントで並べ、C の構造体と同じ配置にする | [ネイティブ連携](../compiler/native-interop.md#c-レイアウトレコードc_layout) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
@@ -324,6 +325,19 @@ extern "NSApplicationLoad" def application_load :: unit -> unit
 - ライブラリ名は `-l` と同じ規則、framework 名は `--framework` と同じ規則（パスや `.framework` 接尾辞なし）です（違反は `E1008` `link_invalid_name`）。
 - 括弧や文字列の構文誤りは `E0002`（`link_attribute_syntax`）、対象外の宣言（`def`・`export def`・`extern type`・アドレスを取る `extern view def` など）への付与は `E0002`（`misplaced_link_attribute`）です。
 - リンク名のない `extern def` に付けると `E1008`（`link_needs_symbol`）、1 つの宣言に 2 回書くと `E1008`（`link_repeated`）、`@link(framework = ...)` に macOS 以外のネイティブターゲットで到達すると `E2000`（`link_framework_target`）、WebAssembly のビルドで到達すると `E2000`（`link_attribute_wasm`）になります。
+
+## @weak (弱い import)
+
+`@weak` は引数を取らず、Apple ターゲット（macOS Arm64）で明示のリンク名を持つ `extern "sym" def` または C データシンボル（`Maybe<T>` / `Maybe<H>` を返すもの）の直前に置きます。新しい macOS にしかない API を参照しながら、古い macOS でも起動できるようにするための属性です（実行中の OS 版は [`Env.os_version`](../built-in-types-and-modules/env.md) で調べられます）。
+
+```tsuzuri
+@trusted @weak
+extern "m17_new_api" def new_api :: unit -> i32
+```
+
+- 関数は `declare extern_weak` になり、呼び出しの地点でシンボルが非 `NULL` か検査します。実行中の OS にそのシンボルがなければ `Tsuzuri runtime: the weak symbol '<sym>' is not available on this system` を標準エラーに書いてから `Assert` トラップで停止します（効果 `trap` を持つため、`@trusted no_trap` との併用は `E1037` `trusted_no_trap_weak`）。同じシンボルに複数の宣言があるとき、どれか 1 つに `@weak` があればすべての呼び出しが検査します。
+- データシンボルは `@sym = extern_weak global [0 x i8]` になり、戻り値は `Maybe<T>` / `Maybe<H>` が必須です（`E1008` `weak_data_symbol_result`）。シンボルが不在ならトラップせず `Maybe.None` を返します。
+- 引数を付けると `E0002`（`weak_attribute_syntax`）、対象外の宣言や重複は `E0002`（`misplaced_weak_attribute`）、リンク名のない `extern def` は `E1008`（`weak_needs_symbol`）です。Apple 以外のネイティブターゲットで到達すると `E1008`（`abi_apple_only`）、WebAssembly では `E1008`（`abi_native_only`）になります（未到達の宣言と `check` は成功します）。なお、Apple のリンカーはリンクする SDK・ライブラリのどれにも存在しないシンボルへの `@weak` を未定義シンボル（`E2002`）として拒否します。
 
 ## @c_layout (C の配置のレコード)
 

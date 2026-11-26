@@ -37,7 +37,9 @@ pub(super) fn extern_declare(
     output: &str,
     types: &[String],
 ) -> String {
-    let dllimport = if !wasm
+    let linkage = if !wasm && module.weak_symbols.contains(symbol) {
+        "extern_weak "
+    } else if !wasm
         && crate::target::current_platform().windows()
         && module.link_libraries.contains_key(symbol)
     {
@@ -51,7 +53,7 @@ pub(super) fn extern_declare(
         String::new()
     };
     format!(
-        "declare {dllimport}{output} @{symbol}({}){attributes}",
+        "declare {linkage}{output} @{symbol}({}){attributes}",
         types.join(", ")
     )
 }
@@ -73,6 +75,71 @@ impl FunctionEmitter<'_, '_> {
             .entry(data.symbol.clone())
             .or_insert(decl_span);
         let global = format!("@{}", data.symbol);
+        if self.module.weak_symbols.contains(&data.symbol) {
+            return match data.access {
+                crate::syntax::DataAccess::Address => self.nullable_from_c(result, &global),
+                crate::syntax::DataAccess::Read => {
+                    let payload = crate::abi::std_maybe_payload(result, &self.module.types())
+                        .expect("validated weak data symbol Maybe<T>")
+                        .clone();
+                    let Type::Union(id, _) = result else {
+                        unreachable!()
+                    };
+                    let some_case = self.module.unions[*id]
+                        .cases
+                        .iter()
+                        .position(|(name, p)| name == "Some" && p.is_some())
+                        .expect("std::Maybe has Some");
+                    let present = self.value(format!("icmp ne ptr {global}, null"));
+                    let ok_block = self.label();
+                    let miss_block = self.label();
+                    let done_block = self.label();
+                    self.branch(&present, &ok_block, &miss_block);
+
+                    self.begin(&miss_block);
+                    let none_val = self.nullary_value(result, "None");
+                    let from_miss = self.block.clone();
+                    self.jump(&done_block);
+
+                    self.begin(&ok_block);
+                    let ok_val = match &payload {
+                        Type::Handle(..) => {
+                            let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                            self.nullable_from_c(result, &raw)
+                        }
+                        Type::Integer(bits, _) => {
+                            let align = usize::from(*bits) / 8;
+                            let v =
+                                self.value(format!("load i{bits}, ptr {global}, align {align}"));
+                            let pty = self.ty(&payload);
+                            self.construct_value(result, some_case, Some((v, pty)))
+                        }
+                        Type::Binary(32) => {
+                            let v = self.value(format!("load float, ptr {global}, align 4"));
+                            self.construct_value(result, some_case, Some((v, "float".into())))
+                        }
+                        Type::Binary(64) => {
+                            let v = self.value(format!("load double, ptr {global}, align 8"));
+                            self.construct_value(result, some_case, Some((v, "double".into())))
+                        }
+                        Type::Record(..) => {
+                            let v = self.read_host_record(&payload, &global);
+                            let pty = self.ty(&payload);
+                            self.construct_value(result, some_case, Some((v, pty)))
+                        }
+                        _ => unreachable!("validated weak data symbol read payload"),
+                    };
+                    let from_ok = self.block.clone();
+                    self.jump(&done_block);
+
+                    self.begin(&done_block);
+                    let llvm = self.ty(result);
+                    self.value(format!(
+                        "phi {llvm} [ {none_val}, %{from_miss} ], [ {ok_val}, %{from_ok} ]"
+                    ))
+                }
+            };
+        }
         match data.access {
             crate::syntax::DataAccess::Address => global,
             crate::syntax::DataAccess::Read => match result {
@@ -444,6 +511,24 @@ impl FunctionEmitter<'_, '_> {
             &output,
             &types,
         ));
+        if !self.globals.wasm
+            && import.explicit
+            && self.module.weak_symbols.contains(&import.native_symbol)
+        {
+            let sym = &import.native_symbol;
+            let present = self.value(format!("icmp ne ptr @{sym}, null"));
+            let ok_block = self.label();
+            let miss_block = self.label();
+            self.branch(&present, &ok_block, &miss_block);
+            self.begin(&miss_block);
+            self.globals.weak_checked_symbols.insert(sym.clone());
+            self.instruction(format!(
+                "call void @tz.weak.missing(ptr @tz.weak.name.{sym}, i64 {})",
+                sym.len()
+            ));
+            self.emit_trap(TrapKind::Assert);
+            self.begin(&ok_block);
+        }
         let call = format!(
             "call {output} @{}({})",
             import.native_symbol,

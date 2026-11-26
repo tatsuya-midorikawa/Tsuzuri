@@ -24,7 +24,7 @@ Tsuzuri のパッケージシステムは、決定論的なビルドと安全性
 
 - `#` の行コメント、空行、CRLF / LF
 - ダブルクォートの UTF-8 文字列と、エスケープ `\"`、`\\`、`\n`、`\r`、`\t`
-- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[windows]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで <!-- rule: EDN-009 -->
+- `[package]` を最初に置き、そのあとに `[dependencies]`、`[wasm]`、`[native]`、`[windows]`、`[macos]`、`[registry]`、`[capabilities]` を任意の順で、それぞれ 1 回まで <!-- rule: EDN-009 -->
 
 <!-- rule: EDN-004 -->
 複数行の配列、未知のセクションやキー、対応していない TOML は `E0002` です。マニフェストは最大 1 MiB で、超えると `E1017` です（ソースの上限の 4 MiB を超えるファイルは、読み込みの `E0003` です）。シンボリックリンクのマニフェストは `E1011` です。
@@ -341,6 +341,17 @@ subsystem = "windows"
 ```
 
 値は `"console"` または `"windows"` です（それ以外は `E0002` `invalid_windows_setting`）。コマンドラインの `--subsystem` が優先されます。Windows 以外のターゲットや `--emit exe` 以外の出力では `[windows]` の設定は無視されます（コマンドラインで `--subsystem` を明示した場合は `console`・`windows` を問わず非 Windows ターゲット・非 `exe` 出力で `E2000` になります）。
+
+### [macos] セクション
+
+macOS 向けに出力するときの最低 OS 版（Mach-O の `minos`）を指定します。ルートパッケージの `[macos]` だけを読み、依存パッケージの `[macos]` は読みません。
+
+```toml
+[macos]
+min_version = "13.0"
+```
+
+値は `12.0` 以上の `"<major>[.<minor>[.<patch>]]"`（例: `"12"`・`"13.0"`・`"14.1.2"`）です（それ以外は `E0002` `invalid_macos_setting`）。有効な版は `[macos] min_version` → 環境変数 `MACOSX_DEPLOYMENT_TARGET` → 既定の `12.0` の順で決まり、macOS 以外のターゲットのビルドでは無視されます。
 
 ## 権限（capabilities）
 

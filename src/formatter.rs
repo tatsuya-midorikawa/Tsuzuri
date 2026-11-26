@@ -332,6 +332,10 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         attribute.span = Span::default();
         attribute.name_span = Span::default();
     }
+    for attribute in &mut program.weaks {
+        canonical.ident(&mut attribute.target);
+        attribute.span = Span::default();
+    }
     for alias in &mut program.aliases {
         canonical.ident(alias);
     }

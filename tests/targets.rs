@@ -460,6 +460,25 @@ fn the_bundled_launcher_maps_every_target_the_compiler_can_name() {
         (wasm.wasm, wasm.zig.as_deref(), wasm.llvm.as_str()),
         (true, Some("wasm32-freestanding"), "wasm32-unknown-unknown")
     );
+    // M17: versioned macOS triples and `-mmacosx-version-min` / `MACOSX_DEPLOYMENT_TARGET` resolution.
+    let v13 = shim::resolve(Some("arm64-apple-macosx13.0.0"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (v13.zig.as_deref(), v13.llvm.as_str()),
+        (Some("aarch64-macos.13.0"), "arm64-apple-macosx13.0.0")
+    );
+    let min_arg =
+        shim::resolve_with_macos(None, Some("13.2"), Some("14.0"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (min_arg.zig.as_deref(), min_arg.llvm.as_str()),
+        (Some("aarch64-macos.13.2"), "aarch64-apple-macosx13.2.0")
+    );
+    let from_env =
+        shim::resolve_with_macos(None, None, Some("14.1.2"), "macos", "aarch64").unwrap();
+    assert_eq!(
+        (from_env.zig.as_deref(), from_env.llvm.as_str()),
+        (Some("aarch64-macos.14.1.2"), "aarch64-apple-macosx14.1.2")
+    );
+    assert!(shim::resolve_with_macos(None, Some("11.0"), None, "macos", "aarch64").is_err());
 }
 
 #[test]

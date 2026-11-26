@@ -154,6 +154,7 @@ jobs:
           export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
           node tests/macos_link_inputs.mjs target/release/tsuzuri
           node tests/data_symbols.mjs target/release/tsuzuri
+          node tests/weak_import.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |

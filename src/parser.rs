@@ -38,6 +38,7 @@ struct Attributes {
     counts: Vec<CountMark>,
     c_layout: Option<CLayoutMark>,
     link: Option<LinkMark>,
+    weak: Option<Span>,
 }
 
 struct LinkMark {
@@ -636,6 +637,7 @@ impl Parser<'_> {
             extern_counts: Vec::new(),
             c_layouts: Vec::new(),
             links: Vec::new(),
+            weaks: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -703,6 +705,7 @@ impl Parser<'_> {
                     counts,
                     c_layout,
                     link,
+                    weak,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -722,6 +725,15 @@ impl Parser<'_> {
                         DiagnosticKind::MisplacedLinkAttribute,
                         "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
                         mark.span,
+                    ));
+                }
+                if let Some(weak_span) = weak
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedWeakAttribute,
+                        "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                        weak_span,
                     ));
                 }
                 if let Some(mark) = &trusted
@@ -834,6 +846,13 @@ impl Parser<'_> {
                                 mark.span,
                             ));
                         }
+                        if let Some(weak_span) = weak {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedWeakAttribute,
+                                "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                                weak_span,
+                            ));
+                        }
                         if let Some(count) = counts.first() {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::MisplacedCountAttribute,
@@ -883,6 +902,13 @@ impl Parser<'_> {
                                     mark.span,
                                 ));
                             }
+                            if let Some(weak_span) = weak {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedWeakAttribute,
+                                    "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                                    weak_span,
+                                ));
+                            }
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedCountAttribute,
@@ -899,6 +925,17 @@ impl Parser<'_> {
                                     first,
                                 ));
                             }
+                        }
+                        if let Some(mark) = &trusted
+                            && let Some(weak_span) = weak
+                            && let Some(no_trap_bit) = crate::syntax::trusted_property_bit("no_trap")
+                            && mark.properties & no_trap_bit != 0
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::TrustedNoTrapWeak,
+                                "'@trusted no_trap' contradicts '@weak': a call of a missing weak symbol traps",
+                                weak_span,
+                            ));
                         }
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
@@ -926,6 +963,12 @@ impl Parser<'_> {
                                 library: mark.library,
                                 span: mark.span,
                                 name_span: mark.name_span,
+                            });
+                        }
+                        if let Some(weak_span) = weak {
+                            program.weaks.push(WeakAttribute {
+                                target: signature.name.clone(),
+                                span: weak_span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1579,6 +1622,15 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.link = Some(link);
+            } else if let Some(weak_span) = self.weak_attribute()? {
+                if attributes.weak.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedWeakAttribute,
+                        "'@weak' applies once to an extern function with a link name, an extern class, or a data symbol",
+                        weak_span,
+                    ));
+                }
+                attributes.weak = Some(weak_span);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1744,6 +1796,35 @@ impl Parser<'_> {
             span,
             name_span,
         }))
+    }
+
+    fn weak_attribute(&mut self) -> Result<Option<Span>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "weak"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let mut span = at.through(self.take().span);
+        if self.at(&TokenKind::LeftParen) {
+            span = span.through(self.take().span);
+            while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::End) {
+                span = span.through(self.take().span);
+            }
+            if self.at(&TokenKind::RightParen) {
+                span = span.through(self.take().span);
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::WeakAttributeSyntax,
+                "'@weak' takes no arguments",
+                span,
+            ));
+        }
+        Ok(Some(span))
     }
 
     /// `@count(position, length)` before an `extern` function declaration (W13).

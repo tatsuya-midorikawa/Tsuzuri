@@ -5993,6 +5993,7 @@ impl Checker<'_> {
             builtin,
             Builtin::OsRead
                 | Builtin::OsArgs
+                | Builtin::OsVersion
                 | Builtin::OsWrite
                 | Builtin::OsRandom
                 | Builtin::OsClock
@@ -7660,6 +7661,7 @@ pub(super) fn specialize(
         extern_abis: module.extern_abis,
         link_libraries: module.link_libraries,
         link_frameworks: module.link_frameworks,
+        weak_symbols: module.weak_symbols,
     })
 }
 

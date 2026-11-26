@@ -2238,6 +2238,7 @@ fn emit_program_in(
     // The functions passed to the host as callbacks get C-ABI wrappers, in id order.
     let callback_ids = std::mem::take(&mut globals.callbacks);
     let mark_main_done = !callback_ids.is_empty() && globals.guard_callbacks_after_main;
+    let mut needs_trap_write = false;
     if mark_main_done {
         const AFTER_MAIN_MSG: &str = "Tsuzuri runtime: a callback was called after main returned; stop the timers, threads and windows that call it before main returns\n";
         let bytes: String = AFTER_MAIN_MSG
@@ -2256,10 +2257,7 @@ entry:\n\
   unreachable\n\
 }}\n"
         );
-        if !instrumentation.traps {
-            output.push_str(traps::TRAP_WRITE);
-            intrinsics.insert("declare i64 @write(i32, ptr, i64)".into());
-        }
+        needs_trap_write = true;
     }
     for id in callback_ids {
         let function = &module.functions[id];
@@ -2280,6 +2278,39 @@ entry:\n\
             &format!("@tz.callback.{}", function.qualified_name()),
             &mut globals,
         ));
+    }
+    if !globals.weak_checked_symbols.is_empty() {
+        const WEAK_PREFIX: &str = "Tsuzuri runtime: the weak symbol '";
+        const WEAK_SUFFIX: &str = "' is not available on this system\n";
+        let enc = |s: &str| -> String { s.bytes().map(|b| format!("\\{b:02X}")).collect() };
+        let plen = WEAK_PREFIX.len();
+        let slen = WEAK_SUFFIX.len();
+        for sym in &globals.weak_checked_symbols {
+            let _ = writeln!(
+                output,
+                "@tz.weak.name.{sym} = private unnamed_addr constant [{} x i8] c\"{sym}\"",
+                sym.len()
+            );
+        }
+        let _ = write!(
+            output,
+            "@tz.weak.missing.prefix = private unnamed_addr constant [{plen} x i8] c\"{}\"\n\
+@tz.weak.missing.suffix = private unnamed_addr constant [{slen} x i8] c\"{}\"\n\
+define internal void @tz.weak.missing(ptr %name, i64 %len) cold nounwind {{\n\
+entry:\n\
+  call void @tz.trap.write(ptr @tz.weak.missing.prefix, i64 {plen})\n\
+  call void @tz.trap.write(ptr %name, i64 %len)\n\
+  call void @tz.trap.write(ptr @tz.weak.missing.suffix, i64 {slen})\n\
+  ret void\n\
+}}\n",
+            enc(WEAK_PREFIX),
+            enc(WEAK_SUFFIX)
+        );
+        needs_trap_write = true;
+    }
+    if needs_trap_write && !instrumentation.traps {
+        output.push_str(traps::TRAP_WRITE);
+        intrinsics.insert("declare i64 @write(i32, ptr, i64)".into());
     }
     for (instance, ty) in &builtins {
         output.push_str(&emit_builtin(
@@ -2326,7 +2357,12 @@ entry:\n\
         let _ = writeln!(output, "{intrinsic}");
     }
     for sym in globals.data_symbols.keys() {
-        let _ = writeln!(output, "@{sym} = external global [0 x i8]");
+        let linkage = if module.weak_symbols.contains(sym) {
+            "extern_weak"
+        } else {
+            "external"
+        };
+        let _ = writeln!(output, "@{sym} = {linkage} global [0 x i8]");
     }
     if let Some(io_wrapper) = io_wrapper {
         output.push_str(&debug::wrapper(
@@ -2998,6 +3034,8 @@ struct Globals {
     callbacks: BTreeSet<usize>,
     /// M06: C global data symbols read or addressed by the emitted code, with their first declaration span.
     data_symbols: BTreeMap<String, Span>,
+    /// M17: explicit function symbols checked against `null` for `@weak` calls.
+    weak_checked_symbols: BTreeSet<String>,
     /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
     guard_callbacks_after_main: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -3063,6 +3101,7 @@ impl Default for Globals {
             user_drops: std::rc::Rc::default(),
             callbacks: BTreeSet::new(),
             data_symbols: BTreeMap::new(),
+            weak_checked_symbols: BTreeSet::new(),
             guard_callbacks_after_main: false,
             coverage: None,
             seed: None,
@@ -4219,7 +4258,25 @@ fn validate_native_externs(
     module: &CheckedModule,
     reachable: &BTreeSet<usize>,
 ) -> Result<(), Diagnostic> {
-    if !crate::target::current_platform().windows() {
+    let platform = crate::target::current_platform();
+    if !platform.mach_o() {
+        for &id in reachable {
+            let function = &module.functions[id];
+            if let TypedExprKind::HostCall(import, _) = &function.body.kind
+                && (import.weak
+                    || import
+                        .explicit_c_symbol()
+                        .is_some_and(|sym| module.weak_symbols.contains(sym)))
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AbiAppleOnly,
+                    "'@weak' needs a Mach-O weak import, which only Apple targets have",
+                    function.span,
+                ));
+            }
+        }
+    }
+    if !platform.windows() {
         return Ok(());
     }
     for &id in reachable {
@@ -4300,6 +4357,17 @@ pub(crate) fn validate_wasm_externs(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if import.weak
+            || import
+                .explicit_c_symbol()
+                .is_some_and(|sym| module.weak_symbols.contains(sym))
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'@weak' needs a Mach-O weak import, which WebAssembly targets do not support; build for an Apple target",
+                function.span,
+            ));
+        }
         if let Some(lib) = &import.library {
             return Err(Diagnostic::of(
                 DiagnosticKind::LinkAttributeWasm,
@@ -8707,6 +8775,7 @@ fn emit_builtin(
         | Builtin::IOWrite
         | Builtin::OsRead
         | Builtin::OsArgs
+        | Builtin::OsVersion
         | Builtin::OsWrite
         | Builtin::OsRandom
         | Builtin::OsClock
@@ -9013,6 +9082,7 @@ fn emit_typed_builtin(
         instance.builtin,
         Builtin::OsRead
             | Builtin::OsArgs
+            | Builtin::OsVersion
             | Builtin::OsWrite
             | Builtin::OsRandom
             | Builtin::OsClock

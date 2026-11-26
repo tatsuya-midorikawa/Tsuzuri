@@ -479,7 +479,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("host_status"),
         ),
         // B16
-        OsArgs | OsRandom => facts(
+        OsArgs | OsVersion | OsRandom => facts(
             Some(Effect::Os),
             true,
             false,
@@ -1325,15 +1325,25 @@ impl<'s, 'a> Scan<'s, 'a> {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind {
             if import.lowers_inline() {
-                self.source(
-                    Effect::Trap,
-                    span,
-                    if import.data.is_some() {
-                        "data-symbol"
-                    } else {
-                        "extern-view-address"
-                    },
-                );
+                if import.data.is_none() || !import.weak {
+                    self.source(
+                        Effect::Trap,
+                        span,
+                        if import.data.is_some() {
+                            "data-symbol"
+                        } else {
+                            "extern-view-address"
+                        },
+                    );
+                }
+            } else if import.explicit
+                && self
+                    .state
+                    .module
+                    .weak_symbols
+                    .contains(&import.native_symbol)
+            {
+                self.source(Effect::Trap, span, "weak-symbol");
             }
             if import.callbacks {
                 if takes_string(function) {
@@ -1854,16 +1864,27 @@ impl<'s, 'a> Scan<'s, 'a> {
                             },
                         );
                     }
-                    self.source(
-                        Effect::Trap,
-                        span,
-                        if import.data.is_some() {
-                            "data-symbol"
-                        } else {
-                            "extern-view-address"
-                        },
-                    );
+                    if import.data.is_none() || !import.weak {
+                        self.source(
+                            Effect::Trap,
+                            span,
+                            if import.data.is_some() {
+                                "data-symbol"
+                            } else {
+                                "extern-view-address"
+                            },
+                        );
+                    }
                     return false;
+                }
+                if import.explicit
+                    && self
+                        .state
+                        .module
+                        .weak_symbols
+                        .contains(&import.native_symbol)
+                {
+                    self.source(Effect::Trap, span, "weak-symbol");
                 }
                 // E15: a person vouched for this property of the extern function.
                 let vouched = self.state.options.trusted.is_some_and(|bit| {
@@ -3866,8 +3887,8 @@ mod tests {
             );
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 377);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 170);
+        assert_eq!(Builtin::ALL.len(), 378);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 171);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 207);
     }
 
@@ -3875,7 +3896,7 @@ mod tests {
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 2);
-        assert_eq!(by(Effect::Os), 21);
+        assert_eq!(by(Effect::Os), 22);
         assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 17);
         assert_eq!(by(Effect::Atomic), 96);
@@ -3887,13 +3908,13 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 77);
+        assert_eq!(count(|facts| facts.alloc), 78);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
         assert_eq!(count(|facts| facts.trap), 59);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 27);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 28);
     }
 
     #[test]

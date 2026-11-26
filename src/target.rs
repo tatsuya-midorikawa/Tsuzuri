@@ -12,6 +12,67 @@ use std::ffi::{OsStr, OsString};
 
 use crate::driver::Target;
 
+/// A macOS deployment target version (`12.0` or later, M17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MacosVersion {
+    pub major: u16,
+    pub minor: u16,
+    pub patch: u16,
+}
+
+impl MacosVersion {
+    pub const DEFAULT: Self = Self {
+        major: 12,
+        minor: 0,
+        patch: 0,
+    };
+
+    pub fn parse(text: &str) -> Option<Self> {
+        if text.is_empty() {
+            return None;
+        }
+        let mut parts = text.split('.');
+        let parse_part = |part: &str| -> Option<u16> {
+            (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| part.parse().ok())?
+        };
+        let major = parse_part(parts.next()?)?;
+        let minor = match parts.next() {
+            Some(part) => parse_part(part)?,
+            None => 0,
+        };
+        let patch = match parts.next() {
+            Some(part) => parse_part(part)?,
+            None => 0,
+        };
+        if parts.next().is_some() || major < 12 {
+            return None;
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+
+    pub fn clang_triple(self) -> String {
+        format!(
+            "arm64-apple-macosx{}.{}.{}",
+            self.major, self.minor, self.patch
+        )
+    }
+}
+
+impl std::fmt::Display for MacosVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.patch == 0 {
+            write!(f, "{}.{}", self.major, self.minor)
+        } else {
+            write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+        }
+    }
+}
+
 /// The operating system of a native target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {

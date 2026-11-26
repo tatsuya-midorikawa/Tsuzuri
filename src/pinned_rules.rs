@@ -134,6 +134,7 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::IOWrite
         | Builtin::OsRead
         | Builtin::OsArgs
+        | Builtin::OsVersion
         | Builtin::OsWrite
         | Builtin::OsRandom
         | Builtin::OsClock

@@ -1660,3 +1660,48 @@ TZ_OS_API int64_t tsuzuri_os_sleep(int64_t milliseconds) {
         Sleep((DWORD)wait_ms);
     }
 }
+
+#if defined(TZ_OS_VERSION)
+typedef struct tz_os_rtl_version_info {
+    ULONG dwOSVersionInfoSize;
+    ULONG dwMajorVersion;
+    ULONG dwMinorVersion;
+    ULONG dwBuildNumber;
+    ULONG dwPlatformId;
+    WCHAR szCSDVersion[128];
+} tz_os_rtl_version_info;
+
+typedef LONG (WINAPI *tz_os_rtl_get_version_fn)(tz_os_rtl_version_info *);
+
+static size_t tz_os_append_ulong(char *dst, size_t pos, ULONG val) {
+    char tmp[16];
+    size_t k = 0;
+    do {
+        tmp[k++] = (char)('0' + (val % 10u));
+        val /= 10u;
+    } while (val > 0);
+    while (k > 0) dst[pos++] = tmp[--k];
+    return pos;
+}
+
+TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
+    tz_os_clear(output);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll == NULL) return tz_os_win_error(GetLastError());
+    tz_os_rtl_get_version_fn fn = (tz_os_rtl_get_version_fn)(void *)GetProcAddress(ntdll, "RtlGetVersion");
+    if (fn == NULL) return tz_os_win_error(GetLastError());
+    tz_os_rtl_version_info info;
+    memset(&info, 0, sizeof info);
+    info.dwOSVersionInfoSize = (ULONG)sizeof info;
+    LONG st = fn(&info);
+    if (st != 0) return tz_os_status(TZ_OS_OTHER, (int32_t)st);
+    char buf[64];
+    size_t n = 0;
+    n = tz_os_append_ulong(buf, n, info.dwMajorVersion);
+    buf[n++] = '.';
+    n = tz_os_append_ulong(buf, n, info.dwMinorVersion);
+    buf[n++] = '.';
+    n = tz_os_append_ulong(buf, n, info.dwBuildNumber);
+    return tz_os_deliver(output, (const unsigned char *)buf, n);
+}
+#endif

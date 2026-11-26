@@ -35,6 +35,8 @@ pub struct Manifest {
     pub capabilities: Option<(CapabilitySet, Span)>,
     /// The `[windows]` section (W09). Only the root package's section counts.
     pub windows: WindowsSettings,
+    /// The `[macos]` section (M17). Only the root package's section counts.
+    pub macos: MacosSettings,
     /// Where the `[package]` values are, for the diagnostics about them.
     pub spans: PackageSpans,
 }
@@ -124,6 +126,12 @@ pub struct WasmSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowsSettings {
     pub subsystem: Option<crate::driver::Subsystem>,
+}
+
+/// The `[macos]` section of the root manifest (M17; M15/M16 add bundle and signing keys).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MacosSettings {
+    pub min_version: Option<(crate::target::MacosVersion, Span)>,
 }
 
 /// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
@@ -901,6 +909,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut dependencies = BTreeMap::new();
     let mut wasm = WasmSettings::default();
     let mut windows = WindowsSettings::default();
+    let mut macos = MacosSettings::default();
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
     let mut registry: Option<(Option<String>, Option<String>, Span)> = None;
@@ -927,6 +936,8 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 Some("capabilities")
             } else if cursor.take("[windows]") {
                 Some("windows")
+            } else if cursor.take("[macos]") {
+                Some("macos")
             } else {
                 cursor.take("[native]").then_some("native")
             };
@@ -935,7 +946,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 _ => {
                     return Err(Diagnostic::of(
                         DiagnosticKind::ManifestSectionOrder,
-                        "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+                        "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities], [windows] and [macos], each once",
                         header,
                     ));
                 }
@@ -1205,6 +1216,28 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                     ));
                 }
             }
+            "macos" => {
+                if key != "min_version" {
+                    return Err(at_key(
+                        DiagnosticKind::UnknownManifestKey,
+                        "unknown macos key; expected min_version",
+                    ));
+                }
+                let (text, value_span) = cursor.string()?;
+                let Some(value) = crate::target::MacosVersion::parse(&text) else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::InvalidMacosSetting,
+                        "min_version must be a macOS version 12.0 or later, such as \"13.0\"",
+                        value_span,
+                    ));
+                };
+                if macos.min_version.replace((value, value_span)).is_some() {
+                    return Err(at_key(
+                        DiagnosticKind::DuplicateManifestKey,
+                        "macos keys must occur at most once",
+                    ));
+                }
+            }
             _ => {
                 return Err(at_key(
                     DiagnosticKind::ManifestSectionOrder,
@@ -1282,6 +1315,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
         registry,
         capabilities,
         windows,
+        macos,
         spans: PackageSpans {
             name: name_span,
             version: version_span,
@@ -2188,7 +2222,7 @@ mod tests {
             ),
             (
                 "[native]\n[native]",
-                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities], [windows] and [macos], each once",
             ),
         ] {
             let error = parse_manifest(&format!("{PACKAGE}{suffix}"), 5).unwrap_err();
@@ -2277,7 +2311,7 @@ mod tests {
             (
                 "[capabilities]\nallow = []\n[capabilities]\nallow = []\n",
                 "manifest_section_order",
-                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities] and [windows], each once",
+                "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities], [windows] and [macos], each once",
             ),
             (
                 "[windows]\nfoo = \"bar\"\n",

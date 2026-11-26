@@ -1676,6 +1676,8 @@ pub enum Builtin {
     OsRead,
     /// `Os.__args :: unit -> (i64 * [ubyte])`: the NUL-terminated command-line arguments after the program name.
     OsArgs,
+    /// `Os.__os_version :: unit -> (i64 * [ubyte])` (M17): the host operating-system version string.
+    OsVersion,
     /// `Os.__write :: i32 -> ref utf8string -> ref [ubyte] -> i64`: writes a file, or creates or removes a file or directory.
     OsWrite,
     /// `Os.__random :: i64 -> (i64 * [ubyte])`: operating-system random bytes.
@@ -2346,6 +2348,7 @@ impl Builtin {
         Self::IOWrite,
         Self::OsRead,
         Self::OsArgs,
+        Self::OsVersion,
         Self::OsWrite,
         Self::OsRandom,
         Self::OsClock,
@@ -2732,6 +2735,7 @@ impl Builtin {
             Self::IOWrite => "IO.__write",
             Self::OsRead => "Os.__read",
             Self::OsArgs => "Os.__args",
+            Self::OsVersion => "Os.__os_version",
             Self::OsWrite => "Os.__write",
             Self::OsRandom => "Os.__random",
             Self::OsClock => "Os.__clock",
@@ -3057,7 +3061,7 @@ impl Builtin {
                 Concrete(Type::Integer(32, true)),
                 Vec::new(),
             ),
-            Self::OsRead | Self::OsArgs | Self::OsRandom => {
+            Self::OsRead | Self::OsArgs | Self::OsVersion | Self::OsRandom => {
                 let owned = || {
                     BuiltinType::Tuple(vec![
                         Concrete(Type::I64),
@@ -3069,7 +3073,7 @@ impl Builtin {
                         Concrete(Type::Integer(32, true)),
                         Reference(Box::new(Concrete(Type::Utf8String)), false),
                     ],
-                    Self::OsArgs => vec![Concrete(Type::Unit)],
+                    Self::OsArgs | Self::OsVersion => vec![Concrete(Type::Unit)],
                     _ => vec![Concrete(Type::I64)],
                 };
                 (parameters, owned(), Vec::new())
@@ -5117,6 +5121,8 @@ pub struct CheckedModule {
     pub link_libraries: BTreeMap<String, BTreeSet<String>>,
     /// M20: explicit extern symbols annotated with `@link(framework = "name")` -> macOS framework names.
     pub link_frameworks: BTreeMap<String, BTreeSet<String>>,
+    /// M17: explicit extern symbols (functions and data symbols) annotated with `@weak`.
+    pub weak_symbols: BTreeSet<String>,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5522,6 +5528,8 @@ pub struct HostImport {
     pub library: Option<String>,
     /// M20: macOS framework name from `@link(framework = "name")`.
     pub framework: Option<String>,
+    /// M17: whether this declaration carries `@weak`.
+    pub weak: bool,
 }
 
 impl HostImport {
@@ -8805,6 +8813,7 @@ fn check_modules_collect(
     let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
     let mut link_libraries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut link_frameworks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut weak_symbols: BTreeSet<String> = BTreeSet::new();
     let mut external_symbols = BTreeSet::new();
     for module in modules {
         for external in &module.program.externs {
@@ -8834,6 +8843,7 @@ fn check_modules_collect(
                     }),
                     library: None,
                     framework: None,
+                    weak: false,
                 }
             } else if external.view {
                 HostImport {
@@ -8847,6 +8857,7 @@ fn check_modules_collect(
                     data: None,
                     library: None,
                     framework: None,
+                    weak: false,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8866,6 +8877,7 @@ fn check_modules_collect(
                     data: None,
                     library: None,
                     framework: None,
+                    weak: false,
                 }
             } else {
                 let native_symbol = format!(
@@ -8887,6 +8899,7 @@ fn check_modules_collect(
                     data: None,
                     library: None,
                     framework: None,
+                    weak: false,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8895,6 +8908,20 @@ fn check_modules_collect(
                     "extern declarations cannot have constraints or named regions",
                     external.name.span,
                 ));
+            }
+            if let Some(weak_attr) = module.program.weaks.iter().find(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            }) {
+                let Some(sym) = import.explicit_c_symbol().map(str::to_owned) else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::WeakNeedsSymbol,
+                        "'@weak' needs an explicit symbol; write extern \"symbol\" def, because the generated tsuzuri_host_ symbols belong to the host",
+                        weak_attr.span,
+                    ));
+                };
+                weak_symbols.insert(sym);
+                import.weak = true;
             }
             if let Some(link_attr) = module.program.links.iter().find(|attr| {
                 attr.target.text == external.name.text
@@ -9831,11 +9858,31 @@ fn check_modules_collect(
                             *first_fn_span,
                         ));
                     }
+                    let is_weak = external_functions[&id].weak;
                     match data.access {
                         crate::syntax::DataAccess::Read => {
+                            let read_ty = if is_weak {
+                                let Some(payload) =
+                                    crate::abi::std_maybe_payload(&signature.result, &types)
+                                else {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::WeakDataSymbolResult,
+                                        format!(
+                                            "'@weak' data symbol '{}' must return 'Maybe<T>' because the symbol may be absent at run time",
+                                            function.name.text
+                                        ),
+                                        function.name.span,
+                                    ));
+                                };
+                                payload
+                            } else {
+                                &signature.result
+                            };
                             if signature.parameters != [Type::Unit]
+                                || (is_weak
+                                    && crate::abi::std_maybe_payload(read_ty, &types).is_some())
                                 || !crate::abi::data_symbol_read_type(
-                                    &signature.result,
+                                    read_ty,
                                     &types,
                                     &function.name.text,
                                 )
@@ -9845,22 +9892,27 @@ fn check_modules_collect(
                                     format!(
                                         "data symbol '{}' reads '{}', which is not a C scalar, a copy extern type, Maybe of one, or a view record; for a C bool read i8u",
                                         function.name.text,
-                                        signature.result.display(&types)
+                                        read_ty.display(&types)
                                     ),
                                     function.name.span,
                                 ));
                             }
+                            let c_var_ty = if is_weak {
+                                read_ty.clone()
+                            } else {
+                                signature.result.clone()
+                            };
                             let entry = data_symbols
                                 .entry(data.symbol.clone())
                                 .or_insert_with(|| (None, function.name.span));
                             if let Some((first_ty, first_read_span)) = &entry.0 {
-                                if *first_ty != signature.result {
+                                if *first_ty != c_var_ty {
                                     return Err(Diagnostic::of(
                                         DiagnosticKind::ConflictingExternDeclaration,
                                         format!(
                                             "data symbol '{}' is read as '{}' here but '{}' in the first declaration",
                                             data.symbol,
-                                            signature.result.display(&types),
+                                            c_var_ty.display(&types),
                                             first_ty.display(&types)
                                         ),
                                         function.name.span,
@@ -9872,12 +9924,29 @@ fn check_modules_collect(
                                     ));
                                 }
                             } else {
-                                entry.0 = Some((signature.result.clone(), function.name.span));
+                                entry.0 = Some((c_var_ty, function.name.span));
                             }
                         }
                         crate::syntax::DataAccess::Address => {
+                            let addr_ty = if is_weak {
+                                let Some(payload) =
+                                    crate::abi::std_maybe_payload(&signature.result, &types)
+                                else {
+                                    return Err(Diagnostic::of(
+                                        DiagnosticKind::WeakDataSymbolResult,
+                                        format!(
+                                            "'@weak' data symbol '{}' must return 'Maybe<H>' because the symbol may be absent at run time",
+                                            function.name.text
+                                        ),
+                                        function.name.span,
+                                    ));
+                                };
+                                payload
+                            } else {
+                                &signature.result
+                            };
                             if signature.parameters != [Type::Unit]
-                                || !crate::abi::data_symbol_address_type(&signature.result)
+                                || !crate::abi::data_symbol_address_type(addr_ty)
                             {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::DataSymbolSignature,
@@ -10837,6 +10906,7 @@ fn check_modules_collect(
         extern_abis,
         link_libraries,
         link_frameworks,
+        weak_symbols,
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -11611,6 +11681,7 @@ fn recovery_module(
         extern_abis: BTreeMap::new(),
         link_libraries: BTreeMap::new(),
         link_frameworks: BTreeMap::new(),
+        weak_symbols: BTreeSet::new(),
     }
 }
 

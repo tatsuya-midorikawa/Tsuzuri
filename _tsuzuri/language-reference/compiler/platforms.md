@@ -36,7 +36,7 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 `--target native|wasm32|wasm64|TRIPLE` は、`build`、`run`、`test`、`bench` が受け付けます（`run` と `bench` は native の target だけです）。ほかのサブコマンドの扱いは [コンパイラ オプション](option.md#どのサブコマンドが受け付けるか) の表にあります。
 
 - `native` はビルド機向けです。Clang へ `--target` を渡しません（Windows のホストだけは、ホストの CPU に合う MSVC の target を渡します）。
-- `TRIPLE` は下の表の名前です。大文字と小文字を区別し、`arm64-apple-darwin` や `x86_64-linux-gnu` のような別名は受け付けません。ビルド機と同じ triple を名指しした場合も、Clang へ target を渡します。IR は `--target native` と同じですが、macOS の最低 OS 版が 12.0 に決まるなど、出力が Clang の既定に左右されません。
+- `TRIPLE` は下の表の名前です。大文字と小文字を区別し、`arm64-apple-darwin` や `x86_64-linux-gnu` のような別名は受け付けません。ビルド機と同じ triple を名指しした場合も、Clang へ target を渡します。macOS の最低 OS 版（Mach-O `LC_BUILD_VERSION` の `minos`）は、ルートの `Tsuzuri.toml` の `[macos] min_version`、空でない環境変数 `MACOSX_DEPLOYMENT_TARGET`、既定の `12.0` の順に決まり、`--target native`・`--target aarch64-apple-darwin`・同梱ツールチェーンのすべてに同じ順で効きます。
 - `wasm32-unknown-unknown` と `wasm64-unknown-unknown` は、`wasm32` と `wasm64` の別名です。
 - 知らない名前と対象外の target は、対応する名前の一覧を添えた `E2000` です。32-bit の名前には、native の IR が 64-bit のポインターを前提にする理由も添えます。
 

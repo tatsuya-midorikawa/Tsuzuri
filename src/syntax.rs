@@ -324,8 +324,10 @@ pub struct Program {
     pub extern_counts: Vec<CountAttribute>,
     /// The `@c_layout` attributes of this module's record declarations (W21).
     pub c_layouts: Vec<CLayoutAttribute>,
-    /// The `@link("name")` attributes of this module's extern declarations (W17).
+    /// The `@link("name")` / `@link(framework = "name")` attributes of this module's extern declarations (W17 / M20).
     pub links: Vec<LinkAttribute>,
+    /// The `@weak` attributes of this module's extern declarations (M17).
+    pub weaks: Vec<WeakAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -539,6 +541,13 @@ pub struct LinkAttribute {
     pub library: String,
     pub span: Span,
     pub name_span: Span,
+}
+
+/// `@weak` before an `extern` declaration with a link name (M17).
+#[derive(Clone, Debug)]
+pub struct WeakAttribute {
+    pub target: Ident,
+    pub span: Span,
 }
 
 /// A `namespace A::B` or `using A::B` declaration.

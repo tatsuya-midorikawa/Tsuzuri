@@ -32,7 +32,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Debug", 2),
     ("Dir", 4),
     ("Domain", 1),
-    ("Env", 3),
+    ("Env", 4),
     ("ErrGroup", 8),
     ("Exception", 0),
     ("File", 14),

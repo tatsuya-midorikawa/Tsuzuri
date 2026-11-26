@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 169;
+const IMPURE_BUILTINS: usize = 170;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -20,8 +20,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
     match builtin {
         DebugPrintString | AllocCounter | BenchConsume => Some("debug"),
         IOReadLine | IOWrite => Some("io"),
-        OsRead | OsArgs | OsWrite | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose
-        | OsSpawn | BenchNow | GenSeed => Some("os"),
+        OsRead | OsArgs | OsVersion | OsWrite | OsRandom | OsClock | OsSleep | OsOpen
+        | OsHandle | OsClose | OsSpawn | BenchNow | GenSeed => Some("os"),
         NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify => {
             Some("net")
         }

@@ -235,6 +235,8 @@ def main :: Array<string> -> i32 = \\main_args ->
     do! say (option_text bad_eq)
     let! cwd = Env.current_dir ()
     do! say (text_text cwd)
+    let! osv = Env.os_version ()
+    do! say (text_text osv)
     0
 `);
 
@@ -451,7 +453,7 @@ def main :: Array<string> -> i32 = \\args ->
         args: ["alpha", "beta gamma", "C:\\dir\\"],
         env: { TZ_W11_VAR: "hello-win", TZ_W11_EMPTY: "" },
       }));
-      assert.deepEqual(out, [
+      assert.deepEqual(out.slice(0, 6), [
         "same:true:alpha|beta gamma|C:\\dir\\",
         "some:hello-win",
         "some:",
@@ -459,6 +461,7 @@ def main :: Array<string> -> i32 = \\args ->
         "invalid input",
         `ok:${cwd}`,
       ]);
+      assert.match(out[6], /^ok:\d+\.\d+\.\d+$/);
     }
 
     // 10-11. Clocks & Random
@@ -1799,6 +1802,22 @@ def main :: unit -> i32 = \\() ->
 `);
   for (const optimization of optimizations) {
     assert.equal(runWasi("spawn-wasi", optimization, scratch("wasi-spawn", optimization)).stdout, "other (os error 52)\n");
+  }
+
+  // M17: Env.os_version returns sw_vers / uname -r natively and ENOSYS (52) on WASI.
+  const osVersionProg = program("os-version", `
+def main :: unit -> i32 = \\() ->
+    let! v = Env.os_version ()
+    do! say (text_text v)
+    0
+`);
+  const expectedNativeOsVer = process.platform === "darwin"
+    ? spawnSync("sw_vers", ["-productVersion"], { encoding: "utf8" }).stdout.trim()
+    : spawnSync("uname", ["-r"], { encoding: "utf8" }).stdout.trim();
+  for (const optimization of optimizations) {
+    const cwd = scratch("os-version", optimization);
+    assert.equal(run(osVersionProg(optimization), cwd).stdout, `ok:${expectedNativeOsVer}\n`);
+    assert.equal(runWasi("os-version", optimization, cwd).stdout, "other (os error 52)\n");
   }
 
   // The exit code of `main` reaches the WASI host through proc_exit, and the host's arguments reach `main`.

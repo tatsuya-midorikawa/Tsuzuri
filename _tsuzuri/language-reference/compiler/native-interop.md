@@ -418,6 +418,7 @@ extern "NSApplicationLoad" def application_load :: unit -> unit
 - **Windows の `dllimport`**: Windows ターゲットでは、`@link("名前")` が付いたシンボルの宣言がすべて `declare dllimport ...` になり、IAT 経由の直接呼び出しになります。
 - **macOS の `@link(framework = "...")`**: 到達したシンボルに `@link(framework = ...)` がある場合、macOS 以外のネイティブターゲットでは `E2000`（`link_framework_target`）、WebAssembly では `E2000`（`link_attribute_wasm`）になります（未到達の宣言と `check` は成功します）。
 - **キャッシュとパッケージ**: `@link` はソースと IR に含まれるためビルドキャッシュを止めません。パスを持ち込まないため、`native = true` のない依存パッケージや git・registry パッケージにも記述でき、実際にその `extern` を呼ぶパッケージには権限 `ffi` の検査が効きます。`tsuzuri audit` は各 `extern` 行に `link <名前>` または `link framework <名前>`（JSON では `"link"` / `"framework"` キー）を表示します。
+- **macOS の弱い import（`@weak`）**: 新しい macOS にだけ存在する関数やデータシンボルを参照しつつ古い macOS（`[macos] min_version`）でも起動させるには、宣言の前に [`@weak`](../values-and-functions/attributes.md#weak-弱い-import) を付けます。
 - **リンクしない出力と WebAssembly**: `--emit object`・`llvm`・`bitcode`・`header` では目的ファイルに要求を埋め込まないため、リンクするホスト側が `-l` を指定します。WebAssembly のビルドで `@link` の付いたシンボルに到達すると `E2000`（`link_attribute_wasm`）になります（到達しない宣言と `check` は成功します）。オブジェクトのパスや静的ライブラリの厳密な順序が必要な場合は `[native]` を使います。
 
 ## 所有バッファと tsuzuri_alloc

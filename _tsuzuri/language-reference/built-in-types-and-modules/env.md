@@ -1,6 +1,6 @@
 # Env
 
-`Env` は、コマンドライン引数、環境変数、作業ディレクトリを読むモジュールです。3 つとも `IO<Result<...>>` で、実行するまで OS は見ません。値を書き換える関数はありません。
+`Env` は、コマンドライン引数、環境変数、作業ディレクトリ、およびホスト OS のバージョンを読むモジュールです。4 つとも `IO<Result<...>>` で、実行するまで OS は見ません。値を書き換える関数はありません。
 
 必要な権限: `env`（すべての関数）。権限の宣言と検査は [権限](../organizing-tsuzuri/packages.md#権限capabilities) を見てください。
 
@@ -71,6 +71,8 @@ true
 
 `Env.current_dir ()` は、OS が報告した作業ディレクトリです。相対パスの [File](./file.md) や [Dir](./dir.md) は、ここを起点に OS が解決します。表示そのものは実行のたびに違うので、例では空でないことだけを見ています。
 
+`Env.os_version ()` は、ホスト OS が報告するバージョン文字列を返します（macOS は `sysctlbyname("kern.osproductversion")` の `"15.3.1"` など、Linux は `uname` のカーネル release、Windows は `RtlGetVersion` の `"10.0.26100"` のような `major.minor.build`）。macOS の [`@weak`](../values-and-functions/attributes.md#weak-弱い-import) シンボルを呼ぶ前に実行環境のバージョンを確かめる用途などに使えます。
+
 環境変数を設定・変更する関数は提供されていません。子プロセスへ渡される環境変数は、親プロセスのものがそのまま継承されます。詳しくは [Process](./process.md) を参照してください。
 
 ## 公開 API
@@ -80,14 +82,19 @@ true
 | `Env.args` | `unit -> IO<Result<[string], Os.Error>>` | プログラム名を除いた引数。不正な UTF-8 は `InvalidEncoding` |
 | `Env.var` | `string -> IO<Result<Maybe<string>, Os.Error>>` | 環境変数。未設定は `Ok None` |
 | `Env.current_dir` | `unit -> IO<Result<string, Os.Error>>` | OS が報告した作業ディレクトリ |
+| `Env.os_version` | `unit -> IO<Result<string, Os.Error>>` | ホスト OS のバージョン文字列 |
+
+### 引数の順序
+
+`Env` の関数はいずれも引数が 1 つ（`unit` または変数名の `string`）なので、引数の順序の迷いはありません（[標準ライブラリの引数の順序](./argument-order.md)）。
 
 返った `string` は所有値です。配列の要素は `Copy` ではないので、`names[0]` をムーブせずに使うには借用するか複製します。
 
 ## 対応環境
 
-既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、ホストが渡した引数を受け取ります。`current_dir` は最初の preopen ディレクトリの名前です。引数を渡さない WASM 出力では、`main` の引数も `Env.args` も空です。既定の wasm32 では、本ページの実行例をそのまま実行することはできません。
+既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、ホストが渡した引数を受け取ります。`current_dir` は最初の preopen ディレクトリの名前で、`os_version` は WASI preview1 に API がないため `Os.Error { kind: Other, code: 52 }`（`ENOSYS`）を返します。引数を渡さない WASM 出力では、`main` の引数も `Env.args` も空です。既定の wasm32 では、本ページの実行例をそのまま実行することはできません。
 
-Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、3 つとも Win32 の API で動きます。`Env.args` は `GetCommandLineW` のコマンドラインを、`main` の引数と同じ規則（[引数と main](#引数と-main)）で分けます。`Env.var` の名前の大文字と小文字を区別しないのは OS の規則です。`Env.current_dir ()` は `C:\work` のように `\` で区切ったパスを返します。`Os.Error.code` は Win32 のエラー番号です（[Os](./os.md#wasm-と-windows)）。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、4 つとも Win32 / NT API で動きます。`Env.args` は `GetCommandLineW` のコマンドラインを、`main` の引数と同じ規則（[引数と main](#引数と-main)）で分けます。`Env.var` の名前の大文字と小文字を区別しないのは OS の規則です。`Env.current_dir ()` は `C:\work` のように `\` で区切ったパス、`Env.os_version ()` は `RtlGetVersion` の `major.minor.build` を返します。`Os.Error.code` は Win32 のエラー番号です（[Os](./os.md#wasm-と-windows)）。
 
 ## まとめ
 

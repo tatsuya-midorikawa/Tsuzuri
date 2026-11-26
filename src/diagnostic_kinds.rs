@@ -117,6 +117,7 @@ diagnostic_kinds! {
         (InvalidGitDependency, "invalid_git_dependency", "E0002"),
         (InvalidJsonAttribute, "invalid_json_attribute", "E0002"),
         (InvalidLinkNameText, "invalid_link_name_text", "E0002"),
+        (InvalidMacosSetting, "invalid_macos_setting", "E0002"),
         (InvalidNativeFrameworkName, "invalid_native_framework_name", "E0002"),
         (InvalidNativeLibraryName, "invalid_native_library_name", "E0002"),
         (InvalidNativePath, "invalid_native_path", "E0002"),
@@ -150,6 +151,7 @@ diagnostic_kinds! {
         (MisplacedNamespaceDeclaration, "misplaced_namespace_declaration", "E0002"),
         (MisplacedRegionList, "misplaced_region_list", "E0002"),
         (MisplacedUsingDeclaration, "misplaced_using_declaration", "E0002"),
+        (MisplacedWeakAttribute, "misplaced_weak_attribute", "E0002"),
         (MissingCapabilitiesAllow, "missing_capabilities_allow", "E0002"),
         (MissingPackageField, "missing_package_field", "E0002"),
         (MissingRegistryIndex, "missing_registry_index", "E0002"),
@@ -196,6 +198,7 @@ diagnostic_kinds! {
         (UnsupportedEdition, "unsupported_edition", "E0002"),
         (UseBangInAndGroup, "use_bang_in_and_group", "E0002"),
         (UseBangOutsideComputation, "use_bang_outside_computation", "E0002"),
+        (WeakAttributeSyntax, "weak_attribute_syntax", "E0002"),
         (WhereBindingIndentation, "where_binding_indentation", "E0002"),
         // E0003
         (SourceTooLarge, "source_too_large", "E0003"),
@@ -303,6 +306,7 @@ diagnostic_kinds! {
         (RecordHasNoField, "record_has_no_field", "E1007"),
         (UnknownField, "unknown_field", "E1007"),
         // E1008
+        (AbiAppleOnly, "abi_apple_only", "E1008"),
         (AbiNativeOnly, "abi_native_only", "E1008"),
         (AbiNullablePayload, "abi_nullable_payload", "E1008"),
         (CLayoutBoolField, "c_layout_bool_field", "E1008"),
@@ -340,6 +344,8 @@ diagnostic_kinds! {
         (ReservedExternSymbol, "reserved_extern_symbol", "E1008"),
         (UnsupportedExportSignature, "unsupported_export_signature", "E1008"),
         (UnsupportedExternSignature, "unsupported_extern_signature", "E1008"),
+        (WeakDataSymbolResult, "weak_data_symbol_result", "E1008"),
+        (WeakNeedsSymbol, "weak_needs_symbol", "E1008"),
         // E1009
         (DecimalLiteralOutOfRange, "decimal_literal_out_of_range", "E1009"),
         (FloatLiteralOutOfRange, "float_literal_out_of_range", "E1009"),
@@ -733,6 +739,7 @@ diagnostic_kinds! {
         (CapabilityDenied, "capability_denied", "E1036"),
         // E1037
         (TrustedDuplicateProperty, "trusted_duplicate_property", "E1037"),
+        (TrustedNoTrapWeak, "trusted_no_trap_weak", "E1037"),
         (TrustedRepeated, "trusted_repeated", "E1037"),
         (TrustedTypeProperty, "trusted_type_property", "E1037"),
         (TrustedUnknownProperty, "trusted_unknown_property", "E1037"),
@@ -814,6 +821,7 @@ diagnostic_kinds! {
         (InputExtensionInvalid, "input_extension_invalid", "E2000"),
         (InvalidFrameworkName, "invalid_framework_name", "E2000"),
         (InvalidLibraryName, "invalid_library_name", "E2000"),
+        (InvalidMacosDeploymentTarget, "invalid_macos_deployment_target", "E2000"),
         (InvalidNamespaceArgument, "invalid_namespace_argument", "E2000"),
         (InvalidPublishGitRev, "invalid_publish_git_rev", "E2000"),
         (InvalidPublishGitUrl, "invalid_publish_git_url", "E2000"),

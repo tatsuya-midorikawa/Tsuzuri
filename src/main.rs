@@ -1847,6 +1847,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         triple,
         overflow_report,
         subsystem,
+        macos_min_version: None,
     };
     // These checks report `E2000` diagnostics without a position, as the command line does.
     options.validate()?;
@@ -2256,6 +2257,7 @@ fn run_test_action(
             fail: !arguments.allow_overflow,
             sources: project.overflow_sources(),
         }),
+        macos_min_version: arguments.options.macos_min_version,
     };
     if let Some(base) = &arguments.affected {
         match select_affected(arguments, project, base, affected_base) {
@@ -2679,6 +2681,7 @@ fn run_bench_action(
             .unwrap_or(driver::DEFAULT_BENCH_SAMPLES),
         allocs: arguments.bench_allocs,
         triple: arguments.options.triple,
+        macos_min_version: arguments.options.macos_min_version,
     };
     if options
         .indices
@@ -4266,7 +4269,10 @@ fn cli(
         };
     }
     let mut arguments = arguments;
-    arguments.options = arguments.options.with_manifest_wasm(project.wasm);
+    arguments.options = arguments
+        .options
+        .with_manifest_wasm(project.wasm)
+        .with_manifest_macos(&project.macos);
     if windows_apply(arguments.action) {
         arguments.options = arguments.options.with_manifest_windows(&project.windows);
     }

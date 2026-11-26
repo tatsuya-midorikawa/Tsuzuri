@@ -755,6 +755,8 @@ pub struct BuildOptions {
     pub overflow_report: bool,
     /// `--subsystem` or `[windows] subsystem` (W09): the PE subsystem of a Windows executable.
     pub subsystem: Option<Subsystem>,
+    /// `[macos] min_version` (M17): minimum macOS version for Mach-O compilation and linking.
+    pub macos_min_version: Option<crate::target::MacosVersion>,
 }
 
 impl Default for BuildOptions {
@@ -786,6 +788,7 @@ impl Default for BuildOptions {
             triple: None,
             overflow_report: false,
             subsystem: None,
+            macos_min_version: None,
         }
     }
 }
@@ -1146,6 +1149,7 @@ impl BuildOptions {
             triple,
             overflow_report: _,
             subsystem: _,
+            macos_min_version: _,
         } = self;
         if optimization != OptLevel::O0 {
             return Err(driver_error_of(
@@ -1476,6 +1480,16 @@ impl BuildOptions {
             && self.platform().windows()
         {
             self.subsystem = self.subsystem.or(windows.subsystem);
+        }
+        self
+    }
+
+    /// Fills `macos_min_version` from the root manifest's `[macos]` when building for a Mach-O target (M17).
+    pub fn with_manifest_macos(mut self, macos: &crate::package::MacosSettings) -> Self {
+        if self.target == Target::Native && self.platform().mach_o() {
+            self.macos_min_version = self
+                .macos_min_version
+                .or(macos.min_version.map(|(ver, _)| ver));
         }
         self
     }
@@ -1814,18 +1828,68 @@ fn native_compile_args(windows: bool, architecture: &str) -> &'static [&'static 
     }
 }
 
+/// Resolved macOS deployment version choice for one native build (M17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MacosChoice {
+    None,
+    Explicit(crate::target::MacosVersion),
+    FromEnvironment(Option<crate::target::MacosVersion>),
+    Default,
+}
+
+pub fn effective_macos_version(
+    platform: Platform,
+    min_version: Option<crate::target::MacosVersion>,
+) -> Result<MacosChoice, Diagnostic> {
+    let env_val = env::var_os("MACOSX_DEPLOYMENT_TARGET");
+    effective_macos_version_with(platform, min_version, env_val.as_deref())
+}
+
+pub fn effective_macos_version_with(
+    platform: Platform,
+    min_version: Option<crate::target::MacosVersion>,
+    env_target: Option<&OsStr>,
+) -> Result<MacosChoice, Diagnostic> {
+    if !platform.mach_o() {
+        return Ok(MacosChoice::None);
+    }
+    if let Some(ver) = min_version {
+        return Ok(MacosChoice::Explicit(ver));
+    }
+    if let Some(raw) = env_target.filter(|v| !v.is_empty()) {
+        if platform.triple().is_some() {
+            let parsed = raw.to_str().and_then(crate::target::MacosVersion::parse);
+            let Some(ver) = parsed else {
+                return Err(driver_error_of(
+                    DiagnosticKind::InvalidMacosDeploymentTarget,
+                    format!(
+                        "MACOSX_DEPLOYMENT_TARGET='{}' must be a macOS version 12.0 or later for --target aarch64-apple-darwin",
+                        raw.to_string_lossy()
+                    ),
+                ));
+            };
+            return Ok(MacosChoice::FromEnvironment(Some(ver)));
+        }
+        return Ok(MacosChoice::FromEnvironment(None));
+    }
+    Ok(MacosChoice::Default)
+}
+
 /// The Clang arguments of every run that is for `platform`, and of the IR compile in them.
 /// Without a named target they are the arguments of the machine the compiler runs on; a named
 /// target also passes its Clang target, even when it is the host's own, so that the output does not
 /// depend on the defaults of the Clang that is found (the deployment target of an Apple SDK).
-fn compile_args(platform: Platform) -> Vec<OsString> {
+fn compile_args(platform: Platform, macos: MacosChoice) -> Vec<OsString> {
     let Some(triple) = platform.triple() else {
-        return native_compile_args(platform.windows(), platform.arch_name())
-            .iter()
-            .map(OsString::from)
-            .collect();
+        let mut arguments: Vec<OsString> =
+            native_compile_args(platform.windows(), platform.arch_name())
+                .iter()
+                .map(OsString::from)
+                .collect();
+        arguments.extend(target_args(platform, macos));
+        return arguments;
     };
-    let mut arguments = target_args(platform);
+    let mut arguments = target_args(platform, macos);
     arguments.extend(triple.clang_arguments().iter().map(OsString::from));
     // Clang rejects position-independent code for the Windows targets.
     if !platform.windows() {
@@ -1872,13 +1936,37 @@ fn wasm_target_args(options: &BuildOptions) -> Vec<OsString> {
     arguments
 }
 
-/// Only the Clang target of a named platform: a link that is not a compile names its target too.
-fn target_args(platform: Platform) -> Vec<OsString> {
-    platform
-        .triple()
-        .map(|triple| format!("--target={}", triple.clang_target()).into())
-        .into_iter()
-        .collect()
+/// The Clang target or minimum macOS deployment flag of `platform`: a link that is not a compile passes it too.
+fn target_args(platform: Platform, macos: MacosChoice) -> Vec<OsString> {
+    if let Some(triple) = platform.triple() {
+        let target = if triple == Triple::Aarch64AppleDarwin {
+            let ver = match macos {
+                MacosChoice::Explicit(v) | MacosChoice::FromEnvironment(Some(v)) => v,
+                _ => crate::target::MacosVersion::DEFAULT,
+            };
+            ver.clang_triple()
+        } else {
+            triple.clang_target().to_owned()
+        };
+        return vec![format!("--target={target}").into()];
+    }
+    if platform.mach_o() {
+        match macos {
+            MacosChoice::Explicit(v) => vec![format!("-mmacosx-version-min={v}").into()],
+            MacosChoice::Default => {
+                vec![
+                    format!(
+                        "-mmacosx-version-min={}",
+                        crate::target::MacosVersion::DEFAULT
+                    )
+                    .into(),
+                ]
+            }
+            MacosChoice::FromEnvironment(_) | MacosChoice::None => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    }
 }
 
 /// The environment variable that names the sysroot of a named target: its C headers and libraries.
@@ -2089,6 +2177,8 @@ pub struct Project {
     pub capabilities: Option<crate::capabilities::Policy>,
     /// The root package's `[windows]` section (W09).
     pub windows: crate::package::WindowsSettings,
+    /// The root package's `[macos]` section (M17).
+    pub macos: crate::package::MacosSettings,
 }
 
 #[derive(Debug)]
@@ -3170,6 +3260,9 @@ impl Project {
         let windows = root_package
             .map(|package| package.manifest.windows.clone())
             .unwrap_or_default();
+        let macos = root_package
+            .map(|package| package.manifest.macos.clone())
+            .unwrap_or_default();
         // A lockfile belongs to the root manifest, which is there whenever the lockfile is.
         let root_edition = root_package.map_or(Edition::MANIFEST_DEFAULT, |package| {
             package.manifest.edition
@@ -3209,6 +3302,7 @@ impl Project {
             native,
             capabilities,
             windows,
+            macos,
         })
     }
 
@@ -3382,6 +3476,7 @@ impl Project {
             native: LinkInputs::default(),
             capabilities: None,
             windows: Default::default(),
+            macos: Default::default(),
         }
     }
 
@@ -4571,6 +4666,16 @@ fn build_complete(
         llvm::duplicate_declarations(&text)
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
+    let os_version_runtime = runtime_symbols.contains("tsuzuri_os_version");
+    let macos_choice = if options.target == Target::Native
+        && !matches!(options.emit, Emit::Llvm | Emit::Header)
+        && !options.emit.is_kernel()
+        && !options.emit.is_bindings()
+    {
+        effective_macos_version(platform, options.macos_min_version)?
+    } else {
+        MacosChoice::None
+    };
     let sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
     let sys_frameworks = system_frameworks_from_symbols(module, &runtime_symbols, links);
     let sdk_link_args = if options.target == Target::Native
@@ -5034,7 +5139,7 @@ fn build_complete(
                     .map(OsString::from),
                 );
             } else {
-                args.extend(compile_args(platform));
+                args.extend(compile_args(platform, macos_choice));
                 args.extend(no_sdk_args(platform));
                 if options.cpu == Cpu::Native {
                     args.extend(
@@ -5071,7 +5176,7 @@ fn build_complete(
         // through the link. A WebAssembly function without SIMD carries none: it inlines without them.
         if options.emit == Emit::Bitcode && (options.target == Target::Native || options.wasm_simd)
         {
-            text = bitcode_ir(&text, options, platform, f16, &temporary.path)?;
+            text = bitcode_ir(&text, options, platform, macos_choice, f16, &temporary.path)?;
         }
         // The merge of the C runtime hides every symbol that only the runtime defines, so the ones a host calls are
         // named to keep (PR08 D5).
@@ -5124,7 +5229,7 @@ fn build_complete(
                 if options.target.is_wasm() {
                     args.extend(wasm_target_args(&options));
                 } else {
-                    args.extend(compile_args(platform));
+                    args.extend(compile_args(platform, macos_choice));
                     if options.cpu == Cpu::Native {
                         args.extend(
                             native_ir_cpu_args(platform.arch_name(), f16)?
@@ -5259,7 +5364,7 @@ fn build_complete(
                 runtime.arg("-c");
             }
             runtime
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
             if (tzroutine_runtime || trap_runtime || net_runtime || gpu_runtime)
@@ -5275,6 +5380,9 @@ fn build_complete(
             }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
+            }
+            if os_version_runtime {
+                runtime.arg("-DTZ_OS_VERSION");
             }
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
@@ -5362,7 +5470,7 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c", "-O1"])
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
             let hint = cross_hint(
                 platform,
@@ -5393,7 +5501,7 @@ fn build_complete(
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
             runtime
                 .args(["-std=c11", "-c", "-O1"])
-                .args(compile_args(platform))
+                .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
             let hint = cross_hint(
                 platform,
@@ -5446,6 +5554,9 @@ fn build_complete(
                 if llvm::exit_code_entry(module) {
                     runtime.arg("-DTZ_WASI_EXIT_CODE");
                 }
+            }
+            if os_version_runtime {
+                runtime.arg("-DTZ_OS_VERSION");
             }
             runtime.arg(options.optimization.flag());
             let hint = "the WASI host needs Clang with WebAssembly support";
@@ -5607,7 +5718,7 @@ fn build_complete(
         if options.target.is_wasm() {
             clang.args(wasm_target_args(&options));
         } else {
-            clang.args(compile_args(platform));
+            clang.args(compile_args(platform, macos_choice));
             if options.cpu == Cpu::Native {
                 clang.args(native_ir_cpu_args(platform.arch_name(), f16)?);
             }
@@ -5754,6 +5865,7 @@ fn build_complete(
             link_shared(
                 symbols,
                 options,
+                macos_choice,
                 links,
                 link_extras,
                 (&object, native_runtime.then_some(runtime_object.as_path())),
@@ -5779,7 +5891,7 @@ fn build_complete(
         } else if dwarf_sidecar.is_some() {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
-                .args(target_args(platform))
+                .args(target_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .args(final_link_args(platform)?)
                 .arg(&module_input)
@@ -5843,7 +5955,7 @@ fn build_complete(
         {
             let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
             linker
-                .args(target_args(platform))
+                .args(target_args(platform, macos_choice))
                 .args(no_sdk_args(platform))
                 .args(link_args(platform))
                 .args(["-r", "-nostdlib"]);
@@ -6102,6 +6214,7 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
 fn link_shared(
     symbols: &[String],
     options: BuildOptions,
+    macos_choice: MacosChoice,
     links: &LinkInputs,
     link_extras: LinkExtras<'_>,
     (object, runtime): (&Path, Option<&Path>),
@@ -6117,7 +6230,7 @@ fn link_shared(
     let platform = options.platform();
     let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
     linker
-        .args(target_args(platform))
+        .args(target_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(final_link_args(platform)?);
     if platform.mach_o() {
@@ -7145,6 +7258,7 @@ fn bitcode_ir(
     ir: &str,
     options: BuildOptions,
     platform: Platform,
+    macos_choice: MacosChoice,
     f16: llvm::F16Path,
     directory: &Path,
 ) -> Result<String, Diagnostic> {
@@ -7158,7 +7272,7 @@ fn bitcode_ir(
         .map(OsString::from)
         .to_vec()
     } else {
-        let mut flags = compile_args(platform);
+        let mut flags = compile_args(platform, macos_choice);
         flags.extend(no_sdk_args(platform));
         flags
     };
@@ -9337,7 +9451,7 @@ mod tests {
     fn named_targets_choose_clang_arguments_and_output_names() {
         use Triple::*;
         let args = |triple| {
-            compile_args(Platform::new(Some(triple)))
+            compile_args(Platform::new(Some(triple)), MacosChoice::Default)
                 .iter()
                 .map(|argument| argument.to_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
@@ -9365,27 +9479,46 @@ mod tests {
             args(Aarch64WindowsGnu),
             ["--target=aarch64-w64-windows-gnu"]
         );
-        // Without a target the arguments are the machine's own, as they always were.
-        assert_eq!(
-            compile_args(Platform::HOST),
+        // Without a target the arguments are the machine's own, with default 12.0 on macOS (M17 D1).
+        let host_macos = if Platform::HOST.mach_o() {
+            MacosChoice::Default
+        } else {
+            MacosChoice::None
+        };
+        let mut expected_host: Vec<OsString> =
             native_compile_args(cfg!(windows), env::consts::ARCH)
                 .iter()
                 .map(OsString::from)
-                .collect::<Vec<_>>()
-        );
-        assert!(target_args(Platform::HOST).is_empty());
+                .collect();
+        if Platform::HOST.mach_o() {
+            expected_host.push("-mmacosx-version-min=12.0".into());
+        }
+        assert_eq!(compile_args(Platform::HOST, host_macos), expected_host);
+        if Platform::HOST.mach_o() {
+            assert_eq!(
+                target_args(Platform::HOST, host_macos),
+                [OsString::from("-mmacosx-version-min=12.0")]
+            );
+        } else {
+            assert!(target_args(Platform::HOST, host_macos).is_empty());
+        }
         assert!(link_args(Platform::HOST).is_empty());
         for triple in Triple::ALL {
             let platform = Platform::new(Some(triple));
             // Every named run starts with its Clang target, and only a Windows target has no -fPIC.
             assert_eq!(
-                target_args(platform),
+                target_args(platform, MacosChoice::Default),
                 [OsString::from(format!(
                     "--target={}",
                     triple.clang_target()
                 ))]
             );
-            assert_eq!(args(triple)[0], target_args(platform)[0].to_str().unwrap());
+            assert_eq!(
+                args(triple)[0],
+                target_args(platform, MacosChoice::Default)[0]
+                    .to_str()
+                    .unwrap()
+            );
             assert_eq!(
                 args(triple).contains(&"-fPIC".to_owned()),
                 !platform.windows()
