@@ -1,17 +1,19 @@
 # 属性
 
-`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
+`@` で始まる属性は、コンパイル時定数、検査付き算術、CPU ごとの関数の版、関数の効果の表明、`extern` の信頼の印、`extern` のバッファに添える長さ引数、C の構造体と同じ配置のレコード、JSON での名前、コンピュテーション式ビルダーの別名をコンパイラへ伝えます。型変数の `@'a : 制約` は同じ記号で始まりますが、属性ではなく制約行です。
 
-このページでは、11 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
+このページでは、12 個の属性の位置と効果、未知の属性がエラーになること、制約行との違いを説明します。関数の本体の先頭に書く契約の行 `@requires`・`@ensures` は、[契約](./contracts.md) を見てください。
 
 ## この記事のポイント
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@json`、`@alias` の 11 個です。ユーザー定義の属性はありません。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` の 12 個です。ユーザー定義の属性はありません。
 - `@literal` は `def` の前に付け、`const` と同じコンパイル時定数にします。
 - `@checked` は直後の式や文の整数演算を検査し、溢れると `OverflowException` になります。
 - `@cpu` はトップレベル関数の `def` の前に付け、命令セットごとの版を作ります。ビルド先で選べない名前は無視されます。
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` はトップレベル関数の `def` の前に付け、「確保しない」「暗黙に複製しない」「論理のトラップをしない」「停止する」をコンパイラに検査させます。生成コードは変わりません。
 - `@trusted` は `extern` の宣言の前に付け、人がその外部関数の契約を確かめたことを記録します。コンパイラは確かめず、生成コードも変わりません。性質（`pure` など）を添えると、`pure def` や効果の表明から呼べます。
+- `@count(位置, 型)` は `extern` 関数の前に付け、バッファ引数に添えて C へ渡す長さ引数の整数型を決めます（`none` なら渡しません）。
+- `@c_layout` は `record` の前に付け、フィールドを C の構造体と同じ配置にします。`@c_layout(pack = N)` は `#pragma pack(N)` と同じ詰め方です。
 - `@json "名前"` はレコードのフィールドや共用体の case の前に付け、導出した `Encode` / `Decode` が使う JSON の名前を変えます。
 - `@alias 名前` は `.tc` のトップレベルに書き、`名前 { ... }` でそのビルダーを呼べるようにします。標準のビルダーは別名を宣言していません。
 - `@'a : 制約` は制約行です。属性の一覧には入りません。
@@ -26,6 +28,8 @@ flowchart TD
     at --> cpu["@cpu<br/>関数の版"]
     at --> effects["@no_alloc / @no_copy<br/>@no_trap / @terminates<br/>効果の表明"]
     at --> trusted["@trusted<br/>extern の信頼の印"]
+    at --> count["@count<br/>extern のバッファの長さ引数"]
+    at --> clayout["@c_layout<br/>C の配置のレコード"]
     at --> json["@json<br/>JSON での名前"]
     at --> alias["@alias<br/>ビルダーの別名"]
     at --> row["型変数が続く行<br/>制約行。属性ではない"]
@@ -39,6 +43,7 @@ flowchart TD
 | `@no_alloc` `@no_copy` `@no_trap` `@terminates` | `private` や `export` より前、トップレベル `def` の直前（`@cpu` と任意の順序） | 関数の効果の検査。違反は `E1031` | [効果の表明](#効果の表明no_allocno_copyno_trapterminates) |
 | `@trusted` | `extern` の宣言の直前（`private` より前）。性質は同じ行 | 人が確かめた `extern` の印。性質は `pure` と効果の表明に効く | [信頼の印](#trusted-extern-の信頼の印) |
 | `@count` | `extern` 関数の宣言の直前（`@trusted` と任意の順序） | バッファ引数（`ref [T]`・`ref mut [T]`・`ref mut [T..]`・`ref string`・`ref utf8string`）の長さ引数の型（`i32`・`i32u`・`i64`・`i64u`）または省略（`none`） | [ネイティブ連携](../compiler/native-interop.md#可変参照ref-mutと-count) |
+| `@c_layout` | `record` の宣言の直前（`private` より前）。引数は省略か `(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`） | フィールドを宣言順に C の標準アライメントで並べ、C の構造体と同じ配置にする | [ネイティブ連携](../compiler/native-interop.md#c-レイアウトレコードc_layout) |
 | `@json` | レコードのフィールドの直前、共用体の case の直前 | 導出した `Encode` / `Decode` のキーとタグ | [Json](../built-in-types-and-modules/json.md) |
 | `@alias` | `.tc` のトップレベルの 1 行 | `名前 { ... }` で呼べるビルダーの別名 | [コンピュテーション式](../computation-expressions/computation-expressions.md#ビルダーの別名) |
 
@@ -301,6 +306,26 @@ extern "GetWindowTextW" def get_window_text :: Hwnd -> ref mut [i16u..] -> i32
 - `none` は C へ長さ引数を渡さずデータポインタだけを渡します（別の引数で長さを渡す C API 向け）。
 - WebAssembly ターゲットで `i64` 以外の `@count` を持つ `extern` に到達すると `E1008`（`abi_native_only`）、`extern` 以外の宣言に付けると `E0002`（`misplaced_count_attribute`）になります。
 
+## @c_layout (C の配置のレコード)
+
+`@c_layout` は、`record` の宣言の前に置き、そのレコードを C や Win32 API の構造体とバイト単位で同じ配置にします。フィールドは宣言順に C の標準アライメントで並び、パディングは明示されます。`@c_layout(pack = N)`（`N` は `1`・`2`・`4`・`8`・`16`）は、各フィールドのアライメントを `N` 以下に丸めます（C の `#pragma pack(N)` と同じ）。
+
+```tsuzuri
+@c_layout
+record Point { x: i32, y: i32 }
+
+@c_layout(pack = 1)
+record Header { tag: i8u, length: i32u }
+```
+
+フィールドに書ける型、生成する C ヘッダー、ホストのメモリを読み書きする `extern view def` は、[ネイティブ連携](../compiler/native-interop.md#c-レイアウトレコードc_layout)にあります。
+
+### 書ける位置とエラー
+
+- `record` の宣言の直前だけです。`private` より前に書きます（`@c_layout private record`）。`def`・`union` などの前に置くと、`E0002`（`misplaced_c_layout_attribute`）です。
+- 1 つのレコードに 2 回書く（`c_layout_repeated`）、`pack` 以外の引数や `1`・`2`・`4`・`8`・`16` 以外の値（`c_layout_argument`）は `E0002` です。
+- C の配置を持たない型のフィールド（`string`、`bool` など）、型パラメーターか region を持つレコードは `E1008` です（kind は `c_layout_` で始まります）。
+
 ## @json (JSON での名前)
 
 `@json "名前"` は、レコードのフィールドか共用体の case の前に付けます。`deriving (Encode, Decode)` で生成するコードが、宣言した名前の代わりにこの名前を JSON のキーやタグに使います。Tsuzuri のコードから見た名前は変わりません。
@@ -357,11 +382,11 @@ fn Return value = value
 
 ## ユーザー定義の属性はない
 
-Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
+Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` と、本体の先頭の契約の行 `@requires`・`@ensures`（`@ensures` の中の `@old`）以外の `@名前`（`@serialize` など）は `E0002` です。動作を属性の裏側に隠さないための制限です。
 
 ## まとめ
 
-- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@json`、`@alias` の 10 個です。
+- 属性は `@literal`、`@checked`、`@cpu`、`@no_alloc`、`@no_copy`、`@no_trap`、`@terminates`、`@trusted`、`@count`、`@c_layout`、`@json`、`@alias` の 12 個です。
 - `@'a : 制約` は制約行であり、属性ではありません。
 - ユーザー定義の属性はありません。
 - `@literal` は `const` と同じコンパイル時定数です。
@@ -369,6 +394,8 @@ Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@lite
 - `@cpu` は命令セットごとの関数の版を作ります。選べない名前は無視され、未知の名前は `E0002` です。
 - `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` は推論した効果を検査する表明で、違反は `E1031`、置き場の誤りは `E1032` です。生成コードは変わりません。
 - `@trusted` は人が確かめた `extern` の印で、誤りは `E1037` です。性質は `pure def` と効果の表明に効きます。
+- `@count` は `extern` のバッファ引数に添える長さ引数の型を決めます。
+- `@c_layout` はレコードを C の構造体と同じ配置にします。
 - `@json` は導出した `Encode` / `Decode` が使うフィールドや case の名前を変えます。
 - `@alias` は `.tc` のビルダーに小文字の別名を足し、`identity { ... }` のような書き方を可能にします。
 
@@ -382,6 +409,7 @@ Tsuzuri 0.1.0 に、独自の属性やデコレータはありません。`@lite
 - [ジェネリック関数と型パラメータ制約](./generics-functions.md)
 - [例外処理](../exception-handling/exception-handling.md)
 - [Json](../built-in-types-and-modules/json.md)
+- [ネイティブ連携 (C ABI)](../compiler/native-interop.md)
 - [言語仕様: 検査付き算術と例外](../../../docs/language.md#検査付き算術と例外)
 - [言語仕様: CPU ごとの関数の版](../../../docs/language.md#cpu-ごとの関数の版cpu)
 - [言語リファレンスの目次](../index.md)
