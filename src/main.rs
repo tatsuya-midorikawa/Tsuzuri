@@ -1964,6 +1964,22 @@ fn print_diagnostics(errors: &tsuzuri::diagnostic::DiagnosticSet, project: &Proj
     write_diagnostics(&mut io::stderr(), errors, project, json);
 }
 
+/// A command's `SourceError` at the line and column of its span in the file it names.
+fn print_source_error(error: &driver::SourceError, json: bool) {
+    print_diagnostic(&error.diagnostic, &error.path, &error.located_text(), json);
+}
+
+/// `print_source_error` through the `err` of `cli`.
+fn write_source_error(err: &mut dyn Write, error: &driver::SourceError, json: bool) {
+    write_diagnostic(
+        err,
+        &error.diagnostic,
+        &error.path,
+        &error.located_text(),
+        json,
+    );
+}
+
 fn write_diagnostic(
     err: &mut dyn Write,
     error: &Diagnostic,
@@ -2135,8 +2151,7 @@ fn run_formatter(arguments: &Arguments) -> u8 {
             EXIT_SUCCESS
         }
         Err(error) => {
-            let source = driver::read_source(&error.path).unwrap_or_default();
-            print_diagnostic(&error.diagnostic, &error.path, &source, arguments.json);
+            print_source_error(&error, arguments.json);
             EXIT_FAILURE
         }
     }
@@ -3024,7 +3039,7 @@ fn fetch_dependencies(arguments: &[OsString]) -> ExitCode {
     match tsuzuri::fetch::fetch(directory) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             ExitCode::FAILURE
         }
     }
@@ -3097,7 +3112,7 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
     let project = match Project::load_for_tests(&directory) {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             return ExitCode::FAILURE;
         }
     };
@@ -3111,7 +3126,7 @@ fn publish_package(arguments: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             ExitCode::FAILURE
         }
     }
@@ -3239,7 +3254,7 @@ fn prove_command(arguments: &[OsString]) -> ExitCode {
     let mut project = match Project::load(&path) {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             return ExitCode::FAILURE;
         }
     };
@@ -3369,7 +3384,7 @@ fn audit_command(arguments: &[OsString]) -> ExitCode {
     let project = match Project::load(&arguments.path) {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             return ExitCode::FAILURE;
         }
     };
@@ -3457,7 +3472,7 @@ fn api_diff_command(arguments: &[OsString]) -> ExitCode {
         let project = match loaded {
             Ok(project) => project,
             Err(error) => {
-                print_diagnostic(&error.diagnostic, &error.path, "", json);
+                print_source_error(&error, json);
                 return ExitCode::FAILURE;
             }
         };
@@ -3653,7 +3668,7 @@ fn fix_command(arguments: &[OsString]) -> ExitCode {
     let mut project = match Project::load(&arguments.input) {
         Ok(project) => project,
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             return ExitCode::FAILURE;
         }
     };
@@ -3669,7 +3684,7 @@ fn fix_command(arguments: &[OsString]) -> ExitCode {
             ExitCode::from(done.exit)
         }
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             ExitCode::from(if error.diagnostic.code == "E2000" {
                 2
             } else {
@@ -3696,8 +3711,7 @@ fn fix_edition_command(
     });
     match result {
         Err(error) => {
-            let text = std::fs::read_to_string(&error.path).unwrap_or_default();
-            print_diagnostic(&error.diagnostic, &error.path, &text, json);
+            print_source_error(&error, json);
             ExitCode::FAILURE
         }
         Ok(migration) => {
@@ -3790,7 +3804,7 @@ fn bindgen_command(arguments: &[OsString]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(error) => {
-            print_diagnostic(&error.diagnostic, &error.path, "", json);
+            print_source_error(&error, json);
             ExitCode::FAILURE
         }
     }
@@ -4186,7 +4200,7 @@ fn cli(
     let mut project = match loaded {
         Ok(project) => project,
         Err(error) => {
-            write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+            write_source_error(err, &error, arguments.json);
             return EXIT_FAILURE;
         }
     };
@@ -4195,7 +4209,7 @@ fn cli(
         project = match project.with_edition(edition) {
             Ok(project) => project,
             Err(error) => {
-                write_diagnostic(err, &error.diagnostic, &error.path, "", arguments.json);
+                write_source_error(err, &error, arguments.json);
                 return EXIT_FAILURE;
             }
         };

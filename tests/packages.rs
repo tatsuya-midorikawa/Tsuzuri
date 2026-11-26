@@ -306,107 +306,280 @@ fn manifest_rejects_invalid_git_dependencies() {
     let too_long = format!("https://example.org/{}", "a".repeat(2049 - 20));
     let upper = REV.to_ascii_uppercase();
     let wide = "a".repeat(64);
+    // Each case: the dependency with the error's span between '«' and '»', and the message.
     let cases = [
-        (format!("{{ git = \"{url}\" }}"), GIT_FORM),
-        (format!("{{ rev = \"{REV}\", git = \"{url}\" }}"), GIT_FORM),
+        (format!("{{ git = \"{url}\" «}}»"), GIT_FORM),
         (
-            format!("{{ git = \"{url}\", branch = \"main\" }}"),
+            format!("{{ «rev» = \"{REV}\", git = \"{url}\" }}"),
             GIT_FORM,
         ),
-        (format!("{{ git = \"{url}\", tag = \"v1\" }}"), GIT_FORM),
-        (format!("{{ git \"{url}\", rev = \"{REV}\" }}"), GIT_FORM),
         (
-            format!("{{ git = \"{url}\", rev = \"{REV}\", native = true }}"),
+            format!("{{ git = \"{url}\", «branch» = \"main\" }}"),
             GIT_FORM,
         ),
-        (format!("{{ git = \"{url}\", rev = \"{REV}\""), GIT_FORM),
-        ("{ branch = \"main\" }".to_owned(), GIT_FORM),
+        (format!("{{ git = \"{url}\", «tag» = \"v1\" }}"), GIT_FORM),
+        (format!("{{ git «\"»{url}\", rev = \"{REV}\" }}"), GIT_FORM),
         (
-            format!("{{ git = \"{url}\", rev = \"0123456\" }}"),
+            format!("{{ git = \"{url}\", rev = \"{REV}\", «native» = true }}"),
+            GIT_FORM,
+        ),
+        (format!("{{ git = \"{url}\", rev = \"{REV}\"«»"), GIT_FORM),
+        ("{ «branch» = \"main\" }".to_owned(), GIT_FORM),
+        (
+            format!("{{ git = \"{url}\", rev = «\"0123456\"» }}"),
             GIT_REV_RULE,
         ),
         (
-            format!("{{ git = \"{url}\", rev = \"{upper}\" }}"),
+            format!("{{ git = \"{url}\", rev = «\"{upper}\"» }}"),
             GIT_REV_RULE,
         ),
         (
-            format!("{{ git = \"{url}\", rev = \"{wide}\" }}"),
+            format!("{{ git = \"{url}\", rev = «\"{wide}\"» }}"),
             GIT_REV_RULE,
         ),
         (
-            format!("{{ git = \"{url}\", rev = \"main\" }}"),
+            format!("{{ git = \"{url}\", rev = «\"main\"» }}"),
             GIT_REV_RULE,
         ),
         (
-            format!("{{ git = \"http://example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"http://example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"ssh://example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"ssh://example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"git://example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"git://example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"git@example.org:r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"git@example.org:r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://user@example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://user@example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://user:token@example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://user:token@example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://example.org/r.git?ref=main\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://example.org/r.git?ref=main\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://example.org/r.git#main\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://example.org/r.git#main\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://example.org/my repo.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://example.org/my repo.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https://example.org\\\\r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https://example.org\\\\r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"https:///r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"https:///r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"file://host/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"file://host/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"HTTPS://example.org/r.git\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"HTTPS://example.org/r.git\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ git = \"{too_long}\", rev = \"{REV}\" }}"),
+            format!("{{ git = «\"{too_long}\"», rev = \"{REV}\" }}"),
             GIT_URL_RULE,
         ),
         (
-            format!("{{ url = \"{url}\" }}"),
+            format!("{{ «url» = \"{url}\" }}"),
             "expected a path, git, or version dependency",
         ),
     ];
     for (value, message) in cases {
-        let source = app_manifest(&format!("dependency = {value}\n"));
+        let (source, span) = marked(&app_manifest(&format!("dependency = {value}\n")));
         let error = parse_manifest(&source, 4).unwrap_err();
         assert_eq!(error.code, "E0002", "{value}: {}", error.message);
         assert_eq!(error.message, message, "{value}");
         assert_eq!(error.span.source, Some(4), "{value}");
-        let line = source.find("dependency =").unwrap();
-        assert_eq!(error.span.start, line, "{value}");
+        assert_eq!((error.span.start, error.span.end), span, "{value}");
     }
+}
+
+/// `text` without the markers '«' and '»', and the byte range between them.
+fn marked(text: &str) -> (String, (usize, usize)) {
+    let start = text.find('«').expect("the case marks its span");
+    let end = text.find('»').expect("the case marks its span") - '«'.len_utf8();
+    (text.replace(['«', '»'], ""), (start, end))
+}
+
+/// Manifest and lockfile diagnostics name the line and column of their cause, in text and in
+/// `--json`, in every command that loads a project, and in a dependency's manifest too.
+#[test]
+fn manifest_and_lock_errors_name_their_line_and_column() {
+    let scratch = Scratch::new("positions");
+    let app = scratch.path("app");
+    let app = app.to_str().unwrap();
+    scratch.write("app/Main.tz", "def main :: i64\nfn main = 0\n");
+    let package = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n";
+    let output = scratch.path("app.out");
+    let output = output.to_str().unwrap();
+    // Each case: the root manifest, the file that the error is in, its code, line, and column.
+    let cases = [
+        (
+            format!("{package}foo = 1\n"),
+            "app/Tsuzuri.toml",
+            "E0002",
+            4,
+            1,
+        ),
+        (
+            format!("{package}\n[windows]\nsubsystem = \"bogus\"\n"),
+            "app/Tsuzuri.toml",
+            "E0002",
+            6,
+            13,
+        ),
+        (
+            format!("{package}\n[native]\nlink = [\"a\"]\nbogus = [\"x\"]\n"),
+            "app/Tsuzuri.toml",
+            "E0002",
+            7,
+            1,
+        ),
+        (
+            format!("{package}\n[native]\nlink = \"m\"\n"),
+            "app/Tsuzuri.toml",
+            "E0002",
+            6,
+            8,
+        ),
+        (
+            format!("{package}edition = \"2030\"\n"),
+            "app/Tsuzuri.toml",
+            "E0002",
+            4,
+            11,
+        ),
+        (
+            "# app\n[wasm]\n".to_owned(),
+            "app/Tsuzuri.toml",
+            "E0002",
+            2,
+            1,
+        ),
+        (
+            "[package]\nname = \"maybe\"\nversion = \"0.1.0\"\n".to_owned(),
+            "app/Tsuzuri.toml",
+            "E1011",
+            2,
+            8,
+        ),
+        (
+            format!("{package}[dependencies]\n  bad_name = {{ path = \"x\" }}\n"),
+            "app/Tsuzuri.toml",
+            "E1011",
+            5,
+            3,
+        ),
+        (
+            format!("{package}[dependencies]\nhelper = {{ path = \"../missing\" }}\n"),
+            "app/Tsuzuri.toml",
+            "E2001",
+            5,
+            1,
+        ),
+        (
+            format!("{package}[dependencies]\nother = {{ path = \"../helper\" }}\n"),
+            "app/Tsuzuri.toml",
+            "E1011",
+            5,
+            1,
+        ),
+    ];
+    let helper = "[package]\nname = \"helper\"\nversion = \"1.0.0\"\n";
+    scratch.write("helper/Tsuzuri.toml", helper);
+    let check = |file: &str, code: &str, line: usize, column: usize| {
+        let place = format!("{}:{line}:{column}: error[{code}]", native(file));
+        for arguments in [
+            &["check", app][..],
+            &["build", app, "-o", output],
+            &["run", app],
+            &["test", app],
+        ] {
+            let result = scratch.tsuzuri(arguments);
+            assert!(!result.status.success(), "{arguments:?}");
+            assert!(
+                stderr(&result).contains(&place),
+                "{arguments:?} {place}: {}",
+                stderr(&result)
+            );
+        }
+        let result = scratch.tsuzuri(&["check", app, "--json"]);
+        let diagnostic: serde_json::Value = serde_json::from_str(stderr(&result).trim()).unwrap();
+        assert_eq!(diagnostic["code"], code, "{place}");
+        assert!(
+            diagnostic["path"]
+                .as_str()
+                .unwrap()
+                .ends_with(&native(file)),
+            "{diagnostic}"
+        );
+        assert_eq!(diagnostic["span"]["line"], line, "{place}");
+        assert_eq!(diagnostic["span"]["column"], column, "{place}");
+    };
+    for (manifest, file, code, line, column) in cases {
+        scratch.write("app/Tsuzuri.toml", &manifest);
+        check(file, code, line, column);
+    }
+    // An error in a dependency's manifest is at its line in that manifest.
+    scratch.write(
+        "app/Tsuzuri.toml",
+        &format!("{package}[dependencies]\nhelper = {{ path = \"../helper\" }}\n"),
+    );
+    scratch.write(
+        "helper/Tsuzuri.toml",
+        &format!("{helper}[wasm]\nmax-memory = \"64MB\"\n"),
+    );
+    check("helper/Tsuzuri.toml", "E0002", 5, 14);
+    // `fmt` reads the manifest for its edition.
+    scratch.write(
+        "app/Tsuzuri.toml",
+        &format!("{package}\nedition = \"2030\"\n"),
+    );
+    let result = scratch.tsuzuri(&["fmt", app]);
+    assert!(
+        stderr(&result).contains(&format!(
+            "{}:5:11: error[E0002]",
+            native("app/Tsuzuri.toml")
+        )),
+        "{}",
+        stderr(&result)
+    );
+    // A lockfile error points at the key or value it is about.
+    scratch.write("app/Tsuzuri.toml", package);
+    scratch.write(
+        "app/Tsuzuri.lock",
+        "{\n  \"format\": 1,\n  \"packages\": [],\n  \"extra\": 0\n}\n",
+    );
+    let result = scratch.tsuzuri(&["check", app]);
+    assert!(
+        stderr(&result).contains(&format!("{}:4:3: error[E2007]", native("app/Tsuzuri.lock"))),
+        "{}",
+        stderr(&result)
+    );
+    let result = scratch.tsuzuri(&["check", app, "--json"]);
+    let diagnostic: serde_json::Value = serde_json::from_str(stderr(&result).trim()).unwrap();
+    assert_eq!(
+        (&diagnostic["span"]["line"], &diagnostic["span"]["column"]),
+        (&4.into(), &3.into())
+    );
 }
 
 #[test]
@@ -468,16 +641,28 @@ fn lock_rejects_invalid_files() {
     let valid = format!(
         "{{\"name\": \"geometry-core\", \"git\": \"https://example.org/g.git\", \"rev\": \"{REV}\", \"sha256\": \"{sha}\"}}"
     );
+    let unsigned = format!(
+        "{{\"name\": \"geometry-core\", \"git\": \"https://example.org/g.git\", \"rev\": \"{REV}\"}}"
+    );
+    let quoted = |text: &str| format!("\"{text}\"");
+    // Each case: the lockfile, a part of the message, and the text that the error's span covers
+    // (its first occurrence, or its last with `true`); `None` covers the whole lockfile.
     let cases = [
-        ("not json".to_owned(), "expected"),
-        ("[]".to_owned(), "expected an object"),
+        (
+            "not json".to_owned(),
+            "expected",
+            Some(("o".to_owned(), false)),
+        ),
+        ("[]".to_owned(), "expected an object", None),
         (
             format!("{{\"format\": 3, \"packages\": [{valid}]}}"),
             "format must be 1 or 2",
+            Some(("3".to_owned(), false)),
         ),
         (
             package(&valid.replace("\"rev\":", "\"version\": \"1.0.0\", \"rev\":")),
             "unknown package key 'version'",
+            Some((quoted("version"), false)),
         ),
         (
             format!(
@@ -485,71 +670,103 @@ fn lock_rejects_invalid_files() {
                 valid.replace("\"rev\":", "\"version\": \"1.0\", \"rev\":")
             ),
             "invalid version of 'geometry-core'",
+            Some((quoted("1.0"), false)),
         ),
         (
             format!("{{\"format\": \"1\", \"packages\": [{valid}]}}"),
             "format must be 1",
+            Some((quoted("1"), false)),
         ),
         (
             format!("{{\"format\": 1.0, \"packages\": [{valid}]}}"),
             "format must be 1",
+            Some(("1.0".to_owned(), false)),
         ),
-        (format!("{{\"packages\": [{valid}]}}"), "format must be 1"),
-        ("{\"format\": 1}".to_owned(), "packages must be an array"),
+        (
+            format!("{{\"packages\": [{valid}]}}"),
+            "format must be 1",
+            None,
+        ),
+        (
+            "{\"format\": 1}".to_owned(),
+            "packages must be an array",
+            None,
+        ),
         (
             format!("{{\"format\": 1, \"packages\": [{valid}], \"extra\": 0}}"),
             "unknown key 'extra'",
+            Some((quoted("extra"), false)),
         ),
         (
             package(&valid.replace("\"sha256\"", "\"hash\"")),
             "unknown package key 'hash'",
+            Some((quoted("hash"), false)),
         ),
         (
             package(&valid.replace(", \"sha256\": \"", ", \"sha\": \"")),
             "unknown package key 'sha'",
+            Some((quoted("sha"), false)),
         ),
         (
             package(&format!("{valid}, {valid}")),
             "duplicate package 'geometry-core'",
+            Some((quoted("geometry-core"), true)),
         ),
         (
             package(&valid.replace(&sha, &sha[..63])),
             "invalid sha256 of 'geometry-core'",
+            Some((quoted(&sha[..63]), false)),
         ),
         (
             package(&valid.replace(&sha, &sha.to_ascii_uppercase())),
             "invalid sha256 of 'geometry-core'",
+            Some((quoted(&sha.to_ascii_uppercase()), false)),
         ),
         (
             package(&valid.replace(REV, &REV[..39])),
             "invalid rev of 'geometry-core'",
+            Some((quoted(&REV[..39]), false)),
         ),
         (
             package(&valid.replace("https://", "http://")),
             "invalid git url of 'geometry-core'",
+            Some((quoted("http://example.org/g.git"), false)),
         ),
         (
             package(&valid.replace("geometry-core", "Geometry")),
             "invalid package name 'Geometry'",
+            Some((quoted("Geometry"), false)),
         ),
         (
             package(&valid.replace(&format!("\"{sha}\""), "7")),
             "each package needs a string sha256",
+            Some(("7".to_owned(), true)),
         ),
-        (package("7"), "each package must be an object"),
+        (
+            package(&unsigned),
+            "each package needs a string sha256",
+            Some((unsigned.clone(), false)),
+        ),
+        (
+            package("7"),
+            "each package must be an object",
+            Some(("7".to_owned(), false)),
+        ),
         (
             package(&valid.replace(
                 "\"rev\":",
                 &format!("\"sha256\": \"{}\", \"rev\":", "d".repeat(64)),
             )),
             "duplicate key 'sha256'",
+            Some((quoted("sha256"), true)),
         ),
         (
             format!("{{\"format\": 1, \"format\": 1, \"packages\": [{valid}]}}"),
             "duplicate key 'format'",
+            Some((quoted("format"), true)),
         ),
     ];
-    for (text, detail) in cases {
+    for (text, detail, covered) in cases {
         let error = parse_lock(&text, 2).unwrap_err();
         assert_eq!(error.code, "E2007", "{text}: {}", error.message);
         assert!(
@@ -572,6 +789,19 @@ fn lock_rejects_invalid_files() {
             error.message
         );
         assert_eq!(error.span.source, Some(2));
+        let (needle, last) = covered.unwrap_or_else(|| (text.clone(), false));
+        let start = if last {
+            text.rfind(&needle)
+        } else {
+            text.find(&needle)
+        }
+        .unwrap();
+        assert_eq!(
+            (error.span.start, error.span.end),
+            (start, start + needle.len()),
+            "{text}: {}",
+            error.message
+        );
     }
     // A key that only looks like a duplicate inside a string value is fine.
     assert!(parse_lock(&package(&valid.replace("g.git", "g-sha256-rev.git")), 0).is_ok());

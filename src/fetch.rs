@@ -85,8 +85,12 @@ pub fn publish(directory: &Path, url: &str, rev: &str) -> Result<String, SourceE
         span: Span::default(),
     };
     let version = Version::parse(&manifest.version).ok_or_else(|| {
-        location.error(DiagnosticKind::InvalidPublishVersion,
-            "a published package needs [package] version in MAJOR.MINOR.PATCH form without leading zeros, such as \"1.2.3\"".to_owned(),
+        SourceError::new(
+            &manifest_path,
+            Diagnostic::of(DiagnosticKind::InvalidPublishVersion,
+                "a published package needs [package] version in MAJOR.MINOR.PATCH form without leading zeros, such as \"1.2.3\"",
+                manifest.spans.version,
+            ),
         )
     })?;
     let mut dependencies = BTreeMap::new();

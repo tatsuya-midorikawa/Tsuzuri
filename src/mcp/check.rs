@@ -57,10 +57,11 @@ pub(crate) fn run(
         }
         Err(error) => {
             let shown = relative_text(root, &error.path);
+            let located = error.located_text();
             let mut diagnostic: Value = serde_json::from_str(&error.diagnostic.json_with(
                 error.diagnostic.severity.as_str(),
                 &shown,
-                "",
+                &located,
                 &|_| None,
             ))
             .unwrap_or(Value::Null);
@@ -69,7 +70,7 @@ pub(crate) fn run(
                 &error.diagnostic.render_with(
                     error.diagnostic.severity.as_str(),
                     &shown,
-                    "",
+                    &located,
                     &|_| None,
                 ),
                 root,
