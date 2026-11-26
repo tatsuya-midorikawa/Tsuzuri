@@ -107,20 +107,27 @@ try {
   for (const [label, clangPath] of clangs) {
     const env = { ...process.env, TSUZURI_CLANG: clangPath, TSUZURI_CACHE_DIR: "" };
     for (const opt of ["-O0", "-O3"]) {
+      rmSync(dylibPath, { force: true });
       copyFileSync(newDylib, dylibPath);
       const bin = join(scratch, `weak-${label}${opt}`);
       must(compiler, ["build", weakProj, opt, "--trap-info", "-L", scratch, "-l", "m17w", "-o", bin], {
         env,
       });
-      assert.equal(run(bin, ["call"]).status, 7);
-      assert.equal(run(bin, ["data"]).status, 11);
+      const callNew = run(bin, ["call"]);
+      assert.equal(callNew.status, 7, `new dylib call (${label} ${opt}): ${callNew.signal} ${callNew.stderr}`);
+      const dataNew = run(bin, ["data"]);
+      assert.equal(dataNew.status, 11, `new dylib data (${label} ${opt}): ${dataNew.signal} ${dataNew.stderr}`);
 
-      // Swap in `old.dylib` without `m17_new_api` / `m17_new_data`:
+      // Swap in `old.dylib` without `m17_new_api` / `m17_new_data` (unlink first so Apple Silicon
+      // XNU creates a fresh vnode rather than reusing the previous dylib's cached code signature):
       // uncalled weak symbol lets process start and return 3; weak data symbol returns `None` (10);
       // calling missing weak function prints the runtime diagnostic and traps!
+      rmSync(dylibPath, { force: true });
       copyFileSync(oldDylib, dylibPath);
-      assert.equal(run(bin, []).status, 3);
-      assert.equal(run(bin, ["data"]).status, 10);
+      const baseOld = run(bin, []);
+      assert.equal(baseOld.status, 3, `old dylib base (${label} ${opt}): ${baseOld.signal} ${baseOld.stderr}`);
+      const dataOld = run(bin, ["data"]);
+      assert.equal(dataOld.status, 10, `old dylib data (${label} ${opt}): ${dataOld.signal} ${dataOld.stderr}`);
       const trapped = run(bin, ["call"]);
       assert.notEqual(trapped.status, 0);
       assert.match(

@@ -330,7 +330,7 @@ try {
   writeFileSync(join(w17App, "Tsuzuri.toml"), '[package]\nname = "w17-app"\nversion = "0.1.0"\n\n[dependencies]\ndep = { path = "dep" }\n');
   writeFileSync(join(w17App, "dep", "Tsuzuri.toml"), '[package]\nname = "dep"\nversion = "0.1.0"\n');
   writeFileSync(join(w17App, "dep", "Api.tz"), '@trusted @link("w17")\nextern "w17_answer" def answer :: unit -> i64\ndef get :: unit -> i64 = \\() -> answer ()\n');
-  writeFileSync(join(w17App, "Main.tz"), "Dep::Api.get ()\n");
+  writeFileSync(join(w17App, "Main.tz"), "export def run :: i64 -> i64 = \\x -> Dep::Api.get () + x\nDep::Api.get ()\n");
   const w17Bin = join(root, "w17-bin");
   execute(compiler, ["build", w17App, "-L", w17LibDir, "-o", w17Bin]);
   assert.equal(execute(w17Bin, []).stdout.trim(), "42");

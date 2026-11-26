@@ -527,6 +527,7 @@ impl FunctionEmitter<'_, '_> {
                 sym.len()
             ));
             self.emit_trap(TrapKind::Assert);
+            self.instruction("unreachable");
             self.begin(&ok_block);
         }
         let call = format!(

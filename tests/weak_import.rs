@@ -263,3 +263,78 @@ fn weak_effects_trust_and_audit() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn weak_function_ir_assembles_with_and_without_trap_info() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root: PathBuf =
+        std::env::temp_dir().join(format!("tsuzuri-m17-trap-{}-{stamp}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("Main.tz"),
+        concat!(
+            "@trusted @weak\n",
+            "extern \"m17_new_api\" def new_api :: unit -> i32\n",
+            "@trusted @weak\n",
+            "extern \"m17_new_data\" view def new_data :: unit -> Maybe<f64>\n",
+            "def main :: Array<string> -> i32 = \\args ->\n",
+            "    if args.length > 0 then new_api ()\n",
+            "    else match new_data () with | Maybe.Some _ -> 1i32 | Maybe.None -> 0i32\n",
+        ),
+    )
+    .unwrap();
+
+    for extra in [&[][..], &["--trap-info"][..]] {
+        for opt in ["-O0", "-O3"] {
+            let ir_path = root.join(format!("out{opt}-{}.ll", extra.len()));
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+            cmd.args(["build", root.join("Main.tz").to_str().unwrap()])
+                .args(extra)
+                .args([
+                    opt,
+                    "--target",
+                    "aarch64-apple-darwin",
+                    "--emit",
+                    "llvm",
+                    "-o",
+                    ir_path.to_str().unwrap(),
+                ])
+                .env("TSUZURI_CACHE_DIR", "");
+            let out = cmd.output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let ir = fs::read_to_string(&ir_path).unwrap();
+            assert!(
+                ir.contains("call void @llvm.trap()\n  unreachable\n"),
+                "missing unreachable after @llvm.trap() in weak wrapper:\n{ir}"
+            );
+            let obj_path = root.join(format!("out{opt}-{}.o", extra.len()));
+            let clang = std::env::var("TSUZURI_CLANG").unwrap_or_else(|_| "clang".into());
+            let cc = Command::new(clang)
+                .args([
+                    "--target=aarch64-apple-darwin",
+                    opt,
+                    "-Wno-override-module",
+                    "-c",
+                    ir_path.to_str().unwrap(),
+                    "-o",
+                    obj_path.to_str().unwrap(),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                cc.status.success(),
+                "clang failed to assemble @weak IR ({opt}, {extra:?}):\n{}",
+                String::from_utf8_lossy(&cc.stderr)
+            );
+        }
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
