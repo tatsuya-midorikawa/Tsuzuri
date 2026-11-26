@@ -142,7 +142,7 @@ function walk(dir, prefix, found) {
     }
 }
 
-/** The documents that markers may be in, relative to `root`: `docs/*.md`, `README.md`, `_tsuzuri/**`. */
+/** The documents that markers may be in, relative to `root`: `docs/*.md`, `README.md`. */
 export function docFiles(root) {
     const found = [];
     if (existsSync(join(root, 'docs'))) {
@@ -151,13 +151,12 @@ export function docFiles(root) {
         }
     }
     if (existsSync(join(root, 'README.md'))) found.push('README.md');
-    if (existsSync(join(root, '_tsuzuri'))) walk(join(root, '_tsuzuri'), '_tsuzuri/', found);
     return found.sort(compare);
 }
 
 /** Whether a Doc link may point at the root-relative `path`. */
 export function allowedDoc(path) {
-    return /^docs\/[^/]+\.md$/.test(path) || /^_tsuzuri\/language-reference\/.+\.md$/.test(path) || path === 'README.md';
+    return /^docs\/[^/]+\.md$/.test(path) || path === 'README.md';
 }
 
 /** The Doc cell for `page` (root-relative) and `heading`, or an error message. */

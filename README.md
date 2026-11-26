@@ -4,7 +4,7 @@
 
 コードは **`.tz`**、型クラス宣言は **`.tt`**、コンピュテーション式のビルダー実装は **`.tc`** に記述します。Rust 製のフロントエンドで厳密な型検査を行い、LLVM をバックエンドとして高効率なネイティブコードおよび WebAssembly を生成します。
 
-- **[公式日本語ドキュメント（言語リファレンス）](_tsuzuri/language-reference/index.md)**: [Tsuzuri の特徴](_tsuzuri/language-reference/languages/how-about-tsuzuri.md) · [なぜ Tsuzuri なのか](_tsuzuri/language-reference/languages/why-tsuzuri.md) · [所有権とムーブ](_tsuzuri/language-reference/ownership-and-memory/ownership.md) · [組み込み型 / 組み込みモジュール](_tsuzuri/language-reference/index.md#組み込み型--組み込みモジュール) · [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md)
+- **[公式日本語ドキュメント（言語リファレンス）](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/index.md)**: [Tsuzuri の特徴](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/overview/introduction.md) · [なぜ Tsuzuri なのか](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/overview/comparison.md) · [所有権とムーブ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/ownership/ownership-and-move.md) · [組み込み型 / 組み込みモジュール](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/index.md) · [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)
 - **[VS Code 拡張機能](vsc/README.md)**: コンパイラ・LLVM・SDK を統合した VSIX パッケージを提供。シンタックスハイライト、コード補完、定義ジャンプ、リファクタリング、ビルド・実行、テスト、ソースデバッグに対応しています（対応アーキテクチャ: x64 / ARM64。詳細は [vsc/Development.md](vsc/Development.md) を参照）。
 
 ---
@@ -19,7 +19,7 @@
 - **安全で軽量な並列処理**: Go の goroutine に相当する `tzroutine { ... }`（専用のスタックを持つ M:N のスケジューリング。捕捉は所有値のムーブか Copy です。`main` や `export` の呼び出しは、その中で起動した tzroutine の終了を待ちます）と、同じスケジューラーの上で配列を分けて並列に計算する `Parallel.*`、借用を共有する子を tzroutine で呼ぶ `Routine.scope` により、データ競合のない安全な並列計算を提供します。Go の `chan T` に当たる `Channel<T>`（`for x in ch`、`close`、バッファなしの受け渡し）、複数のチャンネルを同時に待つ `select` 式、Go の `time` と同じタイマー（`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker`）、Go の `sync` に当たる同期の型（`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap`）、取り消しと期限の `Context`、最初の誤りで残りを止める `ErrGroup` も使えます。
 - **明快な名前空間とモジュール構造**: 1 ファイル = 1 モジュールの原則を維持しつつ、`namespace` と `using` による階層管理、`::` によるパス区切りをサポートしています。
 - **LLVM による高い実行性能**: 既定で LLVM `-O3` による最適化を適用し、自動ベクトル化や `--cpu native` によるターゲット最適化に対応しています。
-- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](_tsuzuri/language-reference/compiler/platforms.md) にあります。
+- **マルチターゲット（Native & WASM）**: 単一のコードベースからネイティブ実行ファイル、C ABI 連携用の共有ライブラリ / オブジェクト、およびブラウザや Node.js で動作する WebAssembly を出力可能です。対応環境は Windows x64/Arm64、Linux x64/Arm64、macOS Arm64 の 5 つだけです。`--target` は、Linux の glibc/musl と Windows の MSVC/MinGW を区別した 9 個の native triple を受け付け、同梱ツールチェーンか `TSUZURI_SYSROOT` でクロスリンクします。検証範囲と機能の制限は [対応プラットフォーム](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/platforms.md) にあります。
 - **充実した開発支援ツール**: 公式言語サーバー（LSP）、自動フォーマッター、単体テストランナー、プロジェクト生成ツール（`tsuzuri new`。AI エージェント向けの `AGENTS.md`・`llms.txt` も作る）、AI エージェント向けのガイド（`tsuzuri guide`）と MCP サーバー（`tsuzuri mcp`）、Markdown ドキュメント生成ツール、C ヘッダーからの extern 生成ツール（`tsuzuri bindgen`）を標準で同梱しています。
 
 ---
@@ -76,6 +76,8 @@ def main :: unit -> i32 = \() ->
 
 ## 設計方針と現在の対応状況
 
+<!-- rule: CLI-009 -->
+
 現在は **0.1.0 — 計算カーネルを実行できる初版** です。コンソール実行、C ABI、ネイティブのデスクトップ・ホスト、ブラウザでのゲーム実行例を含みます。
 C/C++ を上回る性能や C#/F# 以上の書きやすさは設計目標であり、現時点での完全な達成を保証するものではありません。
 
@@ -126,14 +128,14 @@ def main :: string = {
 - **Copy と Move**: 数値、真偽値（`bool`）、`unit`、共有参照、関数値は自動的に Copy となります（関数値のコピーには捕捉環境の複製が伴う場合があります）。レコードや配列も、全要素が Copy であれば Copy、非 Copy の要素を含む場合は所有権が移動（move）します。
 - **スタックとヒープの記憶域**: `new` を使って生成した値はヒープ、`new` なしで生成して束縛した値はスタック（関数のスタックフレーム）に配置されます。スタック上の値を戻り値やクロージャの捕捉などで関数外へ移動させる際は、その時点で自動的に要素がヒープへ昇格されるため、安全性や意味論が変わることはありません。関数外へ返すことが確定している値は、最初から `new` で生成することでこのコピーを省けます。
   文字列リテラルの連結と長さだけを使う連結の確保は省き、外へ逃げない小さな連結・局所の捕捉環境は上限付きのスタック領域を使います。ただし native Windows では、束縛の初期化に使うこの追加領域を安全性のためヒープへ確保します。
-  ヒープの所有文字列は連結で左辺のバッファを再利用します。詳細と fallback は [スタックとヒープ](_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md#確保の省略とバッファ再利用) を参照してください。
+  ヒープの所有文字列は連結で左辺のバッファを再利用します。詳細と fallback は [スタックとヒープ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/ownership/memory-layout.md) を参照してください。
 - **フロントエンドの確保削減**: 不要な本体・Local の複製と子 Vec 確保を除き、型述語には private TypeId arena を使います。公開 AST・型・診断順・構文と資源上限は維持します。改善率は [性能測定](docs/benchmarks.md) の同条件の記録で確認してください。
 - **ランタイムの再利用**: 通常の native／wasm32 ビルドでは numeric／math と native C runtime の object を再利用します。同梱 object → 内容とツールが一致する runtime cache → 埋め込みソースからのコンパイルの順で選び、破損や未対応の組は source fallback になります。`--no-cache` は同梱 object と cache の両方を使わず、自己完結した LLVM／object 出力や debug／trap 計装の契約は維持します。
 - **数値表示・解析**: f32／f64 の最短表示は整数 Schubfach、通常の十進解析は Eisel–Lemire（符号を除き最大 25 ASCII 文字・19 有効桁）と正確な fallback を使い、最短往復・ties-to-even・NaN・符号付きゼロ・文法を維持します。詳細な検証と比較条件は [性能測定](docs/benchmarks.md) を参照してください。
 - **UTF 処理**: UTF 変換・検証・比較は scalar 参照と SIMD 経路を持ち、所有権・文字列表現・符号なしコード単位の比較順序・置換・trap の意味を維持します。
   - native の CPU 経路は能力を検査して fallback し（Windows の CPU runtime は portable baseline）、WASM は `--wasm-feature simd128` の明示指定時だけ SIMD を要求します。UTF-8 復号は 16 bytes 未満なら inline scalar、native の 16–31 bytes は portable LLVM、32 bytes 以上は CPU 経路です。順序比較は UTF-16 の 16 単位未満／UTF-8 の 32 bytes 未満で従来の 64-bit/scalar 経路を使います。
   - UTF-16 符号化は AArch64 など non-x86 では portable LLVM、native x86 の 32 単位以上では CPU による検証・計数と LLVM writer を組み合わせます。portable 符号化は 16 単位未満や初窓にサロゲートがある入力では元の scalar 変換を使い、長い一括経路は別の内部関数へ分離しています。計数は 1／2／3-byte 幅の BMP が混在する窓も扱いますが、writer は均一幅の prefix だけを一括処理します。
-  - SIMD 経路の UTF-16 の検証・修復はサロゲートを含まない prefix の後、残りを一度だけ scalar へ渡します。変換・計数・UTF-8 検証も一括経路が使えない窓からは scalar のまま進み、失敗した probe を繰り返しません。新しい import は不要です。詳細は [String の UTF 処理の実装](_tsuzuri/language-reference/built-in-types-and-modules/string.md#utf-処理の実装) を参照してください。
+  - SIMD 経路の UTF-16 の検証・修復はサロゲートを含まない prefix の後、残りを一度だけ scalar へ渡します。変換・計数・UTF-8 検証も一括経路が使えない窓からは scalar のまま進み、失敗した probe を繰り返しません。新しい import は不要です。詳細は [String の UTF 処理の実装](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/string.md) を参照してください。
 
 ```text
 let local = [1, 2, 3]            // 要素はスタック（関数のフレーム）に配置
@@ -150,8 +152,8 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 #### 数値型とリテラル
 
 - **整数型**: `i8`〜`i128`、符号なしの `i8u`〜`i128u`。別名として `byte`／`ubyte`（`i8u`）、`sbyte`（`i8`）が利用可能です。
-- **浮動小数点型**: `f16`、`f32`、`f64`、`f128`。十進浮動小数点型として `d32`、`d64`、`d128` もサポートしています。`f16` の演算と変換は、AArch64 では LLVM の `half` 命令、x86-64 の `--cpu native` では F16C と AVX512-FP16 の命令、それ以外（WASM を含む）では同梱のソフトウェア実装で計算し、結果のビット（NaN を含む）はどれも同じです。詳細は [`f16` の計算の経路](_tsuzuri/language-reference/types-and-type-inference/basic-types.md#f16-の計算の経路) を参照してください。
-- **任意精度整数 (`bigint`)**: `123I` のように `I` 接尾辞で記述し、加減乗除（`+`, `-`, `*`, `/`, `%`）、累乗（`**`）、比較演算、文字列変換に対応します。詳細は [BigInt](_tsuzuri/language-reference/built-in-types-and-modules/bigint.md) を参照してください。
+- **浮動小数点型**: `f16`、`f32`、`f64`、`f128`。十進浮動小数点型として `d32`、`d64`、`d128` もサポートしています。`f16` の演算と変換は、AArch64 では LLVM の `half` 命令、x86-64 の `--cpu native` では F16C と AVX512-FP16 の命令、それ以外（WASM を含む）では同梱のソフトウェア実装で計算し、結果のビット（NaN を含む）はどれも同じです。詳細は [`f16` の計算の経路](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/primitive-types.md) を参照してください。
+- **任意精度整数 (`bigint`)**: `123I` のように `I` 接尾辞で記述し、加減乗除（`+`, `-`, `*`, `/`, `%`）、累乗（`**`）、比較演算、文字列変換に対応します。詳細は [BigInt](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/bigint.md) を参照してください。
 - **リテラルの接尾辞**: `1i32` や `0.1d128` などの標準的な接尾辞に加え、F# 互換の短い接尾辞（`1y`, `1uy`, `1s`, `1us`, `1u`, `1l`, `1ul`, `1L`, `1UL`, `1.5hf`, `1.5f`, `1.5F`, `0.1hm`, `0.1m`, `0.1M`）が利用できます。バイトリテラルは `'a'B`（`byte`）、`"text"B`（`[byte]`）です。接尾辞のない整数は文脈から推論され、未確定時は `i32`、小数は `f64` に決定されます。
 
 #### 文字列と文字
@@ -159,22 +161,22 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **既定の `string` (UTF-16)**: [ECMA-262 の String 値モデル](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) に従う UTF-16 コード単位列です。文字型は UTF-16 コード単位を表す `char`（`'A'`）です。
 - **バイト列 `utf8string` (UTF-8)**: 従来の UTF-8 文字列は `utf8string` 型および `u8"..."` リテラルで扱います。文字型は Unicode スカラー値を表す `utf8char`（`u8'😀'`）です。
 - **文字列補間**: `$"x = {x}, y = {y:.2}"`（UTF-8 は `u8$"..."`）と記述し、波括弧自体は `{{`／`}}` でエスケープします。書式指定は `[[fill]align][+][width][.precision][type]` に対応し、ネイティブと WASM で完全に一致する丸め処理を行います。
-- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版、型を選ばない `is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` もあります）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](_tsuzuri/language-reference/built-in-types-and-modules/regex.md) を参照してください。
-- **Unicode のテキスト処理 (`Unicode`)**: 一般カテゴリー、正規化（`Unicode.normalize Unicode.Nfc (ref text)` など）、書記素クラスターと単語の境界（UAX #29）、完全な大文字小文字の変換（`to_upper`・`to_lower`・`to_title`・`case_fold`）を提供します。詳細は [Unicode](_tsuzuri/language-reference/built-in-types-and-modules/unicode.md) を参照してください。
+- **正規表現 (`Regex`)**: `Regex.compile (ref "\\d+")` でパターンをコンパイルし、`is_match`・`find`・`captures`・`find_all`・`replace_all`・`split`（UTF-8 は `_utf8` 版、型を選ばない `is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` もあります）で使います。後戻りしない Pike VM なので、1 回の探索は入力の長さに線形です。`\w`・`\p{Lu}`・大文字小文字を区別しない照合は Unicode 17.0.0 の表（`Unicode` モジュール）に従います。詳細は [Regex](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/regex.md) を参照してください。
+- **Unicode のテキスト処理 (`Unicode`)**: 一般カテゴリー、正規化（`Unicode.normalize Unicode.Nfc (ref text)` など）、書記素クラスターと単語の境界（UAX #29）、完全な大文字小文字の変換（`to_upper`・`to_lower`・`to_title`・`case_fold`）を提供します。詳細は [Unicode](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/unicode.md) を参照してください。
 - 詳細は [文字列の仕様](docs/language.md#string-と-utf8string) を参照してください。
 
 #### 配列・リスト・コレクション
 
-- **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。F# の `Array` モジュールの関数は、F# と同じ名前（snake_case）で、配列を最後の引数にして使えます（F# で配列が最後にない `get`・`sub`・`fold_back` などだけ、F# と引数の順が違います）。詳細は [Array](_tsuzuri/language-reference/built-in-types-and-modules/array.md) を参照してください。
-- **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。F# の `List` モジュールの関数（`List.map`・`List.filter`・`List.fold` など）は、F# と同じ名前（snake_case）で、リストを最後の引数にして使えます（F# でリストが最後にない `fold_back` などだけ、F# と引数の順が違います）。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.rev`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。詳細は [List](_tsuzuri/language-reference/built-in-types-and-modules/list.md) を参照してください。
-- **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。.NET の `List<T>` のメンバーの関数が、同じ名前（snake_case）で使えます。引数は .NET の順で、`Vec` は最後に渡すので、`values |> Vec.add 3 |> Vec.sort` のようにパイプでつなげられます。容量の増え方と、範囲外などでのトラップ、`-1` と二分探索の補数の戻り値も .NET と同じです。詳細は [Vec](_tsuzuri/language-reference/built-in-types-and-modules/vec.md) を参照してください。
-- **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: キーの昇順に並べたエントリを、1〜512 エントリのチャンクの列で持つ、所有権を消費して更新するコレクションです（木ではありません）。検索は $O(\log n)$ 回の比較、挿入および削除は $O(\log n)$ 回の比較と 1 チャンク内の移動（最大 511 エントリ）で動作し、チャンクの分割と併合はチャンクの個数に比例する移動を伴います。詳細は [Map](_tsuzuri/language-reference/built-in-types-and-modules/map.md) / [Set](_tsuzuri/language-reference/built-in-types-and-modules/set.md) を参照してください。
-- **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](_tsuzuri/language-reference/built-in-types-and-modules/hashmap.md) / [HashSet](_tsuzuri/language-reference/built-in-types-and-modules/hashset.md) を参照してください。
-- **JSON (`Json`)**: RFC 8259 に厳密な `Json.parse`、決定的な `Json.to_utf8string`、字句を保つ数値 `Json.Numeral`、組み込み型クラス `Encode` / `Decode` と `Json.serialize` / `Json.deserialize` を提供します。入力 64 MiB・入れ子 128 段の上限を超える入力も `Result` のエラーで返します。`@json "名前"` による名前の変更、字下げした出力、木を作らないプル型の解析器と逐次の出力器、同じ値の CBOR（[Cbor](_tsuzuri/language-reference/built-in-types-and-modules/cbor.md)）も提供します。詳細は [Json](_tsuzuri/language-reference/built-in-types-and-modules/json.md) を参照してください。
+- **配列 (`[T]`)**: 固定長の連続メモリ領域です。`[1, 2, 3]` のように記述し、生成後の長さや要素は不変です。`ref values[start..end]` で終端を含まない共有スライス（型: `ref [T]`）を作成でき、コピーを発生させずに部分列を読み取れます。動的な初期化には `new [i32](count, i -> i as i32)` を使用します。F# の `Array` モジュールの関数は、F# と同じ名前（snake_case）で、配列を最後の引数にして使えます（F# で配列が最後にない `get`・`sub`・`fold_back` などだけ、F# と引数の順が違います）。詳細は [Array](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/array.md) を参照してください。
+- **連結リスト (`[|T|]`)**: 不変のリストです。リテラルは `[|1, 2, 3|]`、空リストは `[||]` です。F# の `List` モジュールの関数（`List.map`・`List.filter`・`List.fold` など）は、F# と同じ名前（snake_case）で、リストを最後の引数にして使えます（F# でリストが最後にない `fold_back` などだけ、F# と引数の順が違います）。要素は連続した領域（chunk）に並び、一度に作ったリスト（`new`・リテラル・複製）は 1 つの chunk、`List.cons` で伸ばしたリストは chunk の連なりです。要素への添字アクセスは、一度に作ったリストなら $O(1)$、`List.cons` で伸ばしたリストなら先行する chunk の数に比例します。要素数が定数の小さなリストを 1 つの関数の中で作って使って捨てる処理は、以前の node の連結（LLVM が確保を全部消して約 1 ns）より遅くなることがあります（`List.map`・`List.rev`・`List.copy`・`List.cons` の連鎖・文字列のリストで 25〜80 ns）。要素数が実行時に決まるリストは速くなります。詳細は [List](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/list.md) を参照してください。
+- **ベクター (`Vec<T>`)**: 伸縮可能な所有バッファです。.NET の `List<T>` のメンバーの関数が、同じ名前（snake_case）で使えます。引数は .NET の順で、`Vec` は最後に渡すので、`values |> Vec.add 3 |> Vec.sort` のようにパイプでつなげられます。容量の増え方と、範囲外などでのトラップ、`-1` と二分探索の補数の戻り値も .NET と同じです。詳細は [Vec](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/vec.md) を参照してください。
+- **順序付きマップ・セット (`Map<K, V>` / `Set<K>`)**: キーの昇順に並べたエントリを、1〜512 エントリのチャンクの列で持つ、所有権を消費して更新するコレクションです（木ではありません）。検索は $O(\log n)$ 回の比較、挿入および削除は $O(\log n)$ 回の比較と 1 チャンク内の移動（最大 511 エントリ）で動作し、チャンクの分割と併合はチャンクの個数に比例する移動を伴います。詳細は [Map](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/map.md) / [Set](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/set.md) を参照してください。
+- **ハッシュマップ・ハッシュセット (`HashMap<K, V>` / `HashSet<K>`)**: 平均 $O(1)$ で検索・挿入・削除が可能なコレクションです。挿入順序が保持されます。詳細は [HashMap](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/hashmap.md) / [HashSet](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/hashset.md) を参照してください。
+- **JSON (`Json`)**: RFC 8259 に厳密な `Json.parse`、決定的な `Json.to_utf8string`、字句を保つ数値 `Json.Numeral`、組み込み型クラス `Encode` / `Decode` と `Json.serialize` / `Json.deserialize` を提供します。入力 64 MiB・入れ子 128 段の上限を超える入力も `Result` のエラーで返します。`@json "名前"` による名前の変更、字下げした出力、木を作らないプル型の解析器と逐次の出力器、同じ値の CBOR（[Cbor](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/encoding/cbor.md)）も提供します。詳細は [Json](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/encoding/json.md) を参照してください。
 - **シーケンス (`Seq<T>`)**: 一度だけ消費可能な遅延反復ストリームです。`Seq.unfold`、`Seq.map`、`Seq.filter`、`Seq.to_array` などを提供します。
-- **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で、`Send` かつ `Sync` な値を複数のタスクで共有できます。共有した値を書き換えるときは `Atomic` か `Mutex` を入れます（`Arc` と `Mutex` では循環を作れるので、一方は `Arc.Weak` で持ちます）。詳細は [Rc と Arc](_tsuzuri/language-reference/built-in-types-and-modules/rc.md)、[Atomic](_tsuzuri/language-reference/built-in-types-and-modules/atomic.md)、[Mutex](_tsuzuri/language-reference/built-in-types-and-modules/mutex.md) を参照してください。
-- **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](_tsuzuri/language-reference/built-in-types-and-modules/arena.md) を参照してください。
-- **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、それ以外の native と wasm32 では積和ごとにソフトウェアのルーチンを呼ぶので、`mul_fma` は大幅に遅くなります（ビットは同じです）。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](_tsuzuri/language-reference/built-in-types-and-modules/matrix.md)・[MatrixView](_tsuzuri/language-reference/built-in-types-and-modules/matrix-view.md)・[Tensor](_tsuzuri/language-reference/built-in-types-and-modules/tensor.md) を参照してください。
+- **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で、`Send` かつ `Sync` な値を複数のタスクで共有できます。共有した値を書き換えるときは `Atomic` か `Mutex` を入れます（`Arc` と `Mutex` では循環を作れるので、一方は `Arc.Weak` で持ちます）。詳細は [Rc と Arc](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/memory/rc.md)、[Atomic](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sync/atomic.md)、[Mutex](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sync/mutex.md) を参照してください。
+- **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/memory/arena.md) を参照してください。
+- **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、それ以外の native と wasm32 では積和ごとにソフトウェアのルーチンを呼ぶので、`mul_fma` は大幅に遅くなります（ビットは同じです）。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/matrix.md)・[MatrixView](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/matrix-view.md)・[Tensor](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/tensor.md) を参照してください。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -213,13 +215,13 @@ def distance_of :: 'T -> 'U
 
 #### カリー化・演算子・クロージャ
 
-- **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](_tsuzuri/language-reference/values-and-functions/functions.md)）。
-- **契約**: 関数の本体の先頭に `@requires 条件`・`@ensures \r -> 条件` を書くと、`run`・`test` は入口と出口で検査し（`build` の既定は検査コードなし）、`tsuzuri test --contracts test` は性質テストを生成し、`tsuzuri prove` は z3 などの SMT ソルバーで証明します（[契約](_tsuzuri/language-reference/values-and-functions/contracts.md)）。
-- **正準形（edition 2027）**: 範囲は `a ..= b`（終端を含む）と `a ..< b`（含まない）、接尾辞は型名（`86i8u`・`1.5f32`）、借用はキーワード（`ref x`・`deref r`・`ref T`）、ラムダは `\x y -> e` の 1 つの書き方です。edition 2027 は別の書き方を `E0004` で拒否し、edition 2026 では `--warn canonical`（`W1007`）と `tsuzuri fix --edition 2027` が書き換えます（[for...in](_tsuzuri/language-reference/loops-and-conditionals/for-in.md#整数範囲の反復)）。
-- **信頼境界と権限**: `extern` の宣言に `@trusted [pure no_alloc ...]` を付けて、人が確かめた外部関数を記録します（印のない使用は `--warn untrusted-extern` と `tsuzuri audit` の `W1010`）。マニフェストの `[capabilities]` と依存の `capabilities = [...]` で、パッケージごとに `fs`・`net`・`env`・`time` など 9 個の権限を許すと、許可の外の静的な使用を `E1036` で拒否します。`tsuzuri audit` はパッケージごとの使用・許可・`extern` の信頼をテキストと JSON Lines（`tz-audit/1`）で報告します。実行時のサンドボックスではありません（[パッケージ: 権限](_tsuzuri/language-reference/organizing-tsuzuri/packages.md#権限capabilities)）。
-- **効果の表明**: `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を `def` に付けると、コンパイラが関数の効果（確保・暗黙の複製・論理のトラップ・停止しない可能性）を型付き IR から推論し、表明を破れば `E1031` で拒否します。属性は検査だけで、生成コードは変わりません（[属性: 効果の表明](_tsuzuri/language-reference/values-and-functions/attributes.md#効果の表明no_allocno_copyno_trapterminates)）。
-- **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](_tsuzuri/language-reference/types-and-type-inference/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
-- **演算子**: パイプライン演算子 `|>`、関数合成演算子 `>>`（順方向: `\x -> g (f x)`）および `<<`（逆方向: `\x -> f (g x)`）、累乗演算子 `**`（右結合）、組み込みの `not` や `ignore` を提供します。ビット演算には F# と同様の `&&&`、`|||`、`^^^`、`~~~`、`<<<`、`>>>` を使用します（`>>>` は符号付き整数なら算術シフト、符号なし整数なら論理シフト）。詳細は [演算子と式](_tsuzuri/language-reference/values-and-functions/op-and-expressions.md) を参照してください。
+- **純粋性の契約**: `pure def` と関数型 `pure (T -> U)` は、観測できる副作用がないことをコンパイラが検査する契約です。引数は共有借用か平たいデータの `own` で、generic・純粋 callback・class／instance・`@cpu` にも対応します。停止・トラップしないこと・割り当てがないことは保証しません（[純粋関数](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/functions.md)）。
+- **契約**: 関数の本体の先頭に `@requires 条件`・`@ensures \r -> 条件` を書くと、`run`・`test` は入口と出口で検査し（`build` の既定は検査コードなし）、`tsuzuri test --contracts test` は性質テストを生成し、`tsuzuri prove` は z3 などの SMT ソルバーで証明します（[契約](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/contracts-and-attributes.md)）。
+- **正準形（edition 2027）**: 範囲は `a ..= b`（終端を含む）と `a ..< b`（含まない）、接尾辞は型名（`86i8u`・`1.5f32`）、借用はキーワード（`ref x`・`deref r`・`ref T`）、ラムダは `\x y -> e` の 1 つの書き方です。edition 2027 は別の書き方を `E0004` で拒否し、edition 2026 では `--warn canonical`（`W1007`）と `tsuzuri fix --edition 2027` が書き換えます（[for...in](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/loops.md)）。
+- **信頼境界と権限**: `extern` の宣言に `@trusted [pure no_alloc ...]` を付けて、人が確かめた外部関数を記録します（印のない使用は `--warn untrusted-extern` と `tsuzuri audit` の `W1010`）。マニフェストの `[capabilities]` と依存の `capabilities = [...]` で、パッケージごとに `fs`・`net`・`env`・`time` など 9 個の権限を許すと、許可の外の静的な使用を `E1036` で拒否します。`tsuzuri audit` はパッケージごとの使用・許可・`extern` の信頼をテキストと JSON Lines（`tz-audit/1`）で報告します。実行時のサンドボックスではありません（[パッケージ: 権限](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/modules/packages.md)）。
+- **効果の表明**: `@no_alloc`・`@no_copy`・`@no_trap`・`@terminates` を `def` に付けると、コンパイラが関数の効果（確保・暗黙の複製・論理のトラップ・停止しない可能性）を型付き IR から推論し、表明を破れば `E1031` で拒否します。属性は検査だけで、生成コードは変わりません（[属性: 効果の表明](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/contracts-and-attributes.md)）。
+- **カリー化と静的単相化**: すべての関数は自動的にカリー化されており、部分適用を自然に行えます。型クラスによるメソッド解決はコンパイル時に完全に完了し、動的ディスパッチやランタイム辞書渡しのコストを一切発生させません（明示した [`dyn` 型](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/type-classes.md) を除きます）。呼び出しに使われた具体的な型の組み合わせごとに最適化されたコードを生成します。
+- **演算子**: パイプライン演算子 `|>`、関数合成演算子 `>>`（順方向: `\x -> g (f x)`）および `<<`（逆方向: `\x -> f (g x)`）、累乗演算子 `**`（右結合）、組み込みの `not` や `ignore` を提供します。ビット演算には F# と同様の `&&&`、`|||`、`^^^`、`~~~`、`<<<`、`>>>` を使用します（`>>>` は符号付き整数なら算術シフト、符号なし整数なら論理シフト）。詳細は [演算子と式](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/operators.md) を参照してください。
 - **クロージャと環境捕捉**: ラムダ式（`\x -> ...`）は外側のスコープの値を安全に捕捉できます。捕捉された所有値は関数値自身が管理し、関数値のコピー時には捕捉環境の独立したスナップショットが作成されます。完全適用された既知の関数呼び出しは、環境オブジェクトの確保を行わず直接呼び出しへと最適化されます。
 
 #### 型クラスの定義とインスタンス化
@@ -254,7 +256,7 @@ instance Classes.Score<Point> {
 
 #### レコードと共用体 (union)
 
-- **ジェネリックレコード**: フィールド型に型パラメーターを持つレコードを宣言できます。型パラメーターおよび型引数は常に `Name<'a, 'b>` や `Name<i64, string>` のように `<...>` で括って記述します。詳細は [ジェネリックなレコード](docs/language.md#ジェネリックなレコード) を参照してください。レコードの値は、宣言の順に並べるよりも小さくなるときだけ、フィールドをアライメントの大きい順に格納します（たとえば `{ bool, i64, i8, f64 }` は 32 バイトでなく 24 バイト）。観測できる動作は宣言の順のままです。詳細は [メモリ上の大きさ](_tsuzuri/language-reference/built-in-types-and-modules/record.md#メモリ上の大きさ) を参照してください。
+- **ジェネリックレコード**: フィールド型に型パラメーターを持つレコードを宣言できます。型パラメーターおよび型引数は常に `Name<'a, 'b>` や `Name<i64, string>` のように `<...>` で括って記述します。詳細は [ジェネリックなレコード](docs/language.md#ジェネリックなレコード) を参照してください。レコードの値は、宣言の順に並べるよりも小さくなるときだけ、フィールドをアライメントの大きい順に格納します（たとえば `{ bool, i64, i8, f64 }` は 32 バイトでなく 24 バイト）。観測できる動作は宣言の順のままです。詳細は [メモリ上の大きさ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/records.md) を参照してください。
 
 ```text
 record Pair<'a, 'b> { first: 'a, second: 'b }
@@ -266,7 +268,7 @@ let pair: Pair<string, i64> = swap (Pair { first: 42, second: "answer" })
 pair.second
 ```
 
-- **代数的データ型 (`union`)**: 各ケース（variant）は 0 個または 1 個のペイロードを持ちます。ペイロードを持つケースは 1 引数のコンストラクタ関数値としても扱えます。値はタグ（ケースの数に応じて 1・2・4 バイト）と、最大のペイロードのアライメントに揃えた共有領域で、たとえば下の `Shape` は 24 バイトです。`Maybe<string>` のように、ペイロードなしのケースと文字列・配列のペイロードだけを持つ共用体はタグを持たず、ペイロードそのもの（16 バイト）です。ネイティブのターゲットでは、`ref` のペイロードも null ポインターを `None` にして 8 バイトです。関数値のペイロードも、どのターゲットでも null の記述子を `None` にして、関数値と同じ大きさ（ネイティブは 16 バイト）です。詳細は [メモリ上の大きさ](_tsuzuri/language-reference/built-in-types-and-modules/union.md#メモリ上の大きさ) を参照してください。
+- **代数的データ型 (`union`)**: 各ケース（variant）は 0 個または 1 個のペイロードを持ちます。ペイロードを持つケースは 1 引数のコンストラクタ関数値としても扱えます。値はタグ（ケースの数に応じて 1・2・4 バイト）と、最大のペイロードのアライメントに揃えた共有領域で、たとえば下の `Shape` は 24 バイトです。`Maybe<string>` のように、ペイロードなしのケースと文字列・配列のペイロードだけを持つ共用体はタグを持たず、ペイロードそのもの（16 バイト）です。ネイティブのターゲットでは、`ref` のペイロードも null ポインターを `None` にして 8 バイトです。関数値のペイロードも、どのターゲットでも null の記述子を `None` にして、関数値と同じ大きさ（ネイティブは 16 バイト）です。詳細は [メモリ上の大きさ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/unions.md) を参照してください。
 
 ```text
 union Shape =
@@ -287,7 +289,7 @@ area (Rect (3.0, 4.0))
 
 - **自動導出 (`deriving`)**: レコードや共用体の宣言末尾に `deriving (Eq, Ord, Display, Hash, Default)` を指定することで、構造的なインスタンス実装を自動生成できます。`deriving (Encode, Decode)` はレコードを JSON の object、共用体を `"Case"` / `{"Case": payload}` と相互変換します。
 - **再帰的データ型**: `union Tree<'a> = Leaf | Node of Tree<'a> * 'a * Tree<'a>` のように木構造や構文木を定義できます。再帰ケースは自動的にヒープへ配置され、解放や環境の複製時にスタックオーバーフローを起こさない工夫が施されています。詳細は [共用体 (union)](docs/language.md#共用体union) を参照してください。
-- **匿名共用体**: `(i64 | string)` のように、宣言なしで要素の型そのものをケースにする共用体を書けます（F# の提案 FS-1092 に当たります）。要素の順序と入れ子は型を変えず、期待される型が匿名共用体の位置では要素の型の値をそのまま書け、`:? i64 as n` で取り出して `match` の網羅性を検査します。要素の少ない匿名共用体の値は、その要素をすべて持つ匿名共用体の位置へそのまま渡せ（拡大）、`:? (i64 | f64) as x` で一部の要素の匿名共用体へ絞り込めます。要素がすべて持てば、タプルと同じく組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ち（順序は要素の正準順序、表示はペイロードだけ）、`HashMap`・`Map` のキーや `deriving` のある型のフィールドに使えます。JSON では `Encode` がペイロードだけをタグなしで書き、`Decode` は JSON の値の種類で要素を選びます（要素が読む種類が重なる `(i64 | f64)` などの `Decode` は `E1025`）。詳細は [匿名共用体](_tsuzuri/language-reference/built-in-types-and-modules/anonymous-union.md) を参照してください。
+- **匿名共用体**: `(i64 | string)` のように、宣言なしで要素の型そのものをケースにする共用体を書けます（F# の提案 FS-1092 に当たります）。要素の順序と入れ子は型を変えず、期待される型が匿名共用体の位置では要素の型の値をそのまま書け、`:? i64 as n` で取り出して `match` の網羅性を検査します。要素の少ない匿名共用体の値は、その要素をすべて持つ匿名共用体の位置へそのまま渡せ（拡大）、`:? (i64 | f64) as x` で一部の要素の匿名共用体へ絞り込めます。要素がすべて持てば、タプルと同じく組み込みの `Eq`・`Ord`・`Hash`・`Display` を持ち（順序は要素の正準順序、表示はペイロードだけ）、`HashMap`・`Map` のキーや `deriving` のある型のフィールドに使えます。JSON では `Encode` がペイロードだけをタグなしで書き、`Decode` は JSON の値の種類で要素を選びます（要素が読む種類が重なる `(i64 | f64)` などの `Decode` は `E1025`）。詳細は [匿名共用体](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/anonymous-unions.md) を参照してください。
 - **高階型 (HKT)**: カインドを明示したランク 1 の高階型をサポートしています（例: `class Functor<'f: * -> *> { def map :: ('a -> 'b) -> 'f<'a> -> 'f<'b> }`）。詳細は [HKT仕様](docs/language.md#高階型hkt) を参照してください。
 
 ### 制御構文とパターンマッチ
@@ -334,7 +336,7 @@ match answer with
 ```
 
 - **構文要素**: `let!` は `Builder.Bind`、`return` は `Builder.Return` に展開されます。その他、必要に応じて `ReturnFrom`、`Yield`／`YieldFrom`、`Zero`、`Combine`、`For`／`While`、`Delay`／`Run` を実装できます。使用した構文に対応する操作がビルダーに未定義の場合は、明確なコンパイルエラーとなります。
-- **ビルダーの別名**: ビルダーの `.tc`（たとえば `Query.tc`）に `@alias query` のように書くと、`query { ... }` と小文字でも同じビルダーを呼べます（`Query { ... }` と同じ展開）。詳細は [ビルダーの別名](_tsuzuri/language-reference/computation-expressions/computation-expressions.md#ビルダーの別名) を参照してください。
+- **ビルダーの別名**: ビルダーの `.tc`（たとえば `Query.tc`）に `@alias query` のように書くと、`query { ... }` と小文字でも同じビルダーを呼べます（`Query { ... }` と同じ展開）。詳細は [ビルダーの別名](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/computation-expressions.md) を参照してください。
 - **高度な演算**: 複数ソースの並行的な合成を行う `and!` や `match!`、およびビルダーが提供する `MergeSources` / `BindReturn` / `Bind2` に対応しています（`and!` の各項は左から右へ順に一度ずつ評価され、勝手な自動並列化は行われません）。
 - **暗黙のコンピュテーション式**: 通常の関数や `main` の本体において、明示的なビルダーブロックを省略して `let!` や `do!` を直接記述することも可能です。コンパイラが戻り値の型に基づいて適切なビルダーを自動合成します。詳細は [暗黙の計算式](docs/language.md#ビルダー名を省略した本体) を参照してください。
 - **最適化**: スコープを脱出しないローカルな継続はコンパイラによって特殊化・インライン化され、不要なクロージャのメモリ確保や間接関数呼び出しが完全に消去されます。特殊化した関数（worker）の数には 1,024 個の予算があり、使い切る program では、予算で完成できる連鎖を完成させ、残りは通常の経路になります（[測定](docs/benchmarks.md#抽象化コストの除去pr032026-10-16)）。詳細は [ビルダーの仕様](docs/language.md#コンピュテーション式) および [コンピュテーション式の比較](docs/benchmarks.md#コンピュテーション式の比較) を参照してください。実行例は `tsuzuri run examples/computations` で確認できます。
@@ -362,13 +364,13 @@ total
 // 出力: 42
 ```
 
-- **tzroutine (`tzroutine { ... }`)**: ブロックを Go の goroutine に相当する軽量な実行単位として起動し、`()` を返します。捕捉は所有値のムーブか Copy の複製で、`Send` でなければなりません（借用と `Rc` の捕捉は `E1013`）。`main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。`Routine.go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread` を持つ組み込みの `Routine` モジュールがあり、P の数は `TSUZURI_MAXPROCS` で決めます。`extern` 関数・ファイル・標準入出力の呼び出しの間は P をほかの OS スレッドへ渡し、ソケットの待ちは tzroutine だけが待ちます（netpoller）。ネイティブでは、待たずに計算し続ける tzroutine も 10 ms ほどで P を譲ります（再帰とループの検査、macOS と Linux の実行ファイルでは呼び出しのないループも `SIGURG` で横取り）。ネイティブの macOS・Linux・Windows と、`--wasm-feature jspi` の wasm32 で動きます。wasm32 では生成した JavaScript のグルーが、JSPI で 1 本のスレッドの上を交代に走らせます（[tzroutine 式](./_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#webassemblyjspi)）。
+- **tzroutine (`tzroutine { ... }`)**: ブロックを Go の goroutine に相当する軽量な実行単位として起動し、`()` を返します。捕捉は所有値のムーブか Copy の複製で、`Send` でなければなりません（借用と `Rc` の捕捉は `E1013`）。`main`・`export` の呼び出し・`test`・`bench` は、その中で起動した tzroutine（孫を含む）がすべて終わるまで戻りません。`Routine.go`・`yield`・`count`・`max_procs`・`cpu_count`・`with_locked_thread` を持つ組み込みの `Routine` モジュールがあり、P の数は `TSUZURI_MAXPROCS` で決めます。`extern` 関数・ファイル・標準入出力の呼び出しの間は P をほかの OS スレッドへ渡し、ソケットの待ちは tzroutine だけが待ちます（netpoller）。ネイティブでは、待たずに計算し続ける tzroutine も 10 ms ほどで P を譲ります（再帰とループの検査、macOS と Linux の実行ファイルでは呼び出しのないループも `SIGURG` で横取り）。ネイティブの macOS・Linux・Windows と、`--wasm-feature jspi` の wasm32 で動きます。wasm32 では生成した JavaScript のグルーが、JSPI で 1 本のスレッドの上を交代に走らせます（[tzroutine 式](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/concurrency/tzroutine.md)）。
 - **安全なスレッド分離**: tzroutine の捕捉と `Parallel.*` のコールバックは借用した環境を持てず、`Rc` の持ち込みはコンパイル時に拒否されます。これにより、共有可変状態によるデータ競合の発生を根本から防ぎます。共有して書き換える状態は、`Atomic`（整数と `bool`）と `Mutex`（ほかの値）に限られ、`Arc<Atomic<T>>`、`Arc<Mutex<T>>`、または次の `Routine.scope` の共有借用で渡します。ネイティブの `Mutex.with_lock` は tzroutine のランタイムのロックで、ロックを持ったまま待てます（同じ `Mutex` をもう一度取るとトラップ）。容量付きの `DataChannel`（最後の `Sender` の drop で閉じる）も、待つのはその tzroutine（tzroutine でないスレッドではそのスレッド）だけで、誰も起こせない待ちはデッドロックの報告で終わります。`DataChannel` の要素は借用を持てず（関数値は、環境が借用を持たないものだけ）、`Send` の検査は、ジェネリック関数を通しても、使う型ごとに行われます。`Sync` でない値（`Rc`、ホストのハンドルなど）は共有できません。
 - **借用を共有する子 (`Routine.scope`)**: `Routine.scope (ref shared) count callback` は、`Sync` な値の共有借用を `count` 個の子に貸し、子ごとに 1 つの tzroutine で `callback shared index` を呼んで、結果を添字順に返します。すべての子が終わってから戻るので、外の値を持ち込まずに共有できます。子は互いを待てます。
 - **データ並列 API**: 配列の要素ごとの大量の処理には、`Parallel.init`、`Parallel.map`、`Parallel.map_ref`、`Parallel.reduce`、`Parallel.sum`、`Parallel.fold` を使用します。配列を固定チャンクに分割し、ネイティブでは tzroutine のスケジューラーの上で、呼び出し元と最大 `min(チャンク数, P) - 1` 個の補助の tzroutine が処理します（P は `TSUZURI_MAXPROCS`）。結合的な還元を `Monoid`（`Monoids.Sum`・`Monoids.MaxOf`）で書くと、`Parallel.fold` は逐次の `Array.fold_monoid` とビットまで同じ値を返します（浮動小数点を含む型は `E1039` で拒否されます）。`tsuzuri check PATH --report parallel` は、`Parallel` に置き換えられる `Array` の呼び出しを提案として一覧にします（自動では書き換えません）。詳細は [データ並列 API](docs/language.md#データ並列-api) を参照してください。実行例は `tsuzuri run examples/tzroutines` で確認できます。
-- **Channel (`Channel<T>`)**: tzroutine の間で値を受け渡す Go と同じ双方向のチャンネルです。`Channel.make n`（0 はバッファなし）・`send`・`recv`（`Maybe`）・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share` と `for x in ch` があり、閉じるのは `close` だけ、閉じた後の `send` はトラップです。待つのは tzroutine だけで、誰も起こせない待ちはその場所でトラップします。tzroutine を起動しないプログラムは、既定の WebAssembly でも 1 本の実行として使えます。旧 `Channel`（送り手と受け手の端が分かれたもの）は `DataChannel` に改名し、旧の名前は `E1040` と `tsuzuri fix` で直せます（[Channel](./_tsuzuri/language-reference/built-in-types-and-modules/channel.md)）。
-- **select 式**: `select | recv x from ch -> … | send v to ch -> … | default -> …` で複数のチャンネルの送受信を同時に待ち、すぐにできる腕を一様乱数で 1 つ選びます。`when` で腕を止め（Go の nil チャンネルの代わり）、`default` で待たずに試します。選ばれなかった送る値は drop されます（[select 式](./_tsuzuri/language-reference/async-tasks-and-lazy/select.md)）。
-- **タイマー**: 長さはナノ秒の `i64`（`50 * Time.millisecond()`）です。`Time.sleep` は tzroutine だけを待たせ（`Time.sleep_ms` も tzroutine の中では同じ）、`Time.after` は `select` のタイムアウト、`Time.tick` と `Ticker` は周期、`Time.after_func` は遅らせた呼び出し、`Timer` は止められる 1 回のタイマーです。境界はまだ発火していないタイマーを待たずに止めます（[Time](./_tsuzuri/language-reference/built-in-types-and-modules/time.md)）。
+- **Channel (`Channel<T>`)**: tzroutine の間で値を受け渡す Go と同じ双方向のチャンネルです。`Channel.make n`（0 はバッファなし）・`send`・`recv`（`Maybe`）・`try_send`・`try_recv`・`close`・`length`・`capacity`・`share` と `for x in ch` があり、閉じるのは `close` だけ、閉じた後の `send` はトラップです。待つのは tzroutine だけで、誰も起こせない待ちはその場所でトラップします。tzroutine を起動しないプログラムは、既定の WebAssembly でも 1 本の実行として使えます。旧 `Channel`（送り手と受け手の端が分かれたもの）は `DataChannel` に改名し、旧の名前は `E1040` と `tsuzuri fix` で直せます（[Channel](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sync/channel.md)）。
+- **select 式**: `select | recv x from ch -> … | send v to ch -> … | default -> …` で複数のチャンネルの送受信を同時に待ち、すぐにできる腕を一様乱数で 1 つ選びます。`when` で腕を止め（Go の nil チャンネルの代わり）、`default` で待たずに試します。選ばれなかった送る値は drop されます（[select 式](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/concurrency/select.md)）。
+- **タイマー**: 長さはナノ秒の `i64`（`50 * Time.millisecond()`）です。`Time.sleep` は tzroutine だけを待たせ（`Time.sleep_ms` も tzroutine の中では同じ）、`Time.after` は `select` のタイムアウト、`Time.tick` と `Ticker` は周期、`Time.after_func` は遅らせた呼び出し、`Timer` は止められる 1 回のタイマーです。境界はまだ発火していないタイマーを待たずに止めます（[Time](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sys/time.md)）。
 - **最初の誤りで止める (`ErrGroup`)**: `ErrGroup.go` で関数ごとに tzroutine を起動し、`ErrGroup.wait` で全員の終わりを待って最初の誤り（完了の時刻の順）を返します。最初の誤りはグループの `Context` を取り消すので、ほかの関数はそれを見て早く止まれます。
 
 ```tsuzuri
@@ -382,8 +384,8 @@ match ErrGroup.wait group with
 // 出力: failed
 ```
 
-- **削除した Task**: 以前の `task { ... }`、`Task<T>`、`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました。書くと `E1040` で、`tsuzuri fix` は `Task.scope` を `Routine.scope` に書き換えます。書き換え方は [Task からの移行](_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#task-からの移行) にあります。
-- **削除した Async**: 以前の `Async { ... }`・`async { ... }`、`Async<T>`、`Async.run`・`Async.block_on`・`Async.all`・`Async.all_results`・`Async.sleep`・`Async.start` などと、`Net` の `_async` の 12 関数（`connect_async` など）は削除しました（TZ13）。書くと `E1040` で、`tsuzuri fix` の自動の書き換えはありません。I/O を待ちながら別の計算を進めるには tzroutine を起動し（`Net` の同期の関数は、その tzroutine だけを待たせます）、終わりは `WaitGroup` か `ErrGroup`、タイムアウトは `select` と `Time.after`、待ちは `Time.sleep` で書きます。ホストのイベントループが計算を進める実行器（`Async.start`）と `Async.run` の仮想時刻には後継がありません。書き換え方は [Async からの移行](_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
+- **削除した Task**: 以前の `task { ... }`、`Task<T>`、`Task.run`・`Task.parallel`・`Task.parallel_results`・`Task.scope` は削除しました。書くと `E1040` で、`tsuzuri fix` は `Task.scope` を `Routine.scope` に書き換えます。書き換え方は [Task からの移行](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/concurrency/tzroutine.md) にあります。
+- **削除した Async**: 以前の `Async { ... }`・`async { ... }`、`Async<T>`、`Async.run`・`Async.block_on`・`Async.all`・`Async.all_results`・`Async.sleep`・`Async.start` などと、`Net` の `_async` の 12 関数（`connect_async` など）は削除しました（TZ13）。書くと `E1040` で、`tsuzuri fix` の自動の書き換えはありません。I/O を待ちながら別の計算を進めるには tzroutine を起動し（`Net` の同期の関数は、その tzroutine だけを待たせます）、終わりは `WaitGroup` か `ErrGroup`、タイムアウトは `select` と `Time.after`、待ちは `Time.sleep` で書きます。ホストのイベントループが計算を進める実行器（`Async.start`）と `Async.run` の仮想時刻には後継がありません。書き換え方は [Async からの移行](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/concurrency/tzroutine.md) にあります。
 
 ### 入出力・OS 連携・定数
 
@@ -402,7 +404,7 @@ def main :: unit -> i32 = \() ->
 ```
 
 - 標準出力へ書く `IO.write`・`IO.writeln`、標準エラーへ書く `IO.write_err`・`IO.write_errln`、標準入力から 1 行読む `IO.readln` などの基本関数を提供します（`ln` は行、`err` は標準エラー）。
-- 失敗の可能性がある操作には `IO.try_*` 系統の関数を使用し、結果を `Result` 型として安全に処理できます。詳細は [IO](_tsuzuri/language-reference/built-in-types-and-modules/io.md) を参照してください。
+- 失敗の可能性がある操作には `IO.try_*` 系統の関数を使用し、結果を `Result` 型として安全に処理できます。詳細は [IO](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sys/io.md) を参照してください。
 
 #### OS API
 
@@ -412,7 +414,7 @@ def main :: unit -> i32 = \() ->
 #### ネットワーク API
 
 TCP と UDP のソケット、IP アドレスの解析と表示、名前解決は、opt-in の標準モジュール `Net` で提供されます（ソケットは macOS・Linux・Windows の native と、`--wasm-feature jspi --wasm-feature net` を付けた Node.js 向けの wasm32。アドレスの解析と表示はどの target でも import なしで動きます）。
-操作は `IO<Result<T, Os.Error>>` です。tzroutine の中の待つ操作（`Net.accept`・`Net.read` など）は、その tzroutine だけを待たせ、ほかの tzroutine は走り続けます（[tzroutine の中の Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md#tzroutine-の中の-net)）。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](_tsuzuri/language-reference/built-in-types-and-modules/net.md) を参照してください。
+操作は `IO<Result<T, Os.Error>>` です。tzroutine の中の待つ操作（`Net.accept`・`Net.read` など）は、その tzroutine だけを待たせ、ほかの tzroutine は走り続けます（[tzroutine の中の Net](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sys/net.md)）。ハンドルは `Copy` の不透明な値です（`close` か `with_connection` などで閉じます）。通信は暗号化されません。API と例は [Net](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sys/net.md) を参照してください。
 
 #### エントリーポイント (`Main.tz`)
 
@@ -437,7 +439,7 @@ const Area: i64 = square 12
 #### デバッグ出力と例外処理
 
 - **デバッグ出力**: `Debug.print value` は値を借用して標準エラー出力に表示し、`Debug.trace value` は表示を行ったうえで同じ所有値をそのまま返します（パイプラインの途中での値確認に便利です）。
-- **チェック付き演算と例外**: `@checked x + y` は演算オーバーフロー時に `OverflowException` を送出します。この例外は関数境界やラムダ式を越えず、同一関数内の最も内側の `try ... with ... finally` 式によって `Result` 型の値へと安全に変換されます。詳細は [例外処理](_tsuzuri/language-reference/exception-handling/exception-handling.md) を参照してください。
+- **チェック付き演算と例外**: `@checked x + y` は演算オーバーフロー時に `OverflowException` を送出します。この例外は関数境界やラムダ式を越えず、同一関数内の最も内側の `try ... with ... finally` 式によって `Result` 型の値へと安全に変換されます。詳細は [例外処理](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/error-handling.md) を参照してください。
 
 ### 名前空間・モジュール・パッケージ
 
@@ -538,7 +540,7 @@ tiles = { version = "1.2.0" }
 index = "https://example.org/tsuzuri-index.git"
 ```
 
-依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](_tsuzuri/language-reference/organizing-tsuzuri/packages.md) を参照してください。
+依存パッケージのモジュールは `GeometryCore::Point`（依存先が `namespace` を持てばその名前空間）のように完全修飾名で参照します。git 依存は commit を固定し、registry 依存（`version`）は `[registry]` の git の index から最小版選択で版を決めます。`tsuzuri fetch app` が `git` で取得して内容の SHA-256 と選んだ版を `Tsuzuri.lock` に記録します。index は利用者や組織が置き（Tsuzuri は公開の registry を運営しません）、`tsuzuri publish` が index に足す項目を出力します。ネットワークに触れるのは `fetch` と `publish` だけで、`check`・`build`・`run` などは `Tsuzuri.lock` とキャッシュ内のストアだけを読み、内容の一致を検証します。詳細は [ローカルパッケージの仕様](docs/language.md#ローカルパッケージ) と [パッケージ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/modules/packages.md) を参照してください。
 
 `edition` は、そのパッケージのソースを読むときの言語版です。対応する値は `"2026"`・`"2027"`・`"2028"` で、既存 manifest の省略時は互換性のため `2026` のままです。新規パッケージ・manifest のない CLI 入力・script・REPL・std は最新の `2028` を使います。依存パッケージは自分の `Tsuzuri.toml` の版で読まれ、異なる edition を 1 つのプログラムにまとめられます。2027 以降は A18 の明示的な例外として、通常の引数を読み取り既定にし、`own T` と `mut T` で所有・更新を表します。2028 は D-66c の例外として、終端を含むスライスの素の `..`、`<..`・`<..<`、末尾からの位置 `^k` などの範囲の構文の族を導入します。旧契約やスライスの意味を保存して移行するには `tsuzuri fix --edition 2027 --from 2026 app/` や `tsuzuri fix --edition 2028 --from 2027 app/` を使います。保証と例外は [安定性と互換性の方針](docs/stability.md) にあります。
 
@@ -565,7 +567,7 @@ clang -O3 examples/native/main.c target/examples/physics.o -I target/examples -l
 - **不透明ハンドルとコールバック**: `extern type Counter` でホストが所有するポインタをムーブ専用の不透明ハンドルとして、`extern type copy Hwnd` でホストが所有権を渡さない識別子を `Copy`・捕捉可能なハンドルとして、`extern type local Hdc` で OS スレッドに結び付くハンドルを `pinned` 効果で静的に閉じ込めて扱えます。トップレベル関数は `FnPtr.of` で関数ポインタの値（`FnPtr<F>`）にでき、コールバックからアプリケーション状態へは世代つきトークン `Anchor<T>` で安全に到達できます。NUL 終端 UTF-16 文字列は `ZString`、C の入出力バッファ・レコードは `ref mut` と `@count` で受け渡せます。
 - **ホストライブラリのリンク**: ネイティブ実行ファイルのビルド時には、`--link PATH`、`-l NAME`、`-L DIR`（macOS ではさらに `--framework NAME`、`-F DIR`、`--rpath PATH`）や `Tsuzuri.toml` の `[native]` セクション、ならびに `extern` ごとの `@link("名前")` / `@link(framework = "名前")` を通じて、外部の C/C++ ライブラリ・オブジェクト・framework を直接リンクできます。
 - **共有ライブラリと各言語のバインディング**: `--emit shared` は公開 C ABI（`tz_*`、`tsuzuri_alloc`、`tsuzuri_free` など）だけを export する共有ライブラリ（macOS は `.dylib`、Linux は `.so`。Windows は未対応で `E2000`）を出します。`--emit bindings-cs`、`--emit bindings-py`、`--emit bindings-cpp` は、それを呼ぶ C#（`[LibraryImport]` と `SafeHandle`）、Python（`ctypes`）、C++20（C ヘッダーの上の RAII）のバインディングを同じソースから生成します。`--trap-mode return` を付けると、トラップが各言語の例外になります。
-- **言語間 LTO（bitcode）**: `--emit bitcode` は、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。C・C++ のホストが、bitcode を書いた Clang と同じ Clang の `-flto=thin`（Linux は `-fuse-ld=lld`）でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--target wasm32` は `wasm-ld` の LTO で同じことができます。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link`（`TSUZURI_LLVM_LINK`）が要ります。Windows と `wasm64` は `E2000` です。10 億回のループの測定（M1 Max、macOS、共有機の目安）では、bitcode のリンクは `--emit object` のリンクの約 0.5〜0.6 倍の時間で、C で書いた同じ関数と区別できませんでした。使い方と確かめた組み合わせは [ネイティブ連携](_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode)、測定は [docs/benchmarks.md](docs/benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
+- **言語間 LTO（bitcode）**: `--emit bitcode` は、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。C・C++ のホストが、bitcode を書いた Clang と同じ Clang の `-flto=thin`（Linux は `-fuse-ld=lld`）でリンクすると、`tz_add` のような小さな公開関数をホストのループへ inline できます。`--target wasm32` は `wasm-ld` の LTO で同じことができます。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link`（`TSUZURI_LLVM_LINK`）が要ります。Windows と `wasm64` は `E2000` です。10 億回のループの測定（M1 Max、macOS、共有機の目安）では、bitcode のリンクは `--emit object` のリンクの約 0.5〜0.6 倍の時間で、C で書いた同じ関数と区別できませんでした。使い方と確かめた組み合わせは [ネイティブ連携](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/native-interop.md)、測定は [docs/benchmarks.md](docs/benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 - **デスクトップ GUI 連携の例**: Python/Tkinter などのデスクトップ GUI から Tsuzuri のネイティブ共有ライブラリを呼び出すことも可能です（詳細は `examples/desktop` を参照してください）。
 
 ### WebAssembly (ブラウザ / Node.js)
@@ -607,7 +609,7 @@ console.log(instance.exports.tz_transform(1n, 2n, 3n, 4n)); // 42n
 
 言語ランタイムから WebGPU で動かすには、`Gpu.request Gpu.WebGpu` を使います。デバイスが開けたときだけ `Result.Ok` で、ライブラリやアダプタがなければ `Result.Error Gpu.Unavailable` です（CPU への置き換えはしません）。native は、リンク時の依存なしに wgpu-native 29 を実行時に読み込みます（`TSUZURI_WEBGPU_LIBRARY` で名指しするか、システムの場所の絶対パスにあるものだけで、作業ディレクトリは探しません。`TSUZURI_GPU_DEBUG=1` で理由を表示）。WebAssembly は `--wasm-feature webgpu` を付けると `tsuzuri_gpu.open` と `tsuzuri_gpu.run` を import し、`src/runtime/webgpu.mjs` の `createGpuImports` が JSPI で実装します。厳密な `Gpu.init`・`Gpu.map` が WebGPU で動くのは `i32`・`i32u` だけで、`f32`・`f16` は緩い名前の API だけです。
 
-Vulkan では、`tsuzuri build Kernel.tz --emit spirv -o kernel.spv` が SPIR-V（厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`。除算は出せません）を、`--emit spirv-relaxed` が緩い `f32` のモジュールを書きます。`Gpu.request Gpu.Vulkan` は、native のランタイムが Vulkan のデバイスを開けて、プログラムのカーネルが要る機能（`i64` は `shaderInt64`、厳密な `f32` は float controls）をそのデバイスが持つときだけ `Result.Ok` です（ローダーは `TSUZURI_VULKAN_LIBRARY` で名指しするか、macOS はシステムの場所の絶対パス、Windows は System32 だけで、作業ディレクトリは探しません。WebAssembly では常に `Unavailable`）。**デバイスが報告する float controls は申告で、厳密さの証明ではありません。** ランタイムは、組み込みの適合プローブを通ったデバイスにだけ、厳密な `f32` を許します（MoltenVK は `-(x * 0.0)` の符号と非正規化数、SwiftShader は 2^31 以上の `i32u` から `f32` への変換で、報告と違う結果を出しました）。`Gpu.request Gpu.Auto` は常に成功し、呼び出しごとに、転送・同期・初回の費用を含めて測ったコストの規則で CPU 参照か Vulkan を選びます（`Gpu.last_backend ()` で見られます）。規則の定数は 1 台のマシンの経験則です。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけで、float controls をすべて報告して適合プローブを通る実機、離散 GPU、離散 GPU と統合 GPU が両方ある機械（デバイスの選び方はモックだけで確認）、Linux、Windows、NVIDIA・AMD・Intel の GPU では確かめていません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](_tsuzuri/language-reference/built-in-types-and-modules/gpu.md) を参照してください。
+Vulkan では、`tsuzuri build Kernel.tz --emit spirv -o kernel.spv` が SPIR-V（厳密な `i32`・`i32u`・`i64`・`i64u`・`f32`。除算は出せません）を、`--emit spirv-relaxed` が緩い `f32` のモジュールを書きます。`Gpu.request Gpu.Vulkan` は、native のランタイムが Vulkan のデバイスを開けて、プログラムのカーネルが要る機能（`i64` は `shaderInt64`、厳密な `f32` は float controls）をそのデバイスが持つときだけ `Result.Ok` です（ローダーは `TSUZURI_VULKAN_LIBRARY` で名指しするか、macOS はシステムの場所の絶対パス、Windows は System32 だけで、作業ディレクトリは探しません。WebAssembly では常に `Unavailable`）。**デバイスが報告する float controls は申告で、厳密さの証明ではありません。** ランタイムは、組み込みの適合プローブを通ったデバイスにだけ、厳密な `f32` を許します（MoltenVK は `-(x * 0.0)` の符号と非正規化数、SwiftShader は 2^31 以上の `i32u` から `f32` への変換で、報告と違う結果を出しました）。`Gpu.request Gpu.Auto` は常に成功し、呼び出しごとに、転送・同期・初回の費用を含めて測ったコストの規則で CPU 参照か Vulkan を選びます（`Gpu.last_backend ()` で見られます）。規則の定数は 1 台のマシンの経験則です。確かめたのは Apple M1 Max（WebGPU は wgpu-native と Dawn、Vulkan は MoltenVK と SwiftShader）だけで、float controls をすべて報告して適合プローブを通る実機、離散 GPU、離散 GPU と統合 GPU が両方ある機械（デバイスの選び方はモックだけで確認）、Linux、Windows、NVIDIA・AMD・Intel の GPU では確かめていません。詳細は [GPU 仕様](docs/language.md#gpu-kernel実験的) と [Gpu](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/gpu.md) を参照してください。
 
 ---
 
@@ -643,7 +645,7 @@ tsuzuri fix app/
 ```
 
 値渡しの署名と標準 API を `own`・`_owned` で保存し、対象版で全体を再検査してから atomic に書き換えます。
-依存パッケージは変更せず、manifest の edition は最後に更新します（[詳細](_tsuzuri/language-reference/compiler/usage.md#fix)）。
+依存パッケージは変更せず、manifest の edition は最後に更新します（[詳細](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)）。
 
 ```sh
 tsuzuri fix --edition 2027 --from 2026 --dry-run app/
@@ -652,7 +654,7 @@ tsuzuri fix --edition 2027 --from 2026 app/
 
 ### MCP サーバー (`tsuzuri mcp`)
 
-Claude Code・VS Code・Copilot CLI・Cursor などの AI エージェントから使える、標準入出力の Model Context Protocol サーバーです。型検査の診断（`tz_check`）、言語の案内、診断の説明、知識グラフの照会（宣言・呼び出し元・最短の鎖・型での検索）、版の比較、修正の計画、図を、読み取り専用の 12 の型付きツールで返します。ファイルを書かず、子プロセスもネットワークも使いません（[MCP サーバー](_tsuzuri/language-reference/compiler/mcp.md)）。
+Claude Code・VS Code・Copilot CLI・Cursor などの AI エージェントから使える、標準入出力の Model Context Protocol サーバーです。型検査の診断（`tz_check`）、言語の案内、診断の説明、知識グラフの照会（宣言・呼び出し元・最短の鎖・型での検索）、版の比較、修正の計画、図を、読み取り専用の 12 の型付きツールで返します。ファイルを書かず、子プロセスもネットワークも使いません（[MCP サーバー](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/mcp.md)）。
 
 ```sh
 claude mcp add --transport stdio tsuzuri -- tsuzuri mcp
@@ -663,7 +665,7 @@ claude mcp add --transport stdio tsuzuri -- tsuzuri mcp
 VS Code や Neovim など、LSP 対応のエディタから利用可能な標準入出力（stdio）言語サーバーです。
 
 - **主要機能**: 未保存バッファのリアルタイム全量同期、複数診断、型ホバー表示、定義ジャンプ、シンボル検索、参照検索、リネーム、補完、シグネチャヘルプ、セマンティックハイライト、関連する位置の表示、診断の修正案（未使用ローカル変数の `_`、`E1021` の足りない腕、ヒントの字句の置き換えなど）のクイックフィックスと、文書の `certain` の修正案をまとめて適用する `source.fixAll.tsuzuri`、診断の範囲の hover での kind と `tsuzuri explain` の案内。
-- **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。診断の修正案は、適用するとその診断のコードの件数が減り、どのコードのエラーも増えないものだけを出します（ほかのエラーは残っていてもかまいません）。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md) を参照してください。
+- **高精度なリファクタリング**: リネームやクイックフィックスは編集後のコードを内部で再解析し、安全性が確認された差分のみを適用します。診断の修正案は、適用するとその診断のコードの件数が減り、どのコードのエラーも増えないものだけを出します（ほかのエラーは残っていてもかまいません）。詳細は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### 変更の監視 (`tsuzuri watch`)
 
@@ -674,7 +676,7 @@ tsuzuri watch check app/
 tsuzuri watch test app/ --filter parse
 ```
 
-変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。1 回ごとの仕事は新しいコマンドと同じですが、読んだソースの本文と内容ハッシュを `stat` つきで覚えているので、変わっていないファイルは開き直しません。起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも）止まります。Ctrl-C で止めます。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#watch) を参照してください。
+変更は `stat` で見つけ（100 ms ごと。ファイルの追加と削除は 1 秒ごとにディレクトリを探し直します）、本文が同じ保存や `touch` では実行しません。1 回ごとの仕事は新しいコマンドと同じですが、読んだソースの本文と内容ハッシュを `stat` つきで覚えているので、変わっていないファイルは開き直しません。起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも）止まります。Ctrl-C で止めます。詳細は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### 常駐ビルドサーバー (`tsuzuri serve`)
 
@@ -688,7 +690,7 @@ tsuzuri serve --status app/
 tsuzuri serve --stop app/
 ```
 
-サーバーは読んだソースの本文と内容ハッシュを覚えます。要求は 1 つずつ実行し、`--idle-timeout`（既定 1800 秒）のあいだ要求がなければ終わります。`serve --status` は要求の実行中でもすぐに答え、`serve --stop` は実行中の要求を終えてから止めます（待っているあいだに Ctrl-C で止められたクライアントの要求は実行しません）。同じプロジェクトのサーバーは、同時に始めても 1 つです。ログは標準エラーに書き、標準エラーが詰まっても（読まれないパイプなど）要求・`serve --status`・`serve --stop` は止まりません（書けなかった行は捨てて、`status` の `log_dropped` に数えます）。ソケットは `TSUZURI_SERVER_DIR`（既定は macOS が `~/Library/Caches/tsuzuri/server`、Linux が `$XDG_RUNTIME_DIR/tsuzuri`）の中の `0700` のディレクトリに作り、同じ利用者だけを信頼します。空の `TSUZURI_SERVER_DIR=` はサーバーを使いません。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#serve) を参照してください。
+サーバーは読んだソースの本文と内容ハッシュを覚えます。要求は 1 つずつ実行し、`--idle-timeout`（既定 1800 秒）のあいだ要求がなければ終わります。`serve --status` は要求の実行中でもすぐに答え、`serve --stop` は実行中の要求を終えてから止めます（待っているあいだに Ctrl-C で止められたクライアントの要求は実行しません）。同じプロジェクトのサーバーは、同時に始めても 1 つです。ログは標準エラーに書き、標準エラーが詰まっても（読まれないパイプなど）要求・`serve --status`・`serve --stop` は止まりません（書けなかった行は捨てて、`status` の `log_dropped` に数えます）。ソケットは `TSUZURI_SERVER_DIR`（既定は macOS が `~/Library/Caches/tsuzuri/server`、Linux が `$XDG_RUNTIME_DIR/tsuzuri`）の中の `0700` のディレクトリに作り、同じ利用者だけを信頼します。空の `TSUZURI_SERVER_DIR=` はサーバーを使いません。詳細は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### REPL (`tsuzuri repl`)
 
@@ -703,7 +705,7 @@ it: i64 = 36
 > :quit
 ```
 
-1 行で完結しない入力は空行で終えます。同じ名前の再定義は元の位置で置き換え、セッション全体を検査し直します。実行中の値は持ち越さず、評価のたびに受け付けた `let` を実行し直します。コマンドは `:type`、`:load`、`:list`、`:reset`、`:quit` です。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#repl) を参照してください。
+1 行で完結しない入力は空行で終えます。同じ名前の再定義は元の位置で置き換え、セッション全体を検査し直します。実行中の値は持ち越さず、評価のたびに受け付けた `let` を実行し直します。コマンドは `:type`、`:load`、`:list`、`:reset`、`:quit` です。詳細は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### スクリプト実行 (`tsuzuri script`)
 
@@ -716,7 +718,7 @@ def main :: Array<string> -> i32 = \args ->
     0
 ```
 
-`chmod +x greet` の後の `./greet x y` は `hi x y` を出します（macOS は `#!/usr/bin/env tsuzuri script` でも動きます）。詳細は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#script) を参照してください。
+`chmod +x greet` の後の `./greet x y` は `hi x y` を出します（macOS は `#!/usr/bin/env tsuzuri script` でも動きます）。詳細は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### テストランナー (`tsuzuri test`)
 
@@ -814,11 +816,11 @@ non-breaking: added def Shapes.double: `def double :: i64 -> i64`
 summary: 2 breaking, 1 non-breaking
 ```
 
-`tsuzuri publish` は `api-diff` を呼びません。公開の前に実行してください。出力とその制限は [コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
+`tsuzuri publish` は `api-diff` を呼びません。公開の前に実行してください。出力とその制限は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) にあります。
 
 ### 信頼境界と権限 (`tsuzuri audit`)
 
-`tsuzuri audit [PATH]` は、プロジェクトを `check` と同じに検査し、パッケージごとに、コードが使う権限（std の関数と `extern` から導出）、マニフェストが許す権限、`extern` の関数の `@trusted` の印を報告します。ルートの `Tsuzuri.toml` に `[capabilities]` か依存の `capabilities` があると、`check`・`build`・`run`・`test` も許可の外の使用を `E1036` で止めます。宣言がなければ何も検査せず、出力は変わりません（[コンパイラの使い方](_tsuzuri/language-reference/compiler/usage.md#audit)）。
+`tsuzuri audit [PATH]` は、プロジェクトを `check` と同じに検査し、パッケージごとに、コードが使う権限（std の関数と `extern` から導出）、マニフェストが許す権限、`extern` の関数の `@trusted` の印を報告します。ルートの `Tsuzuri.toml` に `[capabilities]` か依存の `capabilities` があると、`check`・`build`・`run`・`test` も許可の外の使用を `E1036` で止めます。宣言がなければ何も検査せず、出力は変わりません（[コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)）。
 
 ```sh
 tsuzuri audit app
@@ -827,13 +829,13 @@ tsuzuri audit app --json --deny-warnings
 
 ### 知識グラフ (`target/tz/kg`、`tsuzuri kg`)
 
-`check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します。`tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions` は、その知識グラフからモジュールの依存・型・呼び出し・所有権の流れ・並行・メモリの配置・状態遷移の図を Mermaid・DOT・Markdown で出し、ID の要らない図は `views/*.mmd` として知識グラフに入ります（[図表の生成](_tsuzuri/language-reference/compiler/diagrams.md)、[知識グラフ](_tsuzuri/language-reference/compiler/kg.md)、[形式](_tsuzuri/language-reference/compiler/kg-format.md)）。
+`check`・`build`・`run`・`test` は、プロジェクトの知識グラフ（宣言をノード、呼び出し・型の使用・テストなどの関係を辺にした JSON Lines、関数ごとの効果・トラップ・所有権の事実、型のレイアウト、短い英語の要約カード）を `target/tz/kg/` に書きます。ソースが変わっていなければ書き直さず、`--no-kg` か `TSUZURI_KG=0` で止められます。`tsuzuri kg build|verify|clean|export` で明示的に作る・確かめる・消す・出力でき、`tsuzuri kg show|callers|callees|uses|tests-for|search|find|path|brief` でソースを読まずに宣言・呼び出し・テスト・型での検索・最短の関係の鎖を引けます。`tsuzuri kg impact --git REV` は前の版との差（公開 API・効果・警告）とその差に届くテストを出し、`tsuzuri test --affected REV` はそのテストだけを実行します。`tsuzuri kg diagram module|types|calls|ownership|concurrency|layout|transitions` は、その知識グラフからモジュールの依存・型・呼び出し・所有権の流れ・並行・メモリの配置・状態遷移の図を Mermaid・DOT・Markdown で出し、ID の要らない図は `views/*.mmd` として知識グラフに入ります（[図表の生成](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/diagrams.md)、[知識グラフ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/knowledge-graph.md)、[形式](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/knowledge-graph-format.md)）。
 
 ### 型つき穴と型での検索 (`?`、`tsuzuri find`)
 
-まだ書いていない式の位置に `?`（`?名前`）を置くと、`check` はその位置で期待される型・見える局所・その型の値を作れる候補（局所、`Array.length (ref xs)` のような呼び出し、共用体のケースなど）を `E1030` で出します。穴は誤りなので、プログラムは生成しません。期待される型の局所が 1 つだけなら、その名前に置き換える `maybe` の修正案も付きます（[型つき穴](_tsuzuri/language-reference/types-and-type-inference/type-inference.md#型つき穴-)）。未知の名前（`E1002`・`E1004`・`E1007`・`E1020`）には、近い名前と、モジュールを付ければ解決する名前（`length` に `Array.length`）が候補として付きます。
+まだ書いていない式の位置に `?`（`?名前`）を置くと、`check` はその位置で期待される型・見える局所・その型の値を作れる候補（局所、`Array.length (ref xs)` のような呼び出し、共用体のケースなど）を `E1030` で出します。穴は誤りなので、プログラムは生成しません。期待される型の局所が 1 つだけなら、その名前に置き換える `maybe` の修正案も付きます（[型つき穴](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/type-inference.md)）。未知の名前（`E1002`・`E1004`・`E1007`・`E1020`）には、近い名前と、モジュールを付ければ解決する名前（`length` に `Array.length`）が候補として付きます。
 
-`tsuzuri find` は、型から std と（`--project DIR` で）プロジェクトの宣言を探します。照合は `tsuzuri kg find` と同じです（[find](_tsuzuri/language-reference/compiler/usage.md#find)）。
+`tsuzuri find` は、型から std と（`--project DIR` で）プロジェクトの宣言を探します。照合は `tsuzuri kg find` と同じです（[find](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)）。
 
 ```sh
 tsuzuri find 'ref [i64] -> i64'
@@ -851,7 +853,7 @@ tsuzuri explain E1012 --json
 tsuzuri explain --catalog
 ```
 
-よくある誤りの形（`pair.0`、`(5: i64)`、`=>` の腕、`println!`、`Option` など 40 件）には、診断にヒントの `help` が付き、7 件は `likely`／`maybe` の修正案も持ちます。詳細は [診断メッセージとエラーコード](_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain) にあります。
+よくある誤りの形（`pair.0`、`(5: i64)`、`=>` の腕、`println!`、`Option` など 40 件）には、診断にヒントの `help` が付き、7 件は `likely`／`maybe` の修正案も持ちます。詳細は [診断メッセージとエラーコード](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/diagnostics.md) にあります。
 
 ### C ヘッダーからの extern 生成 (`tsuzuri bindgen`)
 
@@ -863,9 +865,9 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### デバッグ情報と出力仕様
 
-- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](_tsuzuri/language-reference/compiler/debugging.md)）。
-- **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。`tsuzuri run` のトラップは、`E2005` の下にトラップした関数から入口までの呼び出しの連鎖（`  at Main.level2` の行、`--json` では `trap`）を出します。`--trap-info` の macOS・Linux の実行ファイルは、環境変数 `TSUZURI_TRAP_REPORT` が指すファイルへ同じ連鎖を書き、関数名は `llvm-symbolizer`（`TSUZURI_LLVM_SYMBOLIZER`）で引きます（[デバッグ](./_tsuzuri/language-reference/compiler/debugging.md#トラップのバックトレース)）。
-- **失敗の閉じ込め（`Domain`）**: 純粋な計算を `Domain.run (\() -> ...)` に包むと、中のトラップ（範囲外・ゼロ除算・`assert` など）が `Result.Error` になり、確保した値は解放されてプロセスが続きます。本体の純粋性と、捕捉・結果が平たいデータであることを `E1038` で検査します。macOS・Linux のネイティブだけです（[Domain](./_tsuzuri/language-reference/built-in-types-and-modules/domain.md)）。
+- **DWARF デバッグ情報**: `build` や `run` に `-g`（`--debug-info`）を付与することで、関数・行番号・変数・型の DWARF 情報を埋め込めます。macOS では `.dwarf` ファイルが生成され、LLDB などのデバッガでシンボルを解決可能です。呼び出し履歴の関数名は `Main.show` のような Tsuzuri の名前で、ステップ実行はランタイムとコンパイラーが生成した補助関数に入りません。LLDB に `scripts/lldb/tsuzuri_lldb.py`（配布物では `share/lldb/tsuzuri_lldb.py`）を `command script import` で読み込むと、文字列・配列・リスト・union・`Map` などを Tsuzuri の値として表示します。VS Code 拡張は自動で読み込みます。Windows で MSVC のリンカーを使う場合は CodeView も出し、実行ファイルの隣に PDB を書いて natvis の表示を埋め込みます（[デバッグ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/debugging.md)）。
+- **実行時トラップ報告**: 配布ビルドでは `--trap-info` を指定することで、トラップ発生時の正確なソース位置情報を出力に含めることができます。WASM では `.trap.json` 表との連動に対応しています。`tsuzuri run` のトラップは、`E2005` の下にトラップした関数から入口までの呼び出しの連鎖（`  at Main.level2` の行、`--json` では `trap`）を出します。`--trap-info` の macOS・Linux の実行ファイルは、環境変数 `TSUZURI_TRAP_REPORT` が指すファイルへ同じ連鎖を書き、関数名は `llvm-symbolizer`（`TSUZURI_LLVM_SYMBOLIZER`）で引きます（[デバッグ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/debugging.md)）。
+- **失敗の閉じ込め（`Domain`）**: 純粋な計算を `Domain.run (\() -> ...)` に包むと、中のトラップ（範囲外・ゼロ除算・`assert` など）が `Result.Error` になり、確保した値は解放されてプロセスが続きます。本体の純粋性と、捕捉・結果が平たいデータであることを `E1038` で検査します。macOS・Linux のネイティブだけです（[Domain](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/core/domain.md)）。
 - **コンソールの出力とフォーマット**: トップレベルの結果式が評価された場合、その型が `Display` を実装していれば文字列表現が標準出力に表示されます。浮動小数点数は最短で往復可能な十進表現で出力され、ネイティブと WASM で完全に一致します。
 
 ---
@@ -882,7 +884,7 @@ tsuzuri bindgen vendor/sample.h -o Sample.tz --include-dir vendor --buffer sampl
 
 ### 配布パッケージの利用
 
-ローカルに LLVM / Clang の完全な開発環境を構築せずに利用したい場合は、コンパイラ本体・Clang・LLD・SDK を同梱したプラットフォーム別配布パッケージ（`tsuzuri-<version>-<host>.tar.gz`）を利用できます。詳細は [配布物を使う](_tsuzuri/language-reference/compiler/usage.md#配布物を使う) を参照してください。
+ローカルに LLVM / Clang の完全な開発環境を構築せずに利用したい場合は、コンパイラ本体・Clang・LLD・SDK を同梱したプラットフォーム別配布パッケージ（`tsuzuri-<version>-<host>.tar.gz`）を利用できます。詳細は [配布物を使う](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) を参照してください。
 
 ### プラットフォーム別のセットアップ
 
@@ -913,7 +915,7 @@ LLVM の `clang`、Windows SDK、および Visual Studio Build Tools（MSVC / C+
 cargo build --release
 ```
 
-`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`--emit bitcode` が C ランタイムを IR のまま 1 つにまとめる `llvm-link` は、`TSUZURI_LLVM_LINK` で指定します（なければ、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します）。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](./_tsuzuri/language-reference/compiler/option.md)）。`--profile-use` にディレクトリを渡すときに `.profraw` を merge する `llvm-profdata` は `TSUZURI_LLVM_PROFDATA` で指定します（未設定なら `TSUZURI_CLANG` の Clang の隣、その toolchain の順で探し、PATH は探しません）。
+`clang` や `wasm-ld` のパスは環境変数 `TSUZURI_CLANG`、`TSUZURI_WASM_LD` で明示的に指定することも可能です。`--emit bitcode` が C ランタイムを IR のまま 1 つにまとめる `llvm-link` は、`TSUZURI_LLVM_LINK` で指定します（なければ、配布物の `bin/`、Clang と同じディレクトリ、PATH の順で探します）。`TSUZURI_LINKER=lld` は、ネイティブ実行ファイルと共有ライブラリの最終リンクに Clang へ `-fuse-ld=lld` を渡す opt-in で、未設定と `default` は従来どおり Clang の既定のリンカーです（[option.md](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。`--profile-use` にディレクトリを渡すときに `.profraw` を merge する `llvm-profdata` は `TSUZURI_LLVM_PROFDATA` で指定します（未設定なら `TSUZURI_CLANG` の Clang の隣、その toolchain の順で探し、PATH は探しません）。
 
 Windows は、CI（`.github/workflows/windows.yml`。x64 は `windows-2022`、Arm64 は `windows-11-arm`。main へのマージのたびと、`ci:full` ラベルを付けた PR で動く）が LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 の組で、fmt・clippy・release build・Rust テスト（`cargo nextest`）・`tests/windows.mjs`・`tests/os.mjs`・`tests/cache.mjs`・`tests/examples.mjs`・`tests/wasm_threads.mjs` を実行します。Visual Studio は x64 が 2022、Arm64 が 2026 で、後者も同梱の 14.44 toolset を使います。配布物の MinGW は、5 環境の CLI と VSIX を作る `.github/workflows/vscode.yml` が検証します（Windows の 2 job は `tests/os.mjs` も実行します）。Windows の共有ライブラリ（`--emit shared`）は未対応です（[G10](_features/_completed/G10-windows.md)）。
 
@@ -926,11 +928,13 @@ tsuzuri build app --target aarch64-unknown-linux-musl -o app-linux-arm64
 TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 ```
 
-target の一覧、CI が確かめている範囲（tier）、制限は [対応プラットフォームとクロスコンパイル](_tsuzuri/language-reference/compiler/platforms.md) にあります。32-bit の native target は受け付けません。
+target の一覧、CI が確かめている範囲（tier）、制限は [対応プラットフォームとクロスコンパイル](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/platforms.md) にあります。32-bit の native target は受け付けません。
 
 ---
 
 ## CLI リファレンス
+
+<!-- rule: CLI-003 --> <!-- rule: CLI-004 --> <!-- rule: CLI-005 --> <!-- rule: CLI-008 --> <!-- rule: CLI-010 --> <!-- rule: DIA-008 --> <!-- rule: EDN-012 -->
 
 ### コマンド書式
 
@@ -978,6 +982,8 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 
 ### 主要オプション一覧
 
+<!-- rule: CLI-001 -->
+
 | オプション | 説明 |
 | --- | --- |
 | `-o`, `--output PATH` | 出力先パスを指定します（親ディレクトリは自動作成されます）。 |
@@ -1010,11 +1016,11 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--wasm-feature simd128\|threads\|jspi\|webgpu\|net\|tail-call` | WebAssembly の追加機能（128-bit SIMD、Worker スレッド分散、モジュールが JavaScript Promise Integration で待ち、export が Promise を返す `jspi`、`Gpu.request Gpu.WebGpu` 用の WebGPU import、`Net` のソケットを Node.js 向けのグルーで実装する `net`、同じ再帰グループへの保証された末尾呼び出しを `return_call` にする `tail-call`。`net` には `jspi` が必要）を有効化します。 |
 | `--allocator system\|host\|counting\|small` | ヒープ確保の行き先（既定: `system`）。`host` はホストの `tsuzuri_host_alloc`・`tsuzuri_host_free`・`tsuzuri_host_realloc` を呼びます。`counting` は実行ファイル・object・共有ライブラリ・LLVM IR・header・WASM に使え、`Alloc` と従来の 32-byte ABI `tsuzuri_alloc_stats` で読めます。`run` と `test` も `counting` だけを受けます。`small` は native 64-bit のサイズ区分 allocator（512 バイト以下を区分から、それ以上を C ライブラリから確保）で、WASM・`--trap-mode return`・`--freestanding` とは排他です。 |
 | `--freestanding` | C ライブラリに依存しない native の object・LLVM IR・header を出力します（`--allocator host` が必須）。 |
-| `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます。`run` と `test` は native だけです）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](_tsuzuri/language-reference/compiler/option.md#コード生成器)）。 |
+| `--backend llvm\|fast` | コード生成器（既定: `llvm`）。`fast` は `-O0` の `build`・`run`・`test` で、Tsuzuri の出した LLVM IR を Clang に渡さずにコンパイラ自身が機械語にします（native は Cranelift、wasm32 は WebAssembly の命令を直接書きます。`run` と `test` は native だけです）。`cargo build --release --features fast-backend` でビルドした `tsuzuri` が要り、`-O1` 以上、`--cpu native`、`--emit exe\|object`（wasm32 は `wasm\|object`）以外、`--profile-*`、`--target TRIPLE`、Windows のホストは `E2000` です（[コード生成器](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。 |
 | `--strip` | native の実行ファイルのリンクでローカルシンボルを除きます（`build` の `--emit exe` だけ。`-g`・WASM とは組み合わせられず、Windows のリンクは変わりません）。 |
 | `--subsystem console\|windows` | Windows ターゲットの実行ファイル（`--emit exe` と `run`）の PE サブシステムを指定します（既定: `Tsuzuri.toml` の `[windows] subsystem`、省略時は `console`）。Windows 以外のターゲットや `exe` 以外の `--emit` で `--subsystem` を指定すると `E2000` です（`Tsuzuri.toml` の `[windows] subsystem` は非 Windows ターゲットや非 `exe` 出力では無視されます）。 |
 | `--wasm-opt` | wasm32 の `.wasm` のリンク後に Binaryen の `wasm-opt -Oz` を実行します（`build` の `--emit wasm` だけ。`-g`・threads・wasm64 とは組み合わせられません）。Binaryen は同梱せず、`--wasm-opt` を付けたときだけ使います。見つからない・失敗したときは `E2002` です。場所は環境変数 `TSUZURI_WASM_OPT`（この変数だけでは何も実行しません）。 |
-| `--profile-generate DIR` / `--profile-use PATH` | プロファイル誘導最適化（`build` と `run`）。`--profile-generate` は、native の実行ファイルとオブジェクトを計装し、正常に終了したときに LLVM の raw profile（`.profraw`）を `DIR` に書きます。`--profile-use` は、merge 済みの `.profdata` か `.profraw` のディレクトリ（`llvm-profdata` で merge）で最適化します。wasm32 の module も使え、その host は module の隣の `app.wasm.profile.mjs` の `writeProfile(instance)` で書きます。LLVM の Clang が要り（同梱の `tsuzuri-clang` は `E2002`）、Windows と別の機械の `--target` は `E2000` です。速くなる種目も遅くなる種目もあります（[詳細](./_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化)）。 |
+| `--profile-generate DIR` / `--profile-use PATH` | プロファイル誘導最適化（`build` と `run`）。`--profile-generate` は、native の実行ファイルとオブジェクトを計装し、正常に終了したときに LLVM の raw profile（`.profraw`）を `DIR` に書きます。`--profile-use` は、merge 済みの `.profdata` か `.profraw` のディレクトリ（`llvm-profdata` で merge）で最適化します。wasm32 の module も使え、その host は module の隣の `app.wasm.profile.mjs` の `writeProfile(instance)` で書きます。LLVM の Clang が要り（同梱の `tsuzuri-clang` は `E2002`）、Windows と別の機械の `--target` は `E2000` です。速くなる種目も遅くなる種目もあります（[詳細](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。 |
 | `--no-cache` | `build`・`run`・`script` で、ビルド成果物キャッシュと構文解析の結果のキャッシュ（frontend cache）の読み書きをやめます。`repl` ではビルド成果物キャッシュをやめます。 |
 | `--json` | 診断情報やテスト結果を 1 行 1 JSON オブジェクト形式で標準エラー出力へ返します。 |
 
@@ -1024,13 +1030,13 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 - **一括エラー報告**: コンパイラは独立した複数の型エラーや構文エラーを収集し、ファイル名およびソース位置順にまとめて報告します（最大 50 件まで表示、残りは件数のみ通知）。二次エラーは抑制され、エラーが存在する限りコード生成や実行は行われません。
 - **ビルドキャッシュ**: ビルドおよび実行時のアーティファクトキャッシュは既定で有効です。ソース、コンパイラ、ツールチェイン、設定内容の SHA-256 ハッシュをキーとして管理し、変更のないモジュールの再コンパイルを回避します。キャッシュ保存先は環境変数 `TSUZURI_CACHE_DIR` でカスタマイズでき、`--no-cache` で無効化できます。同じ保存先の `packages/` には `tsuzuri fetch` が取得した git と registry のパッケージが置かれ、キャッシュの掃除の対象外です。同梱ツールチェーンの識別（配布物の全ファイルの SHA-256 など）は最初のビルドで計算して `bundle/` に控え、配布物の署名が変わるまで読み直しません（信頼の範囲は `_tsuzuri/language-reference/compiler/usage.md` の「ランタイム object」）。
 - **frontend cache**: `check`・`build`・`run`・`script`・`test`・`bench`・`doc` は、構文解析の結果を同じ保存先の `frontend/` にプロジェクトごとに保存し、内容の変わらないソースを構文解析し直しません。出力（IR、診断とその順序、警告、終了コード）はキャッシュの有無で変わりません。`--no-cache` は `build`・`run`・`script`・`repl` だけで受け付け、ほかのコマンドでは `TSUZURI_CACHE_DIR=`（空）にすると両方のキャッシュを使いません。
-- **codegen unit（PB07、opt-in）**: 環境変数 `TSUZURI_CODEGEN_UNITS=auto|split` を選ぶと、`-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g`・`--wasm-feature tail-call` を含む）は、生成した IR を決定的な unit に分け、unit ごとの object を同じ保存先の `units/` に内容で保存し、変わった unit だけを並列にコンパイルして 1 回でリンクします。1 つのモジュールの本体の編集で再コンパイルされるのは、そのモジュールの unit だけで、大きなプログラムでは編集後のビルドが短くなります。初回のビルドは長くなるので、既定は `single`（分けない。未設定と空も同じ）で、`auto` は IR が 16 MB 以上の対象のビルドだけ、`split` は対象のビルドをすべて分けます。ほかの値は `E2000` です。`-O1` 以上、`--backend fast`、`--emit shared`・`bitcode`・`llvm`、PGO、Windows のホストなどは、どの値でも従来どおり 1 つのモジュールです。出力の意味と公開 symbol は変わりません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コード生成の単位codegen-unit)、[測定](./docs/benchmarks.md#pb07-codegen-unit-による増分ビルド)）。
-- **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
-- **コンパクト文字列（opt-in）**: `TSUZURI_STRINGS=compact` は、全コード単位が 0xFF 以下（ASCII と Latin-1）の `string` を 1 単位 1 byte で保存し、そうでない文字列は UTF-16 のままにします（長さの語の bit 62 が印で、`Maybe<string>` の niche は変わりません）。ASCII・Latin-1 の文字列の確保量は約半分になり、native と `--wasm-feature simd128` の WebAssembly では Latin-1 の走査・比較・変換に 128-bit vector の kernel を使います。長さ・添字・順序・hash・表示・host との ABI（常に UTF-16）は変わりません。既定の `utf16` は PM03 より前と byte 単位で同じ IR を出し、ほかの値は `E2000` です。runtime の IR・小さな WebAssembly・ビルド時間が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のままです（[測定と判断](./docs/benchmarks.md#pm03-コンパクト文字列)、[使い方](./_tsuzuri/language-reference/compiler/option.md#コンパクト文字列の旗)）。
-- **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](./_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
-- **デバッグ用のツール**: macOS で、タスクを含むデバッグ用オブジェクトを作る `llvm-link` は環境変数 `TSUZURI_LLVM_LINK`（既定 `llvm-link`）、デバッグ実行ファイルを作る `dsymutil` は `TSUZURI_DSYMUTIL`（既定 `dsymutil`）、`run` のトラップの呼び出しの連鎖に名前を付ける `llvm-symbolizer` は `TSUZURI_LLVM_SYMBOLIZER`（既定 `llvm-symbolizer`。なければアドレスだけ）で指定できます。空の値も「設定済み」で、配布物や `PATH` を探しません（[option.md](./_tsuzuri/language-reference/compiler/option.md#環境変数)）。
+- **codegen unit（PB07、opt-in）**: 環境変数 `TSUZURI_CODEGEN_UNITS=auto|split` を選ぶと、`-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g`・`--wasm-feature tail-call` を含む）は、生成した IR を決定的な unit に分け、unit ごとの object を同じ保存先の `units/` に内容で保存し、変わった unit だけを並列にコンパイルして 1 回でリンクします。1 つのモジュールの本体の編集で再コンパイルされるのは、そのモジュールの unit だけで、大きなプログラムでは編集後のビルドが短くなります。初回のビルドは長くなるので、既定は `single`（分けない。未設定と空も同じ）で、`auto` は IR が 16 MB 以上の対象のビルドだけ、`split` は対象のビルドをすべて分けます。ほかの値は `E2000` です。`-O1` 以上、`--backend fast`、`--emit shared`・`bitcode`・`llvm`、PGO、Windows のホストなどは、どの値でも従来どおり 1 つのモジュールです。出力の意味と公開 symbol は変わりません（[詳細](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)、[測定](./docs/benchmarks.md#pb07-codegen-unit-による増分ビルド)）。
+- **整数の範囲証明の旗**: 整数の `+ - *` は常に型の幅で折り返します。`TSUZURI_RANGE_FLAGS` は、コンパイラが範囲を証明できた演算に LLVM の `nsw`／`nuw` を書くかを選びます。`off`（既定）は何も書かず、`proven` は証明のある命令に書き、`audit` は旗の代わりに、証明が誤っていれば trap する検査を書く試験用です。ほかの値は `E2000`、結果の値は変わりません（[変数の表](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
+- **コンパクト文字列（opt-in）**: `TSUZURI_STRINGS=compact` は、全コード単位が 0xFF 以下（ASCII と Latin-1）の `string` を 1 単位 1 byte で保存し、そうでない文字列は UTF-16 のままにします（長さの語の bit 62 が印で、`Maybe<string>` の niche は変わりません）。ASCII・Latin-1 の文字列の確保量は約半分になり、native と `--wasm-feature simd128` の WebAssembly では Latin-1 の走査・比較・変換に 128-bit vector の kernel を使います。長さ・添字・順序・hash・表示・host との ABI（常に UTF-16）は変わりません。既定の `utf16` は PM03 より前と byte 単位で同じ IR を出し、ほかの値は `E2000` です。runtime の IR・小さな WebAssembly・ビルド時間が増え、host へ短い文字列を返す呼び出しが遅くなるので、既定は `utf16` のままです（[測定と判断](./docs/benchmarks.md#pm03-コンパクト文字列)、[使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
+- **スレッド数**: コンパイラ自身が使うスレッド数の上限は環境変数 `TSUZURI_THREADS`（1 から 32 の整数）で決まります。未設定または空のとき、CLI は使える core 数（最大 8）、ライブラリ API は 1 です。`1` は呼び出したスレッドだけで解析し、範囲外や整数でない値は `E2000`（終了コード 2）です。並列に実行する段は、現在はソースの構文解析（`parse`。frontend cache の照合を含む）、関数ごとの本体の型検査と仕上げ、所有権の検査（`check` の一部と `ownership`）で、ソースや関数が少ない入力は 1 スレッドのままです。診断（順序・重複の除去・上限）、IR、終了コードはスレッド数で変わらず、キャッシュのキーにもスレッド数は入りません（[詳細](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
+- **デバッグ用のツール**: macOS で、タスクを含むデバッグ用オブジェクトを作る `llvm-link` は環境変数 `TSUZURI_LLVM_LINK`（既定 `llvm-link`）、デバッグ実行ファイルを作る `dsymutil` は `TSUZURI_DSYMUTIL`（既定 `dsymutil`）、`run` のトラップの呼び出しの連鎖に名前を付ける `llvm-symbolizer` は `TSUZURI_LLVM_SYMBOLIZER`（既定 `llvm-symbolizer`。なければアドレスだけ）で指定できます。空の値も「設定済み」で、配布物や `PATH` を探しません（[option.md](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
 - **知識グラフと証明の道具**: 知識グラフの置き場は `--kg-dir`、なければ環境変数 `TSUZURI_KG_DIR`（未設定は `<根>/target/tz/kg`。`tsuzuri mcp` は読みません）です。`tsuzuri prove` と `--contracts prove` の SMT ソルバーは `TSUZURI_SMT`（名前か経路。未設定なら PATH の `z3`、なければ `cvc5`。同梱しません）です。
-- **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します（`watch` は 1 回ごと、`serve` が引き受けた要求は 1 要求ごとに、その回の分だけです）。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](./_tsuzuri/language-reference/compiler/option.md#コンパイルの段階別時間)）。
+- **段階別時間**: `TSUZURI_TIME_PASSES=1` のときだけ、終了時に stderr の最後へ時間の JSON を 1 行出します（`watch` は 1 回ごと、`serve` が引き受けた要求は 1 要求ごとに、その回の分だけです）。`emit` は target ごとの ABI・WASM host／runtime の IR 処理も含み、Clang・リンカーは `tool.*` に分けます。成果物・診断・終了コードは変わりません（[段の範囲](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
 
 ---
 
@@ -1171,7 +1177,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | LSP・docgen・debug | `tests/lsp.rs`、`tests/docs.rs`、`tests/doctest.rs`（`tsuzuri test --doc`。G34）、`tests/std_examples.rs`（std の公開関数の例の数と記法）、`tests/debug_info.rs` | `lsp_sessions.mjs`、`docgen.mjs`、`debug_info.mjs` |
 | 言語内テスト | `tests/test_runner.rs` | `tsuzuri test` を使う E2E |
 | `_tsuzuri/` の文書 | — | `node scripts/check-docs.mjs <変更したページ>`（引数なしで全体） |
-| 仕様の規則（`spec/rules/`）と適合性テスト（`tests/conformance/`） | — | `node scripts/conformance.mjs target/debug/tsuzuri --rule <ID>`、`node scripts/check-spec.mjs --require-markers`（規則・文書のマーカーを変えたとき）。言語の振る舞いを変えたときは、その規則のテストを直すか規則を `retired` にする（[仕様の規則と適合性テスト](_tsuzuri/language-reference/compiler/conformance.md)） |
+| 仕様の規則（`spec/rules/`）と適合性テスト（`tests/conformance/`） | — | `node scripts/conformance.mjs target/debug/tsuzuri --rule <ID>`、`node scripts/check-spec.mjs --require-markers`（規則・文書のマーカーを変えたとき）。言語の振る舞いを変えたときは、その規則のテストを直すか規則を `retired` にする（[仕様の規則と適合性テスト](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/conformance.md)） |
 | AI 向けガイド（`guide/`、`tsuzuri guide`、`tsuzuri new` の `AGENTS.md`・`llms.txt`） | `tests/guide.rs`、`src/guide.rs`・`src/guide_std.rs` の test module | `TSUZURI_BIN=target/debug/tsuzuri node scripts/check-guide.mjs`（例を全 edition で `check`・`run`・`test`。上限の検査） |
 
 表にない組み合わせは、変更した関数名を `grep -rn "<関数名>" tests/` して、それを使うテストを全部実行します。
@@ -1305,7 +1311,7 @@ node scripts/check-guide-lite.mjs
 node scripts/repo-kb.mjs build
 ```
 
-機能を追加・変更・修正・削除したときは、同じ変更で [言語リファレンス](_tsuzuri/language-reference/index.md) の関連ページも最新にします（手順は [_features/GUIDE.md §8](_features/GUIDE.md#8-ドキュメント更新規約)）。
+機能を追加・変更・修正・削除したときは、同じ変更で [言語リファレンス](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/index.md) の関連ページも最新にします（手順は [_features/GUIDE.md §8](_features/GUIDE.md#8-ドキュメント更新規約)）。
 
 ### ベンチマーク測定
 

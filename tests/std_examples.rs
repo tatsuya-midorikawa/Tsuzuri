@@ -300,7 +300,7 @@ fn every_public_std_function_has_an_example() {
     assert!(
         missing.is_empty(),
         "{} public std functions have no example (add one in the form of \
-         _tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md): {}",
+         Tsuzuri-Reference docs/modules/doc-comments.md): {}",
         missing.len(),
         missing.join(", ")
     );

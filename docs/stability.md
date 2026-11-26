@@ -1,6 +1,6 @@
 # 安定性と互換性の方針
 
-コンパイラを更新しても利用者のソースが壊れないように、保つものと保たないものを先に決めておきます。このページは、安定として保つもの、保たないもの、言語版（edition）、非推奨にした宣言の扱い、既知の例外、公開 API の差分の確かめ方をまとめます。個々の機能の仕様は [言語仕様](language.md) と `_tsuzuri/language-reference/` にあり、実装の構造は [アーキテクチャ](architecture.md) にあります。
+コンパイラを更新しても利用者のソースが壊れないように、保つものと保たないものを先に決めておきます。このページは、安定として保つもの、保たないもの、言語版（edition）、非推奨にした宣言の扱い、既知の例外、公開 API の差分の確かめ方をまとめます。個々の機能の仕様は [言語仕様](language.md) と [Tsuzuri-Reference](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference) にあり、実装の構造は [アーキテクチャ](architecture.md) にあります。
 
 ## 保証の単位
 
@@ -13,17 +13,17 @@
 | edition ごとの構文と意味 | 型、値、評価順序、所有権と借用、数値のオーバーフロー・丸め・NaN・トラップ。バグの修正は除きます |
 | std の公開 API | 公開した宣言を削除せず、シグネチャも変えません。例外は [既知の例外](#既知の例外) です |
 | 公開 ABI | `export def` の `tz_<name>` シンボル、`--emit header` が出す C ヘッダー、`tsuzuri_` で始まるシンボル（`--overflow-report` の WebAssembly が export する `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` を含む）、`extern` のリンク名と WebAssembly の import 名。`--trap-info` の `.trap.json` と `--overflow-report` の `.overflow.json` のキーも同じ扱いです（キーが増えることはあります） |
-| 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`、`run` のトラップの `E2005` の `trap`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](../_tsuzuri/language-reference/compiler/diagnostics.md#json-の-1-行-1-オブジェクト)） |
-| 仕様の規則の ID（G33） | `spec/rules/` の規則の ID（`OWN-012` など）を再利用しません。廃止した規則は行を消さずに `retired` にし、意味が変わる規則には新しい ID を付けます（[仕様の規則と適合性テスト](../_tsuzuri/language-reference/compiler/conformance.md)） |
-| 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](../_tsuzuri/language-reference/compiler/diagnostics.md#kind-と-explain)） |
+| 診断のコード・重要度・JSON のキー | コードの意味を変えず、別の条件へ再利用しません。`--json` の既存のキーを消したり改名したりしません（キーが増えることはあります）。追加の情報のキー（`kind`・`related`・`help`・`expected`・`found`・`candidates`・`scope`・`fixes`、`run` のトラップの `E2005` の `trap`）は値があるときだけ出し、名前と順序、`related` の `role` と修正案の `applicability` の値を変えません（[診断](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/diagnostics.md)） |
+| 仕様の規則の ID（G33） | `spec/rules/` の規則の ID（`OWN-012` など）を再利用しません。廃止した規則は行を消さずに `retired` にし、意味が変わる規則には新しい ID を付けます（[仕様の規則と適合性テスト](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/conformance.md)） |
+| 診断の kind | すべての診断が持つ `kind` の値（`use_after_move` など）。kind は足すことはあっても、消したり、名前を変えたり、別のコードへ移したりしません。1 つの kind を 2 つに分けるのは互換の変更で、元の kind は残りの条件に使い続けます。edition は kind を変えません（[kind と explain](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/diagnostics.md)） |
 | `tsuzuri guide` | サブコマンドとオプションの名前、`--json` の schema `tz-guide/1` とキーの名前と順序（キーが増えることはあります）、終了コード（出力 0、`--agents`・`--llms-txt` のマニフェストがない 1、引数の誤り 2） |
 | `tsuzuri fix --json` | `event` ごとのキー（`fix`・`file`・`summary`）の名前と順序、`status`・`reason`・`applicability`・`stop` の値を変えません（キーが増えることはあります）。終了コードは完了 0、中止 1、引数の誤り 2 です。`--applicability` の既定（`certain`）を変えません |
 | `tsuzuri explain` の JSON | `--json` と `--catalog --json` のキーの名前と順序を変えません（キーが増えることはあります）。終了コードは成功 0、引数の誤りと不明な対象 2 です |
 | `tsuzuri api-diff` の出力形式 | テキストの行の形と `--json` のキー（キーが増えることはあります） |
 | `tsuzuri audit`（E15） | テキストの行の形、`--json` の schema `tz-audit/1` と行の `type`（`audit`・`package`・`extern`・`summary`）、キーの名前と順序（キーが増えることはあります。読み手は知らないキーを無視します）、終了コード（違反なし 0、`E1036` か `--deny-warnings` の `W1010` 1、引数の誤り 2）。互換のない変更は `tz-audit/2` にします |
 | マニフェストの権限（E15） | `[capabilities]` の `allow` と依存の `capabilities` の書き方、権限の 9 個の名前（`env`・`ffi`・`fs`・`gpu`・`net`・`process`・`random`・`stdio`・`time`）。権限の宣言がないプロジェクトは検査しません。権限の名前は足すことはあっても、消したり意味を変えたりしません |
-| 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](../_tsuzuri/language-reference/compiler/kg-format.md)） |
-| 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](../_tsuzuri/language-reference/compiler/kg.md)） |
+| 知識グラフの schema（facts の行は `tz-facts/1`。G26・D-60） | `nodes.jsonl`・`edges.jsonl`・`tests.jsonl`・`facts/`・`layout/` の行のキーを消さず・改名せず、行の意味を変えません。キーと、`kind`・`rel`・`event`・`conv`・`layout` の語彙を足すのは互換の変更です（読み手は知らないキーと語彙を無視します）。互換のない変更は schema の番号を上げます（[知識グラフの形式](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/knowledge-graph-format.md)） |
+| 知識グラフの置き場と `tsuzuri kg`（G27） | `target/tz/kg/` のファイル名、`manifest.json` の schema `tz-kg/1` とキー（`counts` の項目は増えることがあります）、`tsuzuri kg` のサブコマンド・オプション・`--json` のキー・終了コード、`E2009` の kind（[知識グラフ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/knowledge-graph.md)） |
 | `tsuzuri find`（G25） | オプションの名前、テキストの行の形（`{段} {名前} :: {署名}`、`  (+n)`、`no matches`、`... N more; raise --limit (at most 100)`）、`--json` の `event`（`result`・`summary`）とキーの名前と順序（キーが増えることはあります）、段の名前（`exact`・`borrow`・`partial`）、終了コード（結果が 0 件でも 0、プロジェクトの誤り 1、引数の誤り 2）、`find_bad_arguments`・`find_unknown_module` の kind。どの宣言がどの段に当たるか、候補の並びの細部は照合の改良で変わることがあります |
 | doc の例（G34） | `///` の中の ```` ```tsuzuri ```` のフェンスの記法: 印なし・`run=`（パーセント符号化と比べ方）・`test`・`fails=`・`ignore` の意味と、`# ` の隠し行。印は足すことはあっても、意味を変えません。`tsuzuri test --doc` の `--json` の `type`（`doctest`・`summary`）とキーの名前と順序（`--allow-overflow` で通った `test` の例の `overflow` を含む）、`--list --json` のキー（キーが増えることはあります）、終了コード（成功か 0 件 0、失敗・記法の誤り 1、引数の誤り 2）、`doc_example_invalid`（`E2011`）と `doc_test_failed`（`E2006`）の kind |
 | 型つき穴（G25） | `?`・`?名前` は全 edition で `E1030`（kind `typed_hole`）の誤りで、プログラムを生成しません。`candidates` の中身と順序、`scope` の並べ方は改良で変わることがあります |
@@ -50,6 +50,8 @@
 
 ## edition
 
+<!-- rule: EDN-001 --> <!-- rule: EDN-002 --> <!-- rule: EDN-003 --> <!-- rule: EDN-004 --> <!-- rule: EDN-008 --> <!-- rule: EDN-009 --> <!-- rule: EDN-010 --> <!-- rule: EDN-011 -->
+
 edition は、ソースを読むときの規則の版です。年の名前で呼びます。字句（予約語）と警告の既定に加え、2027 では型検査が通常の関数の引数の既定を決めます。
 
 | edition | 予約語の追加 | 状態 |
@@ -58,7 +60,7 @@ edition は、ソースを読むときの規則の版です。年の名前で呼
 | `2027` | なし | 通常の `def` の所有する具体型・裸の型変数・関数引数を既定で読み取りにし、`mut T` と射影への代入を使えます。同じ意味の書き方が複数あった 6 種類の表記（`for` の素の `..`、`86uy` のような短い接尾辞、`&x`・`&mut x`、`*r`、型の `&T`、旧ラムダ `x -> e`）を `E0004` で拒否します（A22。正準形 `..=`・`..<`・型名の接尾辞・`ref`・`deref`・`\x -> e` はどの edition も受理します） |
 | `2028` | なし | 現在の最新（`Edition::LATEST`）であり、`tsuzuri new` が書く既定です。2027 の引数規約と 5 種類の表記の拒否を引き継ぎつつ、角括弧の中の範囲の構文の族を導入します（終端のある素の `..` のスライスが終端を含み、`for` の素の `..` を正準形として受理し、`<..`・`<..<`、末尾からの位置 `^k`、角括弧の中の刻みなどを使えます） |
 
-どの edition で読むかは、パッケージごと、ソースごとに決まります。`Tsuzuri.toml` の `[package]` に `edition = "2026"` と書きます（[パッケージ](../_tsuzuri/language-reference/organizing-tsuzuri/packages.md#package-セクション)）。
+どの edition で読むかは、パッケージごと、ソースごとに決まります。`Tsuzuri.toml` の `[package]` に `edition = "2026"` と書きます（[パッケージ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/modules/packages.md)）。
 
 | ソース | edition |
 | --- | --- |
@@ -143,7 +145,7 @@ edition ごとに std を複製することはしません。型と instance が
 
 ## 公開 API の差分
 
-`tsuzuri api-diff OLD NEW [--json] [--effective]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると、終了コードは 1 です。使い方と出力は [コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#api-diff) にあります。
+`tsuzuri api-diff OLD NEW [--json] [--effective]` は、パッケージやプロジェクトの 2 つの版の公開 API を比べ、1 変更 1 行で出します。互換性のない変更があると、終了コードは 1 です。使い方と出力は [コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) にあります。
 
 - 互換性のない変更: 公開宣言の削除、署名の変更（型、制約、region、`export` と `const`（`const def`）の取り消し。別のモジュールの `const` の初期化式が `const def` を呼べるので、`const` を外すとそれが壊れます）、record への field の追加（構築式が壊れます）、union への case の追加（網羅的な `match` が壊れます）、既定のない class メソッドの追加、`deriving` の削除。
 - 互換性を保つ変更: 宣言の追加、説明の変更、`@deprecated` の追加、`export` の追加。説明の構造化タグ（`@complexity`・`@since`・`@see`）の追加と変更も説明の変更です（G35）。

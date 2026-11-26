@@ -1,7 +1,7 @@
 name: Tsuzuri IDE
 
 # The extension and its toolchain bundle on the five supported hosts. They run after every merge to main that changes what the bundle
-# or the extension is made of (vsc/scripts/toolchain.mjs copies _tsuzuri/, docs/, _features/, std/, examples/ and README.md into the
+# or the extension is made of (vsc/scripts/toolchain.mjs copies docs/, _features/, std/, examples/ and README.md into the
 # offline handbook, and the Rust tests that Clippy checks embed benchmarks/), on a `vsc-v*` tag (paths do not filter tags) and, on a
 # pull request, with the label `ci:full` (ci.yml is the gate of every pull request).
 
@@ -23,7 +23,6 @@ on:
       - scripts/**
       - benchmarks/**
       - examples/**
-      - _tsuzuri/**
       - docs/**
       - _features/**
       - README.md

@@ -544,7 +544,7 @@ test('spec_coverage_formats', () => {
     assert.equal(lines[5], 'OWN         1        1       1      1       1');
     assert.equal(lines[17], 'Total       2        1       2      3       2');
     const markdown = checkSpec(['--root', good, '--coverage-markdown']).stdout;
-    const page = readFileSync(join(good, '_tsuzuri/language-reference/compiler/conformance.md'), 'utf8');
+    const page = readFileSync(join(good, 'spec/README.md'), 'utf8');
     assert.equal(markdown, page.slice(page.indexOf('| Area |'), page.indexOf('<!-- /generated')));
     const json = JSON.parse(checkSpec(['--root', good, '--coverage', '--json']).stdout);
     assert.equal(json.schema, 'tz-spec-coverage/1');
@@ -561,14 +561,14 @@ test('spec_link_command', () => {
 });
 
 test('spec_generated_block', () => {
-    const dir = mutate('_tsuzuri/language-reference/compiler/conformance.md', '| NUM | 1 | 0 | 1 | 2 | 1 |', '| NUM | 9 | 0 | 1 | 2 | 1 |');
+    const dir = mutate('spec/README.md', '| NUM | 1 | 0 | 1 | 2 | 1 |', '| NUM | 9 | 0 | 1 | 2 | 1 |');
     assert.deepEqual(names(specErrors(dir, [], true)), ['coverage_block']);
     assert.equal(checkSpec(['--root', dir, '--write']).status, 0);
     assert.equal(
-        readFileSync(join(dir, '_tsuzuri/language-reference/compiler/conformance.md'), 'utf8'),
-        readFileSync(join(good, '_tsuzuri/language-reference/compiler/conformance.md'), 'utf8'),
+        readFileSync(join(dir, 'spec/README.md'), 'utf8'),
+        readFileSync(join(good, 'spec/README.md'), 'utf8'),
     );
-    const without = mutate('_tsuzuri/language-reference/compiler/conformance.md', null, null);
+    const without = mutate('spec/README.md', null, null);
     assert.deepEqual(names(specErrors(without, [], true)), []);
 });
 
@@ -589,7 +589,7 @@ test('slug_matches_check_docs', () => {
     };
     const checkDocs = readFileSync(join(root, 'scripts/check-docs.mjs'), 'utf8');
     assert.ok(checkDocs.includes(".replace(/[^\\p{L}\\p{M}\\p{N}\\s_-]/gu, '').replace(/ /g, '-')"));
-    for (const page of ['_tsuzuri/language-reference/ownership-and-memory/ownership.md', 'docs/language.md', 'README.md']) {
+    for (const page of ['docs/language.md', 'docs/stability.md', 'README.md']) {
         const source = readFileSync(join(root, page), 'utf8');
         assert.deepEqual([...headingsOf(source)].sort(), [...reference(source)].sort(), page);
     }

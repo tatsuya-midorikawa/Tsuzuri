@@ -6,12 +6,12 @@ name: Tsuzuri CI
 #           (`--partition slice:N/3`, which deals the tests of every binary round-robin), each building the tests itself;
 #   suites  the end-to-end suites that a compiler change breaks most often, run on the dev binary.
 # targets.yml, windows.yml and vscode.yml are the slow matrices: they run after every merge to main and, on a pull request,
-# with the label `ci:full`. reference.yml checks the language reference.
+# with the label `ci:full`. The user language reference lives in Tsuzuri-Reference.
 
 on:
   workflow_dispatch:
   # Everything the Rust tests and the suites build or read: tests embed benchmarks/, guide/ and scripts/ with include_str!,
-  # and read the language reference (_tsuzuri/) at run time.
+  # and read docs/ at run time.
   pull_request:
     paths:
       - src/**
@@ -21,7 +21,7 @@ on:
       - scripts/**
       - benchmarks/**
       - guide/**
-      - _tsuzuri/**
+      - docs/**
       - Cargo.*
       - .config/**
       - .github/workflows/**

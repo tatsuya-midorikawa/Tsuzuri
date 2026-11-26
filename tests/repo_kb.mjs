@@ -36,8 +36,8 @@ test('slug_matches_check_docs', () => {
     const seen = new Map();
     assert.deepEqual(['ムーブ後の使用エラー（E1012）', 'Phase 1: 差分', 'X', 'X'].map(s => slug(s, seen)),
         ['ムーブ後の使用エラーe1012', 'phase-1-差分', 'x', 'x-1']);
-    for (const file of ['index.md', 'compiler/option.md', 'compiler/diagnostics.md']) {
-        const path = resolve(root, '_tsuzuri/language-reference', file);
+    for (const file of ['docs/language.md', 'docs/architecture.md', 'docs/stability.md']) {
+        const path = resolve(root, file);
         for (const newline of ['\n', '\r\n']) {
             const source = readFileSync(path, 'utf8').replace(/\r\n/g, '\n').replace(/\n/g, newline);
             const duplicates = new Map();
@@ -311,7 +311,7 @@ test('build_real_repo_invariants', () => {
 test('real_diagnostics_match_the_kind_catalog', () => {
     const kb = real();
     // The generated block is `tsuzuri explain --catalog` as a table; gen-docs --check keeps it equal to the registry.
-    const page = readFileSync(resolve(root, '_tsuzuri/language-reference/compiler/diagnostics.md'), 'utf8').replace(/\r\n/g, '\n');
+    const page = readFileSync(resolve(root, 'docs/language.md'), 'utf8').replace(/\r\n/g, '\n');
     const block = /^<!-- generated:diagnostic-kinds -->\n([\s\S]*?)^<!-- \/generated:diagnostic-kinds -->$/m.exec(page)[1];
     const catalog = new Map([...block.matchAll(/^\| `([EW][0-9]{4})` \| (.+) \|$/gm)].map(m => [m[1], { row: m[2], kinds: [...m[2].matchAll(/`([a-z0-9_]+)`/g)].map(k => k[1]) }]));
     assert.ok(catalog.size >= 60, `${catalog.size} codes in the catalog`);
@@ -324,7 +324,7 @@ test('real_diagnostics_match_the_kind_catalog', () => {
     }
     assert.ok(!kb.diagnostics.some(d => d.sites.some(s => s.path === 'src/diagnostic_kinds.rs')));
     const e1012 = kb.diagnostics.find(d => d.code === 'E1012');
-    assert.match(e1012.meaning, /ムーブ後の使用/);
+    assert.match(e1012.meaning, /所有権 move 後の不正な再利用/);
     assert.ok(e1012.sites.some(s => s.path === 'src/ownership.rs' && s.kind === 'use_after_move' && s.function), JSON.stringify(e1012.sites.slice(0, 5)));
     const kindSites = kb.diagnostics.flatMap(d => d.sites.filter(s => s.kind));
     assert.ok(kindSites.length >= 500, `${kindSites.length} kind sites`);

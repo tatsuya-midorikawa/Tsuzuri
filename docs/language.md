@@ -23,7 +23,7 @@ portable 符号化は 16 単位未満、または最初の窓にサロゲート�
 WASM は既定 scalar で、`--wasm-feature simd128` を付けた場合だけ vector IR を選びます。
 UTF-16 の検証と修復の SIMD 経路では、サロゲートを含まない prefix を一括処理した後、最初のサロゲートを含む窓から残りを一度だけ scalar 処理へ渡します。変換・計数の経路とは分けます。変換・計数と UTF-8 検証も、それぞれの一括経路が使えなくなった窓から残りを scalar 処理へ一度だけ渡し、混在入力の各位置で SIMD を試し直しません。その後に長い ASCII 区間があっても、その呼び出しでは scalar のままです。すべての Unicode 入力を SIMD で処理するという保証ではありません。
 変換は全入力の検証・計数後に一度だけ確保し、文字列表現（`TSUZURI_STRINGS=compact` の内部表現は別）、符号なしコード単位の比較、置換とトラップ、ABI、WASM import は変わりません。
-詳細は [String の UTF 処理の実装](../_tsuzuri/language-reference/built-in-types-and-modules/string.md#utf-処理の実装) を参照してください。
+詳細は [String の UTF 処理の実装](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/string.md) を参照してください。
 
 内部 LLVM lowering は、所有権と借用から証明できる正サイズの参照に属性と別名情報を付けます。
 scalar 参照・借用 slice の由来が確定したアクセスには scoped alias、対応する scalar access には限定した TBAA を使います。
@@ -43,42 +43,44 @@ aggregate の noundef、trap・分岐・反復・未知呼出しの memory effec
 その関数だけが使う OS API・定義のない `extern` のシンボル・C ランタイムはプラットフォームの検査にもリンクにも現れないので、
 以前は `E2002` やリンクの失敗だったビルドが通ります。入口か `export def` から到達するなら今までどおり失敗します。
 `--emit object`・`llvm`・`header`・`wasm`・`shared`・`bitcode` は公開関数をすべて出力します。
-詳細は [出力とターゲット](../_tsuzuri/language-reference/compiler/option.md#出力とターゲット) にあります。
+詳細は [出力とターゲット](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md) にあります。
 
 プロファイル誘導最適化（PR07）の `--profile-generate DIR` と `--profile-use PATH` は、native の `exe`・`object` と wasm32 の module で、Clang が IR を機械語にするときの旗（`-fprofile-generate`・`-fprofile-use`）を足すだけです。
 Tsuzuri が出す LLVM IR・診断・終了コード、fast-math を使わない方針、整数の折り返し・NaN・符号付きゼロ・トラップは、プロファイルの有無で変わらず、旗を付けないビルドの成果物とキャッシュのキーも変わりません。
 プロファイルは IR の関数ごとの制御フローに結び付くので、計装と使用は同じコンパイラ・ソース・Clang・オプションで行います。合わない関数はプロファイルなしで最適化され、`W2001` の 1 行で知らされます。
 
-高速バックエンド（PB05）の `--backend fast` は、`-O0` の native `build`・`run`・`test` と wasm32 の `build` で、Tsuzuri が出す `-O0` の LLVM IR を Clang に渡さずに翻訳器で object にします（native は Cranelift で native の object にし、リンクを Clang に任せます。wasm32 は wasm の命令を直接書く再配置可能な object にし、リンクを `wasm-ld` に任せます）。既定は `--backend llvm` です。IR・診断・終了コード、整数の折り返し・NaN・符号付きゼロ・トラップ・`E2005` の報告・`--trap-info` の位置表は `llvm` と同じで（`llvm` のビルドを codegen unit に分けたときは、位置表の `id` だけが違います）、旗を付けないビルドの IR・object・実行ファイルは変わりません（codegen unit に分けるビルドを除きます。キャッシュのキーには入ります）。`-O0` 以外、native と wasm32 以外の target（`wasm64`・`--target TRIPLE`）、native の `exe`・`object` と wasm32 の `wasm`・`object` 以外の `--emit`、`--cpu native`・`--profile-generate`・`--profile-use`、wasm32 の SIMD・threads・jspi・webgpu・net・tail-call・`--wasm-host wasi`・`--wasm-opt`・`-g`、Windows のホストは `E2000` で、`--backend llvm` を使います。native の `-g` は関数の名前と行の対応だけの DWARF を書きます（変数と型は `llvm` だけです）。`--allocator small|counting`・`--freestanding`・`--trap-mode return` は、`llvm` と同じ制約のもとで使えます。翻訳できない構成要素は `E2002` です。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます。詳細は [コード生成器](../_tsuzuri/language-reference/compiler/option.md#コード生成器) にあります。
+高速バックエンド（PB05）の `--backend fast` は、`-O0` の native `build`・`run`・`test` と wasm32 の `build` で、Tsuzuri が出す `-O0` の LLVM IR を Clang に渡さずに翻訳器で object にします（native は Cranelift で native の object にし、リンクを Clang に任せます。wasm32 は wasm の命令を直接書く再配置可能な object にし、リンクを `wasm-ld` に任せます）。既定は `--backend llvm` です。IR・診断・終了コード、整数の折り返し・NaN・符号付きゼロ・トラップ・`E2005` の報告・`--trap-info` の位置表は `llvm` と同じで（`llvm` のビルドを codegen unit に分けたときは、位置表の `id` だけが違います）、旗を付けないビルドの IR・object・実行ファイルは変わりません（codegen unit に分けるビルドを除きます。キャッシュのキーには入ります）。`-O0` 以外、native と wasm32 以外の target（`wasm64`・`--target TRIPLE`）、native の `exe`・`object` と wasm32 の `wasm`・`object` 以外の `--emit`、`--cpu native`・`--profile-generate`・`--profile-use`、wasm32 の SIMD・threads・jspi・webgpu・net・tail-call・`--wasm-host wasi`・`--wasm-opt`・`-g`、Windows のホストは `E2000` で、`--backend llvm` を使います。native の `-g` は関数の名前と行の対応だけの DWARF を書きます（変数と型は `llvm` だけです）。`--allocator small|counting`・`--freestanding`・`--trap-mode return` は、`llvm` と同じ制約のもとで使えます。翻訳できない構成要素は `E2002` です。`cargo build --release --features fast-backend` でビルドした `tsuzuri` だけが受け付けます。詳細は [コード生成器](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md) にあります。
 `.profraw` のディレクトリは `llvm-profdata`（`TSUZURI_LLVM_PROFDATA`、Clang の隣、Clang の toolchain の順）で merge し、中身がキャッシュのキーに入ります。Windows、ビルド機と違う `--target`、同梱の `tsuzuri-clang` は受け付けません。
 速くなる種目も遅くなる種目もあります（`benchmarks/control` は 2 種目が 12〜17% 速く、4 種目が 20〜63% 遅い）。
-詳細は [プロファイル誘導最適化](../_tsuzuri/language-reference/compiler/option.md#プロファイル誘導最適化) にあります。
+詳細は [プロファイル誘導最適化](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md) にあります。
 
 codegen unit（PB07）は、環境変数 `TSUZURI_CODEGEN_UNITS` で選ぶ opt-in の仕組みです。選ぶと、`-O0` の native の実行ファイルと `--emit object`、wasm32 の `--emit wasm`（`--trap-info`・`-g`・`--wasm-feature tail-call` を含む）が、生成した LLVM IR を決定的な unit（モジュールごとに 1 つと、ランタイムなどのための 16 個）に分け、unit ごとの object を内容で保存して、変わった unit だけを Clang で並列にコンパイルし、全 object を 1 回でリンクします。
 値は `single`（既定。未設定と空も同じ。分けない）・`auto`（IR が 16 MB 以上の対象のビルドだけを分ける）・`split`（対象のビルドをすべて分ける）で、ほかの値は `E2000` です。分けると初回のビルドが長くなるので、既定にはしていません（測定は [性能測定](./benchmarks.md#pb07-codegen-unit-による増分ビルド)）。`-O1` 以上、`--backend fast`、`--emit llvm`・`shared`・`bitcode`・`header`、PGO、`--trap-mode return`、`--freestanding`、Windows のホスト、ビルド機と違う `--target`、`test` と `bench` の runner は、どの値でも 1 つのモジュールのままです。
 プログラムの意味、診断、整数の折り返し・NaN・符号付きゼロ・トラップ、`--trap-info` の報告と位置表の内容（`kind`・`path`・位置）、公開 symbol は変わらず、unit の object は決定的で、同じ入力から同じ object になります。変わるのは、関数の並び、hidden な symbol の名前（1 つのモジュールでは local だった定義のうち名前が `tz.` で始まらないもの、たとえばランタイムを埋め込むビルドの数値ランタイムの `power` や `decode` は、`tz.rt.power` のように `tz.rt.` を付けた名前になり、`--link` するホストの object が同じ名前を定義していてもリンクできます）、分けたビルドの `--trap-info` の site の番号（ソースファイルのパスと範囲から決まります。分けないビルドは出現順の通し番号のままです）、`-g` の DWARF の compile unit の数です。
 1 つのモジュールの本体の編集で Clang がコンパイルし直すのは、そのモジュールの unit だけです。unit 1 つにつき約 8 ms の CPU 時間の Clang のジョブがかかるので、小さいプログラムの初回のビルドは分けないほうが速く、`auto` は大きいプログラムだけを分けます。
-詳細は [コード生成の単位](../_tsuzuri/language-reference/compiler/option.md#コード生成の単位codegen-unit)、[unit の object のキャッシュ](../_tsuzuri/language-reference/compiler/usage.md#コード生成単位の-object) と [性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド) にあります。
+詳細は [コード生成の単位](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)、[unit の object のキャッシュ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md) と [性能測定](benchmarks.md#pb07-codegen-unit-による増分ビルド) にあります。
 
 ## ソースと宣言
+
+<!-- rule: CTL-029 --> <!-- rule: EDN-006 --> <!-- rule: LEX-001 --> <!-- rule: LEX-005 --> <!-- rule: LEX-006 --> <!-- rule: LEX-007 --> <!-- rule: MOD-005 --> <!-- rule: MOD-006 --> <!-- rule: MOD-007 --> <!-- rule: MOD-008 --> <!-- rule: OWN-011 --> <!-- rule: SYN-003 --> <!-- rule: SYN-007 --> <!-- rule: TYP-013 --> <!-- rule: TYP-019 -->
 
 フロントエンドは不要な本体・局所値の複製と子列の確保を省き、型述語に private TypeId arena を使います。
 公開 AST と型の契約、宣言・子・診断・捕捉の順序、所有権規則、構文・CLI・資源上限は変わりません。
 型付き IR 全体の arena 移行は行っていません。
 フロントエンドは、構文解析・関数ごとの型検査・所有権の検査を複数のスレッドで実行できます（環境変数 `TSUZURI_THREADS`。
-[コンパイラのスレッド数](../_tsuzuri/language-reference/compiler/option.md#コンパイラのスレッド数)）。
+[コンパイラのスレッド数](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md)）。
 診断の順序・件数・上限、IR、キャッシュの内容はスレッド数で変わりません。
 
 `tsuzuri watch check|build|test` は、そのコマンドを同じプロセスで実行し、読むファイル（ユーザーのソースとマニフェスト）が変わるたびにもう一度実行します（PB06）。
 各回の診断・警告・IR・終了コードは、同じ引数の単独のコマンドと同じです。変更は `stat`（Unix では状態変更時刻を含みます）で見つけ、
 本文が同じ保存では実行しません。プロセスは、読んだソースの本文と内容ハッシュを `stat` つきで覚え、書き換えられていないファイルは開き直さず、
-起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも）止まります（[コンパイラの使い方](../_tsuzuri/language-reference/compiler/usage.md#watch)）。
+起動したコンパイラのファイルが差し替えられると、次の回を始める前に（待っているあいだも）止まります（[コンパイラの使い方](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)）。
 
 `tsuzuri serve DIR`（macOS と Linux。PB06）は、1 つのプロジェクトの常駐ビルドサーバーです。同じコンパイラのファイル・作業ディレクトリ・
 コンパイラとそのツールが読む環境変数（`PATH`、`TSUZURI_*` など）で起動した `check` と `build` は、サーバーが実行して出力を返し、
 サーバーがなければ（断られても）黙って自分で実行します。標準出力・標準エラー・終了コード・成果物は、サーバーの有無と `--no-server` の有無で変わりません。
 ソケットは、`TSUZURI_SERVER_DIR`（空ならサーバーを使わない）の `0700` のディレクトリにあり、同じ利用者だけを信頼します
-（[serve](../_tsuzuri/language-reference/compiler/usage.md#serve)）。サーバーのログ（標準エラー）は専用のスレッドが書くので、標準エラーが詰まっても要求・`status`・`--stop` は待たず、書けなかった行は捨てて `status` の `log_dropped` に数えます。
+（[serve](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/cli.md)）。サーバーのログ（標準エラー）は専用のスレッドが書くので、標準エラーが詰まっても要求・`status`・`--stop` は待たず、書けなかった行は捨てて `status` の `log_dropped` に数えます。
 
 コンパイラの計測用環境変数 `TSUZURI_TIME_PASSES` は、値が `1` のときだけ、CLI の終了時に段階別の経過時間を
 stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"total_ms":7.702}` の形式で 1 行出します。
@@ -110,7 +112,7 @@ stderr の最後へ `{"time_passes":1,"phases":[{"name":"load","ms":0.412}],"tot
 native と `--wasm-feature simd128` の WebAssembly は Latin-1 の走査・比較・変換に 128-bit vector の kernel を使い、simd128 なしの WebAssembly は scalar の kernel を使います。
 確保量は ASCII・Latin-1 の文字列で約半分になりますが、runtime の IR と小さな WebAssembly の大きさとビルド時間が増え、host へ短い文字列を返す呼び出しは遅くなるので、既定は `utf16` のままです
 （測定と判断は [ベンチマーク](benchmarks.md)、実装は [コンパイラ構成](architecture.md) の「コンパクト文字列（PM03）」、使い方は
-[コンパクト文字列の旗](../_tsuzuri/language-reference/compiler/option.md#コンパクト文字列の旗) にあります）。
+[コンパクト文字列の旗](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/options.md) にあります）。
 
 - ソースファイル拡張子は `.tz`（通常のプログラムコード）、`.tt`（型クラス宣言）、`.tc`（コンピュテーション式ビルダー）です。
   ファイルエンコーディングは UTF-8（先頭 BOM の有無を許容）、改行コードは LF または CRLF に対応します。識別子は ASCII 英字またはアンダースコア `_` で始まり、英数字または `_` が後続します。
@@ -152,7 +154,7 @@ def answer :: i64 = 42
 警告の対象は `def`（`extern def` を除く）、`record`、`union` で、`const`、`type`、`class`、メソッド、`extern def` の印は表示されるだけです。別のパッケージ（標準ライブラリを含む）が非推奨の宣言の名前を書くと、警告 `W1005`（`'LegacyLib::Old.old' is deprecated: use LegacyLib::Old.next instead`。案内が空なら `'...' is deprecated; see its documentation for a replacement`）が出ます。
 参照の種類は、関数、record の構築と型の注釈（パターンの中の型注釈を除く）、union の case の構築とパターンで、case は union の印を使います（`Light.Red` は case の位置に 1 件です）。案内は 200 文字までで、超えると `...` で切ります。同じパッケージの中の使用（`Tsuzuri.toml` のないプロジェクトは全体で 1 つのパッケージ）には出ません。W1005 は既定で有効で、`--deny-warnings` で終了コード 1 になり、警告の有無は互換性の保証の対象外です（[安定性と互換性の方針](stability.md#非推奨の手順)）。`@deprecated` の有無で、生成される IR は変わりません。
 
-説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます（新しい構文ではありません。`@deprecated` と同じ「行頭のタグ」の規則です）。各行の先頭の空白を除いた最初の語がタグそのもので、直後は行末か空白（スペースかタブ）です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたもの（空でもよい）です。`@complexity` と `@since` は最初の 1 行だけが有効で、`@see` は何行でも書けます。`tsuzuri doc` と LSP のホバーは、これらの行も説明として表示します。コンパイラは値を検査せず、診断も出さず、生成される IR も変わりません。標準ライブラリの値は `node scripts/gen-docs.mjs` と `cargo test --test std_tags` が検査し、標準コレクションの計算量の表（[標準コレクションの計算量](#標準コレクションの計算量)）は `@complexity` から作られます。書き方と規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) です。
+説明の行を `@complexity`・`@since`・`@see` で始めると、宣言に計算量・版・関連する宣言を付けられます（新しい構文ではありません。`@deprecated` と同じ「行頭のタグ」の規則です）。各行の先頭の空白を除いた最初の語がタグそのもので、直後は行末か空白（スペースかタブ）です。`@complexityX` はタグではありません。値は、タグの後ろから行末までの前後の空白を除いたもの（空でもよい）です。`@complexity` と `@since` は最初の 1 行だけが有効で、`@see` は何行でも書けます。`tsuzuri doc` と LSP のホバーは、これらの行も説明として表示します。コンパイラは値を検査せず、診断も出さず、生成される IR も変わりません。標準ライブラリの値は `node scripts/gen-docs.mjs` と `cargo test --test std_tags` が検査し、標準コレクションの計算量の表（[標準コレクションの計算量](#標準コレクションの計算量)）は `@complexity` から作られます。書き方と規則は [構造化タグ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/modules/doc-comments.md) です。
 
 `tsuzuri doc <file|directory> -o <outdir> [--json]` コマンドは、プロジェクト全体の型検査を完了した後に、公開宣言のみを抽出して Markdown 形式のドキュメントを生成します。
 ライブラリのドキュメント生成に対応するため、ディレクトリ入力であっても `Main.tz` の存在は必須としません。階層化されたモジュールのページは `Geometry.Point.md`（見出しおよび一覧での表示表記は `Geometry::Point`）、モジュール一覧ページは `index.md` として出力されます。
@@ -192,6 +194,8 @@ breaking は、公開宣言の削除、署名（型、制約、region、型パ�
 既定は上記の構文比較です。`--effective` は `doc` と同じ依存の読み込みで両方を型検査し、alias 解決後の型、実際の値渡し／共有借用／可変借用、型・高階型・長さパラメーター、制約、入れ子の純粋関数型、型検査済みの region の対応を比べます。関数の class 制約は明示節だけでなく inline／alias 経由の型検査済みの要求を含め、既存の instance／superclass 解決で呼び出し側に残る要求を集合として比較します。表記・順序・重複と、すでに満たされた具体型の要求では差分を出しません。モジュール関数は推論・呼び出し先から伝播した必要な署名も比較し、具体型のモジュールで解決済みの要求を除きます。公開 alias 自体の inline 制約も、ローカルな使用箇所に依存せず比較します。所有権による `Copy` 推論と class 要求の固定点伝播が完了した後、generic 特殊化の直前の要求を使います。依存は取得せず、依存の宣言は API に入れません。依存や型検査のエラーは終了コード 1 で、構文比較へ戻したり部分的な結果を出したりしません。`pure` の削除や保証する呼び出し段階の変更は breaking、引数規約も特殊化の証明義務も変わらない関数への `pure` の追加は non-breaking です。`--effective` では generic template への追加を、特殊化ごとの純粋性・所有条件の義務が増すため保守的に breaking とします。たとえば `own 'a` の署名が同じでも、`Rc` を受け取れていた呼び出しは plain-data の条件で拒否されます。非公開 helper の保留義務も、型引数の対応に沿って公開 wrapper へ伝播します。通常の generic 関数内の明示的な純粋 callback の型・capture・実行する本体の型に由来する保留義務も含みます。その場で実行する tzroutine の本体・並列 callback・閉じたローカル callable も既存の効果解析と同じ段階で扱い、返す通常 callback の後の実行は純粋な factory の保証に含めません。複数段や相互再帰でも同様で、具体化して充足した義務を無関係な型変数へ転嫁せず、型変数の改名だけでは変更にしません。class の既定実装と instance のメソッドの残余義務も、型引数を代入しメソッド名で整列して比較します。既定実装の追加自体は non-breaking のままです。`--effective` は未使用 template 内の完全に具体化した generic 参照、静的に選ばれる class／演算子の呼び出し、具体 instance のメソッドと既定実装も実際に特殊化して検査します。途中の通常 helper も含め、所有条件や選択した class メソッドの効果が不正なら解析エラーを返します。class メソッドへの追加は既存 instance の義務を増すため breaking です。どちらのモードも本体の挙動、性能、`const` の値の互換性を証明しません。alias の置き換えをそのまま変更とするのは既定の構文比較だけです。`tsuzuri publish` は `api-diff` を呼ばないので、公開の前に、前の版のチェックアウトと比べます（[安定性と互換性の方針](stability.md#公開-api-の差分)）。
 
 ### 1 ファイル = 1 モジュール
+
+<!-- rule: MOD-001 --> <!-- rule: MOD-002 --> <!-- rule: MOD-003 --> <!-- rule: MOD-004 --> <!-- rule: MOD-009 --> <!-- rule: MOD-010 -->
 
 `tsuzuri fmt [--check] <file|directory> [--json]` コマンドは、コードの意味論を一切変更することなく、空白文字とインデントを保守的かつ美しく整えます。
 ディレクトリを指定した場合は、その直下に存在する `.tz`、`.tt`、`.tc` ファイルのみが対象となり、型検査、LLVM、エントリーポイントの解決は不要です。
@@ -686,7 +690,7 @@ class の純粋なメソッドは既定実装と全 instance を検査し、inst
 参照・浮動小数点・所有結果の共有、永続的 memo cache、分岐をまたぐ移動は行いません。
 標準 Char の ASCII 6 関数と Random の明示 seed の PCG 3 関数にも明示の純粋契約があります。
 GPU の効果検査は同じ問い合わせを共有しますが、backend 固有の制限と利用可能性の検査は省略しません。
-具体例と制限は[純粋関数](../_tsuzuri/language-reference/values-and-functions/functions.md#純粋関数pure-def)にあります。
+具体例と制限は[純粋関数](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/functions.md)にあります。
 
 ### 匿名関数と捕捉
 
@@ -730,6 +734,8 @@ def answer :: i32 = {
 関数の途中段階が借用を保持しないと証明された場合は、その段階の借用は後続引数の評価前に早期終了します。
 
 ### 多相関数と型クラス
+
+<!-- rule: TYP-009 --> <!-- rule: TYP-014 --> <!-- rule: TYP-015 --> <!-- rule: TYP-021 --> <!-- rule: TYP-022 --> <!-- rule: TYP-023 --> <!-- rule: TYP-025 --> <!-- rule: TYP-026 -->
 
 名前付きの型や型クラスにおける型パラメーターおよび型引数は、すべて山括弧 `<...>` 内にカンマ区切りで記述します。
 宣言側では `record Pair<'a, 'b>`、`union Maybe<'a>`、`class Score<'a>` のように記述し、
@@ -1005,6 +1011,8 @@ Shapes.Shape.area (ref shapes[1])
 
 ### ジェネリックなレコード
 
+<!-- rule: SYN-010 --> <!-- rule: TYP-007 --> <!-- rule: TYP-010 --> <!-- rule: TYP-020 -->
+
 ```text
 record Pair<'a, 'b> { first: 'a, second: 'b }
 record Box<'a> { value: 'a }
@@ -1042,6 +1050,8 @@ Copy、move、drop、借用、および tzroutine への送信（Send）の可�
 
 ### 型別名
 
+<!-- rule: TYP-012 -->
+
 ```text
 type Meters = f64
 type Pair2<'a> = Pair<'a, 'a>
@@ -1057,6 +1067,8 @@ type BorrowedText = ref string
 型別名を用いて宣言された型クラスインスタンスも、展開後の具象型に基づいて重複判定（overlap）が行われます。型システム上で明確に区別される新しい型（いわゆる newtype）が必要な場合は、単一 case を持つ union 型を使用してください。
 
 ### 共用体（union）
+
+<!-- rule: TYP-018 -->
 
 ```text
 union Shape =
@@ -1108,7 +1120,7 @@ Copy、move、drop、借用、および tzroutine への送信（Send）の可�
 ジェネリック union は `Maybe<ref T>` のように共有借用参照をペイロードとして保持することが可能です。この場合、元リソースの借用関係（loan）が保持され、コピー、パターンマッチ、および関数の戻り値返却を経由した場合であっても、参照先の生存期間を超えて生存することはできません。
 なお、排他借用の格納や、`Hold of &i64` のような型宣言自体に借用記号を直接記述する構文は禁止されており、`E1013` エラーとなります。
 
-メモリレイアウトは、識別用のタグ（tag）と、最大のペイロードを格納可能なメモリ領域の組み合わせで構成されます。タグは case の数に応じた最小の幅（256 個まで 1 バイト、65,536 個まで 2 バイト、それを超えると 4 バイト）で、ペイロードの領域は最大のペイロードのアライメント（16 バイトまで）に揃えます。case がちょうど 2 つで、1 つがペイロードなし、もう 1 つのペイロードが `string`・`utf8string`・配列の union は、タグを持たずペイロードそのものです（負の長さがペイロードなしの case）。ネイティブのターゲットでは、スライスでない `ref` のペイロードも同じです（null ポインタがペイロードなしの case）。WebAssembly は `--stack-first` でアドレス 0 も有効なオブジェクトの位置になり得るので、`ref` のペイロードにはタグが付いたままです。関数値のペイロードも同じで、null の記述子（関数値の先頭のポインター）がペイロードなしの case です。記述子は静的データでアドレス 0 には置かれないので、WebAssembly でもタグは付きません。case が 3 つ以上、両方の case にペイロードがある、`Drop` を実装している、再帰している union は対象外です。実際の大きさは [`union` のリファレンス](../_tsuzuri/language-reference/built-in-types-and-modules/union.md)と `docs/architecture.md` に書きます。
+メモリレイアウトは、識別用のタグ（tag）と、最大のペイロードを格納可能なメモリ領域の組み合わせで構成されます。タグは case の数に応じた最小の幅（256 個まで 1 バイト、65,536 個まで 2 バイト、それを超えると 4 バイト）で、ペイロードの領域は最大のペイロードのアライメント（16 バイトまで）に揃えます。case がちょうど 2 つで、1 つがペイロードなし、もう 1 つのペイロードが `string`・`utf8string`・配列の union は、タグを持たずペイロードそのものです（負の長さがペイロードなしの case）。ネイティブのターゲットでは、スライスでない `ref` のペイロードも同じです（null ポインタがペイロードなしの case）。WebAssembly は `--stack-first` でアドレス 0 も有効なオブジェクトの位置になり得るので、`ref` のペイロードにはタグが付いたままです。関数値のペイロードも同じで、null の記述子（関数値の先頭のポインター）がペイロードなしの case です。記述子は静的データでアドレス 0 には置かれないので、WebAssembly でもタグは付きません。case が 3 つ以上、両方の case にペイロードがある、`Drop` を実装している、再帰している union は対象外です。実際の大きさは [`union` のリファレンス](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/unions.md)と `docs/architecture.md` に書きます。
 `E1010` のための保守的なサイズ見積もりは、実際のレイアウトとは独立で、ペイロードを持たない union で 8 バイト、ペイロードを持つ union で 16 バイトと最大ペイロードサイズを 16 バイトアライメントに切り上げた値の合計となり、64 KiB のサイズ上限（`E1010`）が具象型ごとに厳密に検証されます。
 再帰呼び出しを含む具象 union は、後述のヒープ所有ノードへのポインタとして表現され、値のサイズは保守的に 8 バイト（ポインタ 1 つ分）となります。
 union 型に対する等値比較や文字列表現のサポートは、手動でのインスタンス実装か、後述の `deriving` 構文によって付与します（未実装の場合は `E1005`）。
@@ -1333,9 +1345,11 @@ read_line は改行を除いた所有 UTF-8 bytes の descriptor（offset0 point
 所有バッファは `tsuzuri_alloc` で確保し、空行・EOF・失敗は NULL／0 にできます。状態・長さ・NULL・範囲を受領時に検査し、UTF-8 検査は通常の from_bytes で行います。
 write は fd1／fd2 と借用 UTF-8 bytes を受け、0=全量書き込み・flush 成功、非0=失敗です。ホストは変更・解放・非同期保持をせず、`ln` 版（`writeln`・`write_errln` とそれらの `try_` 版）が付けた LF を重複追加しません。
 IO を使わないプログラムの import 要件は変えません。既定の WASM 出力に WASI は要りません。`--wasm-host wasi` を指定したときだけ、標準入出力と OS API を WASI preview1 の import に下げます（[WASM と Windows](#wasm-と-windows)）。非同期イベントループは追加しません。
-API と詳しい利用例は [IO リファレンス](../_tsuzuri/language-reference/built-in-types-and-modules/io.md)にあります。
+API と詳しい利用例は [IO リファレンス](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sys/io.md)にあります。
 
 ### OS API
+
+<!-- rule: TSK-023 --> <!-- rule: TSK-025 -->
 
 標準の OS API は std の `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` です。インポートや設定は不要で、他の std と同じく `File.read_text` のように修飾して呼びます。
 OS のリソースにアクセスする操作は、すべて遅延評価される `IO<Result<T, Os.Error>>` アクションとして表現されます。アクションを生成・合成・破棄するだけの段階では OS のシステムコールは発行されず、実際にアクションが実行された回数だけ OS API が呼び出されます。
@@ -1607,6 +1621,8 @@ instance = (await WebAssembly.instantiate(wasmBytes, imports)).instance;
 
 ## 言語内テスト
 
+<!-- rule: CLI-006 --> <!-- rule: CLI-007 -->
+
 `.tz` および `.tc` の宣言セクションにおいて、`test "テスト名" = 本体式` の構文でテストケースを直接記述できます（型クラス定義用の `.tt` および埋め込み標準ライブラリ内での記述は `E1018` エラーとなります）。
 テスト名には正当な Unicode 文字列を指定でき、空文字列や同一モジュール内での重複したテスト名も許容されます（各テストは所属モジュールとソースコード上の宣言順インデックスによって一意に識別されます）。
 テスト宣言に対して `private`、`export`、`rec` などの修飾子を付与することはできず、通常の関数名前空間に登録されることもありません。
@@ -1664,6 +1680,8 @@ seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri 
 
 ## 型とメモリ
 
+<!-- rule: ABI-003 --> <!-- rule: NUM-001 --> <!-- rule: TYP-001 --> <!-- rule: TYP-002 --> <!-- rule: TYP-003 --> <!-- rule: TYP-004 --> <!-- rule: TYP-005 --> <!-- rule: TYP-006 --> <!-- rule: TYP-008 --> <!-- rule: TYP-011 -->
+
 | 型名 | 表現する値および言語挙動 |
 |---|---|
 | `bool` | 真偽値リテラル `true` / `false` |
@@ -1696,7 +1714,7 @@ seed は時刻に依存しない固定値 `11400714819323198485` で、`tsuzuri 
 Tsuzuri はガベージコレクション（GC）とプログラマによる手動の解放操作を使用せず、アフィン所有権システムと借用検証によってメモリを安全に自動管理します。
 参照カウントは、std の [Rc / Arc](#rc--arc) を明示的に使った値だけが行います（所有者は `share` で明示的に増やし、暗黙の複製はありません。サイクルコレクターはありません）。
 循環する構造は、std の [Arena](#arena) が値をまとめて所有し、Copy のハンドルで指すことで表します（ハンドルは値の寿命を延ばしません）。
-レコードはスタックやヒープに直接インライン配置される値型として保持され、配列は所有する要素データ領域へのポインタと長さを格納した記述子（ファットポインタ）として表現されます。ユーザーのレコードのフィールドは、宣言の順に並べるよりも小さくなるときだけ、アライメントの大きい順に格納します（同じアライメントは宣言の順。標準ライブラリのレコードとタプルは宣言の順のまま）。評価と drop の順、`deriving` の比較・Hash・Display、デバッグ情報のメンバー、公開 ABI の C の構造体は、宣言の順のまま変わりません。実際の大きさは [`record` のリファレンス](../_tsuzuri/language-reference/built-in-types-and-modules/record.md#メモリ上の大きさ)と `docs/architecture.md` に書きます。
+レコードはスタックやヒープに直接インライン配置される値型として保持され、配列は所有する要素データ領域へのポインタと長さを格納した記述子（ファットポインタ）として表現されます。ユーザーのレコードのフィールドは、宣言の順に並べるよりも小さくなるときだけ、アライメントの大きい順に格納します（同じアライメントは宣言の順。標準ライブラリのレコードとタプルは宣言の順のまま）。評価と drop の順、`deriving` の比較・Hash・Display、デバッグ情報のメンバー、公開 ABI の C の構造体は、宣言の順のまま変わりません。実際の大きさは [`record` のリファレンス](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/types/records.md)と `docs/architecture.md` に書きます。
 連結リストは所有する先頭の chunk へのポインタと要素数を保持し、chunk は 24 バイトの header（次の chunk へのポインタ、その後ろにある要素の数、容量）と、連続して並ぶ要素の領域を 1 回の確保で持ちます。一度に作ったリスト（`new`、リテラル、複製、`Array.to_list`、`List.map`、`List.rev`）は要素数ちょうどの 1 つの chunk で、`List.cons` で伸ばしたリストは chunk の連なりです。
 配列の要素領域やリストの chunk をスタックとヒープのどちらに確保するかは、次節で解説するように生成時の構文（`new` の有無）によって決定論的に定まります。
 LLVM 最適化パスによって積極的なスカラー化（SROA）やコピーの除去が行われますが、巨大な構造体の値コピーが常にゼロコストになるわけではありません。
@@ -1775,6 +1793,8 @@ Copy 型の要素で構成されたコレクションを値として明示的に
 関数値がキャプチャした環境オブジェクトは明示的な `new` の対象ではなく、[コンピュテーション式の性能](#コンピュテーション式の性能) の最適化ルール（呼び出し先が既知で外へ脱出しない一時環境はスタック、それ以外はヒープ確保）に従って自動的に決定されます。
 
 ### Ownership / Borrowing
+
+<!-- rule: OWN-001 --> <!-- rule: OWN-005 --> <!-- rule: OWN-006 --> <!-- rule: OWN-008 --> <!-- rule: OWN-014 --> <!-- rule: OWN-016 --> <!-- rule: OWN-017 --> <!-- rule: OWN-020 --> <!-- rule: OWN-021 --> <!-- rule: OWN-032 -->
 
 edition 2027 の通常の `def` は、無印のヒープを所有する具体的な引数（`string`、
 配列・リスト・`Vec`、解放が必要な record・union・tuple など）、裸の型変数、関数型を `ref T` として受け取ります。
@@ -1991,6 +2011,8 @@ edition 2026 ではレコードの特定フィールドへの代入も排他借�
 
 #### 利用者定義の解放（Drop）
 
+<!-- rule: OWN-023 --> <!-- rule: OWN-024 --> <!-- rule: OWN-025 --> <!-- rule: OWN-027 -->
+
 ファイル記述子、ネットワークソケット、OS の各種リソースハンドルなど、メモリ以外の外部リソースをカプセル化する場合、ユーザー定義の `record` や `union` に対して言語組み込みの型クラス `Drop` のインスタンスを定義することで、値の生存期間が終了したタイミングで確実に 1 回だけ自動クリーンアップ処理を実行させることができます。これに伴う特別な予約語や新構文の追加はありません（なお前述のとおり、標準ライブラリの `File.Handle` は `Drop` ではなく、明示的な `File.close` または `File.with_open` を用いてクローズします。[File.Handle](#filehandle) を参照してください）。
 
 ```text
@@ -2142,6 +2164,8 @@ def swap_text {r s} :: ref mut {r} Note {s} -> ref {s} string -> ref {s} string
 
 ### string と utf8string
 
+<!-- rule: EVL-017 --> <!-- rule: LEX-010 --> <!-- rule: OWN-018 --> <!-- rule: STR-001 --> <!-- rule: STR-002 --> <!-- rule: STR-003 --> <!-- rule: STR-007 --> <!-- rule: STR-008 -->
+
 `string` 型は、[ECMA-262 §6.1.4 の String 型仕様](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types-string-type) に準拠する、0 〜 65,535 の **UTF-16 コード単位** の不変シーケンスです。論理的な最大長は $2^{53} - 1$ コード単位ですが、
 実際の生成サイズはターゲット環境の仮想アドレス空間サイズ、利用可能なヒープ容量、および物理的なメモリアロケーション上限によって制約されます。
 上限サイズ超過やメモリ確保の失敗は安全にトラップを引き起こします。なお、文字列に対する暗黙の Unicode 正規化処理は一切行われません。
@@ -2210,7 +2234,7 @@ Tsuzuri におけるインデックスアクセスは境界検査を伴う厳格
 | `repeat count text` | 文字列を `count` 回繰り返した連結文字列。負数は空文字列に対してもトラップ |
 | `compare left right` | 比較演算子と同様に辞書順比較を行い、`-1`／`0`／`1`（`i64`）を返却 |
 
-`Text<'s>`（`string` と `utf8string`）は、この表の操作のうち `decode_at`・`chars`・`char_count` を除いたものと `length`・`clone`・`is_empty` を、同じ名前のメソッド（21 個）にした標準の型クラスです（`std/Text.tt`。`class Ord<'s> => Text<'s>`）。メソッドの意味は `String.f`・`Utf8String.f` と同じで、呼び出しは instance のメソッドへの直接の呼び出し（その本体は `String.f`・`Utf8String.f`・`clone_string`・`Utf8String.clone` の 1 回の呼び出し）です。単位・境界・空のパターン・順序の違いは型ごとにそのまま残ります。`is_empty` は既定の実装（`Text.length text == 0`）で、利用者の型の instance は `Ord`・`Eq` の instance と残りの 20 メソッドを書きます。`Text` は常に読み込まれ、使わないプログラムの IR には出ません。利用者が `class Text` か `union Text` を宣言すると、無修飾の `Text.length` はそちらを指すので、標準のクラスは `Text.Text` と書きます。詳細は [言語リファレンスの Text](../_tsuzuri/language-reference/built-in-types-and-modules/text.md) にあります。
+`Text<'s>`（`string` と `utf8string`）は、この表の操作のうち `decode_at`・`chars`・`char_count` を除いたものと `length`・`clone`・`is_empty` を、同じ名前のメソッド（21 個）にした標準の型クラスです（`std/Text.tt`。`class Ord<'s> => Text<'s>`）。メソッドの意味は `String.f`・`Utf8String.f` と同じで、呼び出しは instance のメソッドへの直接の呼び出し（その本体は `String.f`・`Utf8String.f`・`clone_string`・`Utf8String.clone` の 1 回の呼び出し）です。単位・境界・空のパターン・順序の違いは型ごとにそのまま残ります。`is_empty` は既定の実装（`Text.length text == 0`）で、利用者の型の instance は `Ord`・`Eq` の instance と残りの 20 メソッドを書きます。`Text` は常に読み込まれ、使わないプログラムの IR には出ません。利用者が `class Text` か `union Text` を宣言すると、無修飾の `Text.length` はそちらを指すので、標準のクラスは `Text.Text` と書きます。詳細は [言語リファレンスの Text](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/text.md) にあります。
 
 `slice` および `sub` は、負数の指定、開始・終了位置の逆転、範囲外アクセス、および加算オーバーフローが発生した場合に安全に `None` を返します。`String` においてはサロゲートペアの途中インデックスであっても有効な位置として受け入れられ、サロゲートコード単位がそのまま抽出されます。
 一方 `Utf8String` では、開始・終了位置が妥当な UTF-8 スカラー境界に合致していることが厳格に要求され、後続バイト（continuation byte）の途中に位置する場合は、空区間のスライスであっても `None` が返却されます。
@@ -2716,6 +2740,8 @@ extern 関数を使用するワーカーには同一のホスト環境定義が�
 
 ## tzroutine
 
+<!-- rule: TSK-011 --> <!-- rule: TSK-012 --> <!-- rule: TSK-013 --> <!-- rule: TSK-014 --> <!-- rule: TSK-015 --> <!-- rule: TSK-031 -->
+
 `tzroutine { body }` は、ブロックを新しい tzroutine（専用のスタックを持つ軽量な実行単位。Go の goroutine に相当）として起動し、`()` を返す式です（TZ02、D-61）。`tzroutine` は直後が同じ行の `{` のときだけの文脈キーワードで、ほかの位置では識別子です。
 
 - **型**: 本体は型 `unit` の通常のブロックで、ほかの型は `E1003` です。`let!`・`do!` は関数の本体と同じく IO をその場で実行し、`let` は改行でも終わります。`return` は関数の本体と同じ扱いです。式の型は `unit` です。
@@ -2731,6 +2757,8 @@ extern 関数を使用するワーカーには同一のホスト環境定義が�
 - **WebAssembly（TZ09）**: `--wasm-feature jspi` の wasm32 では、tzroutine は JavaScript の 1 本のスレッドの上で 1 つずつ交代に走ります（M:1。並行で、並列ではなく、待つ点と `Routine.yield` でだけ替わる）。tzroutine が待つと、生成したグルー（`--emit bindings-js --wasm-feature jspi`）が JSPI でその tzroutine の WebAssembly のスタックだけを中断し、次に走れる tzroutine を再開するか、`tsuzuri_tz_entry` で新しく始めます。export の呼び出しは境界の tzroutine で、呼び出しは直列化されます。各 tzroutine の線形メモリのスタックは 64 KiB（モジュールのヒープから、最初に走るときに取り、終わったものを使い回す）で、関数の入口で検査し、溢れはトラップです。モジュールは `tsuzuri_tz` の import（`suspend`・`spawn`・`ready`・`clock`・`timer`）と export（`tsuzuri_tz_entry`・`tsuzuri_tz_fire`）を持ち、tzroutine を起動しないモジュールは持ちません。タイマーはグルーの `setTimeout` で期限に発火し、`Time.sleep` もスケジューラーで待ちます。すべての tzroutine が待ち、タイマーもホストの待ちもないと、export の `Promise` は `RuntimeError("all tzroutines are asleep - deadlock!")` で拒否されます（ほかの失敗は報告の文なしのトラップ）。`--wasm-feature net` のソケットの待ちも、その tzroutine だけを中断します。`Parallel.*` は呼んだ tzroutine の上で逐次、`Routine.max_procs`・`cpu_count` は 1 です。`-O0` の `f128`・`d128` のソフトウェア演算は frame が 60 KiB 近くあり、tzroutine の中ではスタックが足りずにトラップします。
 
 ## select
+
+<!-- rule: TSK-020 --> <!-- rule: TSK-021 --> <!-- rule: TSK-022 -->
 
 `select | head [when guard] -> body ...` は、複数の `Channel` の送受信を同時に待ち、先にできる 1 つの腕を実行する式です（TZ04、D-61）。腕の頭は `recv NAME from CHANNEL`（`NAME` は `_` でもよい）、`send VALUE to CHANNEL`、`default` で、腕は `match` と同じ桁にそろえます。
 
@@ -2754,9 +2782,9 @@ extern 関数を使用するワーカーには同一のホスト環境定義が�
 | `Async.start`・`Async.host` | `removed_async` | `'Async.start' was removed` など | `the host-driven executor was removed; call exports from host threads (native) or await the export's Promise (WebAssembly with --wasm-feature jspi)` | 後継はない（下記） |
 | `Net.connect_async` など 12 関数 | `removed_net_async` | `'Net.connect_async' was removed` など | `call Net.connect (and the others without '_async') in a tzroutine; it waits without stopping other tzroutines` | tzroutine の中で `_async` のない同期版を呼ぶ（[ネットワーク（Net）](#ネットワークnet)） |
 
-- 型の `Async.Step`・`Async.Next` と、ビルダーの操作（`Async.Return`・`ReturnFrom`・`Bind`・`Delay`・`Zero`・`Combine`・`For`）を名前で書いても `E1040`（`removed_async`）です。どれも確かな修正案を持たないので、`tsuzuri fix` は書き換えません。書き換えの例は [言語リファレンスの Async からの移行](../_tsuzuri/language-reference/async-tasks-and-lazy/tzroutine.md#async-からの移行) にあります。
+- 型の `Async.Step`・`Async.Next` と、ビルダーの操作（`Async.Return`・`ReturnFrom`・`Bind`・`Delay`・`Zero`・`Combine`・`For`）を名前で書いても `E1040`（`removed_async`）です。どれも確かな修正案を持たないので、`tsuzuri fix` は書き換えません。書き換えの例は [言語リファレンスの Async からの移行](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/concurrency/tzroutine.md) にあります。
 - `async` と `Async` は予約された名前ではありません。`async { … }` は、`@alias async` を宣言した利用者のビルダーが見えるときはそのビルダーの計算式です（[ビルダーの別名](#ビルダーの別名alias)）。利用者のモジュール `Async`（`Async.tz`、または `Async.tc` のビルダー）と型 `Async` は普通の名前として解決します。`E1040` になるのは、その名前がどの定義にも解決しないときだけです。見えるモジュール `Async` があれば、そこにない `Async.run` や型 `Async.Operation` は、ほかのモジュールと同じ `E1002`・`E1004` です（E18。以前は `E1040` でした）。`std::Async.run` も `E1040` です。
-- **ホスト駆動の実行器には後継がありません**（TZ13 の D2）。tzroutine は境界の中で終わる（D-61 の決定 1）ので、ホストのイベントループに計算を預けて、後から完了を渡す形とは合わないためです。ネイティブのホストは `export` 関数を呼び、その呼び出しは中で起動した tzroutine がすべて終わるまで戻りません（[tzroutine](#tzroutine)）。ホストのイベントループを止めたくないときは、ホストが別のスレッドから `export` を呼びます。WebAssembly では、`--wasm-feature jspi` の export は Promise を返し、ホストはそれを await します。JSPI で待つのは `--wasm-feature net` のソケットの呼び出しで、WebAssembly の tzroutine は今は `E2000` です（[WebAssembly への出力の JSPI](../_tsuzuri/language-reference/compiler/webassembly.md#jspi)）。
+- **ホスト駆動の実行器には後継がありません**（TZ13 の D2）。tzroutine は境界の中で終わる（D-61 の決定 1）ので、ホストのイベントループに計算を預けて、後から完了を渡す形とは合わないためです。ネイティブのホストは `export` 関数を呼び、その呼び出しは中で起動した tzroutine がすべて終わるまで戻りません（[tzroutine](#tzroutine)）。ホストのイベントループを止めたくないときは、ホストが別のスレッドから `export` を呼びます。WebAssembly では、`--wasm-feature jspi` の export は Promise を返し、ホストはそれを await します。JSPI で待つのは `--wasm-feature net` のソケットの呼び出しで、WebAssembly の tzroutine は今は `E2000` です（[WebAssembly への出力の JSPI](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/webassembly.md)）。
 - **`Async.run` の仮想時刻にも後継がありません**（TZ13 の D3）。時刻に依存する処理を決定的に試すときは、時刻を関数の引数か `Channel` で渡します。
 - 出なくなった kind は登録簿に残します: `E1013` の `borrow_across_async_boundary`（`Async` の中断をまたぐ借用）、`E2000` の `net_async_needs_block_on`・`wasm_test_runner_async`。
 
@@ -2767,6 +2795,8 @@ Tsuzuri は、F# 風の直感的な条件分岐、ループ反復、およびパ
 なお、通常のループ構文は完全に逐次実行されるものであり、コンパイラがプログラマに無断で暗黙のマルチスレッド並列化や GPU へのオフロードを行うことはありません。
 
 ### if / then / else
+
+<!-- rule: CTL-001 --> <!-- rule: CTL-002 --> <!-- rule: CTL-003 --> <!-- rule: EVL-007 -->
 
 ```text
 if condition then value else other
@@ -2780,6 +2810,8 @@ if enabled then { counter = counter + 1; }
 なお、条件式の位置にレコードリテラルを記述する場合は、構文の曖昧性を防ぐため丸括弧で囲んでください。
 
 ### for / while
+
+<!-- rule: CTL-004 --> <!-- rule: CTL-005 --> <!-- rule: CTL-006 --> <!-- rule: CTL-007 --> <!-- rule: CTL-008 --> <!-- rule: CTL-009 --> <!-- rule: CTL-011 --> <!-- rule: CTL-012 --> <!-- rule: CTL-027 --> <!-- rule: CTL-028 --> <!-- rule: CTL-031 --> <!-- rule: EVL-013 --> <!-- rule: EVL-014 --> <!-- rule: OWN-015 --> <!-- rule: OWN-022 --> <!-- rule: STD-010 -->
 
 ```text
 let mut total = 0
@@ -2840,6 +2872,8 @@ Copy 型の要素を値として渡す場合は、通常のコピー規則に従
 ループ内で一度 move したまま次回の反復で再利用しようとするコードもコンパイルエラーとなります（次回の反復までに新しい値を再代入していれば問題ありません）。
 
 ### match と分解
+
+<!-- rule: CTL-013 --> <!-- rule: CTL-014 --> <!-- rule: CTL-015 --> <!-- rule: CTL-016 --> <!-- rule: CTL-017 --> <!-- rule: CTL-018 --> <!-- rule: CTL-019 --> <!-- rule: CTL-020 --> <!-- rule: CTL-021 --> <!-- rule: EVL-008 -->
 
 ```text
 match value with
@@ -2985,6 +3019,8 @@ match "42" with | Parsed value -> value | _ -> 0
 
 ### 検査付き算術と例外
 
+<!-- rule: CTL-023 --> <!-- rule: CTL-024 --> <!-- rule: CTL-025 --> <!-- rule: CTL-026 --> <!-- rule: EVL-019 --> <!-- rule: NUM-029 --> <!-- rule: STD-006 -->
+
 ```text
 def safe_add :: i32 -> i32 -> Result<i32, 'E> = \x y ->
     try
@@ -3012,6 +3048,8 @@ show 40 2 + " / " + show 2147483647 1
 - `try` 式の本体、ハンドラー節、および `finally` 節の内部に記述された `IO` の `let!` や `do!` は、その場で即座に実行されます（[IO と標準入出力](#io-と標準入出力) を参照してください）。
 
 ## 式と評価順序
+
+<!-- rule: EVL-001 --> <!-- rule: EVL-004 --> <!-- rule: EVL-005 --> <!-- rule: EVL-006 --> <!-- rule: EVL-015 --> <!-- rule: EVL-018 --> <!-- rule: EVL-020 --> <!-- rule: EVL-021 --> <!-- rule: NUM-013 --> <!-- rule: NUM-014 --> <!-- rule: NUM-016 --> <!-- rule: OWN-031 --> <!-- rule: TYP-024 -->
 
 ```text
 def calculate :: i64 -> i64 = \value -> {
@@ -3208,11 +3246,11 @@ let total = sum3 point            // point は Copy なのでこの後も使え�
 `sort`・`sort_range`・`sort_with` などの並べ替えは安定です（.NET の `Sort` は不安定です）。`Ord` の順に並べる `sort` と `sort_range` は、NaN を他のどの数より前に置きます（.NET の `double.CompareTo` と同じです）。比較関数を渡す形のうち、`sort_with`・`sort_range_with` は `Array.sort_in_place_with` で並べるので、要素が `f32`・`f64` のときは NaN を通常の数値の後ろに置き、`sort_withr`・`sort_range_withr` は NaN を特別に扱わず、渡された関数のとおりに並べます。`sort`・`sort_range`・`sort_withr`・`sort_range_withr` はその場で行い、追加の領域を使いません。`contains`・`index_of`・`remove` は `Eq`（`==`）で比べるので、浮動小数点数の NaN は見つかりません（.NET の `Equals` は NaN を NaN と等しいとみなします）。
 デストラクタによる破棄や `clone` による複製は実際に初期化済みの要素数（length）のみを対象として実行され、未初期化の余剰容量メモリを読み取ることはありません。`clone` は容量を長さにそろえます（`new List<T>(list)` と同じです）。
 `Vec.of_array` および `Vec.to_array` は所有権を持つ内部バッファをそのまま引き渡すため、要素データの無駄なディープコピーは発生しません（ただし、Copy 配列の引数渡しやスタック配置配列のヒープ昇格処理は、言語の通常の所有権規則に従って安全に行われます）。.NET の `ToArray` は複製しますが、`Vec.to_array` は `Vec` を消費します。空の配列が渡された場合は不要なヒープバッファが即座に解放され、空の Vec インスタンスとして正規化されます。
-なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます（容量もそのまま複製され、複製した関数は元と同じに振る舞います。容量を長さにそろえるのは明示的な `Vec.clone` だけです）。利用者向けの詳細と例は言語リファレンスの [Vec](../_tsuzuri/language-reference/built-in-types-and-modules/vec.md) にあります。
+なお、クロージャの内部へキャプチャされた Vec は、クロージャが複製される際に独立した内部スナップショットが安全に作成されます（容量もそのまま複製され、複製した関数は元と同じに振る舞います。容量を長さにそろえるのは明示的な `Vec.clone` だけです）。利用者向けの詳細と例は言語リファレンスの [Vec](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/vec.md) にあります。
 
 ### Json
 
-std モジュール `Json` は JSON（RFC 8259）の解析と出力、および組み込み型クラス `Encode`／`Decode` による値との変換を提供します。利用者向けの詳細と例は言語リファレンスの [Json](../_tsuzuri/language-reference/built-in-types-and-modules/json.md) にあります。
+std モジュール `Json` は JSON（RFC 8259）の解析と出力、および組み込み型クラス `Encode`／`Decode` による値との変換を提供します。利用者向けの詳細と例は言語リファレンスの [Json](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/encoding/json.md) にあります。
 
 ```text
 record Numeral { text: utf8string }
@@ -3353,7 +3391,7 @@ GPU 上の浮動小数点は、上記の厳密な `f32` 規則（再結合・暗
 
 1. 厳密な呼び出しが Vulkan で動くのは、lane が `i32`・`i32u`・`i64`・`i64u`・`f32` で、コールバックが厳格な SPIR-V に出せるときです。結果は CPU 参照とビット単位で一致します。整数の `/`・`%`・`**` と、`f32` の `/`（`OpFDiv` が 2.5 ULP の誤差を許すため）は出せず、`f64`・`f16`・`bool` の lane にはカーネルがありません。カーネルがない呼び出しを Vulkan デバイスで動かすと、理由を標準エラーに出してトラップします。CPU 参照や緩い意味へ黙って切り替えることはありません。
 2. `i64` と `i64u` の lane は `shaderInt64` を要し、厳密な `f32` は float controls を要します。要る機能は、プログラムの SPIR-V カーネル全部の和として、`Gpu.request Gpu.Vulkan` の時点でまとめて確かめます。1 つでも欠ければ `Result.Error Gpu.Unavailable` です。
-3. 厳密な `f32` のモジュールは、すべての浮動小数点演算の結果に `NoContraction` を付け、`SignedZeroInfNanPreserve`・`DenormPreserve`・`RoundingModeRTE`（幅 32）の execution mode を持ち、`f32` から整数へのキャストは、範囲の比較と `OpIsNan` の選択で CPU 参照の飽和と NaN の規則を再現します。ランタイムは、デバイスが対応する 3 つの float controls と、幅ごとに別の mode を許す独立性を報告し、さらに組み込みの適合プローブを通るときだけ、厳密な `f32` を許します。デバイスの報告は申告で、厳密さの証明ではありません（MoltenVK と SwiftShader で、報告と違う結果を観測しています）。プローブは 27 lane の標本で、通ったあとに残る不一致は、そのドライバの不具合です。プローブの詳細は [Gpu](../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md#厳密な-f32-と-float-controls) にあります。
+3. 厳密な `f32` のモジュールは、すべての浮動小数点演算の結果に `NoContraction` を付け、`SignedZeroInfNanPreserve`・`DenormPreserve`・`RoundingModeRTE`（幅 32）の execution mode を持ち、`f32` から整数へのキャストは、範囲の比較と `OpIsNan` の選択で CPU 参照の飽和と NaN の規則を再現します。ランタイムは、デバイスが対応する 3 つの float controls と、幅ごとに別の mode を許す独立性を報告し、さらに組み込みの適合プローブを通るときだけ、厳密な `f32` を許します。デバイスの報告は申告で、厳密さの証明ではありません（MoltenVK と SwiftShader で、報告と違う結果を観測しています）。プローブは 27 lane の標本で、通ったあとに残る不一致は、そのドライバの不具合です。プローブの詳細は [Gpu](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/gpu.md) にあります。
 4. 呼び出しの流れ（複製、アップロード、実行、完了待ち、読み戻し）と、`request` のあとの失敗がトラップになることは、WebGPU と同じです。デバイスはプロセスに 1 つで、最初に来た要求（明示的な要求か `Gpu.Auto`）が開きます。複数スレッドの実行は、1 回ずつ順に動きます。状態のロックと実行のロックを分けてあり、完了待ちのあいだ取られたままなのは実行のロックだけです（例外は、厳密な `f32` の適合プローブで、最初に必要とした明示的な要求が、状態のロックを持ったまま、プローブの dispatch と、動いている別のスレッドのカーネルの完了を待ちます）。同じ SPIR-V のパイプラインは 256 個まで作り直さず、それを超えるカーネルは、呼び出しごとに作って捨てます。完了待ちに時間切れはなく、デバイスを失ったあとは、そのデバイスを二度と触りません。
 5. native のランタイムは、リンク時の依存なしに、Vulkan のローダーを `dlopen`／`LoadLibrary` で読み込み、必要な Vulkan の C API を自前の宣言で呼びます。`TSUZURI_VULKAN_LIBRARY` は、設定すればそのパスを書いたとおりに試し、空なら Vulkan を無効にします。設定がなければ、決まった候補だけを試し、**作業ディレクトリは探しません**（macOS は `/opt/homebrew/lib`・`/usr/local/lib` の絶対パス、Windows はシステムディレクトリだけ、Linux は動的リンカーが作業ディレクトリを探さない soname）。`vkGetInstanceProcAddr` を持たないライブラリは読み飛ばして次へ進みます。MoltenVK のような portability 実装のために、インスタンスの `VK_KHR_portability_enumeration` とデバイスの `VK_KHR_portability_subset` を有効にします。`TSUZURI_GPU_DEBUG` が空でなければ、`Unavailable` の理由、デバイスの能力、適合プローブの結果を標準エラーに出します。
 6. WebAssembly には Vulkan のホストがなく、`Gpu.request Gpu.Vulkan` は常に `Unavailable` で、import も増えません。
@@ -3363,7 +3401,7 @@ GPU 上の浮動小数点は、上記の厳密な `f32` 規則（再結合・暗
 `Gpu.Auto` のデバイスは、`Gpu.init`・`Gpu.map`（と `_relaxed`）の呼び出しごとに、CPU 参照と Vulkan のどちらで動かすかを選びます。WebGPU は候補ではありません。
 
 1. Vulkan が候補になるのは、そのカーネルに SPIR-V モジュールがあり、デバイスがそのカーネルの要る機能（適合プローブを含む）を持ち、デバイスが測った種類（メモリを共有する統合 GPU）で、バッファがデバイスの上限に収まり、パイプラインが作れるときだけです。離散 GPU とソフトウェアの実装は選びません。条件を 1 つでも満たさなければ、CPU 参照が動かします。種類・メモリ・機能・上限の判断は、デバイスが報告する内容だけで、論理デバイスを作る前に行い、合うデバイスがなければ `Gpu.Auto` はデバイスを作りません。デバイスはプロセスに 1 つなので、明示的な要求が先に開いたデバイスが測った種類でなければ、`Gpu.Auto` は使いません（離散 GPU と統合 GPU がある機械で、`Gpu.Auto` が先なら統合 GPU を開き、明示的な要求が先なら離散 GPU を開きます）。
-2. 候補の呼び出しを Vulkan に出すのは、転送・同期・呼び出しの固定費を含めたデバイスの見積りが CPU 参照の見積りより小さく、デバイスを開く費用とパイプラインを作る費用（初回の費用）を、CPU 参照で動いた呼び出しが積んだ節約で払えたときです。CPU 参照の見積りに使うカーネルの重みは、1 lane が実行する命令の数の下限です（分岐のないコードは全部、`if` は条件と安いほうの枝、`&&`・`||` は左の項だけ数えるので、重い枝があっても、安い道で済む lane の多いカーネルをデバイスへ出しすぎません。最大は 2,147,483,647 で、記述子の欄に収まらないほど重いカーネルも、この値です）。見積りの定数は、1 台のマシンで測った経験則で、他のマシンの保証ではありません（[Gpu](../_tsuzuri/language-reference/built-in-types-and-modules/gpu.md#gpuauto-で呼び出しごとに選ぶ) と [性能測定](benchmarks.md#vulkan-と-gpuautof09-phase-3)）。`TSUZURI_GPU_AUTO_MIN_WORK` は、この規則を「lane 数 × カーネルの重みが指定の数以上」に置き換えますが、能力・上限・デバイスの種類の確認は省きません。
+2. 候補の呼び出しを Vulkan に出すのは、転送・同期・呼び出しの固定費を含めたデバイスの見積りが CPU 参照の見積りより小さく、デバイスを開く費用とパイプラインを作る費用（初回の費用）を、CPU 参照で動いた呼び出しが積んだ節約で払えたときです。CPU 参照の見積りに使うカーネルの重みは、1 lane が実行する命令の数の下限です（分岐のないコードは全部、`if` は条件と安いほうの枝、`&&`・`||` は左の項だけ数えるので、重い枝があっても、安い道で済む lane の多いカーネルをデバイスへ出しすぎません。最大は 2,147,483,647 で、記述子の欄に収まらないほど重いカーネルも、この値です）。見積りの定数は、1 台のマシンで測った経験則で、他のマシンの保証ではありません（[Gpu](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/gpu.md) と [性能測定](benchmarks.md#vulkan-と-gpuautof09-phase-3)）。`TSUZURI_GPU_AUTO_MIN_WORK` は、この規則を「lane 数 × カーネルの重みが指定の数以上」に置き換えますが、能力・上限・デバイスの種類の確認は省きません。
 3. 厳密な呼び出しの結果は、どちらが動かしても CPU 参照と同じです。緩い呼び出しは、Vulkan が動かすと緩い結果になりえます。
 4. 準備の失敗（能力の不足、上限、パイプラインの作成）は、その呼び出しを CPU 参照で動かします。呼び出しの途中の失敗（デバイスの喪失、メモリ不足）は、明示的なデバイスと同じようにトラップします。
 5. `Gpu.Auto` の判断は、実行中のカーネルを待ちません。CPU 参照に回す見積りはロックを取らず、それ以外の判断も、状態のロックを待たずに試すだけで、取れなければ CPU 参照で動かします。厳密な `f32` のカーネルの判断が最初に適合プローブを要するときも、プローブが要る実行のロックを待たずに試すだけで、別のスレッドのカーネルが動いていれば、プローブを動かさず（結果も記録せず）、その呼び出しを CPU 参照で動かします。プローブは、カーネルが終わったあとの判断が動かします。
@@ -3716,6 +3754,8 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 型の比較・表示・ハッシュ（`Eq`・`Ord`・`Hash`・`Display`）の instance はありません。`Rc.get` で取り出した値を比べます。公開 ABI（`export def`・`extern def`）には使えず（`E1008`）、const にもできません（`E1026`）。高カインドの型構築子としては使えません。
 ### Atomic / Mutex
 
+<!-- rule: TSK-028 -->
+
 `Atomic<'a>` と `Mutex<'a>` は、共有借用 `ref` から値を書き換えられる std の型です（F10）。予約モジュール `Atomic`・`Mutex` として、ソースに名前が現れたプログラムだけに読み込まれます。どちらも非 Copy の不透明な record で、`Atomic<'a>` は `{ cell: ['a] }`、`Mutex<'a>` は `{ cell: [(i32u * 'a)] }` です。セルは配列のバッファに置くので、record をムーブしてもセルの位置は変わらず、借用は有効なままです。構築・フィールド参照・パターン分解・更新構文は `E1022`、公開 ABI は `E1008`、const の初期化は `E1026` で、`Eq`・`Ord`・`Hash`・`Display` の instance はありません。
 関数値は複製されることがあるので、`Atomic` と `Mutex`（とそれを持つ値）は関数値に捕捉できません（`E1005`）。`tzroutine { ... }` の本体へは、所有値のムーブで持ち込めます。
 
@@ -3743,6 +3783,8 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 
 ### Channel
 
+<!-- rule: TSK-016 --> <!-- rule: TSK-017 --> <!-- rule: TSK-018 --> <!-- rule: TSK-019 -->
+
 `Channel<'a>` は Go の `chan T` に当たる双方向のチャンネルです（TZ03、D-61）。予約モジュール `Channel` として、ソースに名前が現れたプログラムだけに読み込まれます（`DataChannel` も一緒に読み込まれます。旧の名前の `E1040` が置き換えの名前で検査を続けるため）。`Channel<'a>` は非 Copy の不透明な record（`{ block: i64 }`）で、`std/Channel.tz` が宣言し、最後のハンドルの drop でブロックを解放する `Drop` の instance（`Channel.__release`。std 専用で、利用者が呼ぶと `E1022`）も書きます。
 
 | API | 型 | 意味 |
@@ -3767,6 +3809,8 @@ std の型でも、`Arena.Handle<'a>` のように型引数をフィールドで
 - 旧の名前: `Channel.bounded`・`Channel.clone_sender`・型 `Channel.Sender`・`Channel.Receiver` は `E1040`（kind `renamed_to_data_channel`、`'Channel.bounded' is now 'DataChannel.bounded'`）で、確かな修正案（`tsuzuri fix`）を持ちます。名前の解決の後で、新しい `Channel` にも利用者の定義にも解決しないときだけです。書いた `Channel` が std の `Channel` に解決するときだけなので、プロジェクトのモジュール `Channel` が見えるファイルでは、そこにない `Channel.bounded` は修正案のない `E1002` です（E18）。`std::Channel.bounded` は `E1040` で、修正案も `std::DataChannel.bounded` と `std::` を保ちます。`DataChannel.Sender`・`Receiver` を `Channel.send`・`Channel.recv` に渡した `E1003` も、`E1040`（`'Channel.send' of a DataChannel.Sender is now 'DataChannel.send'`）に置き換えます。どれも置き換えの名前で検査を続けるので、1 回の解析がすべての旧の名前を見つけます。
 
 ### タイマー
+
+<!-- rule: TSK-024 -->
 
 TZ05 は Go の `time` パッケージのタイマーを入れます。長さはナノ秒の `i64`（Go の `time.Duration`）で、引数のない組み込みの関数 `Time.nanosecond()`（1）・`microsecond()`（10³）・`millisecond()`（10⁶）・`second()`（10⁹）・`minute()`（6×10¹⁰）・`hour()`（3.6×10¹²）と掛けて書きます（`Math.pi()` と同じ呼び方。`()` の前に空白を入れると `E1006`）。時刻は `Time.monotonic_ns` と同じ単調時計のナノ秒です（Windows は `QueryPerformanceCounter`）。
 
@@ -3795,6 +3839,8 @@ TZ05 は Go の `time` パッケージのタイマーを入れます。長さは
 
 ### 同期の型（TZ06）
 
+<!-- rule: TSK-026 --> <!-- rule: TSK-027 -->
+
 Go の `sync` と `x/sync/semaphore` に当たる型です。待つのは tzroutine（擬似 G を含む）だけで、OS スレッドを止めません。どれも予約モジュールで、名前が現れたプログラムだけに読み込まれます。
 
 | 型 | API | Go |
@@ -3815,6 +3861,8 @@ Go の `sync` と `x/sync/semaphore` に当たる型です。待つのは tzrout
 - **ターゲット**: ネイティブの macOS・Linux・Windows。既定の WebAssembly では、tzroutine を起動しないプログラムが `TZR_SINGLE`（1 本の実行）で使い、待つべき操作はその場でトラップします（`Mutex` も、このページの型を使うプログラムでは同じロックの 1 本の版）。`WaitGroup.go` は tzroutine を起動するので、`--wasm-feature jspi` のない WebAssembly では `E2000` です（`jspi` ではネイティブと同じく、待ちがその tzroutine だけを止めます）。`--trap-mode return` は `Channel` と同じく `E2000` です。
 
 ### 取り消しと ErrGroup（TZ07）
+
+<!-- rule: TSK-029 --> <!-- rule: TSK-030 -->
 
 Go の `context`（取り消しと期限）と `golang.org/x/sync/errgroup` に相当する opt-in のモジュールです。境界は起動した tzroutine を待つので、終わらない tzroutine は `Context` で外から止めます。取り消しは協調的です（tzroutine が `done` を見て自分で戻り、ランタイムは強制的に止めない）。
 
@@ -3868,7 +3916,7 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - `captures` の要素 0 は全体、要素 k は k 番目の group で、参加しなかった group は `(-1, -1)`、繰り返しの中の group は最後に参加した繰り返しの値です。`find_all` の次の探索は、空でない一致の後はその終わり、空の一致の後は次のスカラーから始めます。`split` は一致の間の部分文字列です。`replace_all` の置換文字列は `${n}` と `$$` だけを展開します。
 - 後方参照、先読み・後読み、名前付き group、atomic group、所有的量指定子、`\G`・`\Z`・`\X`・`\R`・`\K` は `Unsupported` です。資源上限（パターン 65,536 コード単位、繰り返し回数 1,000、group の入れ子 64、命令 10,000、class の区間の合計 65,536（`[...]` は併合・畳み込み・否定の後の区間で数える）、命令数 × 2 ×（group 数 + 1）が 262,144）を超えると `TooLarge` で、どちらもトラップしません。
 - `is_match_text`・`find_text`・`find_at_text`・`find_all_text`・`captures_text`・`replace_all_text`・`split_text` は、テキストの型（`string` か `utf8string`）に応じて `is_match`・… か `is_match_utf8`・… を呼ぶ薄い関数です（型クラス `RegexText`。`std/RegexText.tt` の opt-in のモジュールなので、ユーザーのコードでは `RegexText.RegexText<'s>` と修飾します）。`replace_all_text` の置換文字列は本文と同じ型です。
-- `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、tzroutine へ move できます。誤りの一覧と message は [言語リファレンスの Regex](../_tsuzuri/language-reference/built-in-types-and-modules/regex.md) にあります。
+- `Regex` は不透明な非 Copy の record で、構築・フィールド・パターン分解・更新は `E1022` です。照合では変化しないので、共有借用で何度でも使え、tzroutine へ move できます。誤りの一覧と message は [言語リファレンスの Regex](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/text/regex.md) にあります。
 
 ### Unicode
 
@@ -3892,18 +3940,20 @@ match Regex.compile (ref "(\\w+)@(\\w+)") with
 - `Regex.replace_all` は `re replacement text` の順です。置換文字列とテキストはどちらも `ref string` なので、取り違えても型検査を通ります。`String.replace needle replacement text` も、3 つとも `ref string` です。
 - 例外は次の 4 種類だけです。(1) 資源のハンドルを先に取る関数（`File`・`Net`・`Process`・`Atomic`・`Mutex`・`DataChannel`・`Rc`・`Arc`・`Owned`）。.NET のメソッドの受け手と同じです。(2) 数式の被演算子の順で書く数値の関数（`Int`・`Math`・`Simd`・`Char`）。(3) コンパイラが呼ぶ関数（計算式ビルダーの大文字の操作と、`derive` が生成するコードが呼ぶ `Json.decode_field`・`Json.case_index`）。(4) テストとベンチマークの入口（`Gen.for_all`・`Test.*`・`Bench.*`）。
 
-規則は `tests/std_argument_order.rs` が検査します。`std/` の `def` 行と、`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込み関数の型を調べ、分類していない新しい `std/` のファイルがあると失敗します。モジュールごとの表と例は [標準ライブラリの引数の順序](../_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md) にあります。
+規則は `tests/std_argument_order.rs` が検査します。`std/` の `def` 行と、`Array`・`List`・`Vec`・`String`・`Utf8String` の組み込み関数の型を調べ、分類していない新しい `std/` のファイルがあると失敗します。モジュールごとの表と例は [標準ライブラリの引数の順序](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/conventions.md) にあります。
 
 ### 配列・リスト API
+
+<!-- rule: CTL-030 --> <!-- rule: STD-001 --> <!-- rule: STD-002 --> <!-- rule: STD-003 --> <!-- rule: STD-004 --> <!-- rule: STD-007 --> <!-- rule: STD-008 -->
 
 `Array` モジュールが提供する逐次集計関数群と、前述の [データ並列 API](#データ並列-api) は、演算順序や並列化の有無が異なる独立した API です。コンパイラが逐次集計をデータ並列処理へ自動的に切り替えることはありません。
 
 コレクションの読み取り操作は `ref [T]` または `ref [|T|]` の共有借用参照を受け取り、コレクション全体の不要なディープコピーを発生させません。
 `Array` モジュールは、[F# の `Array` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-arraymodule.html)のうち `Array.Parallel` を除く 131 関数を、配列を最後の引数に取る形で提供します。引数の順は F# と同じですが、F# で配列が最後にない `get`、`set`、`sub`、`fill`、`blit`、`fold_back`、`fold_back2`、`scan_back`、`map_fold_back` だけは、配列を最後へ移しています（`Array.get index values`、`Array.fold_back f state values`）。名前は camelCase を snake_case にしたもの（`tryFind` は `try_find`、`foldBack` は `fold_back`）です。
 関数の添字、個数、比較関数の戻り値は `i64` で（添字式 `xs[i]` はどの整数型でも書けます）、F# が例外を投げる場面（空配列、範囲外、長さの不一致、見つからない `find`）は安全なトラップになります。`try_item`、`try_find`、`try_head` のように `try_` が付く関数は `Maybe` を返します。
-`seq` の引数は配列で受け取り（`to_seq` と `of_seq` は `Seq<'a>`）、`Choice` は `Result` に対応します。全関数の一覧と型は [Array](../_tsuzuri/language-reference/built-in-types-and-modules/array.md) にあります。
+`seq` の引数は配列で受け取り（`to_seq` と `of_seq` は `Seq<'a>`）、`Choice` は `Result` に対応します。全関数の一覧と型は [Array](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/array.md) にあります。
 F# にはない `at`、`count`、`index_of`、`equal`、`binary_search`、`product`、`sum_pairwise`、`sum_kahan`、`dot`、`dot_fma` と、更新の `update`、`swap`、`write`、`swap_in`、`split_at_mut` も提供します。
-`List` モジュールは、[F# の `List` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-listmodule.html)のうち、廃止予定の `nth` を除く 117 関数を、`Array` と同じ規則（snake_case の名前、リストを最後に取る引数順、`i64`、トラップと `try_`、`Choice` は `Result`、`seq` の引数はリスト）で提供します。F# でリストが最後にない `fold_back`、`fold_back2`、`scan_back`、`map_fold_back` は、リストを最後へ移しています。全関数の一覧と型は [List](../_tsuzuri/language-reference/built-in-types-and-modules/list.md) にあります。
+`List` モジュールは、[F# の `List` モジュール](https://fsharp.github.io/fsharp-core-docs/reference/fsharp-collections-listmodule.html)のうち、廃止予定の `nth` を除く 117 関数を、`Array` と同じ規則（snake_case の名前、リストを最後に取る引数順、`i64`、トラップと `try_`、`Choice` は `Result`、`seq` の引数はリスト）で提供します。F# でリストが最後にない `fold_back`、`fold_back2`、`scan_back`、`map_fold_back` は、リストを最後へ移しています。全関数の一覧と型は [List](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/collections/list.md) にあります。
 F# にはない `cons`（式の `x :: xs` に当たります）と `copy` も提供します。`cons`、`tail`、`map`、`mapr`、`rev`、`foldr`、`to_array` はコンパイラ組み込みで、残りは `std/List.tz` の関数です。
 2 つのリストを取る関数は、F# と同じく共有する組を先に処理してから長さの違いをトラップします（`exists2` と `forall2` は、答えが決まれば長さを問いません。`fold_back2` と、コールバックのない `zip` などは先に検査します）。
 リストの添字は先行する chunk の数に比例するので、`List` の関数はリストを添字で回さず、`for` で走査するか、いったん配列へ複写して処理します。F# のリストと違ってリストどうしは末尾を共有しないため、`append` や `skip` は要素を複製します。
@@ -3942,7 +3992,7 @@ let lengths = texts |> Array.mapr (\t -> t.length)           // [1, 3]
 
 ### 標準コレクションの計算量
 
-計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](../_tsuzuri/language-reference/organizing-tsuzuri/documentation-comment.md#構造化タグ) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
+計算量は 1 回の呼び出しの最悪の時間で、コールバックの呼び出し・`Eq.eq`・`Ord.lt`・`Hash.hash`・要素 1 つの `Copy` の複製をそれぞれ $O(1)$ と数えます（入れ子のコレクションを持つ要素の複製は、その大きさの分かかります）。`n` は主な入力の要素数、`m` はもう 1 つの入力の要素数、`k` は結果の要素数です（結果が入れ子のコレクションなら入れ子の要素もすべて数え、`with_capacity` などの容量を指定する関数では確保する容量、`longest_probe` では表の大きさです）。`Seq` を返す関数は `Seq` を返すまでの時間で、取り出しは 1 要素ごとに $O(1)$ です。規則は [構造化タグ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/modules/doc-comments.md) にあります。表は `std/` の `@complexity` から `node scripts/gen-docs.mjs` が作ります。平均・償却の値は、キーのハッシュが一様に分散するときのものです。`Hash.hash` や `Eq.eq` のコスト（例えば長い文字列キーの比較）は含みません。組み込みの操作（`Vec.push`・`Array.write`・`List.cons` など）は、各モジュールのページの手書きの表にあります。`String` の `n` は `text` のコード単位数、`m` は `needle`・`separator`・`prefix`・`suffix` のコード単位数です。
 
 **Array**
 
@@ -4494,6 +4544,8 @@ let logical = Bits.ushr (-8) 28           // 15
 
 ## 数値仕様
 
+<!-- rule: LEX-002 --> <!-- rule: LEX-003 --> <!-- rule: LEX-009 --> <!-- rule: NUM-017 --> <!-- rule: NUM-018 --> <!-- rule: NUM-019 --> <!-- rule: NUM-020 --> <!-- rule: NUM-021 --> <!-- rule: NUM-022 --> <!-- rule: NUM-023 --> <!-- rule: NUM-027 --> <!-- rule: STD-009 --> <!-- rule: TYP-016 -->
+
 <!-- rule: NUM-030 -->
 整数リテラルは、通常の 10 進表記のほか、`0x` プレフィックスによる 16 進表記、`0b` プレフィックスによる 2 進表記に対応しており、桁の区切り文字としてアンダースコア `_` を自由に挿入できます。
 浮動小数点リテラルは `1.5`、`1e3`、`1.2e-3` などの一般的な表記に対応しています。
@@ -4669,6 +4721,8 @@ sum = next
 入力データに無限大や NaN が含まれていた場合であってもこの評価順序が変更されることはなく、補償式が NaN となった場合は最終結果も正しく NaN となります。なお、整数版の補償加算、木構造内積、コンパイラによる自動並列化、暗黙の FMA 適用、および `fast-math` は提供されません。
 
 ### 整数 API
+
+<!-- rule: STD-005 -->
 
 `Int` モジュールが提供する関数群は、すべての整数ビット幅の型情報を完全に保持したまま機能し、暗黙の型変換は行われません。
 
@@ -4851,7 +4905,7 @@ WASM ターゲットにおいては、stack-first 配置モデルに基づき、
 スタック領域が枯渇した場合、スタックポインタはアドレス 0 を下回ってアンダーフロー折り返しを起こします。wasm32 のシングルスレッド構成で上限が 2 GiB 以下の場合、ならびに wasm64 環境においては、折り返し先のアドレスは常に有効な線形メモリの外側に位置するため、即座に安全なトラップが発生します。
 一方、wasm32 でメモリ上限が 2 GiB を超過する場合やマルチスレッド有効化時においては、各関数のプロローグで静的フレーム確保直後にスタックポインタが自身のスタック有効範囲（下端に 4 KiB の安全マージンを確保）に収まっているかを明示検証し、オーバーフロー時はスタックフレームメモリを使用する前に安全にトラップします。
 この 4 KiB の安全余白は、スタック検査を持たないスレッドランタイムや 128-bit 整数補助関数のフレーム（合計 1 KiB 未満）を保護するために設けられています。検査は関数のエントリーポイントでのみ行われ、インライン展開後は LLVM 最適化によってループの外側へと効率的に巻き上げられます。
-文字列バッファは、スタックおよび静的データ領域の後方に続くヒープ領域へと動的確保され、解放されたブロックは再利用されます（WASM では、容量 528 バイト以下のブロックは同じ容量の次の要求に返され、ヒープを伸ばす前にまとめて隣と結合されます。詳細は[スタックとヒープ](../_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md)）。
+文字列バッファは、スタックおよび静的データ領域の後方に続くヒープ領域へと動的確保され、解放されたブロックは再利用されます（WASM では、容量 528 バイト以下のブロックは同じ容量の次の要求に返され、ヒープを伸ばす前にまとめて隣と結合されます。詳細は[スタックとヒープ](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/ownership/memory-layout.md)）。
 ネイティブ環境においては標準の `malloc` / `free` アロケータが使用されます（`--allocator host` の出力はホストの関数を呼びます。`--allocator small` は 512 バイト以下の確保をサイズ区分から返します。[ホスト提供の allocator](#ホスト提供の-allocator) を参照。なお、WASM のコールスタックの最大呼び出し深度は実行環境の WebAssembly 仮想マシンエンジンに依存します）。
 スタック上に配置されるリテラルデータ領域や配列の一時作業領域は関数のプロローグで一括確保されるため、末尾再帰ループの各反復でスタックが際限なく肥大化することはありません。
 ただし、非末尾の再帰関数では呼び出しごとのスタックフレームが独立して領域を確保するため、巨大なデータ構造を取り扱う際は明示的に `new` を用いてヒープ領域上に確保してください。
@@ -4888,6 +4942,8 @@ def parity :: i64 -> bool = \n ->
 - `tsuzuri fmt` は `rec` と `and` を保ち、`and` を `let rec` と同じインデントに置きます。`let` と `let rec`、1 つのグループと 2 つのグループは、別のプログラムとして区別されます。LSP は、自己呼び出しとグループの呼び出しを束縛へ解決するので、定義へ移動・参照の一覧・名前の変更が使えます。REPL では、トップレベルの `let rec ... and ...` が 1 つの項目で、グループの名前の 1 つを再定義するとグループ全体が置き換わります。
 
 ## 公開 ABI
+
+<!-- rule: ABI-009 --> <!-- rule: ABI-014 -->
 
 <!-- rule: ABI-002 --> <!-- rule: ABI-001 -->
 `export def name` によって外部公開された関数のシンボル名は、ネイティブ環境および WASM 環境の双方において一貫して `tz_name` と命名されます。
@@ -4969,7 +5025,7 @@ macOS は Apple Silicon のネイティブ arm64 だけで、Rosetta の x64 環
 VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン解決時に拡張ホストを検査し、対象外では対応ホストを示すエラーで停止します。開発用コンパイラの設定でも回避できず、VSIX の作成と再検証も同じ制限です。Windows Arm64 のソースデバッグ未対応は維持します。
 `--target` は、`native`（ビルド機。Windows 以外では Clang へ `--target` を渡さない）、`wasm32`、`wasm64`、および 64-bit・リトルエンディアンの native の名前を受けます。`wasm32-unknown-unknown` と `wasm64-unknown-unknown` は `wasm32` と `wasm64` の別名です。native の名前は `aarch64-apple-darwin`、`aarch64-unknown-linux-gnu`、`x86_64-unknown-linux-gnu`、`aarch64-pc-windows-msvc`、`x86_64-pc-windows-msvc`、`aarch64-unknown-linux-musl`、`x86_64-unknown-linux-musl`、`aarch64-pc-windows-gnu`、`x86_64-pc-windows-gnu` の 9 個です。Linux の glibc/musl と Windows の MSVC/MinGW を区別し、大文字小文字を区別し、別名は受け付けません。macOS x64、RISC-V、FreeBSD、Android、iOS、bare-metal など、それ以外は `E2000`（`unknown target`）です。32-bit は、native の IR が 64-bit のポインターを前提にする理由も添えます。
 言語の意味（整数の折り返し、丸め、NaN、符号付きゼロ、評価順序、トラップ、所有権）は target で変わりません。target で変わるのは、Clang の target、OS ごとのランタイム（`os.c`・`net.c`・`tzroutine.c` の Win32 版）、Windows の ABI の書き換えと COFF の allocator、`@cpu` の版、`Math.fma` の実装（AArch64 だけが命令）、出力の拡張子です。`--target native` の出力は従来と同じです。
-名前を付けた target の実行ファイルは、同梱ツールチェーンか、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。macOS は SDK）でリンクします。MSVC の SDK と CRT は `INCLUDE` と `LIB` を使います。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](../_tsuzuri/language-reference/compiler/platforms.md) にあります。
+名前を付けた target の実行ファイルは、同梱ツールチェーンか、システムの Clang と `TSUZURI_SYSROOT`（C のコンパイルとリンクへ渡す sysroot。macOS は SDK）でリンクします。MSVC の SDK と CRT は `INCLUDE` と `LIB` を使います。`--cpu native` は、ビルド機で動かせない target では `E2000` です。`run` と `test` は、ビルド機で動かせない target では `TSUZURI_RUNNER` を指定したときだけ動き、`bench` は `E2000` です。tier、リンクの手段、診断の一覧は [言語リファレンスの対応プラットフォーム](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/platforms.md) にあります。
 
 ### 生成バインディング
 
@@ -4984,7 +5040,7 @@ VS Code 拡張も同じ 5 環境だけです。起動時とツールチェーン
 
 `tsuzuri build <path> --emit shared` は、`tz_<name>` と、定義されていれば `tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_main`、`tsuzuri_alloc_stats`、`tsuzuri_try_<name>` だけを export する共有ライブラリ（macOS の `.dylib`、Linux の `.so`）を出します。実行ファイルと同じくリンク入力を受け、未解決のシンボルは `E2002` です。Windows（DLL の出力は未対応です。[G10](../_features/_completed/G10-windows.md) の後続の作業です）、`--allocator host`、native 以外のターゲットは `E2000` です。`--emit bindings-cs`、`bindings-py`、`bindings-cpp` は、同じ表から C#（`[LibraryImport]`、`SafeHandle` で所有する結果、`ReadOnlySpan<T>` の借用入力、blittable な struct のレコード）、Python（`ctypes`、結果は複製して `tsuzuri_free`）、C++20（C ヘッダーの上の RAII。`std::span`、`std::u16string_view`、`tsuzuri_free` を呼ぶ所有型）のバインディングを出します。どれも引数を C ABI の前に検査し（不正な UTF-8 は呼ぶ前に例外）、`--trap-mode return` を付けると `tsuzuri_try_<name>` を呼んでトラップを各言語の例外にします。付けないと、トラップはプロセスを終わらせます。
 
-`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*` は弱い定義です（TZ13 より前は、`Async` の実行器の `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post` もありました）。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・tail-call・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](../_tsuzuri/language-reference/compiler/native-interop.md#言語間-lto-と-bitcode) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
+`tsuzuri build <path> --emit bitcode` は、C・C++ のホストが `-flto=thin` で小さな公開関数を inline できるように、プログラムと、それが使う C ランタイムを 1 つにまとめた ThinLTO の LLVM bitcode（`.bc`）を出します。外から見える強い定義は `tz_<name>`（`--trap-mode return` では `tsuzuri_try_<name>`、`--allocator counting` では `tsuzuri_alloc_stats`、標準入出力の入口では `tsuzuri_main`）で、`tsuzuri_alloc`、`tsuzuri_free`、`tsuzuri_trap_hooks`、`tz_soft_*`、`tz_small_*` は弱い定義です（TZ13 より前は、`Async` の実行器の `tsuzuri_async_poll`・`tsuzuri_async_complete`・`tsuzuri_async_post` もありました）。C ランタイムのそれ以外の関数は内部になります。IR の全関数に、同じ Clang が C の関数に付ける `target-cpu` と `tune-cpu`（`--cpu native` と wasm32 の `simd128` は `target-features` も）を付け、`"target-features"` を持つ F08 の `@cpu` 版はそれを保ちます。ホストは、bitcode を書いた Clang と同じ Clang で、`-flto=thin`（Linux は `-fuse-ld=lld`）でリンクします。C ランタイムを使うプログラムには、Clang と同じ LLVM の `llvm-link` が要ります。`--target wasm32` は C ランタイムも `llvm-link` も使わず、`wasm-ld` の LTO でホストへ inline できます。Windows と `wasm64`、`--freestanding`、`--strip`、`--profile-generate`・`--profile-use`、リンク入力、WASM の threads・jspi・webgpu・net・tail-call・WASI は `E2000` です。ビルドキャッシュは使いません。測定と確かめた組み合わせは [ネイティブ連携](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/compiler/native-interop.md) と [benchmarks.md](benchmarks.md#pr08-言語間-lto-と-bitcode-出力) にあります。
 
 ### ホスト提供の allocator
 
@@ -5027,7 +5083,7 @@ void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 カウンターはプロセス全体の原子的な 64-bit 符号なし累計を `i64` として読みます。単一スレッドで同じ処理なら決定的ですが、tzroutine や `Parallel.*` の他スレッドも含み、複数フィールドの同時 snapshot ではありません。
 この観測は確保効果ではなくデバッグ効果であり、`pure def` から `snapshot`・`since`・`measure` を呼ぶと `E1029`（`reads allocation counters`）です。読み取り自体は確保しません。
 選んだテストが `Alloc` に到達するときだけ counting heap を自動連結します。普通のコード生成と `run` は明示の `--allocator counting` が必要で、なし・`system` なら `E1018`、`host`・`small` なら `E2000` です。公開の補助関数は、export や入口などから到達しなければ根から除きます。`check`・`doc`・`lsp` は型検査だけです。std の外から `Alloc.__counter` を呼ぶと `E1022` です。
-`measure` の捕捉した所有値は一意でないので、消費して更新する操作は snapshot/since で測ります。詳細と native/wasm32 × `-O0`/`-O3` の 42 契約は [Alloc](../_tsuzuri/language-reference/built-in-types-and-modules/alloc.md) にあります。
+`measure` の捕捉した所有値は一意でないので、消費して更新する操作は snapshot/since で測ります。詳細と native/wasm32 × `-O0`/`-O3` の 42 契約は [Alloc](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/testing/alloc.md) にあります。
 
 `--allocator small` は native の 64-bit の target で使うサイズ区分の allocator です（PM05。既定ではありません）。実行ファイル（`--emit exe`）・`object`・`llvm`・`header`・`shared` に付けられ、WASM（`E2000`: `--allocator small requires a native target; WebAssembly modules keep their own heap`）・`wgsl`・`spirv`・`--trap-mode return`・`--freestanding` とは併用できません。
 0〜512 バイトの確保を、16 バイト刻みの 32 区分（16、32、……、512 バイトのブロック）から返します。それより大きい確保と、区分に属さないポインターは `system` と同じ C ライブラリの `malloc`・`realloc`・`free` です。ブロックにヘッダーはなく、戻り値は 16 バイト境界で、`tsuzuri_alloc`・`tsuzuri_free` の契約は変わりません。ホストへ返した所有バッファは、これまでどおり `tsuzuri_free` で解放します（`small` のブロックを C ライブラリの `free` へ渡すと壊れます）。
@@ -5038,6 +5094,8 @@ void tsuzuri_alloc_stats(tsuzuri_allocation_stats *stats);
 標準 IO、OS API、`Net` のソケット、tzroutine のランタイム（tzroutine、`Parallel.*`、`Mutex`、`DataChannel` など）、プログラム引数、Debug 出力を使うプログラムは `E2000`（`--freestanding cannot use ...`）で、`--emit header` でも同じです。`--trap-info`・`--debug-output` との併用も `E2000` です。
 
 ## 診断
+
+<!-- rule: DIA-001 --> <!-- rule: DIA-002 --> <!-- rule: DIA-003 --> <!-- rule: DIA-004 --> <!-- rule: DIA-005 --> <!-- rule: DIA-006 --> <!-- rule: DIA-007 --> <!-- rule: DIA-010 --> <!-- rule: DIA-011 --> <!-- rule: DIA-012 --> <!-- rule: LEX-008 -->
 
 <!-- rule: DIA-009 -->
 Tsuzuri コンパイラは、コンパイル成功時には終了コード 0 を返却し、ソースコードの記述エラー、外部ツールの実行失敗、I/O エラー、および実行時エラーが発生した場合は終了コード 1、CLI コマンドライン引数の指定不備が発生した場合は終了コード 2 を返却します。
@@ -5156,3 +5214,84 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E2010` | `tsuzuri mcp` の致命的な誤り（根がディレクトリでない `mcp_root_unusable`、入出力の失敗 `mcp_io_failed`、作業のスレッドを作れない `mcp_worker_failed`）。終了コード 1 |
 | `E2009` | 知識グラフ（`tsuzuri kg`）の欠落・古い・壊れた・置き場が知識グラフでない・型検査の通らないプロジェクトのもの（kind は `kg_missing`・`kg_stale`・`kg_broken`・`kg_not_ours`・`kg_incomplete`）。`check`・`build`・`run`・`test` が自動で書くときの失敗は `W2001` の警告 1 行で、終了コードは変わらない |
 | `E2011` | `tsuzuri test --doc` の doc の例の記法の誤り（`doc_example_invalid`。未知・重複・併用した印、`fails=` の値、`run=` の符号化、字下げ・閉じのない・空のフェンス） |
+
+### コードごとの kind 一覧
+
+<!-- generated:diagnostic-kinds -->
+| コード | kind |
+| --- | --- |
+| `E0001` | `bigint_suffix_with_fraction`, `byte_literal_not_ascii`, `byte_suffix_on_interpolated_string`, `byte_suffix_on_unsupported_literal`, `char_literal_not_one_unit`, `comment_in_interpolation_hole`, `expected_digit`, `float_suffix_on_hex_or_binary_literal`, `format_field_out_of_range`, `format_precision_on_integer`, `format_type_needs_precision`, `interpolation_hole_spans_lines`, `invalid_format_spec`, `invalid_numeric_literal`, `invalid_string_escape`, `invalid_type_variable_start`, `invalid_unicode_scalar_escape`, `numeric_separator_misplaced`, `raw_newline_in_string`, `single_closing_brace_in_interpolation`, `unexpected_character`, `unterminated_block_comment`, `unterminated_interpolation_hole`, `unterminated_string_literal`, `utf8char_not_one_scalar` |
+| `E0002` | `alias_name_on_same_line`, `angle_bracket_spacing`, `anonymous_union_double_bar`, `builder_alias_is_contextual_keyword`, `builder_alias_name_case`, `c_layout_argument`, `c_layout_repeated`, `checked_let_rec`, `class_needs_one_type_parameter`, `computation_match_without_arms`, `computation_nesting_too_deep`, `const_export_order`, `constraint_line_indentation`, `count_attribute_syntax`, `cpu_attribute_on_const_def`, `data_symbol_module_name`, `data_symbol_needs_link_name`, `definition_without_signature`, `do_bang_outside_task`, `duplicate_builder_alias`, `duplicate_capability`, `duplicate_cpu_target`, `duplicate_json_attribute`, `duplicate_manifest_key`, `dyn_with_type_arguments`, `empty_interpolation_hole`, `empty_region_list`, `expected_binding_end`, `expected_body_expression`, `expected_builder_alias`, `expected_computation_body`, `expected_cpu_target`, `expected_dyn_class`, `expected_expression`, `expected_expression_after_attribute`, `expected_identifier`, `expected_interpolation_close`, `expected_kind`, `expected_line_break`, `expected_link_name_string`, `expected_pattern`, `expected_single_type_argument`, `expected_token`, `expected_type_close`, `expected_union_case_name`, `expected_where_bindings`, `export_on_implementation`, `expression_nesting_too_deep`, `extern_type_modifier_conflict`, `extern_type_with_body`, `extern_type_with_link_name`, `extern_view_link_name`, `for_loop_needs_identifier`, `from_end_in_expression`, `from_end_outside_index`, `from_end_step`, `header_path_on_same_line`, `header_path_spacing`, `integer_literal_too_large`, `invalid_capabilities`, `invalid_dependency_form`, `invalid_dependency_native_flag`, `invalid_dependency_path`, `invalid_fixed_array_length`, `invalid_git_dependency`, `invalid_json_attribute`, `invalid_link_name_text`, `invalid_macos_setting`, `invalid_native_framework_name`, `invalid_native_library_name`, `invalid_native_path`, `invalid_native_rpath`, `invalid_native_section`, `invalid_package_field`, `invalid_registry_dependency`, `invalid_registry_setting`, `invalid_wasm_size`, `invalid_windows_setting`, `lambda_without_parameters`, `length_parameter_type`, `let_function_needs_lambda`, `let_rec_needs_lambda`, `link_attribute_syntax`, `list_type_with_length`, `malformed_constraint_line`, `malformed_multi_case_active_pattern`, `malformed_new_collection`, `manifest_section_order`, `manifest_syntax_error`, `match_without_arms`, `misplaced_c_layout_attribute`, `misplaced_checked_attribute`, `misplaced_const_modifier`, `misplaced_count_attribute`, `misplaced_cpu_attribute`, `misplaced_doc_comment`, `misplaced_json_attribute`, `misplaced_link_attribute`, `misplaced_namespace_declaration`, `misplaced_region_list`, `misplaced_using_declaration`, `misplaced_weak_attribute`, `missing_capabilities_allow`, `missing_package_field`, `missing_registry_index`, `module_declaration_unsupported`, `mut_as_expression`, `mutable_let_rec`, `mutable_use_binding`, `negative_pattern_needs_number`, `pattern_nesting_too_deep`, `prefix_keyword_operand`, `range_form_needs_edition_2028`, `range_takes_one_step`, `recursive_let_bang`, `recursive_where_binding`, `return_not_last_in_computation`, `return_outside_task_end`, `select_arm_expected`, `select_default_repeated`, `signature_uses_def`, `signature_uses_double_colon`, `signature_without_definition`, `slice_must_be_borrowed`, `slice_range_needs_end`, `slice_step_down_excludes_end`, `slice_without_bounds`, `start_open_range_needs_start`, `start_open_range_with_step`, `stray_and_member`, `syntax_nesting_too_deep`, `too_many_active_pattern_cases`, `too_many_anonymous_union_members`, `too_many_dyn_classes`, `too_many_extern_link_names`, `too_many_function_parameters`, `too_many_interpolation_holes`, `too_many_lambda_parameters`, `too_many_tuple_elements`, `too_many_type_arguments`, `type_parameters_need_angle_brackets`, `typed_and_needs_body`, `unknown_capability`, `unknown_cpu_target`, `unknown_manifest_key`, `unsupported_edition`, `use_bang_in_and_group`, `use_bang_outside_computation`, `weak_attribute_syntax`, `where_binding_indentation` |
+| `E0003` | `source_too_large` |
+| `E0004` | `bare_range_in_for_rejected`, `legacy_lambda_rejected`, `short_literal_suffix_rejected`, `symbolic_borrow_rejected`, `symbolic_deref_rejected`, `symbolic_reference_type_rejected` |
+| `E1001` | `duplicate_and_binding`, `duplicate_derived_class`, `duplicate_export_name`, `duplicate_extern_declaration`, `duplicate_function_definition`, `duplicate_function_signature`, `duplicate_name` |
+| `E1002` | `class_has_no_method`, `unknown_function`, `unknown_length_constant`, `unknown_module_member`, `unknown_union_case`, `unknown_value` |
+| `E1003` | `active_recognizer_result`, `anonymous_union_not_member`, `anonymous_union_not_subset`, `fixed_array_literal_length`, `format_spec_type_mismatch`, `format_spec_type_unknown`, `index_component_type`, `index_not_integer`, `index_ref_on_value`, `type_mismatch` |
+| `E1004` | `ambiguous_builder_alias`, `ambiguous_name`, `ambiguous_pattern_name`, `dyn_needs_type_class`, `empty_list_needs_annotation`, `expected_length`, `length_used_as_type`, `not_a_record_type`, `repeated_module_name`, `std_item_missing`, `type_argument_count`, `type_used_as_length`, `unknown_type_name` |
+| `E1005` | `array_slice_with_step`, `atomic_element_type`, `builtin_index_one_component`, `call_non_function`, `capture_exclusive_in_reusable_function`, `capture_rc_in_function_value`, `capture_sync_primitive_in_function_value`, `capture_unsendable_in_function_value`, `collection_element_exclusive_borrow`, `cpu_function_wide_vector_boundary`, `deref_non_reference`, `exclusive_slice_whole_array_parameter`, `fixed_array_init_annotation`, `fixed_slice_source`, `for_over_fixed_array`, `for_source_not_iterable`, `from_end_needs_length`, `function_constraint_unresolvable`, `function_constraint_unsatisfied`, `index_non_indexable`, `invalid_length_constant`, `misplaced_mut_convention`, `misplaced_own_convention`, `mut_parameter_needs_edition_2027`, `new_on_fixed_array`, `no_instance`, `no_instance_for_operator`, `no_wider_integer`, `range_as_value`, `rec_function_captures_generic`, `record_update_non_record`, `shared_container_exclusive_borrow`, `simd_lane_count_mismatch`, `simd_operation_vector_type`, `slice_non_array`, `slice_of_fixed_array`, `std_representation_mismatch`, `unsized_slice_type_position`, `use_requires_drop`, `zstring_literal_argument`, `zstring_literal_interior_nul`, `zutf8string_literal_argument`, `zutf8string_literal_interior_nul` |
+| `E1006` | `active_pattern_argument_count`, `active_recognizer_parameters`, `definition_parameter_count_mismatch`, `instance_method_parameter_count`, `owned_function_parameter_count`, `too_many_arguments_applied` |
+| `E1007` | `field_access_non_record`, `missing_record_fields`, `record_has_no_field`, `unknown_field` |
+| `E1008` | `abi_apple_only`, `abi_native_only`, `abi_nullable_payload`, `c_layout_bool_field`, `c_layout_drop`, `c_layout_empty`, `c_layout_field_type`, `c_layout_generic`, `c_layout_in_plain_record`, `c_layout_input_only`, `c_layout_nested_record`, `c_layout_owned_handle_field`, `conflicting_extern_declaration`, `count_not_buffer`, `count_position_out_of_range`, `count_repeated`, `data_symbol_signature`, `data_symbol_target`, `export_active_recognizer`, `export_on_extern_declaration`, `extern_callback_argument`, `extern_callback_call_form`, `extern_declaration_constraints`, `extern_view_call_form`, `extern_view_record`, `extern_view_signature`, `fnptr_argument`, `fnptr_call_form`, `fnptr_from_host`, `fnptr_signature`, `invalid_extern_symbol`, `invalid_wasm_import_module`, `link_invalid_name`, `link_needs_symbol`, `link_repeated`, `reserved_extern_symbol`, `unsupported_export_signature`, `unsupported_extern_signature`, `weak_data_symbol_result`, `weak_needs_symbol` |
+| `E1009` | `decimal_literal_out_of_range`, `float_literal_out_of_range`, `float_literal_type`, `integer_literal_out_of_range`, `integer_literal_type`, `invalid_bigint_digit`, `invalid_float_literal` |
+| `E1010` | `fixed_array_too_long`, `infinite_recursive_layout`, `layout_nesting_limit`, `recursive_union_without_base_case`, `value_layout_too_large` |
+| `E1011` | `ambiguous_package_root`, `conflicting_dependency_source`, `cyclic_package_dependency`, `dependency_kind_not_allowed`, `dependency_name_mismatch`, `dependency_path_not_relative`, `duplicate_dependency`, `duplicate_module`, `incompatible_dependency_versions`, `invalid_module_filename`, `invalid_module_name`, `invalid_package_name`, `invalid_package_namespace`, `invalid_publish_version`, `invalid_source_path`, `invalid_std_path`, `invalid_using_declaration`, `manifest_not_regular_file`, `module_namespace_collision`, `module_source_not_regular_file`, `publish_non_registry_dependency`, `reserved_package_namespace`, `reserved_std_namespace`, `source_filename_case_mismatch`, `source_outside_package_root`, `source_without_filename`, `symlink_not_followed` |
+| `E1012` | `assign_to_immutable_place`, `drop_pass_exclusive_value`, `drop_replace_whole_value`, `move_out_of_collection_element`, `move_out_of_drop_type`, `move_out_of_owned_function`, `move_out_of_rec_function`, `move_out_of_reference_binding`, `update_drop_type_value`, `use_after_move` |
+| `E1013` | `anchor_result_retains_borrow`, `anchor_value_retains_borrow`, `anonymous_union_borrowed_member`, `assignment_extends_borrow`, `borrow_across_async_boundary`, `borrow_field_without_region`, `borrow_of_temporary`, `borrow_outlives_binding`, `borrow_outlives_block`, `borrowed_union_payload`, `callback_contract_unsatisfied`, `channel_item_holds_borrow`, `const_temporary_borrow_escapes`, `dyn_holds_borrow_without_region`, `dyn_holds_exclusive_borrow`, `exclusive_borrow_behind_region`, `exclusive_borrow_field_shape`, `exclusive_field_regions_missing`, `exclusive_field_without_region`, `exclusive_region_reused`, `field_mixes_regions`, `invalid_region_names`, `misplaced_region_quantifier`, `multiple_regions_on_value`, `must_apply_directly`, `mutable_record_field`, `mutable_region_quantified_parameter`, `mutex_result_retains_borrow`, `named_region_in_function_type`, `named_region_in_local`, `nested_borrow_unsupported`, `owned_function_captures_reference`, `parallel_callback_borrows_environment`, `parallel_input_borrows_environment`, `parallel_result_retains_borrow`, `pinned_code_spawned`, `pinned_function_value`, `reference_region_count`, `reference_without_owner`, `region_already_declared`, `region_belongs_to_function`, `region_callback_stores_exclusive_input`, `region_count_mismatch`, `region_on_non_borrow`, `region_quantifier_target`, `result_region_mismatch`, `result_region_missing`, `result_region_without_input`, `self_referential_store`, `store_local_borrow_through_reference`, `store_region_mismatch`, `store_region_unnamed`, `task_capture_retains_borrow`, `task_requires_owned_value`, `task_requires_send`, `task_requires_sync`, `task_result_is_reference`, `task_result_retains_borrow`, `task_scope_shares_borrowed_environment`, `undeclared_region`, `union_payload_exclusive_borrow`, `unused_region` |
+| `E1014` | `active_pattern_mutates_input`, `borrow_conflict`, `exclusive_slice_source`, `move_reborrowed_exclusive_reference`, `mutate_immutable_value`, `mutate_through_shared_reference`, `replace_exclusive_slice` |
+| `E1015` | `ambiguous_polymorphic_use`, `concrete_integer_required`, `concrete_type_required`, `constructor_kind_mismatch`, `constructor_variable_kind_annotation`, `dyn_dispatch_result_type`, `dyn_of_arity`, `dyn_of_needs_expected_type`, `expected_type_constructor`, `extern_signature_not_concrete`, `extern_type_as_constructor`, `fixed_array_length_unknown`, `higher_kinded_alias`, `higher_order_kind_argument`, `infinite_inferred_type`, `instance_head_not_constructor`, `internal_compact_string_runtime`, `internal_rec_binding_not_lambda`, `internal_rec_group_unbound`, `internal_rec_not_bound_by_block`, `internal_unlowerable_ir`, `missing_type_arguments`, `polymorphic_entry_point`, `ref_operand_inferred_late`, `scalar_as_type_constructor`, `simd_vector_type_unknown`, `superclass_kind_mismatch`, `type_constructor_not_applied`, `type_variable_absent_from_signature`, `type_variable_kind_conflict` |
+| `E1016` | `builtin_instance_override`, `class_constraint_arity`, `class_method_constraint`, `class_method_type_variable`, `class_without_methods`, `default_body_unknown_method`, `drop_instance_constraint`, `drop_instance_generic`, `drop_instance_target`, `explicit_drop_call`, `field_type_constraint`, `format_instance_target`, `instance_missing_method`, `instance_unknown_method`, `internal_effective_api_unavailable`, `missing_explicit_constraint`, `operator_instance_form`, `orphan_instance`, `overlapping_instance`, `unknown_type_class` |
+| `E1017` | `and_group_too_large`, `anonymous_union_member_limit`, `capability_analysis_limit`, `class_constraint_limit`, `contract_line_limit`, `deriving_expression_limit`, `deriving_instance_limit`, `doc_example_limit`, `effect_summary_limit`, `exhaustiveness_search_limit`, `fix_candidate_limit`, `function_constraint_limit`, `git_dependency_too_large`, `gpu_effect_analysis_limit`, `gpu_kernel_limit`, `header_path_too_long`, `instance_overlap_limit`, `instance_resolution_cycle`, `instance_resolution_limit`, `lockfile_too_large`, `loop_ownership_limit`, `manifest_too_large`, `module_discovery_limit`, `module_path_limit`, `namespace_path_too_long`, `or_pattern_alternatives_limit`, `package_graph_limit`, `pattern_alternatives_limit`, `polymorphic_constraint_limit`, `polymorphic_recursion_growth`, `polymorphic_type_expansion_limit`, `prove_limit`, `pure_callback_proof_limit`, `pure_definition_reach_limit`, `pure_value_validation_limit`, `qualified_name_too_long`, `recursive_type_changes_arguments`, `recursive_type_expansion_limit`, `registry_index_too_large`, `registry_resolution_limit`, `select_arm_limit`, `sequence_loop_depth_limit`, `specialization_limit`, `superclass_resolution_limit`, `too_many_dependencies`, `too_many_loop_exits`, `too_many_overflow_sites`, `too_many_raise_points`, `too_many_record_regions`, `too_many_region_parameters`, `too_many_trap_locations`, `type_alias_expansion_limit` |
+| `E1018` | `alias_outside_builder_file`, `bench_clock_outside_bench`, `builder_missing_operation`, `builder_without_operations`, `cannot_infer_builder`, `class_outside_class_file`, `computation_without_builder`, `declaration_in_class_file`, `gpu_buffer_element_type`, `gpu_callback_not_known`, `gpu_kernel_effect`, `gpu_kernel_missing`, `gpu_kernel_recursion`, `gpu_kernel_signature`, `gpu_operation_not_direct`, `gpu_unsupported_construct`, `gpu_unsupported_operator`, `gpu_unsupported_type`, `implicit_task_needs_builder`, `no_builder_for_value`, `std_declares_test`, `std_exports_function`, `unknown_computation_builder` |
+| `E1019` | `and_without_recursive_group`, `mismatched_recursive_group`, `missing_rec_marker` |
+| `E1020` | `active_argument_not_value`, `active_pattern_case_count`, `active_pattern_case_name`, `array_pattern_on_fixed_array`, `case_pattern_missing_payload`, `case_pattern_payload_shape`, `case_pattern_unexpected_payload`, `duplicate_active_pattern_case`, `expression_in_pattern`, `multi_case_active_pattern_result_type`, `null_pattern`, `or_pattern_binding_mismatch`, `partial_active_pattern_case_count`, `qualified_pattern_binding`, `record_pattern_unknown_type`, `reserved_active_result_variable`, `unknown_case_or_active_pattern` |
+| `E1021` | `non_exhaustive_match`, `refutable_binding_pattern` |
+| `E1022` | `opaque_type_representation`, `private_builder_operation`, `private_export`, `private_name_access`, `private_on_unsupported_declaration`, `private_std_primitive`, `private_type_in_public_api` |
+| `E1023` | `jump_outside_loop` |
+| `E1024` | `alias_argument_count`, `cyclic_type_alias`, `duplicate_type_parameter`, `duplicate_union_case`, `invalid_type_parameter_name`, `type_name_case`, `undeclared_length_parameter`, `undeclared_type_variable`, `union_case_name_case`, `unused_type_parameter` |
+| `E1025` | `anonymous_union_decode_overlap`, `default_derive_recursive`, `derived_instance_invalid`, `deriving_unavailable`, `duplicate_json_name`, `json_name_without_deriving`, `underivable_class` |
+| `E1026` | `const_aggregate_operator`, `const_assignment_target`, `const_borrow_not_allowed`, `const_call_depth_limit`, `const_callee_not_const`, `const_checked_operation`, `const_condition_not_bool`, `const_cycle`, `const_evaluation_trapped`, `const_expression_not_allowed`, `const_fnptr`, `const_for_loop_form`, `const_function_value`, `const_limit_exceeded`, `const_new_collection_form`, `const_operation_not_allowed`, `const_partial_application`, `const_pipe_not_allowed`, `const_signature_invalid`, `const_static_data_too_large`, `const_unbuildable_type`, `const_unsupported_operation`, `constant_type_not_concrete` |
+| `E1027` | `class_context_not_a_class`, `instance_check_failed`, `instance_context_variable`, `instance_missing_superclass`, `superclass_cycle`, `superclass_type_variable`, `undeclared_default_constraint`, `undeclared_instance_constraint`, `unknown_class_in_context` |
+| `E1028` | `dyn_incompatible_class` |
+| `E1029` | `impure_builtin_for_pure_contract`, `impure_callback_for_pure_contract`, `impure_operation_in_pure_def`, `impure_pure_function_value`, `pure_function_type_parameter_not_allowed`, `pure_implementation_partial_parameters`, `pure_method_mutable_reference`, `pure_on_non_function_type`, `pure_parameter_not_allowed`, `pure_returned_function_contract`, `pure_specialization_own_parameter`, `pure_value_captures_unknown_callback`, `pure_value_unprovable` |
+| `E1030` | `typed_hole` |
+| `E1031` | `effect_alloc_in_no_alloc`, `effect_copy_in_no_copy`, `effect_diverge_in_terminates`, `effect_extern_in_attribute`, `effect_trap_in_no_trap`, `effect_unknown_callee` |
+| `E1032` | `effect_attribute_duplicate`, `effect_attribute_misplaced`, `effect_attribute_on_extern`, `effect_attribute_unavailable` |
+| `E1033` | `contract_ensures_reference_result`, `contract_impure`, `contract_misplaced`, `contract_not_bool`, `contract_old_misplaced`, `contract_old_nested`, `contract_old_not_copy`, `contract_old_operand`, `contract_on_const`, `contract_result_lambda`, `contract_writes` |
+| `E1034` | `prove_counterexample`, `prove_solver_error`, `prove_solver_missing`, `prove_unknown`, `prove_unsupported` |
+| `E1036` | `capability_denied` |
+| `E1037` | `trusted_duplicate_property`, `trusted_no_trap_weak`, `trusted_repeated`, `trusted_type_property`, `trusted_unknown_property`, `trusted_view_property`, `trusted_wrong_target` |
+| `E1038` | `domain_argument_not_closure`, `domain_body_not_pure`, `domain_capture_not_plain`, `domain_not_called_directly`, `domain_result_not_plain`, `domain_target_unsupported` |
+| `E1039` | `monoid_float_instance` |
+| `E1040` | `removed_async`, `removed_net_async`, `removed_task_api`, `removed_task_expression`, `removed_task_type`, `renamed_io_function`, `renamed_to_data_channel` |
+| `E1041` | `anonymous_union_ambiguous_literal`, `anonymous_union_ambiguous_member`, `anonymous_union_duplicate_member`, `anonymous_union_indistinct_members`, `anonymous_union_instance`, `anonymous_union_type_variable`, `type_test_narrow_borrowed`, `type_test_not_anonymous_union`, `type_test_not_member`, `type_test_union`, `type_test_unknown_scrutinee` |
+| `E1042` | `index_view_not_writable`, `index_view_requires_ref` |
+| `E1043` | `ambiguous_instance_candidates` |
+| `E2000` | `alloc_needs_counting_allocator`, `audit_usage`, `bindgen_annotation_error`, `bindgen_argument_error`, `cannot_derive_namespace`, `debug_info_without_source_map`, `diagram_bad_option`, `diagram_format_unsupported`, `diagram_needs_id`, `diagram_too_large`, `diagram_unavailable`, `diagram_unknown_id`, `diagram_unknown_kind`, `diagram_usage`, `diagram_wrong_id_kind`, `duplicate_link_input`, `duplicate_option`, `edition_option_with_manifest`, `environment_setting_invalid`, `fast_backend_unavailable`, `fast_backend_unsupported_option`, `file_not_formatted`, `find_bad_arguments`, `find_unknown_module`, `fix_bad_arguments`, `fix_edition_unsupported`, `fix_edition_with_applicability`, `fix_maybe_needs_dry_run`, `foreign_target_not_runnable`, `formatter_changed_semantics`, `formatter_invalid_output`, `guide_bad_arguments`, `guide_edition_unsupported`, `guide_manifest_missing`, `guide_unknown_std_module`, `guide_unknown_topic`, `index_out_of_range`, `input_count_invalid`, `input_extension_invalid`, `invalid_framework_name`, `invalid_library_name`, `invalid_macos_deployment_target`, `invalid_namespace_argument`, `invalid_publish_git_rev`, `invalid_publish_git_url`, `invalid_range_flag_setting`, `invalid_rpath`, `invalid_thread_setting`, `invalid_trap_source_map`, `kg_ambiguous_id`, `kg_unknown_id`, `link_attribute_wasm`, `link_framework_target`, `link_input_limit`, `mcp_bad_arguments`, `missing_input`, `native_link_setting_not_allowed`, `net_async_needs_block_on`, `new_project_folder_not_empty`, `new_project_io_failure`, `no_sources_found`, `option_conflict`, `option_invalid_for_command`, `option_invalid_value`, `option_missing_value`, `option_requires_build`, `option_requires_option`, `option_unsupported_platform`, `output_extension_invalid`, `project_manifest_missing`, `prove_unknown_function`, `repl_command_usage`, `repl_declaration_not_allowed`, `repl_unknown_command`, `script_wrong_file_kind`, `trap_info_without_source_map`, `unknown_explain_target`, `unknown_git_revision`, `unknown_option`, `unknown_target`, `usage_error`, `wasm_net_needs_opt_in`, `wasm_os_api_needs_opt_in`, `wasm_test_runner_async` |
+| `E2001` | `build_server_control_failed`, `build_server_start_failed`, `foreign_runner_not_startable`, `input_not_regular_file`, `input_not_utf8`, `input_path_not_utf8`, `input_too_large`, `io_failure`, `link_input_unreadable`, `repl_stream_failure`, `temp_directory_failed` |
+| `E2002` | `bindgen_unreadable_ast`, `bindgen_unsupported_target`, `bitcode_symbol_not_kept`, `external_tool_failed`, `external_tool_not_runnable`, `external_tool_output_too_large`, `external_tool_read_failed`, `external_tool_wait_failed`, `fast_backend_unsupported_construct`, `invalid_coverage_counters`, `macos_sdk_not_found`, `platform_unsupported_api`, `target_attributes_not_applicable`, `target_attributes_unreadable`, `toolchain_missing_feature` |
+| `E2003` | `bindgen_output_not_generated`, `doc_filename_collision`, `doc_output_changed`, `doc_output_contains_sources`, `doc_output_invalid`, `doc_output_not_owned`, `doc_publication_failed`, `format_target_not_regular_file`, `output_has_source_extension`, `output_not_regular_file`, `output_overwrites_input`, `output_overwrites_link_input`, `output_publication_failed`, `source_changed_during_formatting` |
+| `E2004` | `ambiguous_entry_point`, `builder_file_toplevel_code`, `entry_point_missing`, `entry_point_result_type`, `invalid_main_signature`, `spirv_kernel_count`, `toplevel_code_outside_main` |
+| `E2005` | `benchmark_failed`, `contract_ensures`, `contract_requires`, `program_exited_nonzero`, `program_terminated`, `program_time_limit_exceeded` |
+| `E2006` | `doc_test_failed`, `tests_failed` |
+| `E2007` | `file_url_after_https`, `git_case_collision`, `git_command_failed`, `git_missing_manifest`, `git_non_regular_entry`, `git_source_not_utf8`, `git_tree_unreadable`, `git_unsafe_path`, `git_version_unsupported`, `invalid_lockfile`, `lockfile_checksum_mismatch`, `lockfile_entry_missing`, `lockfile_missing`, `lockfile_not_regular_file`, `lockfile_version_mismatch`, `package_files_unreadable`, `package_not_downloaded`, `package_store_unavailable`, `package_store_unusable`, `published_package_mismatch`, `registry_checksum_mismatch`, `registry_dependency_not_selected`, `registry_entry_mismatch`, `registry_index_invalid`, `registry_index_missing`, `registry_package_missing`, `registry_version_missing` |
+| `E2008` | `fix_source_changed`, `fix_verification_failed`, `fix_write_failed`, `migration_edition_backwards`, `migration_edition_mismatch`, `migration_invalid_edit`, `migration_manifest_update_failed`, `migration_source_too_large`, `migration_write_failed` |
+| `E2009` | `kg_broken`, `kg_incomplete`, `kg_missing`, `kg_not_ours`, `kg_stale` |
+| `E2010` | `mcp_io_failed`, `mcp_root_unusable`, `mcp_worker_failed` |
+| `E2011` | `doc_example_invalid` |
+| `W1001` | `unused_local` |
+| `W1002` | `unused_private_function`, `unused_private_type` |
+| `W1003` | `unreachable_match_arm` |
+| `W1004` | `shadowed_local` |
+| `W1005` | `deprecated_use` |
+| `W1006` | `implicit_copy_of_large_value` |
+| `W1007` | `bare_range_in_for`, `legacy_lambda`, `short_literal_suffix`, `symbolic_borrow`, `symbolic_deref`, `symbolic_reference_type` |
+| `W1008` | `effect_attribute_on_const_def`, `effect_attribute_unchecked_generic` |
+| `W1009` | `contract_always_true`, `contract_result_unused`, `contract_test_skipped` |
+| `W1010` | `untrusted_extern` |
+| `W1012` | `refutable_binding_pattern_warning` |
+| `W1013` | `bare_slice_range_meaning_changed`, `legacy_bare_slice_range` |
+| `W1014` | `negative_literal_index`, `negative_literal_range_bound` |
+| `W2001` | `integer_overflow_wrapped`, `tool_notice` |
+| `W2002` | `bindgen_skipped_declaration` |
+<!-- /generated:diagnostic-kinds -->
+

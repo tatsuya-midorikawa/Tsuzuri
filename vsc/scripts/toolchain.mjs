@@ -37,7 +37,7 @@ async function resources() {
   await copyFile(path.join(repository, 'LICENSE'), path.join(extension, 'LICENSE'));
   // Rebuild the handbook from scratch so documents removed from the repository do not linger in the VSIX.
   await rm(path.join(root, 'handbook'), { recursive: true, force: true });
-  for (const name of ['_tsuzuri', 'docs', '_features', 'std']) {
+  for (const name of ['docs', '_features', 'std']) {
     await cp(path.join(repository, name), path.join(root, 'handbook', name), { recursive: true });
   }
   await cp(path.join(repository, 'examples'), path.join(root, 'handbook', 'examples'), {

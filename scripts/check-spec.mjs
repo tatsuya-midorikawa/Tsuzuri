@@ -26,7 +26,7 @@ import {
 } from './conformance/spec.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const COVERAGE_PAGE = '_tsuzuri/language-reference/compiler/conformance.md';
+const COVERAGE_PAGE = 'spec/README.md';
 const BLOCK_START = '<!-- generated:spec-coverage -->';
 const BLOCK_END = '<!-- /generated:spec-coverage -->';
 

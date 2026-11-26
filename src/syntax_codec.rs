@@ -2848,13 +2848,18 @@ mod tests {
         );
     }
 
-    /// The language reference's examples, the std sources, the fixtures and the examples write
-    /// every variant that the parser produces; the rest come from hand-built programs.
+    /// The documentation and guide examples, the std sources, the conformance tests, the fixtures
+    /// and the examples write every variant that the parser produces; the rest come from
+    /// hand-built programs.
     #[test]
     fn round_trips_every_variant() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut pages = Vec::new();
-        let mut pending = vec![root.join("_tsuzuri/language-reference")];
+        let mut pending = vec![
+            root.join("docs"),
+            root.join("guide"),
+            root.join("src/explain"),
+        ];
         while let Some(directory) = pending.pop() {
             for entry in std::fs::read_dir(directory).unwrap() {
                 let path = entry.unwrap().path();
@@ -2889,6 +2894,7 @@ mod tests {
             seen.extend(round_trips(text, 0).unwrap());
         }
         let mut paths = Vec::new();
+        sources(&root.join("tests/conformance"), &mut paths);
         sources(&root.join("tests/fixtures"), &mut paths);
         sources(&root.join("examples"), &mut paths);
         for path in paths {
@@ -3290,6 +3296,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000000000300224500",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000000000000000300224500",
     );
 }
