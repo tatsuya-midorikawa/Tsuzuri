@@ -2452,15 +2452,14 @@ impl Parser<'_> {
         let constraint_column = self.column(self.current().span);
         while self.at(&TokenKind::At) {
             // The attribute of the next declaration, at its column, after a signature without a body
-            // (and after its constraint lines, which are indented further).
+            // (and after its constraint lines, which are indented further): an identifier after '@',
+            // since a constraint line names a type variable (M22).
             if self.newline_before_current()
                 && self.column(self.current().span) <= column
-                && (self.effect_attribute_ahead().is_some()
-                    || matches!(
-                        self.tokens.get(self.position + 1).map(|token| &token.kind),
-                        Some(TokenKind::Ident(name))
-                            if matches!(name.as_str(), "cpu" | "trusted" | "count")
-                    ))
+                && matches!(
+                    self.tokens.get(self.position + 1).map(|token| &token.kind),
+                    Some(TokenKind::Ident(_))
+                )
             {
                 break;
             }
