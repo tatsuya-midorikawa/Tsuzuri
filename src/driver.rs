@@ -1798,6 +1798,16 @@ impl SourceError {
             diagnostic,
         }
     }
+
+    /// The text that the diagnostic's span is in, for its line and column: the file at `path`,
+    /// read again, when the span covers anything (a manifest, a lockfile, or a source), and
+    /// empty for a diagnostic without a position or a file that cannot be read.
+    pub fn located_text(&self) -> String {
+        if self.diagnostic.span.end == 0 {
+            return String::new();
+        }
+        read_source_text(&self.path).unwrap_or_default()
+    }
 }
 
 impl SourceFile {
@@ -2089,9 +2099,10 @@ pub(crate) fn load_packages(
             }) {
                 return Err(SourceError::new(
                     &path,
-                    driver_error_of(
+                    Diagnostic::of(
                         DiagnosticKind::ReservedPackageNamespace,
                         "package namespace is reserved by the standard library",
+                        manifest.spans.namespace,
                     ),
                 ));
             }
@@ -2101,9 +2112,10 @@ pub(crate) fn load_packages(
             {
                 return Err(SourceError::new(
                     &path,
-                    driver_error_of(
+                    Diagnostic::of(
                         DiagnosticKind::AmbiguousPackageRoot,
                         "package name or namespace resolves to multiple roots",
+                        manifest.spans.namespace,
                     ),
                 ));
             }
@@ -2112,12 +2124,13 @@ pub(crate) fn load_packages(
             {
                 return Err(SourceError::new(
                     &path,
-                    driver_error_of(
+                    Diagnostic::of(
                         DiagnosticKind::LockfileVersionMismatch,
                         format!(
                             "registry package '{}' declares version {} but Tsuzuri.lock records {version}; run tsuzuri fetch",
                             manifest.name, manifest.version
                         ),
+                        manifest.spans.version,
                     ),
                 ));
             }
@@ -2280,10 +2293,9 @@ fn dependency_directory(
             }
         }
         let metadata = fs::symlink_metadata(&directory).map_err(|error| {
-            SourceError::new(
-                manifest,
-                io_error("inspect dependency directory", &directory, error),
-            )
+            let mut diagnostic = io_error("inspect dependency directory", &directory, error);
+            diagnostic.span = span;
+            SourceError::new(manifest, diagnostic)
         })?;
         if !metadata.is_dir() || metadata.is_symlink() {
             return Err(SourceError::new(

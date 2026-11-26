@@ -524,6 +524,7 @@ SPIR-V は `src/gpu/spirv.rs` が、`extract_kernel` の結果から決定的に
 ### パッケージ
 
 パッケージ読み込み層は、`Tsuzuri.toml` で定義されたローカルパス依存、commit 固定の git 依存、registry の版の要求を取り扱います。`package.rs` が限定的なマニフェスト文法、`Tsuzuri.lock` の読み書き（`parse_lock`／`render_lock`）、内容ハッシュ（`content_sha256`）を受け持ち、ドライバーの `load_packages` は明示的なスタックを用いて依存グラフの循環参照、パッケージ名と取得元の一意性、およびリソース上限を検査します。
+マニフェストの読み手（`package.rs` の `Line`）は行の中の位置を持ち、各診断の span は問題の本体（キー、値、節の見出し、足りない記号があるべき場所の 1 文字か空の span）です。依存の項目の span（`Dependency::span`）はキーから `}` まで、`[package]` の値の span は `Manifest::spans`（`PackageSpans`）で、`load_packages`・オフラインの解決・`fetch`・`publish` の診断もこれらを使います。`parse_lock` は `serde_json` で読んだあと、誤りの位置を `json_span`（受理済みの JSON の中のキーか値のバイト範囲）と構文の誤りの行と列で求めます。読み込みの失敗（`SourceError`）は span だけを持つので、CLI と MCP は `SourceError::located_text` で span のあるファイルを読み直して行と列を出します（span の終わりが 0 なら読まず、`1:1` です）。
 `SourceFile.package` には正規化されたルートパスとパッケージ名からなる `PackageId` が格納され、依存パッケージの名前空間が各ファイルの `relative_path` に付与されます。型検査における User／Std の分類や `private` 可視性の境界判定自体は変更されません。
 マニフェスト情報は `Project.manifests` に保持され、`source_for` においては通常のソースファイルの後に続く ID として参照されます。ビルド成果物およびドキュメントの出力保護機構は、ルートパッケージと依存パッケージの両集合を対象として適用されます。
 すべてのソースファイルは論理パス順に整列され、標準ライブラリ（std）は常に末尾に配置されます。依存パッケージのルートは親プロジェクトのファイル探索スコープから除外され、同一ルートのパッケージが重複して読み込まれることはありません。ビルドスクリプトは実行しません。
