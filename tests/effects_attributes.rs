@@ -411,8 +411,28 @@ fn attributes_after_a_bodyless_signature_start_the_next_declaration() {
             "misplaced_c_layout_attribute",
         ),
     ] {
-        let after_bodyless = rejects(&format!("{ext}{tail}"), code, kind);
-        let after_bodied = rejects(&format!("{body_def}{tail}"), code, kind);
+        let s1 = format!("{ext}{tail}");
+        let s2 = format!("{body_def}{tail}");
+        let after_bodyless = tsuzuri::analyze_modules(&[("Main.tz", &s1)]).expect_err(&s1);
+        let after_bodied = tsuzuri::analyze_modules(&[("Main.tz", &s2)]).expect_err(&s2);
+        assert_eq!(
+            after_bodyless.code, code,
+            "{s1}\n{}",
+            after_bodyless.message
+        );
+        assert_eq!(
+            after_bodyless.kind,
+            Some(kind),
+            "{s1}\n{}",
+            after_bodyless.message
+        );
+        assert_eq!(after_bodied.code, code, "{s2}\n{}", after_bodied.message);
+        assert_eq!(
+            after_bodied.kind,
+            Some(kind),
+            "{s2}\n{}",
+            after_bodied.message
+        );
         assert_eq!(after_bodyless.message, after_bodied.message);
     }
 

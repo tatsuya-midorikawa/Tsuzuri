@@ -1136,6 +1136,43 @@ fn open_type(ty: &Type, types: &TypeContext<'_>) -> bool {
     })
 }
 
+/// Whether `read_host_record` can emit a `TrapKind::NullHandle` guard when loading `ty` (`llvm_abi`).
+fn host_record_read_can_trap(ty: &Type, types: &TypeContext<'_>) -> bool {
+    match ty {
+        Type::Record(id, _) => types.records[*id]
+            .fields
+            .iter()
+            .any(|(_, field)| match field {
+                Type::Handle(..) => true,
+                Type::Record(..) => host_record_read_can_trap(field, types),
+                Type::FixedArray(elem, _) => {
+                    matches!(elem.as_ref(), Type::Handle(..))
+                        || host_record_read_can_trap(elem, types)
+                }
+                _ => false,
+            }),
+        _ => false,
+    }
+}
+
+fn inline_import_can_trap(
+    import: &crate::check::HostImport,
+    result_ty: &Type,
+    types: &TypeContext<'_>,
+) -> bool {
+    let Some(data) = &import.data else {
+        return true;
+    };
+    if !import.weak {
+        return true;
+    }
+    match data.access {
+        crate::syntax::DataAccess::Address => false,
+        crate::syntax::DataAccess::Read => crate::abi::std_maybe_payload(result_ty, types)
+            .is_some_and(|payload| host_record_read_can_trap(payload, types)),
+    }
+}
+
 struct Scan<'s, 'a> {
     state: &'s mut State<'a>,
     function: &'a CheckedFunction,
@@ -1325,7 +1362,8 @@ impl<'s, 'a> Scan<'s, 'a> {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind {
             if import.lowers_inline() {
-                if import.data.is_none() || !import.weak {
+                let types = self.state.module.types();
+                if inline_import_can_trap(import, &function.body.ty, &types) {
                     self.source(
                         Effect::Trap,
                         span,
@@ -1843,14 +1881,19 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
             K::HostCall(import, _) => {
                 if import.lowers_inline() {
-                    // W24 / M06: an extern view or data symbol does not allocate, deep-copy, or diverge,
-                    // so it satisfies `@no_alloc`, `@no_copy`, and `@terminates` automatically, while
-                    // remaining an `extern` and `trap` source for `pure` and `@no_trap`.
+                    let can_trap = inline_import_can_trap(import, &expression.ty, types);
+                    // W24 / M06 / M17: an extern view or data symbol does not allocate, deep-copy,
+                    // or diverge; a weak data symbol without non-nullable handle fields in a record
+                    // payload also cannot trap.
                     let compiler_vouched = self.state.options.trusted.is_some_and(|bit| {
-                        let guaranteed = crate::syntax::trusted_property_bit("no_alloc")
+                        let mut guaranteed = crate::syntax::trusted_property_bit("no_alloc")
                             .unwrap_or(0)
                             | crate::syntax::trusted_property_bit("no_copy").unwrap_or(0)
                             | crate::syntax::trusted_property_bit("terminates").unwrap_or(0);
+                        if !can_trap {
+                            guaranteed |=
+                                crate::syntax::trusted_property_bit("no_trap").unwrap_or(0);
+                        }
                         bit & guaranteed != 0
                     });
                     if !compiler_vouched {
@@ -1864,7 +1907,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                             },
                         );
                     }
-                    if import.data.is_none() || !import.weak {
+                    if can_trap {
                         self.source(
                             Effect::Trap,
                             span,
@@ -3486,18 +3529,29 @@ pub fn validate(
 /// compiler itself guarantees for an `extern view`: `no_alloc`, `no_copy`, `terminates`), and
 /// which forbid `extern`: each needs its own summary (E15, D14, W24).
 pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
-    let has_view = module.functions.iter().any(|function| {
-        matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if import.lowers_inline())
-    });
+    let types = module.types();
+    let mut has_inline = false;
+    let mut has_nontrapping_inline = false;
+    for function in &module.functions {
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind
+            && import.lowers_inline()
+        {
+            has_inline = true;
+            if !inline_import_can_trap(import, &function.body.ty, &types) {
+                has_nontrapping_inline = true;
+            }
+        }
+    }
     EffectKind::ALL
         .into_iter()
         .filter(|kind| {
             forbidden(*kind).contains(Effect::Extern)
-                && ((has_view
+                && ((has_inline
                     && matches!(
                         kind,
                         EffectKind::NoAlloc | EffectKind::NoCopy | EffectKind::Terminates
                     ))
+                    || (has_nontrapping_inline && *kind == EffectKind::NoTrap)
                     || module.functions.iter().any(|function| {
                         function
                             .origin

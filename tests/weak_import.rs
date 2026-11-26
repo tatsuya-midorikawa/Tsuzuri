@@ -198,6 +198,18 @@ fn weak_effects_trust_and_audit() {
     );
     assert_eq!(no_trap_caller.code, "E1031");
 
+    // Weak scalar/nullable-handle data imports are non-trapping (`Maybe.None` when absent),
+    // whereas a `@c_layout` record containing a non-nullable handle can still trap on a null field.
+    analyze(
+        "extern type copy H\n@c_layout\nrecord Safe { x: i64, h: Maybe<H> }\n@trusted @weak\nextern \"g_safe\" view def read_safe :: unit -> Maybe<Safe>\n@no_trap\ndef ok_read :: unit -> Maybe<Safe> = \\() -> read_safe ()\n0\n",
+    )
+    .expect("weak data read without non-nullable handle field does not trap");
+
+    let weak_record_handle_trap = check_err(
+        "extern type copy H\n@c_layout\nrecord Trapping { h: H }\n@trusted @weak\nextern \"g_trap\" view def read_trapping :: unit -> Maybe<Trapping>\n@no_trap\ndef bad_read :: unit -> Maybe<Trapping> = \\() -> read_trapping ()\n0\n",
+    );
+    assert_eq!(weak_record_handle_trap.code, "E1031");
+
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
