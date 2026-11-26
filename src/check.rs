@@ -15191,7 +15191,6 @@ impl<'a> Checker<'a> {
                 self.soft_hint_class = soft;
                 let then_branch = self.expression(then_branch, expected)?;
                 let branch_expected = self.sibling_hint(&then_branch.ty, expected);
-                self.soft_hint_class = soft;
                 let else_branch = self.expression(else_branch, branch_expected)?;
                 let ty = then_branch.ty.clone();
                 (

@@ -328,6 +328,7 @@ fn resolution_literal_hints_soft_hints_and_ambiguity() {
          let s7 = t + { Tensor.of_array [2] [1.0, 2.0] }\n\
          let s8 = t * (match 3 with | 3 -> Tensor.full 2 [2] | _ -> Tensor.full 3 [2])\n\
          let s9 = t + (if b then Tensor.view (ref t) else Tensor.view (ref u))\n\
+         let s10 = t + (match b with | true -> Tensor.view (ref t) | false -> Tensor.view (ref u))\n\
          let nested = t + mk_t (g_int 2)\n\
          let vv = V { x: 1.5 }\n\
          let v1 = vv * (if b then V { x: 2 } else V { x: 3 })\n\
@@ -337,7 +338,23 @@ fn resolution_literal_hints_soft_hints_and_ambiguity() {
          let p25 = k * (if b then 1 else 2)\n\
          let big = 10I\n\
          let p22 = (big * 2) + (3 * big)\n\
-         s1[0] + s2[0] + s3[0] + s4[0] + (s5[0] as f64) + s6[0] + s7[0] + s8[0] + s9[0] + nested[0] + v1.x + v2.x + v3.x + p13 + p25 + (if p22 == 50I then 1.0 else 0.0)\n",
+         s1[0] + s2[0] + s3[0] + s4[0] + (s5[0] as f64) + s6[0] + s7[0] + s8[0] + s9[0] + s10[0] + nested[0] + v1.x + v2.x + v3.x + p13 + p25 + (if p22 == 50I then 1.0 else 0.0)\n",
+    );
+
+    // Mismatched branch/arm types inside an operator operand must still be rejected with E1003
+    check_err(
+        "let b = true\n\
+         let t: Tensor<f64> = Tensor.of_array [1] [2.0]\n\
+         t * (if b then 2.0 else Tensor.full 3.0 [1])\n",
+        "E1003",
+        "type_mismatch",
+    );
+    check_err(
+        "let b = true\n\
+         let t: Tensor<f64> = Tensor.of_array [1] [2.0]\n\
+         t * (match b with | true -> 2.0 | false -> Tensor.full 3.0 [1])\n",
+        "E1003",
+        "type_mismatch",
     );
 }
 

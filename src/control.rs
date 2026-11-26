@@ -865,7 +865,7 @@ impl Checker<'_> {
         let subject = self.match_subject(&matched, span);
         let mut checked = Vec::new();
         let mut result = expected.cloned();
-        for arm in arms {
+        for (arm_index, arm) in arms.iter().enumerate() {
             self.scopes.push(BTreeMap::new());
             let (alternatives, pattern) =
                 self.pattern_alternatives(&arm.pattern, local_value(&subject))?;
@@ -1010,7 +1010,9 @@ impl Checker<'_> {
                 .as_ref()
                 .map(|guard| self.expression(guard, Some(&Type::Bool)))
                 .transpose()?;
-            self.soft_hint_class = soft;
+            if arm_index == 0 {
+                self.soft_hint_class = soft;
+            }
             let mut body = self.expression(&arm.body, result.as_ref())?;
             if !result.as_ref().is_some_and(Type::contains_error) {
                 result = self.sibling_hint(&body.ty, result.as_ref()).cloned();
