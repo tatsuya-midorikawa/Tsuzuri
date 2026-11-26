@@ -48,7 +48,13 @@ impl FunctionEmitter<'_, '_> {
             }
             crate::syntax::ViewDirection::Write => {
                 let address = self.expression(&arguments[0]);
-                let source_ref = self.expression(&arguments[1]);
+                // M21: a borrowed temporary lives in a slot until the record is written, as in `host_call`.
+                let mut operands = Vec::new();
+                let source_ref = if let TypedExprKind::BorrowOperand(operand) = &arguments[1].kind {
+                    self.operand_borrow(&arguments[1], operand, &mut operands)
+                } else {
+                    self.expression(&arguments[1])
+                };
                 let Type::Reference(record_ty, false) = &arguments[1].ty else {
                     unreachable!("validated extern view write parameter")
                 };
@@ -57,6 +63,7 @@ impl FunctionEmitter<'_, '_> {
                 self.host_pointer(&ptr, &size.to_string(), align, false);
                 let value = self.value(format!("load {}, ptr {source_ref}", self.ty(record_ty)));
                 self.write_host_record(record_ty, &value, &ptr);
+                self.release_operands(operands);
                 "0".into()
             }
         }
