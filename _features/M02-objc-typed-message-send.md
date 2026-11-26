@@ -307,7 +307,7 @@ declare ptr @objc_msgSend(ptr, ptr, ...) local_unnamed_addr #3   ; #3 = { nonlaz
 - WASM の検査は `validate_wasm_externs`（`src/llvm.rs:4165` 〜）、kind `abi_native_only`（`src/diagnostic_kinds.rs:286`）。`abi_record_by_value_target`・`abi_apple_only` は登録簿にない。
 - `--backend fast`（既定は `llvm`）の翻訳器は、可変長と宣言された関数の呼び出しを拒む（`src/backend/call.rs:102-110`）。可変長引数は言語の外（`docs/language.md:446`）。
 - `ZString.literal` の引数の規則は `validate_zstring_literals`（`src/check.rs:10619` 〜）、kind `zstring_literal_argument`（`E1005`）。
-- [W36](W36-c-layout-by-value.md) は todo。人間が求めない限り Phase 1 だけ（W36:7）、Phase 2 が AAPCS64 の macOS を含み（W36:19・161-164。macOS は `alignstack` なし）、Phase の外の macOS は `E1008` `abi_record_by_value_target`（W36:171）、`llvm_byvalue::{ByValue, classify, classify_call}` と `FunctionEmitter::{by_value_slot, by_value_to_abi, by_value_from_abi}` を提供する（W36:236）。
+- [W36](W36-c-layout-by-value.md) は todo。人間が求めない限り Phase 1 だけ（W36:7）、Phase 2 が AAPCS64 の macOS を含み（W36:19・161-164。macOS は `alignstack` なし）、Phase の外の macOS は `E1008` `abi_record_by_value_target`（W36:171）、`llvm_byvalue::{ByValue, classify, classify_call}` と `FunctionEmitter::{by_value_slot, by_value_to_abi, by_value_from_abi}` を提供する（W36:236）。D-67 の分岐 4 で、人間は W36 を Phase 2 まで実装することを求めた（2026-11-26）。停止条件 S1 の選択（A・B）は未決で、W21 の出荷により W36 の Phase 1 にも当たる。
 
 ## 変えてはいけない意味
 

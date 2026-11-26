@@ -9,7 +9,7 @@
 | 後続 | [M13](M13-desktop-os-services-package.md)（弱い後続: [M14](M14-tls-http-packages.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 2（宣言はすべて手書き。bindgen は AppKit のヘッダーで E2002、objc/runtime.h でも 114 件を省く）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | D-67 の分岐 1（X′）と分岐 5（配布の形）は承認済み（2026-11-26。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)）。W27 の D3・D9 は W27 自身の決定として残る。分岐 1・分岐 5 は決定事項の D7・D8 に写した（承認済み）。要承認: D-55（`tsuzuri bindgen --objc`）。生成した宣言の `@trusted`（W27 と共有する決定）。決定事項 D2・D6 が要承認。D-55 の登録は決定事項の D9 に写した（要承認）。D14（`@optional` の字句の走査。停止条件 S1 の例外）も要承認で、承認までプロトコルは `// skipped` にする |
+| 承認 | D-67 の分岐 1（X′）と分岐 5（配布の形）は承認済み（2026-11-26。[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22)）。W27 の D3・D9 は W27 自身の決定として残る。分岐 1 は決定事項の D7 に写した（承認済み）。分岐 5 は D8 に写した（分岐 5 の部分は承認済み。`namespace = "Apple"`、中身を核の宣言に絞ること、リポジトリの名前・置き場・ライセンスは要承認）。要承認: D-55（`tsuzuri bindgen --objc`）。生成した宣言の `@trusted`（W27 と共有する決定）。決定事項 D2・D6 が要承認。D-55 の登録は決定事項の D9 に写した（要承認）。D14（`@optional` の字句の走査。停止条件 S1 の例外）も要承認で、承認までプロトコルは `// skipped` にする |
 | 改善する劣位 | Swift（ClangImporter が SDK のヘッダーを直接読む）・Rust（`objc2` の生成済みの framework の crate）比: AppKit・Foundation の宣言を利用者が手で書くしかなく、セレクター・型・nullability・所有・スレッドの性質の誤りが宣言の数だけ入りうる。今の `tsuzuri bindgen` は AppKit のヘッダーで `E2002` になり、`objc/runtime.h` でも大半を省く |
 | 手本にする既存実装 | `src/bindgen.rs`（`MARKER`・`TRUSTED_NOTE`・`MAX_AST_BYTES`・`HARMLESS_ATTRIBUTES`・位置の `Tracker`・属性の範囲の文字を読む `nonnull_attr_indices`・名前の関数）、`src/bindgen_driver.rs`（clang の起動、`capture`、`publish`・`protect_bindgen_output`）、`src/main.rs` の `bindgen_command`、`tests/bindgen.rs`（手で書いた JSON の AST で clang を起動しない検査）・`tests/bindgen.mjs`、[W27](W27-win32-package-from-winmd.md)（`--api` の一覧、閉包、名前空間ごとのモジュール、公式パッケージ、信頼の印） |
 | 主な影響ファイル | `src/bindgen_objc.rs`（新規。模型・閉包・写像・書き出し）、`src/bindgen_objc_input.rs`（新規。clang の JSON の流し読みと symbol graph の読み取り）、`src/bindgen.rs`（部品を `pub(crate)` にする。出力は変えない）、`src/bindgen_driver.rs`、`src/main.rs`、`src/lib.rs`、`src/diagnostic_kinds.rs`、`tests/bindgen_objc.rs`（新規）、`tests/bindgen_objc.mjs`（新規。macOS と SDK があるときだけ動く）、`tests/fixtures/bindgen_objc/`（新規。`Fixture.h`・`api.txt`・期待の出力）、`.github/workflows/targets.yml`、`docs/language.md`、`docs/architecture.md`、`README.md`、`_tsuzuri/language-reference/compiler/native-interop.md`、`_tsuzuri/language-reference/compiler/option.md`、`_tsuzuri/language-reference/compiler/diagnostics.md`。Phase 2 はこのリポジトリの外の公式パッケージのリポジトリ。Phase 3: `src/package.rs`・`src/driver.rs`・`src/capabilities.rs`・`tests/audit.rs`・`tests/packages.rs`（W27 の Phase 3 と共有） |
@@ -74,7 +74,7 @@ M01・M02 がそろうと、Objective-C のクラスとメッセージ送信を�
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。
-- **承認が記録されるまで、該当する Phase に着手しない**（GUIDE §0 の 1）。D7（分岐 1 が X′）と D8（分岐 5）は承認済み（2026-11-26）。D2（名前）の承認まで手順 4、D9（D-55 の登録）の承認まで手順 6 に着手しない。D6 と W27 の D5 の承認まで Phase 3 に着手しない。D14 の承認までは、M03 があってもプロトコルを `// skipped`（`cannot tell @optional members`）にし、採用したプロトコルのメンバーをクラスに混ぜない（Phase 1 はこの形で完了できる）。
+- **承認が記録されるまで、該当する Phase に着手しない**（GUIDE §0 の 1）。D7（分岐 1 が X′）と、D8 のうち分岐 5 の部分は承認済み（2026-11-26）。D8 の残り（`namespace = "Apple"`、中身を核の宣言に絞ること、リポジトリの名前・置き場・ライセンス）の承認まで Phase 2 に着手しない。D2（名前）の承認まで手順 4、D9（D-55 の登録）の承認まで手順 6 に着手しない。D6 と W27 の D5 の承認まで Phase 3 に着手しない。D14 の承認までは、M03 があってもプロトコルを `// skipped`（`cannot tell @optional members`）にし、採用したプロトコルのメンバーをクラスに混ぜない（Phase 1 はこの形で完了できる）。
 - Phase 1: M01・M02 の Phase 1・M06 の Phase 1・M20 の Phase 2・W17 が done。確認: `grep -nE "^\| \[?(M01|M02|M06|M20|W17)\b" _features/README.md`。弱い依存（M03・M04・M05・M09 の Phase 2・M17・M23 の Phase 1・W36 の Phase 2）は、入っていればその写像の行を有効にする。
 - P2 のチケットは独立レビューを受けていない。着手の前に、その時点のコードと台帳でレビューし、指摘を反映してから実装する（GUIDE §0 の 2）。特に M01・M02 が出荷した綴りと仕様 5 の表を照らし合わせる。
 - **Apple の SDK の利用条件の確認（Phase 2 の前提。Phase 1 の着手前に記録する）**: Xcode と SDK の利用許諾を読み、(a) 利用者の手元の SDK のヘッダーを読むこと、(b) 生成した `.tz` を公式パッケージとして再配布すること、(c) Tsuzuri の Apache-2.0 との組み合わせ、(d) 表示の義務を、このチケットの末尾に記録する。**起票の時点では確かめていない**（未確認）。
@@ -218,7 +218,7 @@ c:objc(cs)NSComboButton  objective-c.class  [{"domain": "macos", "introduced": {
 | Phase | 内容 | 規模 | 前提 |
 | --- | --- | --- | --- |
 | 1 | `tsuzuri bindgen --objc`。clang の 2 回の起動と流し読み、一覧と閉包、framework ごとのモジュール、写像、スレッドの性質・所有・availability、`// skipped`、決定性と保護 | L | M01・M02 の Phase 1・M06 の Phase 1・M20 の Phase 2・W17。D2・D9（D7 は承認済み） |
-| 2 | 公式の git パッケージ `apple`（核の一覧、生成の CI、再生成の手順） | M | 利用条件の記録（D8 は承認済み） |
+| 2 | 公式の git パッケージ `apple`（核の一覧、生成の CI、再生成の手順） | M | 利用条件の記録と D8 の残りの承認（分岐 5 の部分は承認済み） |
 | 3 | ルートが依存の `extern` を信頼する印。W27 の Phase 3 と同じもの | S | D6・W27 の D5 |
 
 ### Phase 1: 1. コマンド
@@ -452,7 +452,7 @@ extern class NSWindow : NSResponder {
 - [M02](M02-objc-typed-message-send.md): 本体 `{ member }`、`[class] ["selector"] name :: …`、`Self`・`Maybe<Self>`、`extern category`、メンバーの `bool` と `ref mut bool`、可変長のセレクターの拒否、`ObjC.literal`。Phase 2 の `@c_layout` の値渡し。
 - [M06](M06-extern-data-symbols-and-zutf8string.md): Phase 1 の `view def`・`address def`。Phase 2 の `ref ZUtf8String`（無ければ `const char *` を省く）。
 - [M20](M20-macos-framework-link-inputs.md): Phase 2 の `@link(framework = "...")`（`extern class` とデータシンボルにも。git のパッケージにも書ける）。`-F` の意味。[W17](W17-link-attribute-dllimport.md): `@link("objc")`。
-- 弱い依存: [M03](M03-objc-classes-defined-in-tsuzuri.md) の `extern protocol P [: Q…]`・`optional`・`ref P`・Apple のクラスの `with P, Q`（宣言した適合）、[M04](M04-objc-blocks.md) の `ObjC.Block<F>`、[M05](M05-objc-exception-boundary.md) の `Result<R, ObjC.Exception>`、[M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 の `extern class main`、[M17](M17-macos-min-version-and-weak-import.md) の `@weak`、[M23](M23-objc-out-parameters-and-weak-references.md) の Phase 1 の `ref mut Maybe<C>`（物体の出力引数）と skip の理由の文、[W36](W36-c-layout-by-value.md) の Phase 2（C の関数の `CGRect` など）、[W27](W27-win32-package-from-winmd.md) の一覧の書式・共有の kind・Phase 3。W27 の配布の決定（W27 の D3・D9）は W27 自身の決定として残り、M07 の配布の形は D8（分岐 5。承認済み）で決まった。
+- 弱い依存: [M03](M03-objc-classes-defined-in-tsuzuri.md) の `extern protocol P [: Q…]`・`optional`・`ref P`・Apple のクラスの `with P, Q`（宣言した適合）、[M04](M04-objc-blocks.md) の `ObjC.Block<F>`、[M05](M05-objc-exception-boundary.md) の `Result<R, ObjC.Exception>`、[M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 の `extern class main`、[M17](M17-macos-min-version-and-weak-import.md) の `@weak`、[M23](M23-objc-out-parameters-and-weak-references.md) の Phase 1 の `ref mut Maybe<C>`（物体の出力引数）と skip の理由の文、[W36](W36-c-layout-by-value.md) の Phase 2（C の関数の `CGRect` など）、[W27](W27-win32-package-from-winmd.md) の一覧の書式・共有の kind・Phase 3。W27 の配布の決定（W27 の D3・D9）は W27 自身の決定として残り、std の外の公式の git パッケージにすることは D8 のうち分岐 5 の部分で決まった（承認済み）。D8 の残りは要承認。
 - done: W18 の `extern type copy`、W21 の `@c_layout` と入れ子の record、W14 の同じ symbol の複数の宣言。
 
 ## 他チケットへ提供するインターフェース
@@ -477,7 +477,7 @@ extern class NSWindow : NSResponder {
 
 ### Phase 2
 
-1. **P2-1**: 核の一覧を下書きし、生成物を依存にした hello の `check` の時間を測る（S3）。D8 は承認済み（2026-11-26）。リポジトリは、利用条件の記録の後に名前・置き場・ライセンスを決めてから作る（D8）。
+1. **P2-1**（D8 の残りの承認の後。D8 のうち分岐 5（std の外の公式の git パッケージにすること）は承認済み（2026-11-26））: 核の一覧を下書きし、生成物を依存にした hello の `check` の時間を測る（S3。D8 の分け方を変えるなら報告する）。リポジトリは利用条件の記録の後に、承認された名前・置き場・ライセンスで作る（D8）。
 2. **P2-2**: リポジトリの CI（macOS、Xcode と `tsuzuri` の版の固定、生成、`git diff --exit-code`、headless のアプリ）。
 3. **P2-3**: README（出どころ、利用条件の表示、再生成の手順、使い方）と、このリポジトリの言語リファレンスの使い方の節。
 
@@ -566,7 +566,7 @@ extern class NSWindow : NSResponder {
 - **D5（既定案）availability**: 決定: 仕様 6（symbol だけ `@weak`、メンバーは注記、使えないものは省く）。採らない案: 新しいメンバーを省く。理由: `@weak` は symbol にだけ意味がある。省くと新しい OS だけを対象にする利用者が手で書くことになる。
 - **D6（要承認。W27 と共有）`@trusted`**: 決定（推奨）: 生成した宣言に `@trusted` を付けず、`TRUSTED_NOTE` で確認を促し、`W1010` は Phase 3 のルートの印（W27 の D5）で消す。採らない案: 生成器が付ける、生成物の中の印で消す。理由: `@trusted` は人が確かめた印（E15）で、SDK は寿命・スレッド・例外の契約のすべてを表さない。ファイルの中の印は自己申告になる。承認前は Phase 3 に着手しない。
 - **D7（承認済み（2026-11-26。D-67 の分岐 1））D-67 の分岐 1**: 決定: X′（`extern class`・`extern category`・`extern protocol`）を前提にする。選ばれなかった案での扱いは、Y′ ならこのチケットを閉じ、Z′ なら `objc_msgSend` の型付きの宣言を生成する形に計画し直す、だった。
-- **D8（承認済み（2026-11-26。D-67 の分岐 5））D-67 の分岐 5（配布の形）**: 決定: std の外の公式の git パッケージ `apple`（`namespace = "Apple"`）で、中身は核の宣言だけ。リポジトリの名前・置き場・ライセンスは利用条件の記録の後に決める。採らない案: SDK の全体を 1 つのパッケージにする（依存の全モジュールを毎回型検査する。現状 12）、std にする（非目標）。起票のときは W27 の D3・D9 と共有する決定としたが、承認では W27 の D3・D9 は W27 自身の決定として残った（W27 は変えない）。
+- **D8（要承認。分岐 5 の部分（std の外の公式の git パッケージにすること）は承認済み（2026-11-26））D-67 の分岐 5（配布の形）**: 決定（推奨）: std の外の公式の git パッケージ `apple`（`namespace = "Apple"`）で、中身は核の宣言だけ。リポジトリの名前・置き場・ライセンスは利用条件の記録の後に承認で決める。採らない案: SDK の全体を 1 つのパッケージにする（依存の全モジュールを毎回型検査する。現状 12）、std にする（非目標）。`namespace = "Apple"`、中身を核の宣言に絞ること、リポジトリの名前・置き場・ライセンスは要承認のまま（承認前は Phase 2 に着手しない）。起票のときは W27 の D3・D9 と共有する決定としたが、承認では W27 の D3・D9 は W27 自身の決定として残った（W27 は変えない）。
 - **D9（要承認）D-55 の登録**: 決定: サブコマンドの形 `tsuzuri bindgen --objc` と引数 `--framework`・`-F`（M20 と同じ綴りと意味）・`--api`（W27 と共有）・`--min-version`、kind 案 `bindgen_unknown_framework`・`bindgen_apple_sdk_missing`（と W27 と共有の `bindgen_unknown_api`・`bindgen_api_limit`）。採らない案: 別のサブコマンド（`tsuzuri objc-bindgen`）、Tsuzuri が `SDKROOT` を読む（`xcrun` が読む）。理由: 既存の `bindgen` の約束（`MARKER`・`TRUSTED_NOTE`・`// skipped`・`W2002`・保護）をそのまま使える。承認前は手順 6 に着手しない。
 - **D10（既定案）一覧の書式**: 決定: 仕様 3 の表（W27 の書式に `-[Class sel]`・`+[Class sel]`・`Class(Category)`・`@protocol Name`・`catch ` を足す）。採らない案: クラスの名前だけ（メンバーを選べない）、独自のセレクターの綴り。理由: `mangledName` は JSON にそのままあり、ObjC の文書と同じ綴り。`NSObject` はクラスとプロトコルの両方の名前なので `@protocol` で分ける。
 - **D11（既定案）閉包**: 決定: 仕様 3（一覧のものは本体ごと、参照するクラスとプロトコルは本体なし、基底の連鎖は根まで）。採らない案: 参照するクラスも本体ごと（AppKit のほぼ全体になる）。理由: M01 の本体のない宣言で型の参照は足りる。依存の全モジュールの型検査の費用を抑える。
