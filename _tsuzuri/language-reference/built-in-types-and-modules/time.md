@@ -251,7 +251,7 @@ Go の `time.Time`（壁時計の時刻・書式・時差）に当たる型は�
 
 既定の wasm32 で `monotonic_ns`・`unix_ns`・`sleep_ms` に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では WASI の時計とポーリングに下がります。`Time.sleep` は、tzroutine を起動しない WebAssembly のプログラムでは `sleep_ms` と同じ待ち（ミリ秒に切り上げ、`--wasm-host` が必要）です。`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のスケジューラーのタイマーを使うので、WebAssembly では tzroutine と同じく `--wasm-feature jspi` の wasm32 で動き（ないと `E2000`）、`--trap-mode return` とは組み合わせられません（`E2000`）。`--wasm-feature jspi` で tzroutine を起動するプログラムでは、`Time.sleep` もスケジューラーのタイマーで、その tzroutine だけを待たせます。期限はグルーの `setTimeout` が知らせます（[JSPI の tzroutine](../compiler/webassembly.md#jspi-の-tzroutine)）。`Time.sleep` もスケジューラーで待つので、ネイティブの `--trap-mode return` とは組み合わせられません（`E2000`。メッセージは `Channel` と同期の型と同じ）。
 
-Windows のネイティブビルドは、`monotonic_ns`・`unix_ns`・`sleep_ms` の OS API に到達すると `E2002` で失敗します。`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のランタイムで動くので、Windows でも使えます（時計は `QueryPerformanceCounter`）。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、`monotonic_ns` は `QueryPerformanceCounter`、`unix_ns` は `GetSystemTimePreciseAsFileTime` を読み、`sleep_ms` は期限まで `Sleep` を繰り返します（tzroutine の中では、ほかの OS と同じく、その tzroutine だけを待たせます）。`Time.sleep`・`Time.after`・`Time.tick`・`Time.after_func`・`Timer`・`Ticker` は tzroutine のランタイムで動き、時計は `QueryPerformanceCounter` です。
 
 tzroutine の本体の中でも、`let!`・`do!` でこれらのアクションを実行できます（[tzroutine 式](../async-tasks-and-lazy/tzroutine.md)）。
 

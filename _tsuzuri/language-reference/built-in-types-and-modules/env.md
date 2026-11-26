@@ -85,9 +85,9 @@ true
 
 ## 対応環境
 
-既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、ホストが渡した引数を受け取ります。`current_dir` は最初の preopen ディレクトリの名前です。引数を渡さない WASM 出力では、`main` の引数も `Env.args` も空です。
+既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、ホストが渡した引数を受け取ります。`current_dir` は最初の preopen ディレクトリの名前です。引数を渡さない WASM 出力では、`main` の引数も `Env.args` も空です。既定の wasm32 では、本ページの実行例をそのまま実行することはできません。
 
-Windows のネイティブビルドは、OS API に到達すると `E2002` で失敗します。これらの環境では本ページの実行例をそのまま実行することはできません。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、3 つとも Win32 の API で動きます。`Env.args` は `GetCommandLineW` のコマンドラインを、`main` の引数と同じ規則（[引数と main](#引数と-main)）で分けます。`Env.var` の名前の大文字と小文字を区別しないのは OS の規則です。`Env.current_dir ()` は `C:\work` のように `\` で区切ったパスを返します。`Os.Error.code` は Win32 のエラー番号です（[Os](./os.md#wasm-と-windows)）。
 
 ## まとめ
 

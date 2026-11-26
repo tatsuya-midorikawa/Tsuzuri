@@ -123,7 +123,7 @@ match Random.pcg_next_u32 state with
 
 `HashMap.randomized` のように OS の種を使う API も、同じ理由で既定の wasm32 では拒否されます。種を自分で渡す版は拒否されません。
 
-Windows のネイティブビルドは、OS の乱数 API に到達すると `E2002` で失敗します。一方、`Pcg` のみを使用するプログラムはこの制限を受けません。
+Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、`bytes` と `next_u64` は `BCryptGenRandom` から読みます。失敗は `Other` で、`code` は NTSTATUS の値をビットのまま `i32` にしたものです。
 
 ## まとめ
 

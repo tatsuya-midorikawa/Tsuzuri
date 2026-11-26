@@ -134,7 +134,7 @@ flowchart TD
 
 ## 対応環境
 
-既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、preopen されたディレクトリを起点に解決します。Windows のネイティブビルドは、OS API に到達すると `E2002` です。これらの環境では本ページの実行例をそのまま実行することはできません。
+既定の wasm32 でこれらの関数に到達すると、ビルドは `E2000` で失敗します。`--wasm-host wasi` では、preopen されたディレクトリを起点に解決します。既定の wasm32 では、本ページの実行例をそのまま実行することはできません。Windows のネイティブビルド（x64・Arm64、MSVC と MinGW）では、Win32 の API で動き、`Os.Error.code` は Win32 のエラー番号です（[Os](./os.md#wasm-と-windows)）。
 
 ## まとめ
 

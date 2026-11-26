@@ -80,11 +80,11 @@ tsuzuri build lib --target aarch64-pc-windows-msvc --emit object -o lib.obj
 | --- | --- | --- | --- | --- | --- | --- |
 | macOS Arm64 | `aarch64-apple-darwin` | なし | `.o` | `.dylib` | 受け付ける | 受け付ける |
 | Linux x64・Arm64（glibc、musl） | `*-unknown-linux-*` | なし | `.o` | `.so` | 受け付ける | 受け付ける |
-| Windows x64・Arm64（MinGW、MSVC） | `*-pc-windows-*` | `.exe` | `.obj` | なし（`E2000`） | `E2002` | 受け付ける |
+| Windows x64・Arm64（MinGW、MSVC） | `*-pc-windows-*` | `.exe` | `.obj` | なし（`E2000`） | 受け付ける | 受け付ける |
 
 [tzroutine](../async-tasks-and-lazy/tzroutine.md) は、表のすべての native の target（aarch64・x86-64）で動き、Windows では Fiber で実行します。WebAssembly の target では、tzroutine を起動するプログラムは `--wasm-feature jspi` の wasm32 で、生成したグルーが 1 本のスレッドの上で交代に走らせます。`jspi` がないと `E2000` です（[Channel](../built-in-types-and-modules/channel.md) は、起動しないプログラムなら既定の WebAssembly で 1 本の実行として動きます）。
 
-「OS API」は `File`、`Dir`、`Env`、`Time`、`Random`、`Process` です。Windows 向けの実装がないため、これらに到達するビルドは、ランタイムの C をコンパイルする前に `E2002` です。対応するホストでも、すべての API が使えるという意味ではありません。
+「OS API」は `File`、`Dir`、`Env`、`Time`、`Random`、`Process` です。macOS と Linux は POSIX の API、Windows は Win32 の API（`src/runtime/os-windows.h`）で実装します。OS ごとの違い（Windows の `Os.Error.code` は Win32 のエラー番号、`Process.run` の探索と引用など）は [Os](../built-in-types-and-modules/os.md#wasm-と-windows) と各モジュールのページにあります。ランタイムを埋め込む Windows の COFF の `--emit object` は、OS API に限らず `E2002` です（[既知の制限](#既知の制限)）。
 
 `-g` のデバッグ情報は、Mach-O の実行ファイルと共有ライブラリの dSYM を `dsymutil` が、MSVC の実行ファイルの PDB を MSVC のリンカーが作るので、それぞれ macOS と Windows のホストだけです。ほかのホストで付けると `E2000` です。オブジェクトと LLVM IR の DWARF は、どの対応ホストでも出ます。MSVC の target は CodeView も付けます（同梱の `tsuzuri-clang` は MinGW でリンクするので DWARF だけです）。
 
@@ -156,13 +156,13 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 | `E2000` | ホストにない dsymutil か MSVC のリンカーが要る `-g` | `--debug-info for <triple> needs a macOS host: ...` / `... needs a Windows host: ...` |
 | `E2002` | Windows 以外で同梱ツールチェーンに MSVC を指定 | `the bundled toolchain links MinGW, not the MSVC runtime of <value>; build <arch>-pc-windows-gnu instead` |
 | `E2002` | 同梱ツールチェーンに sysroot を指定 | `the bundled toolchain brings its own C library and cannot use a sysroot; ...` |
-| `E2002` | Windows の OS API | `the File, Dir, Env, Time, Random, and Process operating-system APIs are not supported on Windows yet (G10); build on macOS or Linux` |
+| `E2002` | Windows の target で、tzroutine・CPU カーネル・IO・`Net`・OS API のランタイムを埋め込む `--emit object` | `Windows COFF objects with embedded tzroutine, CPU, IO, Net, or operating-system runtime are not supported; emit LLVM and link the runtime once, or build an executable` |
 
-引数の誤りは終了コード 2、ビルドや実行中の失敗は 1 です。実行ファイルの OS API の検査は、入口・`export def`・`Drop` から到達する関数だけが対象です。未使用の公開関数だけが Windows の OS API を使っても、実行ファイルには出さないので拒否しません。`--emit object` と `--emit llvm` は公開関数をすべて出すので拒否します（[出力とターゲット](option.md#出力とターゲット)）。
+引数の誤りは終了コード 2、ビルドや実行中の失敗は 1 です。実行ファイルに入るのは、入口・`export def`・`Drop` から到達する関数だけです。`--emit object` は公開関数をすべて出すので、未使用の公開関数だけが IO や OS API を使っても、Windows の COFF の object は上の `E2002` です（[出力とターゲット](option.md#出力とターゲット)）。
 
 ## 既知の制限
 
-- Windows の `--emit shared` と OS API は未対応です。MSVC の実行ファイルを Windows 以外のホストでリンクする方法は検証していません。
+- Windows の `--emit shared` は未対応です。MSVC の実行ファイルを Windows 以外のホストでリンクする方法は検証していません。
 - 同梱ツールチェーンは、Mach-O の `--emit object` で C ランタイムを含むものを作れません。Windows の COFF のランタイム埋め込み object も `E2002` です。ランタイムを要しない object と LLVM IR は作れます。
 - Windows の `--trap-info` のトラップ報告（`tsuzuri run` は既定で有効。`--trap-info` のない既定の `build` はどの OS でもトラップの文を出しません）と tzroutine ランタイムの報告は、OS の標準エラーハンドル（`STD_ERROR_HANDLE`）へ直接書きます。標準エラーが無い、または書き込みに失敗したときは、文全体を `OutputDebugStringW`（Visual Studio の出力ウィンドウ、WinDbg、DebugView）へ送ります。
 - プロファイル誘導最適化は、ビルド機の native の `exe` と `object`、wasm32 の module だけです。Windows と別の `--target TRIPLE` は `E2000`、同梱の launcher は `E2002` です。LLVM の Clang を指定してください（[プロファイル誘導最適化](option.md#プロファイル誘導最適化)）。
@@ -172,8 +172,8 @@ TSUZURI_RUNNER=qemu-aarch64 tsuzuri run app --target aarch64-unknown-linux-musl
 
 - `ci.yml` は、Linux x64 の Clippy と Rust テストに加え、Windows x64・Arm64、Linux Arm64、macOS Arm64 を型検査します。`tests/platforms.mjs` が配布物と CI マトリクスの対応環境を照合します。
 - `targets.yml` の 3 ホストは、ホストの実行、9 triple の object の形式と CPU、同梱ツールチェーンの 7 triple のリンク、Linux での qemu-user を検査します。
-- `windows.yml` の 2 ホストは、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、`i128` の除算と剰余、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
-- `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Net を検査します。Windows Arm64 のソースデバッグは対象外です。
+- `windows.yml` の 2 ホストは、LLVM 21.1.8、MSVC 14.44、Windows SDK 10.0.26100 で、native と名前を付けた MSVC の target の `-O0`・`-O3`、Win32 の tzroutine、OS API（`tests/os.mjs`）、`i128` の除算と剰余、UTF-8、ファイル保護、object の ABI、トラップ、WASM、Rust テストを検査します。Visual Studio は x64 が 2022、Arm64 が 2026 です。
+- `vscode.yml` の 5 job は、ホストに対応する CLI archive と VSIX、そのインストール、LSP、Net を検査します。Windows の 2 job は、同梱の MinGW で OS API（`tests/os.mjs`）も検査します。Windows Arm64 のソースデバッグは対象外です。
 
 ## まとめ
 
