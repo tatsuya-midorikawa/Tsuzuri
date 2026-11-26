@@ -5748,7 +5748,8 @@ fn sum_axis axis view = reduce_axis_core true slice_sum axis false view
 /// ```tsuzuri run=[1,%203]%20[5,%207,%209]
 /// let t = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
 /// let out = Tensor.sum_with (Tensor.AxisOptions { axis: 0, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def sum_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn sum_with opts view = reduce_axis_core true slice_sum opts.axis opts.keepdims view
@@ -5785,7 +5786,8 @@ fn sum_kahan_axis axis view = reduce_axis_core true slice_sum_kahan axis false v
 /// ```tsuzuri run=[1,%201]
 /// let t = Tensor.of_array [1, 4] [1.0, 1e100, 1.0, -1e100]
 /// let out = Tensor.sum_kahan_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// Array.copy (Tensor.shape (Tensor.view out))
+/// let ov = Tensor.view out
+/// Array.copy (Tensor.shape ov)
 /// ```
 def sum_kahan_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn sum_kahan_with opts view = reduce_axis_core true slice_sum_kahan opts.axis opts.keepdims view
@@ -5813,7 +5815,8 @@ fn prod_axis axis view = reduce_axis_core true slice_prod axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%2012]
 /// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
 /// let out = Tensor.prod_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def prod_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn prod_with opts view = reduce_axis_core true slice_prod opts.axis opts.keepdims view
@@ -5850,7 +5853,8 @@ fn mean_axis axis view = reduce_axis_core true slice_mean axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%205]
 /// let t = Tensor.of_array [2, 3] [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
 /// let out = Tensor.mean_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def mean_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn mean_with opts view = reduce_axis_core true slice_mean opts.axis opts.keepdims view
@@ -6008,7 +6012,8 @@ fn min_axis axis view = reduce_axis_core false slice_min axis false view
 /// ```tsuzuri run=[2,%201]%20[1,%202]
 /// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
 /// let out = Tensor.min_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def min_with :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn min_with opts view = reduce_axis_core false slice_min opts.axis opts.keepdims view
@@ -6045,7 +6050,8 @@ fn max_axis axis view = reduce_axis_core false slice_max axis false view
 /// ```tsuzuri run=[2,%201]%20[4,%203]
 /// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
 /// let out = Tensor.max_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def max_with :: (Numeric<'a>, Add<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn max_with opts view = reduce_axis_core false slice_max opts.axis opts.keepdims view
@@ -6082,7 +6088,8 @@ fn argmin_axis axis view = reduce_axis_core false slice_argmin axis false view
 /// ```tsuzuri run=[2,%201]%20[1,%201]
 /// let t = Tensor.of_array [2, 2] [4, 1, 3, 2]
 /// let out = Tensor.argmin_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def argmin_with :: (Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<i64>
 fn argmin_with opts view = reduce_axis_core false slice_argmin opts.axis opts.keepdims view
@@ -6110,7 +6117,8 @@ fn argmax_axis axis view = reduce_axis_core false slice_argmax axis false view
 /// ```tsuzuri run=[2,%201]%20[1,%200]
 /// let t = Tensor.of_array [2, 2] [1, 4, 5, 2]
 /// let out = Tensor.argmax_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def argmax_with :: (Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<i64>
 fn argmax_with opts view = reduce_axis_core false slice_argmax opts.axis opts.keepdims view
@@ -6138,7 +6146,8 @@ fn ptp_axis axis view = reduce_axis_core false (\s -> slice_max s - slice_min s)
 /// ```tsuzuri run=[2,%201]%20[3,%204]
 /// let t = Tensor.of_array [2, 2] [1, 4, 8, 4]
 /// let out = Tensor.ptp_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def ptp_with :: (Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn ptp_with opts view = reduce_axis_core false (\s -> slice_max s - slice_min s) opts.axis opts.keepdims view
@@ -6166,7 +6175,8 @@ fn all_axis axis view = reduce_axis_core true slice_all axis false view
 /// ```tsuzuri run=[2,%201]%20[true,%20false]
 /// let t = Tensor.of_array [2, 2] [true, true, true, false]
 /// let out = Tensor.all_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def all_with :: own AxisOptions -> ref View<bool> -> Tensor<bool>
 fn all_with opts view = reduce_axis_core true slice_all opts.axis opts.keepdims view
@@ -6203,7 +6213,8 @@ fn any_axis axis view = reduce_axis_core true slice_any axis false view
 /// ```tsuzuri run=[2,%201]%20[false,%20true]
 /// let t = Tensor.of_array [2, 2] [false, false, false, true]
 /// let out = Tensor.any_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def any_with :: own AxisOptions -> ref View<bool> -> Tensor<bool>
 fn any_with opts view = reduce_axis_core true slice_any opts.axis opts.keepdims view
@@ -6240,7 +6251,8 @@ fn count_nonzero_axis axis view = reduce_axis_core true slice_count_nonzero axis
 /// ```tsuzuri run=[2,%201]%20[1,%202]
 /// let t = Tensor.of_array [2, 3] [0, 2, 0, -5, 0, 1]
 /// let out = Tensor.count_nonzero_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def count_nonzero_with :: Numeric<'a> => own AxisOptions -> ref View<'a> -> Tensor<i64>
 fn count_nonzero_with opts view = reduce_axis_core true slice_count_nonzero opts.axis opts.keepdims view
@@ -6268,7 +6280,8 @@ fn nansum_axis axis view = reduce_axis_core true slice_nansum axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%207]
 /// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
 /// let out = Tensor.nansum_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nansum_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nansum_with opts view = reduce_axis_core true slice_nansum opts.axis opts.keepdims view
@@ -6296,7 +6309,8 @@ fn nanprod_axis axis view = reduce_axis_core true slice_nanprod axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%2012]
 /// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
 /// let out = Tensor.nanprod_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nanprod_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nanprod_with opts view = reduce_axis_core true slice_nanprod opts.axis opts.keepdims view
@@ -6324,7 +6338,8 @@ fn nanmean_axis axis view = reduce_axis_core true slice_nanmean axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%203.5]
 /// let t = Tensor.of_array [2, 2] [2.0, 0.0 / 0.0, 3.0, 4.0]
 /// let out = Tensor.nanmean_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nanmean_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nanmean_with opts view = reduce_axis_core true slice_nanmean opts.axis opts.keepdims view
@@ -6419,7 +6434,8 @@ fn nanmin_axis axis view = reduce_axis_core false slice_nanmin axis false view
 /// ```tsuzuri run=[2,%201]%20[5,%202]
 /// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
 /// let out = Tensor.nanmin_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nanmin_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nanmin_with opts view = reduce_axis_core false slice_nanmin opts.axis opts.keepdims view
@@ -6447,7 +6463,8 @@ fn nanmax_axis axis view = reduce_axis_core false slice_nanmax axis false view
 /// ```tsuzuri run=[2,%201]%20[5,%203]
 /// let t = Tensor.of_array [2, 2] [0.0 / 0.0, 5.0, 3.0, 2.0]
 /// let out = Tensor.nanmax_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nanmax_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nanmax_with opts view = reduce_axis_core false slice_nanmax opts.axis opts.keepdims view
@@ -6635,7 +6652,9 @@ fn gradient_1d view = gradient (1i64 as 'a) 0 view
 ///
 /// ```tsuzuri run=4
 /// let t = Tensor.of_array [3] [1.0, 2.0, 3.0]
-/// Tensor.sum (Tensor.view (Tensor.trapezoid 1.0 0 (Tensor.view t)))
+/// let out = Tensor.trapezoid 1.0 0 (Tensor.view t)
+/// let ov = Tensor.view out
+/// Tensor.sum ov
 /// ```
 def trapezoid :: Float<'a> => own 'a -> own i64 -> ref View<'a> -> Tensor<'a>
 fn trapezoid dx axis view =
@@ -6893,7 +6912,8 @@ fn median_axis axis view = reduce_axis_core false slice_median axis false view
 /// ```tsuzuri run=[2,%201]%20[2,%205]
 /// let t = Tensor.of_array [2, 3] [3.0, 1.0, 2.0, 6.0, 4.0, 5.0]
 /// let out = Tensor.median_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def median_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn median_with opts view = reduce_axis_core false slice_median opts.axis opts.keepdims view
@@ -6921,7 +6941,8 @@ fn nanmedian_axis axis view = reduce_axis_core true slice_nanmedian axis false v
 /// ```tsuzuri run=[2,%201]%20[2,%204]
 /// let t = Tensor.of_array [2, 3] [2.0, 0.0 / 0.0, 2.0, 3.0, 5.0, 0.0 / 0.0]
 /// let out = Tensor.nanmedian_with (Tensor.AxisOptions { axis: 1, keepdims: true }) (Tensor.view t)
-/// $"{Tensor.shape (Tensor.view out)} {Tensor.as_array out}"
+/// let ov = Tensor.view out
+/// $"{Tensor.shape ov} {Tensor.as_array out}"
 /// ```
 def nanmedian_with :: Float<'a> => own AxisOptions -> ref View<'a> -> Tensor<'a>
 fn nanmedian_with opts view = reduce_axis_core true slice_nanmedian opts.axis opts.keepdims view
@@ -7568,7 +7589,7 @@ fn bsearch_sorted side sorted target =
 
 /// Binary-searches insertion indices in ascending 1-D `sorted` for every element of `values`, preserving `values.shape`.
 ///
-/// ```tsuzuri run=[1,%202,%204]
+/// ```tsuzuri run=[1,%203,%204]
 /// let s = Tensor.of_array [4] [10, 20, 20, 30]
 /// let v = Tensor.of_array [3] [20, 25, 40]
 /// Tensor.to_array (Tensor.searchsorted Tensor.SearchSide.Left (Tensor.view s) (Tensor.view v))

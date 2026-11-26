@@ -27,6 +27,7 @@ M06_EXPORT float m06_neg_zero = -0.0f;
 M06_EXPORT uint64_t m06_nan_raw = UINT64_C(0x7ff8000000012345);
 M06_EXPORT double m06_nan_f64 = 0.0;
 M06_EXPORT const void *m06_null_ptr = 0;
+M06_EXPORT const void *m06_null_trap_ptr = 0;
 M06_EXPORT const void *m06_nonnull_ptr = &m06_target_box;
 M06_EXPORT m06_pair m06_point = { -17, 29 };
 M06_EXPORT m06_queue m06_main_q = { 909 };

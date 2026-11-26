@@ -130,6 +130,7 @@ try {
       [
         "extern type copy BoxPtr",
         "extern type copy Queue",
+        "@c_layout",
         "record Pair { x: i32, y: i32 }",
         "",
         '@trusted extern "m06_min_i8" view def min_i8 :: unit -> i8',
@@ -138,7 +139,7 @@ try {
         '@trusted extern "m06_neg_zero" view def neg_zero :: unit -> f32',
         '@trusted extern "m06_nan_f64" view def nan_f64 :: unit -> f64',
         '@trusted extern "m06_null_ptr" view def null_as_maybe :: unit -> Maybe<BoxPtr>',
-        '@trusted extern "m06_null_ptr" view def null_as_handle :: unit -> BoxPtr',
+        '@trusted extern "m06_null_trap_ptr" view def null_as_handle :: unit -> BoxPtr',
         '@trusted extern "m06_nonnull_ptr" view def nonnull_ptr :: unit -> BoxPtr',
         '@trusted extern "m06_point" view def read_point :: unit -> Pair',
         '@trusted extern "m06_main_q" address def main_q :: unit -> Queue',
