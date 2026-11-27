@@ -1170,6 +1170,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | WebAssembly（JSPI）の tzroutine（TZ09） | `tests/tzroutine.rs`（`jspi_*`）、`src/driver.rs` の単体テスト | `tzroutine_wasm.mjs`（Node.js 24 の JSPI） |
 | OS を待つ呼び出し・netpoller・`Routine.with_locked_thread`（TZ08） | `tests/blocking.rs` | `tzroutine_runtime.mjs`（`blocking_*`・`locked_thread`・`netpoll_*`）、`tzroutine.mjs`（`tests/fixtures/blocking` とホストの C）、`net.mjs tzroutine` |
 | トラップの報告・境界・`Domain`（E14・B10） | `tests/trap_locations.rs`、`tests/trap_backtrace.rs`（バックトレースとクラッシュレポート）、`tests/domain.rs`（`E1038` と IR） | `trap_return.mjs`（C の境界と `tests/domain_runtime.c`）、`domain.mjs`、`trap_boundary.mjs`、`stack_overflow.mjs`、`trap_return_sync.mjs`（`TSUZURI_NO_SANITIZERS=1` で sanitizer の build を外す） |
+| macOS の報告の送り先（標準エラーが閉じているか `/dev/null` のときの unified logging。M19） | `src/llvm.rs` の単体テスト `darwin_trap_report_asks_the_runtime` | `macos_report.mjs`（macOS だけ。実行ファイルの標準エラーをパイプ・ファイル・`/dev/null`・閉じた状態にし、記録を `/usr/bin/log show` でプロセス ID から読む。読めない機械ではその旨を出し、`tests/macos_report_host.c` で送り先の判定だけを確かめる。ほかのホストでは理由を出して飛ばす） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |

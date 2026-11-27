@@ -34,6 +34,13 @@ static atomic_uint tz_stack_count;
 __attribute__((visibility("hidden")))
 _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 
+#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
+/* M19, src/runtime/oslog-darwin.c: an Apple executable whose standard error is closed or /dev/null
+   sends the report to unified logging. Only the driver's build of an executable defines the macro. */
+int32_t tsuzuri_report_to_log(void);
+void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
+#endif
+
 /* The report is written before anything can end the process, by every thread that overflows, so
    it is never lost to a second thread that overflows at the same time. */
 static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
@@ -42,6 +49,12 @@ static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
     int32_t (*guard)(uintptr_t) = atomic_load_explicit(&tsuzuri_stack_guard_hook, memory_order_acquire);
     if (guard != 0 && guard(address)) {
         static const char message[] = "trap: stack overflow\n";
+#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
+        if (tsuzuri_report_to_log()) {
+            tsuzuri_report_log(0, message, (int64_t)(sizeof message - 1));
+            abort();
+        }
+#endif
         (void)!write(2, message, sizeof message - 1);
         abort();
     }
@@ -52,6 +65,12 @@ static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
         uintptr_t start = atomic_load_explicit(&tz_stack_windows[slot].start, memory_order_relaxed);
         if (end != 0 && address >= start && address < end) {
             static const char message[] = "trap: stack overflow\n";
+#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
+            if (tsuzuri_report_to_log()) {
+                tsuzuri_report_log(0, message, (int64_t)(sizeof message - 1));
+                abort();
+            }
+#endif
             (void)!write(2, message, sizeof message - 1);
             abort();
         }

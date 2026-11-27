@@ -2207,7 +2207,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   - 環境変数: `TSUZURI_CODESIGN`・`TSUZURI_NOTARYTOOL`（M16）、`TSUZURI_LIPO`（M18。同じく、方針を改める決定があったときにだけ諮る）。
   - std の型と関数: `Env.executable_path`（M15）、`Env.os_version`（M17 の D3 で採ったとき）、`ZUtf8String.of`・`ZUtf8String.literal`・`ZUtf8String.to_utf8string`（M06 の D2）、Phase 3 の `Anchor.Shared`・`Anchor.create_shared`・`Anchor.shared_token`・`Anchor.read_shared`（M09 の D16。案で、名前は承認で決める。M14 の D5 は鍵で解放する操作も求める）。
   - AGENTS.md の D-59 の資源のハンドルの一覧に `ObjC.Block`（M04 の Phase 2）。
-  - D-55 の外で承認を待つ名前: M19 の subsystem `dev.tsuzuri.runtime` と category `trap`・`runtime`（D2。利用者が `log` で引く）。std の外の公式パッケージの API の名前（M07 の `apple`、M13、M14）は D-55 に登録せず、各チケットの承認の行で諮る。
+  - D-55 の外の名前: M19 の subsystem `dev.tsuzuri.runtime` と category `trap`・`runtime`（D2。利用者が `log` で引く。2026-11-28 に委任で決定し、実装した）。std の外の公式パッケージの API の名前（M07 の `apple`、M13、M14）は D-55 に登録せず、各チケットの承認の行で諮る。
 - **起票の共通規則**:
   - ファイル名は `M<nn>-<小文字とハイフン>.md`、1 行目は `# M<nn>: <題>`、メタ情報の表の見出しは `| 項目 | 内容 |`。
   - 「起票」の行は「2026-11-26（D-67。利用者の依頼「…」から起票。HEAD `804b7970` で確認）」とする。
@@ -2224,6 +2224,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   | W36 | D1、停止条件 S1 は A | `extern def` の `ref` のない `@c_layout` record は C の値渡し・値返しにする。W21 が出荷したポインター渡しからの互換を破る変更で、`docs/stability.md` に記録した。D2（W21 での綴りの予約）は W21 が出荷済みなので当たらない。Phase 2（System V x86-64 と AAPCS64）は分岐 4 のとおり実装した |
 
   実装で設計から外した点（各チケットの「実装と検証」に理由がある）: 送信は新しい式の種類 `TypedExprKind::ObjcSend` でなく、呼び出し地点で下がる extern 関数（`HostImport::objc`）で表した。Objective-C に到達する E2E のプログラムは `tests/fixtures/` でなく `tests/objc/` に置いた。後続のチケット（M03・M05・M23 など）は、`HostImport::objc`（`objc::ObjcSend`）と `FunctionEmitter::host_call` を送信の 1 か所として読む。
+- **委任による決定（2026-11-28、M19）**: 利用者は優先順位の高い 3 件（M09・M15・M19）の実装を依頼し、同じ委任（「すべてのフェーズを完了させること」「あなたが考える最高の選択肢で実装することを常に許可します」）を与えた。M19 では D2 を推奨の案のとおり決めた: unified logging の subsystem は `dev.tsuzuri.runtime`、category は `trap`（生成コードの報告とスタックのあふれ）と `runtime`（tzroutine と CPU のランタイム）。D-55 の外の文字列だが、利用者が `log show` と Console.app で引く名前なので、変えるときは互換を破る変更として扱う。逆 DNS の元のドメインの持ち主は確かめていない（記録の識別子で、名前の解決には使われない）。実装で設計から外した点は M19 の「実装と検証」にある: `<os/log.h>` を include せずに `os_log_with_type` の展開を自前で書き（同梱の zig のヘッダーに無い。停止条件 S3）、送り元の image に `_mh_execute_header` を渡し（zig のリンカーの `__dso_handle` は Mach-O のヘッダーを指さない）、改行で終わらない断片（M17 の `@tz.weak.missing`）を 1 件にまとめる。後続のランタイムの報告（M09 のメインスレッドの検査など）は、`@tz.trap.write` か `tsuzuri_report_to_log`・`tsuzuri_report_log` を通せば記録へ届く。`--emit app`（M15）の実行ファイルは、`driver.rs` の `report_to_os_log` の条件に入れる。
 
 ## 10. 完了の定義（全チケット共通）
 

@@ -234,6 +234,45 @@ fn replace_windows_debug_write(mut ir: String) -> (String, bool) {
     (out, true)
 }
 
+/// M19: the IR of an executable for an Apple target. The function that writes a trap's message, the report
+/// of a callback called after `main` and the report of a missing weak symbol (`@tz.trap.write`) asks the
+/// runtime where the report goes, so that a process whose standard error is closed or `/dev/null` (one
+/// started from Finder, the Dock, `open` or launchd) leaves it in unified logging. IR without the writer
+/// comes back byte for byte, and so does IR that already went through here.
+pub(crate) fn darwin_report(ir: String) -> String {
+    const DEFINITION: &str = "define internal void @tz.trap.write(";
+    let Some(start) = ir.find(DEFINITION) else {
+        return ir;
+    };
+    // The line of the definition may have got attributes since (the frame pointers of a build that writes
+    // the chain of frames, B10), so what is compared and replaced is the body after it.
+    let body_of = |writer: &'static str| &writer[writer.find('\n').expect("writer header") + 1..];
+    let body = start + ir[start..].find('\n').expect("writer header") + 1;
+    if ir[body..].starts_with(body_of(traps::TRAP_WRITE_DARWIN)) {
+        return ir;
+    }
+    let original = body_of(traps::TRAP_WRITE);
+    assert!(
+        ir.matches(DEFINITION).count() == 1 && ir[body..].starts_with(original),
+        "unexpected @tz.trap.write definition in Apple IR"
+    );
+    let mut ir = ir;
+    ir.replace_range(
+        body..body + original.len(),
+        body_of(traps::TRAP_WRITE_DARWIN),
+    );
+    for declaration in traps::DARWIN_REPORT_DECLARATIONS {
+        if !ir.lines().any(|line| line == declaration) {
+            if !ir.ends_with('\n') {
+                ir.push('\n');
+            }
+            ir.push_str(declaration);
+            ir.push('\n');
+        }
+    }
+    ir
+}
+
 pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) -> String {
     let aarch64 = crate::target::current_platform().aarch64();
     let (ir, has_debug_write) = replace_windows_debug_write(ir);
@@ -11917,6 +11956,129 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn darwin_trap_report_asks_the_runtime() {
+        // M19: what the two writers share is the loop of TRAP_WRITE, byte for byte.
+        let tail = |text: &'static str| &text[text.find("loop:\n").unwrap()..];
+        assert_eq!(tail(traps::TRAP_WRITE), tail(traps::TRAP_WRITE_DARWIN));
+        let options = EmitOptions {
+            entry: Entry::Console,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::System,
+            f16: F16Path::Soft,
+        };
+        let body_of = |writer: &'static str| &writer[writer.find('\n').unwrap() + 1..];
+        let check = |base: String| {
+            assert!(!base.contains("tsuzuri_report_"));
+            assert_eq!(base.matches(body_of(traps::TRAP_WRITE)).count(), 1);
+            let darwin = darwin_report(base.clone());
+            assert_eq!(darwin, darwin_report(base.clone()));
+            assert_eq!(darwin, darwin_report(darwin.clone()));
+            assert!(duplicate_declarations(&darwin).is_empty());
+            assert_eq!(darwin.matches(body_of(traps::TRAP_WRITE_DARWIN)).count(), 1);
+            assert!(!darwin.contains(body_of(traps::TRAP_WRITE)));
+            let start = darwin.find("define internal void @tz.trap.write(").unwrap();
+            let body = &darwin[start..start + darwin[start..].find("\n}\n").unwrap()];
+            assert!(body.contains("%choice = call i32 @tsuzuri_report_to_log()"));
+            assert!(body.contains("call void @tsuzuri_report_log(i32 0, ptr %data, i64 %length)"));
+            assert!(body.contains("call i64 @write(i32 2, ptr %pointer, i64 %remaining)"));
+            for declaration in traps::DARWIN_REPORT_DECLARATIONS {
+                assert_eq!(
+                    darwin.lines().filter(|line| *line == declaration).count(),
+                    1,
+                    "{declaration}"
+                );
+            }
+            assert_eq!(
+                darwin.matches("declare i64 @write(i32, ptr, i64)").count(),
+                1
+            );
+            // Nothing but the writer's body and the two declarations differs.
+            let mut restored = darwin.replacen(
+                body_of(traps::TRAP_WRITE_DARWIN),
+                body_of(traps::TRAP_WRITE),
+                1,
+            );
+            for declaration in traps::DARWIN_REPORT_DECLARATIONS {
+                restored = restored.replacen(&format!("{declaration}\n"), "", 1);
+            }
+            assert_eq!(restored, base);
+        };
+        let source = "def divide :: i64 -> i64\nfn divide x = 10 / x\ndivide 0\n";
+        let module = analyze(source).unwrap();
+        let sources = [TrapSource {
+            path: "Main.tz",
+            text: source,
+        }];
+        for numbering in [TrapNumbering::Dense, TrapNumbering::Stable] {
+            for debug_info in [false, true] {
+                for optimized in [false, true] {
+                    if !debug_info && optimized {
+                        continue;
+                    }
+                    let emit = || {
+                        if debug_info {
+                            emit_with_debug_info_numbered(
+                                &module,
+                                options,
+                                &sources,
+                                optimized,
+                                true,
+                                &|_| numbering,
+                            )
+                            .unwrap()
+                            .ir
+                        } else {
+                            emit_with_trap_info_numbered(&module, options, &sources, &|_| numbering)
+                                .unwrap()
+                                .ir
+                        }
+                    };
+                    let base = emit();
+                    assert_eq!(darwin_report(base.clone()), darwin_report(emit()));
+                    check(base);
+                    // What the driver emits for an executable: on Unix the writer's line has the frame
+                    // pointer attribute of the report that writes the chain of frames (B10).
+                    let native = emit_native_build_numbered(
+                        &module,
+                        options,
+                        &sources,
+                        debug_info.then_some(optimized),
+                        true,
+                        &|_| numbering,
+                    )
+                    .unwrap()
+                    .ir;
+                    check(native);
+                }
+            }
+        }
+        // W12: without --trap-info, the report of a callback that is called after `main` has the writer too.
+        let callback = "@trusted\nextern \"atexit\" def c_atexit :: (unit -> unit) -> i32\n\n\
+def bye :: unit -> unit = \\() -> ()\n\n\
+def main :: unit -> i32 = \\() ->\n    let _r = c_atexit bye\n    0\n";
+        let module = analyze(callback).unwrap();
+        let base = emit_with_options(&module, options).unwrap();
+        assert!(base.contains("define internal void @tz.callback.after_main()"));
+        check(base);
+        // IR without the writer comes back as it is: a library's, and an executable's that cannot report.
+        for (source, entry) in [
+            (
+                "export def answer :: i64 -> i64\nfn answer x = x + 1\n",
+                Entry::Library,
+            ),
+            ("let x = 40\nx + 2\n", Entry::Console),
+        ] {
+            let module = analyze(source).unwrap();
+            let plain = emit_with_options(&module, EmitOptions { entry, ..options }).unwrap();
+            assert!(!plain.contains("@tz.trap.write("));
+            assert_eq!(darwin_report(plain.clone()), plain);
         }
     }
 

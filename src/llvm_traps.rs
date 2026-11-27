@@ -930,6 +930,42 @@ fn report_done(backtrace: bool) -> &'static str {
 /// The function that writes a site's message to the standard error, one `write` after another.
 pub(crate) const TRAP_WRITE: &str = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  %done = icmp eq i64 %offset, %length\n  br i1 %done, label %exit, label %write\nwrite:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  %remaining = sub i64 %length, %offset\n  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\nadvance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}\n";
 
+/// M19: the replacement for `TRAP_WRITE` in an executable for an Apple target. It asks the runtime
+/// (`src/runtime/oslog-darwin.c`) first: when standard error is closed or `/dev/null`, the message goes to
+/// unified logging; otherwise the loop of `TRAP_WRITE` writes the same bytes as before.
+pub(crate) const TRAP_WRITE_DARWIN: &str = concat!(
+    "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\n",
+    "entry:\n",
+    "  %choice = call i32 @tsuzuri_report_to_log()\n",
+    "  %to_log = icmp ne i32 %choice, 0\n",
+    "  br i1 %to_log, label %log, label %loop\n",
+    "log:\n",
+    "  call void @tsuzuri_report_log(i32 0, ptr %data, i64 %length)\n",
+    "  ret void\n",
+    "loop:\n",
+    "  %offset = phi i64 [0, %entry], [%next, %advance]\n",
+    "  %done = icmp eq i64 %offset, %length\n",
+    "  br i1 %done, label %exit, label %write\n",
+    "write:\n",
+    "  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n",
+    "  %remaining = sub i64 %length, %offset\n",
+    "  %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n",
+    "  %progress = icmp sgt i64 %written, 0\n",
+    "  br i1 %progress, label %advance, label %exit\n",
+    "advance:\n",
+    "  %next = add i64 %offset, %written\n",
+    "  br label %loop\n",
+    "exit:\n",
+    "  ret void\n",
+    "}\n",
+);
+
+/// M19: the runtime functions that `TRAP_WRITE_DARWIN` calls, one declaration a line.
+pub(crate) const DARWIN_REPORT_DECLARATIONS: [&str; 2] = [
+    "declare i32 @tsuzuri_report_to_log()",
+    "declare void @tsuzuri_report_log(i32, ptr, i64)",
+];
+
 /// W04: the Windows replacement for `TRAP_WRITE`. Writes directly to the OS standard-error handle
 /// (`STD_ERROR_HANDLE` = -12) without touching CRT file descriptors, and falls back to sending the
 /// whole message to `OutputDebugStringW` when the handle is missing or a write fails.

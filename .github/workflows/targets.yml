@@ -165,6 +165,16 @@ jobs:
           export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
           node tests/objc_classes.mjs target/release/tsuzuri
           node tests/objc_send.mjs target/release/tsuzuri
+      # M19: an executable whose standard error is closed or /dev/null (as under Finder, the Dock, `open` and launchd)
+      # sends its trap and runtime reports to unified logging, with Apple's ld and with the bundled toolchain; a pipe
+      # and a file get the bytes they got before. The entries are read back with `log show` by process ID; where the
+      # runner cannot read them the suite says so and still checks where each report goes (tests/macos_report_host.c).
+      - name: macOS reports in unified logging (M19)
+        if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
+          node tests/macos_report.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |

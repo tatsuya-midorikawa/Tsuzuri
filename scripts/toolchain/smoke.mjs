@@ -55,8 +55,9 @@ try {
   const runtime = JSON.parse(await readFile(path.join(tools, 'share/runtime/manifest.json'), 'utf8'));
   assert.equal(runtime.format, 2);
   assert.match(runtime.resource_fingerprint, /^[0-9a-f]{64}$/);
-  // numeric/math and the three C combinations of cpu.c and io.c (TZ12 removed task.c), at O0-O3.
-  assert.equal(runtime.objects.length, 36);
+  // numeric/math and the three C combinations of cpu.c and io.c (TZ12 removed task.c), at O0-O3; on macOS also the
+  // two combinations with cpu.c that report through unified logging, at O0-O3, and the report destination (M19).
+  assert.equal(runtime.objects.length, process.platform === 'darwin' ? 45 : 36);
   let compiler = path.join(tools, 'bin', `tsuzuri${suffix}`);
   if (discover) {
     // Only the compiler is on PATH; it must find the bundled tools itself.

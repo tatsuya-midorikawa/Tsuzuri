@@ -4683,6 +4683,14 @@ fn build_complete(
             text = llvm::with_codeview(text);
         }
     }
+    // M19: an executable for an Apple target sends its reports to unified logging when its standard error is
+    // closed or /dev/null (a process started from Finder, the Dock, `open` or launchd). Objects, shared
+    // libraries and the IR that `--emit llvm` writes are left alone: their host owns its standard error.
+    let report_to_os_log =
+        platform.mach_o() && options.target == Target::Native && options.emit == Emit::Executable;
+    if report_to_os_log {
+        text = llvm::darwin_report(text);
+    }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
         if options.wasm_host == Some(WasmHost::Wasi) {
@@ -4882,6 +4890,14 @@ fn build_complete(
     // and libraries leave the host's signals alone (as stack.c does), and the fast backend cannot place
     // a function in a section: both keep the checks of Phase 1 only.
     let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
+    // M19: src/runtime/oslog-darwin.c decides where the reports of an Apple executable go. It is linked when
+    // the IR's own writer asks it (`@tz.trap.write`) or when a C runtime that reports is linked; those C
+    // runtimes are then built with TZ_REPORT_OSLOG, so that they ask it too.
+    let report_runtime = report_to_os_log
+        && (runtime_symbols.prefix("tsuzuri_report_")
+            || tzroutine_runtime
+            || stack_runtime
+            || cpu_runtime);
     if async_preempt {
         text = llvm::preempt::with_generated_section(
             text,
@@ -5441,6 +5457,11 @@ fn build_complete(
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
             }
+            // M19: only a unit with a C runtime that reports (tzroutine.c, cpu.c). A unit of io.c alone keeps
+            // its arguments, which are the ones of the prebuilt object.
+            if report_runtime && (tzroutine_runtime || cpu_runtime) {
+                runtime.arg("-DTZ_REPORT_OSLOG");
+            }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
             }
@@ -5566,6 +5587,9 @@ fn build_complete(
                 .args(["-std=c11", "-c", "-O1"])
                 .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
+            if report_runtime {
+                runtime.arg("-DTZ_REPORT_OSLOG");
+            }
             let hint = cross_hint(
                 platform,
                 "native runtime requires Clang and the platform C/OS SDK headers",
@@ -5584,6 +5608,39 @@ fn build_complete(
                 )?;
             } else {
                 runtime.arg(&stack_source).arg("-o").arg(&stack_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
+        }
+        // M19: the report destination of an Apple executable is an object of its own in every build, so that
+        // the runtime cache (or a distribution's prebuilt object) saves the compile of <os/log.h>.
+        let mut report_object = temporary.path.join(format!("{REPORT_UNIT}.o"));
+        if report_runtime {
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-c", "-O1"])
+                .args(compile_args(platform, macos_choice))
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
+            );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                report_object = compile_runtime_object(
+                    REPORT_UNIT,
+                    include_str!("runtime/oslog-darwin.c"),
+                    "oslog-darwin.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                let report_source = temporary.path.join("oslog-darwin.c");
+                fs::write(&report_source, include_str!("runtime/oslog-darwin.c"))
+                    .map_err(|error| io_error("write report runtime", &report_source, error))?;
+                runtime.arg(&report_source).arg("-o").arg(&report_object);
                 collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
             }
         }
@@ -5868,6 +5925,10 @@ fn build_complete(
             } else {
                 // The same Clang run compiles the guard, which costs far less than a process of its own.
                 clang.args(["-x", "c", "-std=c11"]).arg(&stack_source);
+                // M19: the overflow report of an Apple executable asks oslog-darwin.c where it goes.
+                if report_runtime {
+                    clang.arg("-DTZ_REPORT_OSLOG");
+                }
             }
             clang.arg("-pthread");
         }
@@ -5877,6 +5938,9 @@ fn build_complete(
             } else {
                 clang.args(["-x", "c", "-std=c11"]).arg(&backtrace_source);
             }
+        }
+        if report_runtime && dwarf_sidecar.is_none() {
+            clang.args(["-x", "none"]).arg(&report_object);
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang, link_extras)?;
@@ -5980,6 +6044,9 @@ fn build_complete(
             }
             if backtrace_runtime {
                 linker.arg(&backtrace_object);
+            }
+            if report_runtime {
+                linker.arg(&report_object);
             }
             links.add_to(&mut linker, link_extras)?;
             linker.arg("-o").arg(&artifact);
@@ -7255,6 +7322,10 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 /// What a failing compile of a runtime object tells the user to check, unless its caller knows more.
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
+
+/// The runtime cache's name of the object of `src/runtime/oslog-darwin.c` (M19); `scripts/toolchain/runtime.mjs`
+/// prebuilds the same unit for a macOS distribution.
+const REPORT_UNIT: &str = "report-darwin";
 
 /// Translates the module's IR with the fast backend and writes the object (PB05).
 #[cfg(feature = "fast-backend")]
