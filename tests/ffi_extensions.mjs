@@ -11,8 +11,13 @@ const hostSource = resolve("tests/ffi_extensions_host.c");
 const root = mkdtempSync(join(tmpdir(), "tsuzuri-ffi-"));
 const fixture = join(root, "fixture");
 cpSync("tests/fixtures/ffi_extensions", fixture, { recursive: true });
-function execute(program, args, success = true) {
-  const result = spawnSync(program, args, { encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+function execute(program, args, success = true, extraEnv = null) {
+  const result = spawnSync(program, args, {
+    encoding: "utf8",
+    timeout: 180_000,
+    maxBuffer: 16 * 1024 * 1024,
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env,
+  });
   assert.ifError(result.error);
   if (success) assert.equal(result.status, 0, `${program} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
   return result;
@@ -371,8 +376,10 @@ try {
   for (const optimization of ["-O0", "-O3"]) {
     const w16Bin = join(root, `w16${optimization}`);
     execute(compiler, ["build", w16Posix, "--no-cache", "--allocator", "counting", optimization, "-l", "pthread", "-o", w16Bin]);
-    const res = execute(w16Bin, [], true, { TSUZURI_MAXPROCS: "2" });
-    assert.equal(res.status, 0);
+    for (const procs of ["1", "4"]) {
+      const res = execute(w16Bin, [], true, { TSUZURI_MAXPROCS: procs });
+      assert.equal(res.status, 0);
+    }
   }
 
   console.log("ffi extensions: run passed");
