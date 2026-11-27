@@ -631,6 +631,8 @@ pub(crate) fn with_stack_checks(ir: String, bounds: StackBounds) -> String {
 mod anchor;
 #[path = "llvm_bulk.rs"]
 mod bulk;
+#[path = "llvm_byvalue.rs"]
+pub(crate) mod byvalue;
 #[path = "llvm_channel.rs"]
 mod channel;
 #[path = "llvm_compare.rs"]
@@ -2013,6 +2015,7 @@ fn emit_program_in(
         validate_native_externs(module, &reachable)?;
     }
     validate_objc_target(module, &reachable, wasm)?;
+    byvalue::validate(module, &reachable, wasm)?;
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();

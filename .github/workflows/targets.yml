@@ -161,6 +161,15 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/e2e.mjs target/release/tsuzuri
+      # W36: `@c_layout` records passed and returned by value. Every declare of every target against this Clang,
+      # and the host's own ABI end to end with a C host: AAPCS64 on darwin-arm64 and linux-arm64, System V on linux-x64.
+      - name: C structs by value (W36)
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/c_layout.mjs target/release/tsuzuri
+          node tests/c_layout_by_value.mjs target/release/tsuzuri
       - name: Language conformance suite
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
