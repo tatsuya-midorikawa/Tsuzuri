@@ -531,7 +531,7 @@ fn macos_sdk_error(framework_name: &str) -> Diagnostic {
 }
 
 /// Refuses an output that would replace a link input.
-fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
+pub(crate) fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
     let Ok(metadata) = fs::symlink_metadata(output) else {
         return Ok(());
     };
@@ -643,6 +643,10 @@ pub enum Emit {
     BindingsPy,
     /// `--emit bindings-cpp` (E13 Phase 2): a header-only C++20 wrapper over the C header.
     BindingsCpp,
+    /// `--emit app` (M15): a macOS application bundle `Name.app` around the native executable, signed
+    /// ad hoc. [`crate::app_bundle::build_app`] builds the executable with `Emit::Executable` options,
+    /// so `build_complete` never sees this kind.
+    App,
 }
 
 impl Emit {
@@ -875,6 +879,11 @@ impl BuildOptions {
     }
 
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.emit == Emit::App {
+            self.validate_app(cfg!(target_os = "macos"))?;
+            // Every other rule is the rule of the executable inside the bundle.
+            return self.bundle_executable().validate();
+        }
         if self.backend == Backend::Fast {
             // The advice of the fast backend's errors is `--backend llvm`, which would give the error
             // of a combination that no backend builds, so that error is the one reported.
@@ -1569,8 +1578,59 @@ impl BuildOptions {
             Emit::BindingsCs => "cs",
             Emit::BindingsPy => "py",
             Emit::BindingsCpp => "hpp",
+            Emit::App => "app",
         })
     }
+
+    /// The options of the executable inside the bundle of `--emit app` (M15): the same options with
+    /// `--emit exe`, so that the executable shares its cache entry with that build. Other options are
+    /// returned as they are.
+    pub fn bundle_executable(self) -> Self {
+        if self.emit == Emit::App {
+            Self {
+                emit: Emit::Executable,
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+
+    /// The host and the target of `--emit app` (M15): the bundle is signed with `codesign`, which only
+    /// macOS has, and it holds a Mach-O executable. `macos_host` is whether the compiler runs on macOS.
+    pub fn validate_app(self, macos_host: bool) -> Result<(), Diagnostic> {
+        if !macos_host {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "'--emit app' needs a macOS host: the bundle is signed with codesign",
+            ));
+        }
+        if self.target != Target::Native || !self.platform().mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "'--emit app' builds a macOS application; build for aarch64-apple-darwin or remove it",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The error for an output path that `--emit app` cannot use (M15): the bundle is a directory `Name.app`,
+/// and `Name` names its executable (`Contents/MacOS/Name` and `CFBundleExecutable`).
+pub fn app_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
+    if emit != Emit::App || app_executable_name(output).is_some() {
+        return None;
+    }
+    Some(driver_error_of(
+        DiagnosticKind::OutputExtensionInvalid,
+        "app output must end with '.app'; its file name, without the extension, names the executable",
+    ))
+}
+
+/// `Name` of a bundle path `…/Name.app`.
+pub fn app_executable_name(output: &Path) -> Option<&str> {
+    let stem = output.file_stem().and_then(OsStr::to_str)?;
+    (output.extension() == Some(OsStr::new("app")) && !stem.is_empty()).then_some(stem)
 }
 
 /// The error for an output path that bindings cannot use. The JavaScript module must be a `.mjs`
@@ -4311,8 +4371,37 @@ pub fn build_profiled(
     links: &LinkInputs,
     profile: &Profile,
 ) -> Result<Vec<String>, Diagnostic> {
+    if options.emit == Emit::App {
+        return crate::app_bundle::build_app(module, project, output, options, links, profile);
+    }
     build_complete(module, project, output, options, links, "build", profile)
         .map(|(messages, _, _)| messages)
+}
+
+/// The executable of an application bundle (M15): a `build` of `options`, which are those of `--emit exe`,
+/// to `output` in the staging directory. `final_output` is where the executable will be in the bundle; the
+/// cache key of a `-g` build records that path instead of the staging path, which differs in every build.
+pub(crate) fn build_bundle_executable(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    final_output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
+    debug_assert_eq!(options.emit, Emit::Executable);
+    build_complete_keyed(
+        module,
+        project,
+        output,
+        final_output,
+        options,
+        links,
+        "build",
+        profile,
+    )
+    .map(|(messages, _, _)| messages)
 }
 
 /// What a build reports besides its outputs: the tool messages, the trap sites, and the sites of
@@ -4327,6 +4416,24 @@ fn build_complete(
     module: &CheckedModule,
     project: &Project,
     output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    action: &str,
+    profile: &Profile,
+) -> Result<Built, Diagnostic> {
+    build_complete_keyed(
+        module, project, output, output, options, links, action, profile,
+    )
+}
+
+/// [`build_complete`] whose cache key records `key_output` as the output path (see `cache::build_key`):
+/// the same path as `output` for every build but the executable of an application bundle.
+#[allow(clippy::too_many_arguments)]
+fn build_complete_keyed(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    key_output: &Path,
     options: BuildOptions,
     links: &LinkInputs,
     action: &str,
@@ -5119,7 +5226,7 @@ fn build_complete(
                 options,
                 action,
                 &text,
-                output,
+                key_output,
                 clang_identity.as_ref(),
                 staged_profile
                     .as_ref()
@@ -7474,7 +7581,7 @@ fn tool(variable: &str, fallback: &str) -> OsString {
     resolve_tool(variable, fallback).1
 }
 
-fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
+pub(crate) fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
     let name = command.get_program().to_string_lossy().into_owned();
     let started = crate::timings::start();
     let output = command.output();
@@ -7577,7 +7684,7 @@ fn run_wasm_opt(
     })
 }
 
-fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
+pub(crate) fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
     for source in project.sources.iter().chain(&project.manifests) {
         // Std sources are embedded, so no output can overwrite them.
         if source.origin == ModuleOrigin::User {
@@ -7643,11 +7750,11 @@ fn same_file(
     Ok(false)
 }
 
-fn driver_error_of(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
+pub(crate) fn driver_error_of(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
     Diagnostic::of(kind, message, Span::default())
 }
 
-fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
+pub(crate) fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
     driver_error_of(
         DiagnosticKind::IoFailure,
         format!("cannot {action} '{}': {error}", path.display()),
@@ -7691,6 +7798,12 @@ impl TemporaryDirectory {
             DiagnosticKind::TempDirectoryFailed,
             "could not create a unique temporary directory",
         ))
+    }
+
+    /// Leaves the directory in place when the value is dropped: it holds files that a failed
+    /// publication could not put back, and the error names it.
+    pub(crate) fn keep(&mut self) {
+        self.removed = true;
     }
 
     pub(crate) fn close(mut self) -> Result<(), Diagnostic> {
