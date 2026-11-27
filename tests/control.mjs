@@ -551,11 +551,18 @@ int main(int argc, char **argv) {
     for (let i = 0; i < 32; i++) assert.equal(exports.tz_loop_copies(8192n), 34058240n);
     assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
   }
-  const directRun = join(temporary, "direct-break-run.tz");
-  writeFileSync(directRun, "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == 5 then break\n    do! IO.writeln $\"n={n}\"\n    n as i32\n");
-  const ranDirect = execute(compiler, ["run", directRun], false);
-  assert.equal(ranDirect.status, 5);
+  const directRunDir = join(temporary, "direct-break-run");
+  mkdirSync(directRunDir);
+  writeFileSync(join(directRunDir, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == 5 then break\n    do! IO.writeln $\"n={n}\"\n    n as i32\n");
+  const ranDirect = execute(compiler, ["run", directRunDir], false);
+  assert.equal(ranDirect.status, 1);
+  assert.match(ranDirect.stderr, /program exited with code 5/);
   assert.equal(ranDirect.stdout.replace(/\r\n/g, "\n"), "n=5\n");
+  const directBin = join(temporary, process.platform === "win32" ? "direct-break.exe" : "direct-break");
+  cli(["build", directRunDir, "-o", directBin]);
+  const ranBin = execute(directBin, [], false);
+  assert.equal(ranBin.status, 5);
+  assert.equal(ranBin.stdout.replace(/\r\n/g, "\n"), "n=5\n");
   console.log(`control: ${cases.length} cases, ownership cleanup, traps and loop boundaries passed on native/WASM at O0/O3`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

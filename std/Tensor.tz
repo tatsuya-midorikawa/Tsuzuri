@@ -2267,36 +2267,45 @@ instance Copy<'a> => Index<Mut<'a>, [Slice.Pos], 'a> {
 
 instance IndexMut<Tensor<'a>, [i64], 'a> {
     fn index_mut coords value self =
-        self.data[dense_offset (ref self.shape) coords] = value
+        let slot = dense_offset (ref self.shape) coords
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, i64, 'a> {
     fn index_mut c0 value self =
-        self.data[dense_offset_1 (ref self.shape) (deref c0)] = value
+        let slot = dense_offset_1 (ref self.shape) (deref c0)
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (i64 * i64), 'a> {
     fn index_mut coords value self =
         match coords with
-        | (c0, c1) -> self.data[dense_offset_2 (ref self.shape) c0 c1] = value
+        | (c0, c1) ->
+            let slot = dense_offset_2 (ref self.shape) c0 c1
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (i64 * i64 * i64), 'a> {
     fn index_mut coords value self =
         match coords with
-        | (c0, c1, c2) -> self.data[dense_offset_3 (ref self.shape) c0 c1 c2] = value
+        | (c0, c1, c2) ->
+            let slot = dense_offset_3 (ref self.shape) c0 c1 c2
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (i64 * i64 * i64 * i64), 'a> {
     fn index_mut coords value self =
         match coords with
-        | (c0, c1, c2, c3) -> self.data[dense_offset_4 (ref self.shape) c0 c1 c2 c3] = value
+        | (c0, c1, c2, c3) ->
+            let slot = dense_offset_4 (ref self.shape) c0 c1 c2 c3
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, Slice.Pos, 'a> {
     fn index_mut p0 value self =
         assert (self.shape.length == 1)
-        self.data[resolve_pos_axis self.shape[0] p0] = value
+        let slot = resolve_pos_axis self.shape[0] p0
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos), 'a> {
@@ -2306,7 +2315,8 @@ instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos), 'a> {
             assert (self.shape.length == 2)
             let c0 = resolve_pos_axis self.shape[0] (ref p0)
             let c1 = resolve_pos_axis self.shape[1] (ref p1)
-            self.data[c0 * self.shape[1] + c1] = value
+            let slot = c0 * self.shape[1] + c1
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
@@ -2317,7 +2327,8 @@ instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
             let c0 = resolve_pos_axis self.shape[0] (ref p0)
             let c1 = resolve_pos_axis self.shape[1] (ref p1)
             let c2 = resolve_pos_axis self.shape[2] (ref p2)
-            self.data[(c0 * self.shape[1] + c1) * self.shape[2] + c2] = value
+            let slot = (c0 * self.shape[1] + c1) * self.shape[2] + c2
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
@@ -2329,12 +2340,14 @@ instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), '
             let c1 = resolve_pos_axis self.shape[1] (ref p1)
             let c2 = resolve_pos_axis self.shape[2] (ref p2)
             let c3 = resolve_pos_axis self.shape[3] (ref p3)
-            self.data[((c0 * self.shape[1] + c1) * self.shape[2] + c2) * self.shape[3] + c3] = value
+            let slot = ((c0 * self.shape[1] + c1) * self.shape[2] + c2) * self.shape[3] + c3
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 instance IndexMut<Tensor<'a>, [Slice.Pos], 'a> {
     fn index_mut coords value self =
-        self.data[dense_pos_offset (ref self.shape) coords] = value
+        let slot = dense_pos_offset (ref self.shape) coords
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
 }
 
 // ---------------------------------------------------------------------------
@@ -4926,7 +4939,7 @@ fn tensor_tensor_in_place f rhs target =
         assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
         let t_shape = Array.copy (ref target.shape)
         let t_strides = dense_strides (ref t_shape)
-        let mut dst = Mut { data: ref mut target.data[0 ..], offset: 0, shape: t_shape, strides: t_strides }
+        let mut dst = Mut { data: ref mut target.data[0 ..< target.data.length], offset: 0, shape: t_shape, strides: t_strides }
         let rv = view rhs
         map2_in_place_kernel f (ref rv) (ref mut dst)
 
@@ -4945,7 +4958,7 @@ fn tensor_view_in_place f rhs target =
         assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
         let t_shape = Array.copy (ref target.shape)
         let t_strides = dense_strides (ref t_shape)
-        let mut dst = Mut { data: ref mut target.data[0 ..], offset: 0, shape: t_shape, strides: t_strides }
+        let mut dst = Mut { data: ref mut target.data[0 ..< target.data.length], offset: 0, shape: t_shape, strides: t_strides }
         map2_in_place_kernel f rhs (ref mut dst)
 
 private def mut_tensor_in_place { r } :: Copy<'a> => own ('a -> 'a -> 'a) -> ref Tensor<'a> -> ref mut Mut<'a> { r } -> unit

@@ -227,13 +227,22 @@ fn diagnostics_match_specification_section_8() {
         "E1042",
         "index_view_requires_ref",
     );
-    // `ref mut t[...]` before NC20 -> E1042 index_view_not_writable
+    // `ref mut` window on a read-only `Tensor.View` (no `IndexBorrowMut`) -> E1042 index_view_not_writable,
+    // while `Tensor` and `Tensor.Mut` implement `IndexBorrowMut` in NC20.
     check_err(
-        "let mut t: Tensor<i64> = Tensor.zeros [2, 2]\nref mut t[0..1, ..]\n",
+        "let t: Tensor<i64> = Tensor.zeros [2, 2]\nlet mut v = Tensor.view (ref t)\nref mut v[0..1, ..]\n",
         Edition::E2028,
         "E1042",
         "index_view_not_writable",
     );
+    tsuzuri::analyze_with_edition(
+        "let mut t: Tensor<i64> = Tensor.zeros [2, 2]\n\
+         let mut w = ref mut t[0..1, ..]\n\
+         w[0, 1] = 7\n\
+         t[0, 1]\n",
+        Edition::E2028,
+    )
+    .unwrap();
     // Temporary base `ref (mk 1)[0, ..]` -> E1013
     let err = tsuzuri::analyze_with_edition(
         "def mk :: i64 -> Tensor<i64> = \\n -> Tensor.zeros [n, n]\n\

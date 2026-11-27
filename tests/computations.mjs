@@ -236,6 +236,12 @@ int main(int argc, char **argv) {
     }
   }
   writeFileSync(entryMain, entryChecks[0][0]);
+  const entryIrA = join(temporary, "entry-w31-a.ll");
+  const entryIrB = join(temporary, "entry-w31-b.ll");
+  cli(["build", entryDir, "--target", "wasm32", "--emit", "llvm", "-O3", "-o", entryIrA]);
+  cli(["build", entryDir, "--target", "wasm32", "--emit", "llvm", "-O3", "-o", entryIrB]);
+  assert.deepEqual(readFileSync(entryIrA), readFileSync(entryIrB));
+  writeFileSync(entryMain, `export def keep :: i64\nfn keep = 0\n\n${entryChecks[0][0]}`);
   const entryWasmA = join(temporary, "entry-w31-a.wasm");
   const entryWasmB = join(temporary, "entry-w31-b.wasm");
   cli(["build", entryDir, "--target", "wasm32", "-O3", "-o", entryWasmA]);

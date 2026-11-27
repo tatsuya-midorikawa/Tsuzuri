@@ -20,7 +20,7 @@ instance Drop<Once> {
 ///     })
 /// Atomic.load (Arc.get (ref count))
 /// ```
-def call :: ref Once -> (unit -> unit) -> unit
+def call :: ref Once -> own (unit -> unit) -> unit
 fn call once function =
     if Once.__begin once then {
         function ();
