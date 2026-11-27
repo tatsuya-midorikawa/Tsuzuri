@@ -3078,7 +3078,11 @@ fn signature(view: &View<'_>, tokens: &[Token], head: usize, active: usize) -> O
                 && item.name == ident(&tokens[head])
         }),
     }
-    .filter(|item| callable(item.kind))?;
+    // A member of an Objective-C class (M02) is a method that carries the signature of its send;
+    // a method of a type class has none.
+    .filter(|item| {
+        callable(item.kind) || (item.kind == SymbolKind::Method && !item.result.is_empty())
+    })?;
     let parameters = if item.parameters.is_empty() {
         "()".to_owned()
     } else {

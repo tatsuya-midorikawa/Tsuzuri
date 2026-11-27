@@ -636,7 +636,7 @@ Phase 1 と Phase 2 を、M01・W36 と同じブランチ（`feat/m01-m02-w36-ob
 
 ### 検証
 
-- `cargo test --locked --test objc_send`: 17 件が通過（構文と整形、拒否の各 kind、`:` の数、族、受け手と名前と型、`Module.C.m`、`call` の型、構造体、利用者の `declare` との併用、`ObjC.literal`、target、包み、監査と `W1010`（継承したメンバーの両方の組を含む）、`api-diff`、`doc`、効果解析（送信は extern の効果））。`src/objc.rs` の単体テスト 3 件（セレクター・族・実行時名）。
+- `cargo test --locked --test lsp objc_members`（メンバーの参照・定義・hover・シグネチャヘルプ。PR #149 のレビューで足した）が通過。`cargo test --locked --test objc_send`: 17 件が通過（構文と整形、拒否の各 kind、`:` の数、族、受け手と名前と型、`Module.C.m`、`call` の型、構造体、利用者の `declare` との併用、`ObjC.literal`、target、包み、監査と `W1010`（継承したメンバーの両方の組を含む）、`api-diff`、`doc`、効果解析（送信は extern の効果））。`src/objc.rs` の単体テスト 3 件（セレクター・族・実行時名）。
 - `node tests/objc_send.mjs target/debug/tsuzuri`（arm64 macOS 27.2、Apple clang 21）: 90 検査が通過。
   - **clang の参照との突き合わせ（S4）**: `tests/objc_send_reference.m` を `xcrun clang -target arm64-apple-macosx12.0 -fobjc-arc -fno-objc-msgsend-selector-stubs -fno-objc-convert-messages-to-runtime-calls -O0 -S -emit-llvm` で下げた 41 個の `objc_msgSend` の `call` の型（結果と各引数。`zeroext`・`signext`・`sret` を含む）が、同じ順に同じ送信をする `reference_calls` の `call` の型とすべて一致した。構造体は葉の列に平らにして比べる。
   - **実行**: `-O0`・`-O3`、Apple の ld と同梱のツールチェーン（zig・lld）、`--allocator counting`。族と所有（ホストの生きている物体の数）、nil を返す init、`BOOL`・8/16/32 bit の境界の値、スタックに回る引数（整数 10 個）、buffer、`ref mut i64`・`ref mut bool`、物体と `Maybe<ref C>`、静的コールバック、クラスの物体、`ObjC.Sel` の引数、派生の名前と動的な分配、カテゴリー、構造体の結果 6 種と引数 8 種（d0〜d7 が尽きる HFA、整数のレジスターが尽きる `[2 x i64]`、48 バイトの `sret` と複写へのポインター）、tzroutine の中の送信。期待はホストの算術を JavaScript で書いた値。
