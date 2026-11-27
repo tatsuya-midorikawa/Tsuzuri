@@ -341,6 +341,94 @@ pub(crate) fn check_recovered(module: &CheckedModule) -> Vec<Diagnostic> {
     recovered
 }
 
+/// A35: the four stop limits of `LoanGrowth` in `ownership_control.rs`, so that
+/// `tests/loop_growth.rs` tracks them without duplicating constants.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoopGrowthLimits {
+    pub faster: usize,
+    pub growing: usize,
+    pub growing_large_iterations: usize,
+    pub growing_large_loans: usize,
+    pub state: usize,
+}
+
+/// A35: where a settled loop growth metric reached its maximum in a `CheckedModule`.
+#[doc(hidden)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoopGrowthSite {
+    pub function_id: usize,
+    pub function_name: String,
+    pub body_span: Span,
+    pub iteration_loans: Vec<usize>,
+}
+
+/// A35: one settled loop growth statistic and the first loop check that reached it.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoopGrowthMetric {
+    pub value: usize,
+    pub site: Option<LoopGrowthSite>,
+}
+
+impl LoopGrowthMetric {
+    fn record(&mut self, value: usize, make_site: impl FnOnce() -> LoopGrowthSite) {
+        if self.site.is_none() || value > self.value {
+            self.value = value;
+            self.site = Some(make_site());
+        }
+    }
+}
+
+/// A35: the largest growth of the loans of the loops that settled in the ownership check of a
+/// `CheckedModule` (`LoanGrowth`), with where each statistic was reached.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SettledLoopGrowth {
+    pub faster: LoopGrowthMetric,
+    pub growing: LoopGrowthMetric,
+    pub growing_large: LoopGrowthMetric,
+    pub state: LoopGrowthMetric,
+    pub iterations: LoopGrowthMetric,
+}
+
+/// A35: the limits of the `LoanGrowth` stops, so that `tests/loop_growth.rs` follows them.
+#[doc(hidden)]
+pub fn loop_growth_limits() -> LoopGrowthLimits {
+    LoopGrowthLimits {
+        faster: control::LOOP_FASTER_ITERATIONS,
+        growing: control::LOOP_GROWING_ITERATIONS,
+        growing_large_iterations: control::LOOP_GROWING_LARGE.0,
+        growing_large_loans: control::LOOP_GROWING_LARGE.1,
+        state: control::LOOP_STATE_ITERATIONS,
+    }
+}
+
+/// A35: the largest growth of the loans of the loops that settled in the ownership check of
+/// `module` (`LoanGrowth`), with where it was reached. Read by `tests/loop_growth.rs` only.
+#[doc(hidden)]
+pub fn settled_loop_growth(module: &CheckedModule) -> SettledLoopGrowth {
+    let stats = std::cell::RefCell::new(SettledLoopGrowth::default());
+    let facts = call_facts_with_growth(module, false, Some(&stats));
+    for (id, function) in module.functions.iter().enumerate() {
+        let _ = check_body_with_growth(
+            module,
+            function.parameters.iter(),
+            &function.body,
+            false,
+            &facts,
+            function.is_once,
+            module.user_drops.values().any(|drop| *drop == id),
+            facts.contract(module, id),
+            &mut Vec::new(),
+            None,
+            None,
+            Some((id, &stats)),
+        );
+    }
+    stats.into_inner()
+}
+
 /// The consuming reads of Copy values that need a drop, per function of a checked module (A15).
 pub(crate) fn copy_reads(module: &CheckedModule) -> Vec<Vec<CopyRead>> {
     copy_reads_where(module, &call_facts(module, false), |_| true)
@@ -629,6 +717,38 @@ fn check_body<'a>(
     copies: Option<&mut Vec<CopyRead>>,
     events: Option<&mut Vec<OwnershipEvent>>,
 ) -> Result<BTreeSet<String>, Diagnostic> {
+    check_body_with_growth(
+        module, parameters, body, infer, facts, task, user_drop, contract, recovered, copies,
+        events, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_body_with_growth<'a>(
+    module: &'a CheckedModule,
+    parameters: impl Clone + Iterator<Item = &'a Local>,
+    body: &'a TypedExpr,
+    infer: bool,
+    facts: &CallFacts,
+    task: bool,
+    user_drop: bool,
+    contract: Contract<'a>,
+    recovered: &mut Vec<Diagnostic>,
+    copies: Option<&mut Vec<CopyRead>>,
+    events: Option<&mut Vec<OwnershipEvent>>,
+    growth_stats: Option<(usize, &std::cell::RefCell<SettledLoopGrowth>)>,
+) -> Result<BTreeSet<String>, Diagnostic> {
+    let drops_stop = drops_stop_reads(
+        module,
+        parameters.clone(),
+        body,
+        infer,
+        facts,
+        task,
+        user_drop,
+        contract,
+        growth_stats,
+    );
     let mut checker = start_checker(
         module,
         parameters.clone(),
@@ -642,16 +762,8 @@ fn check_body<'a>(
         copies,
         events,
     );
-    checker.drops_stop_reads = drops_stop_reads(
-        module,
-        parameters.clone(),
-        body,
-        infer,
-        facts,
-        task,
-        user_drop,
-        contract,
-    );
+    checker.drops_stop_reads = drops_stop;
+    checker.growth_stats = growth_stats;
     // The body's value goes to the caller, which applies the drop hook where it keeps it.
     checker.bound_next = true;
     let mut result = checker.eval(body, Use::Consume, &BTreeSet::new())?;
@@ -801,6 +913,7 @@ fn start_checker<'a, 'run>(
         injections: BTreeSet::new(),
         checking_contents: false,
         last_deref_all_through: false,
+        growth_stats: None,
     };
     if !infer && facts.seeded {
         known_functions(
@@ -1488,11 +1601,19 @@ thread_local! {
 }
 
 fn call_facts(module: &CheckedModule, infer: bool) -> CallFacts {
+    call_facts_with_growth(module, infer, None)
+}
+
+fn call_facts_with_growth(
+    module: &CheckedModule,
+    infer: bool,
+    growth: Option<&std::cell::RefCell<SettledLoopGrowth>>,
+) -> CallFacts {
     #[cfg(test)]
     CALL_FACTS.with(|count| count.set(count.get() + 1));
     let closed = closed_returns(module);
     let lending = lending_bodies(module, infer);
-    let joint = joint_facts(module, &closed, &lending, infer, None);
+    let joint = joint_facts(module, &closed, &lending, infer, None, growth);
     CallFacts {
         revoked: closed
             .iter()
@@ -1728,7 +1849,7 @@ fn parameter_retention_within(
     infer: bool,
     budget: Option<usize>,
 ) -> Vec<Option<Box<[bool]>>> {
-    joint_facts(module, closed, lending, infer, budget).retained
+    joint_facts(module, closed, lending, infer, budget, None).retained
 }
 
 /// What `joint_facts` finds: the closed results that survive the store facts, A28's retention
@@ -2035,6 +2156,7 @@ fn joint_facts(
     lending: &Lending,
     infer: bool,
     budget: Option<usize>,
+    growth: Option<&std::cell::RefCell<SettledLoopGrowth>>,
 ) -> JointFacts {
     let count = module.functions.len();
     let types = module.types();
@@ -2349,6 +2471,7 @@ fn joint_facts(
                 contents_targets.contains(&id),
                 storing[id],
                 facts.closed[id] && revocable(id),
+                growth,
             );
             facts.failed[id] |= outcome.failed;
             let mut changed = false;
@@ -3901,6 +4024,7 @@ fn check_facts(
     contents: bool,
     stores: bool,
     revocable: bool,
+    growth: Option<&std::cell::RefCell<SettledLoopGrowth>>,
 ) -> FactsOutcome {
     let function = &module.functions[id];
     let retention = retention && !facts.lending.no_facts(id);
@@ -3916,6 +4040,17 @@ fn check_facts(
         };
     }
     let user_drop = module.user_drops.values().any(|drop| *drop == id);
+    let drops_stop = drops_stop_reads(
+        module,
+        function.parameters.iter(),
+        &function.body,
+        infer,
+        facts,
+        function.is_once,
+        user_drop,
+        facts.contract(module, id),
+        growth.map(|stats| (id, stats)),
+    );
     let mut recovered = Vec::new();
     let mut checker = start_checker(
         module,
@@ -3931,16 +4066,8 @@ fn check_facts(
         None,
     );
     checker.checking_contents = contents;
-    checker.drops_stop_reads = drops_stop_reads(
-        module,
-        function.parameters.iter(),
-        &function.body,
-        infer,
-        facts,
-        function.is_once,
-        user_drop,
-        facts.contract(module, id),
-    );
+    checker.drops_stop_reads = drops_stop;
+    checker.growth_stats = growth.map(|stats| (id, stats));
     checker.collect_drops();
     if stores {
         checker.stores = Some(StoreFacts::default());
@@ -5737,6 +5864,7 @@ fn drops_stop_reads<'a>(
     task: bool,
     user_drop: bool,
     contract: Contract<'a>,
+    growth_stats: Option<(usize, &std::cell::RefCell<SettledLoopGrowth>)>,
 ) -> bool {
     if !facts.lending.drops_store
         || contract.lends_mutable == Some(true)
@@ -5758,6 +5886,7 @@ fn drops_stop_reads<'a>(
         None,
         None,
     );
+    checker.growth_stats = growth_stats;
     checker.collect_drops();
     checker.eval(body, Use::Consume, &BTreeSet::new()).is_ok()
         && checker.read_through_used
@@ -5999,6 +6128,9 @@ struct Checker<'a, 'run> {
     injections: BTreeSet<(Option<usize>, usize, usize)>,
     checking_contents: bool,
     last_deref_all_through: bool,
+    /// A35: collects settled loop growth statistics for `settled_loop_growth`, with the checked
+    /// function's id; `None` during normal compilation.
+    growth_stats: Option<(usize, &'run std::cell::RefCell<SettledLoopGrowth>)>,
 }
 
 /// A31: the parameter of a body and the path of tuple or record fields (or union payloads) in its
@@ -6358,7 +6490,7 @@ impl<'a> Checker<'a, '_> {
                     })
                     .collect();
                 function.parameters.len() == captures.len() + callback.arity
-                    && check_body(
+                    && check_body_with_growth(
                         module,
                         function.parameters.iter(),
                         &function.body,
@@ -6379,6 +6511,7 @@ impl<'a> Checker<'a, '_> {
                         &mut Vec::new(),
                         None,
                         None,
+                        self.growth_stats.map(|(_, stats)| (*id, stats)),
                     )
                     .is_ok()
             }
@@ -14994,7 +15127,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         // A lambda of a body that reads nothing through reads nothing through either
         // (`lending_bodies`).
         let lends_mutable = self.body_lends_mutable().then_some(true);
-        self.copy_variables.extend(check_body(
+        self.copy_variables.extend(check_body_with_growth(
             self.module,
             locals.into_iter(),
             body,
@@ -15011,6 +15144,7 @@ impl<'a, 'run> Checker<'a, 'run> {
             self.recovered,
             None,
             None,
+            self.growth_stats,
         )?);
         self.capture_loans(expression, &during, &mut result)?;
         Ok(result)
@@ -17374,7 +17508,7 @@ mod retention_tests {
             .iter()
             .position(|function| function.name == "a31_put")
             .expect("a31_put");
-        let full = joint_facts(&module, &closed, &lending, false, None);
+        let full = joint_facts(&module, &closed, &lending, false, None, None);
         assert_eq!(
             full.stores[put],
             StoreFacts {
@@ -17384,7 +17518,7 @@ mod retention_tests {
         );
         let mut topped = false;
         for budget in 0..24 {
-            let facts = joint_facts(&module, &closed, &lending, false, Some(budget));
+            let facts = joint_facts(&module, &closed, &lending, false, Some(budget), None);
             for (function, stores) in facts.stores.iter().enumerate() {
                 assert!(
                     stores.top || *stores == full.stores[function],

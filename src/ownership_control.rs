@@ -83,7 +83,8 @@ const LOAN_HOLDING: u8 = 32;
 ///
 /// What `check_loop` keeps for the stops: the loans that the last iteration made and that the
 /// state held after it, how many more of each than the iteration before, and the three counts.
-/// Planned test of real loops' margin to these stops: `_features/A35-loop-growth-margin-check.md`.
+/// `tests/loop_growth.rs` (`ownership::settled_loop_growth`) checks that the settling loops of the
+/// corpus stay below half of each iteration-count limit.
 #[derive(Default)]
 struct LoanGrowth {
     /// The loans that the last iteration made, and how many more than the one before it (none when
@@ -101,6 +102,13 @@ struct LoanGrowth {
     /// How many iterations in a row left the state holding more loans than the one before, and
     /// more of them than that one added.
     state_faster: usize,
+    /// A35: the largest `faster`, `growing`, large-iteration `growing`, and growing-iteration
+    /// `state_faster` seen on this loop, plus per-iteration loan counts when `growth_stats` asks.
+    max_faster: usize,
+    max_growing: usize,
+    max_growing_large: usize,
+    max_state: usize,
+    iteration_loans: Option<Vec<usize>>,
 }
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
@@ -115,8 +123,9 @@ struct LoanGrowth {
 /// places at each link, so its loans grow faster in each iteration until it settles, and this
 /// stops it from 7 links on (`15d84aaf` checks 7 links in 0.8 seconds on a release build, 8 in 3.3
 /// and 9 in 16). With one of four fields, 5 links grow faster in four iterations in a row and
-/// settle in the fifth (57, 121, 313, 825, 1849 loans).
-const LOOP_FASTER_ITERATIONS: usize = 5;
+/// settle in the fifth (57, 121, 313, 825, 1849 loans). `tests/loop_growth.rs` checks the margin
+/// of settling corpus loops against half of this limit.
+pub(super) const LOOP_FASTER_ITERATIONS: usize = 5;
 
 /// A31: how many iterations in a row that did not settle may each make more loans than the
 /// iteration before it, and at least as many more as that one added, before
@@ -131,8 +140,9 @@ const LOOP_FASTER_ITERATIONS: usize = 5;
 /// loans takes about 8.5 seconds, and one through 500 locals about 7 (A34 `loopplace`). A loop that
 /// copies a reference along `n` locals, one per iteration (`u(n-1) = u(n-2)`, ..., `u1 = u0`, `u0
 /// = ref a`), and borrows through the last of them adds one loan per iteration the same way and
-/// settles in iteration `n`, so this stops such a loop from 25 locals on.
-const LOOP_GROWING_ITERATIONS: usize = 24;
+/// settles in iteration `n`, so this stops such a loop from 25 locals on. `tests/loop_growth.rs`
+/// checks the margin of settling corpus loops against half of this limit.
+pub(super) const LOOP_GROWING_ITERATIONS: usize = 24;
 
 /// A31: the iterations in a row of `LOOP_GROWING_ITERATIONS` that stop a loop whose last iteration
 /// made more loans than the second number. The loans are the only measure of the body that the
@@ -140,8 +150,10 @@ const LOOP_GROWING_ITERATIONS: usize = 24;
 /// would take seconds (a body of 1000 borrows and 40 locals that pass the borrow on took about 5
 /// seconds for 32), and this stops it after a third of that. A body of many statements that make
 /// few loans takes as long per iteration but runs all 24. A loop that copies a reference along 9 or
-/// more locals and makes more than 200 loans per iteration stops too.
-const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
+/// more locals and makes more than 200 loans per iteration stops too. `tests/loop_growth.rs`
+/// checks settling corpus loops that exceed one eighth of the loan threshold against half of the
+/// iteration limit.
+pub(super) const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
 
 /// A31: how many iterations in a row that did not settle may each leave the loop's state holding
 /// more loans than the one before it, and more of them than that one added
@@ -167,8 +179,9 @@ const LOOP_GROWING_LARGE: (usize, usize) = (8, 200);
 /// and windows that `LoanGrowth` describes. In the loops of the reviews of A31 that settle, the
 /// state had grown faster at most 4 iterations in a row at such an iteration (a chain whose links
 /// each take one of two fields of the next link's target, of 6 links; 8 at 10 links, which
-/// `LOOP_FASTER_ITERATIONS` stops first).
-const LOOP_STATE_ITERATIONS: usize = 8;
+/// `LOOP_FASTER_ITERATIONS` stops first). `tests/loop_growth.rs` checks the margin of settling
+/// corpus loops against half of this limit.
+pub(super) const LOOP_STATE_ITERATIONS: usize = 8;
 
 /// A31: the change that lets the loops of A34 `loopplace` settle, which the help of each stop of
 /// `LoanGrowth` names.
@@ -249,6 +262,17 @@ impl LoanGrowth {
                  borrows until they settle, which hides such growth for some iterations; \
                  {LOOP_GROWTH_ADVICE}"
             ));
+        }
+        self.max_faster = self.max_faster.max(self.faster);
+        self.max_growing = self.max_growing.max(self.growing);
+        if made * 8 > large {
+            self.max_growing_large = self.max_growing_large.max(self.growing);
+        }
+        if self.growing > 0 {
+            self.max_state = self.max_state.max(self.state_faster);
+        }
+        if let Some(loans) = &mut self.iteration_loans {
+            loans.push(made);
         }
         None
     }
@@ -750,8 +774,11 @@ impl<'a> Checker<'a, '_> {
                 body.span,
             )
         };
-        let mut growth = LoanGrowth::default();
-        for _ in 0..=crate::syntax::MAX_NESTING {
+        let mut growth = LoanGrowth {
+            iteration_loans: self.growth_stats.is_some().then(Vec::new),
+            ..LoanGrowth::default()
+        };
+        for iteration in 0..=crate::syntax::MAX_NESTING {
             let before = self.loop_summary();
             let made_before = self.loans.len();
             self.reachable = entry_reachable;
@@ -782,6 +809,25 @@ impl<'a> Checker<'a, '_> {
                 self.merge(&edge);
             }
             if self.loop_summary() == before {
+                if let Some((function_id, stats)) = self.growth_stats {
+                    let mut stats = stats.borrow_mut();
+                    let function = &self.module.functions[function_id];
+                    let site = || super::LoopGrowthSite {
+                        function_id,
+                        function_name: if function.module.is_empty() {
+                            function.name.clone()
+                        } else {
+                            format!("{}.{}", function.module, function.name)
+                        },
+                        body_span: body.span,
+                        iteration_loans: growth.iteration_loans.clone().unwrap_or_default(),
+                    };
+                    stats.faster.record(growth.max_faster, site);
+                    stats.growing.record(growth.max_growing, site);
+                    stats.growing_large.record(growth.max_growing_large, site);
+                    stats.state.record(growth.max_state, site);
+                    stats.iterations.record(iteration + 1, site);
+                }
                 self.state = exit;
                 self.reachable = exit_reachable;
                 for edge in flow.breaks {
