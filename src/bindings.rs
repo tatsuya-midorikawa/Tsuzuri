@@ -182,6 +182,7 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
             Type::Reference(inner, _) => visit(inner, module, records),
             ty @ Type::Record(id, arguments)
                 if !crate::abi::any_zstring(ty, &module.types())
+                    && !crate::abi::extern_addr(ty, &module.types())
                     && records
                         .insert(record_name(ty, module), ty.clone())
                         .is_none() =>

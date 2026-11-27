@@ -75,6 +75,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
     ("std/ZUtf8String.tz", include_str!("../std/ZUtf8String.tz")),
+    ("std/ExternAddr.tz", include_str!("../std/ExternAddr.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
     ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
 ];
@@ -168,6 +169,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ZString",
     // M06: NUL-terminated UTF-8 strings for C / POSIX / Objective-C APIs.
     "ZUtf8String",
+    // NS07: non-zero 64-bit host addresses for extern view.
+    "ExternAddr",
     "Complex",
     // NC08: portable linear algebra and tensor contractions.
     "Linalg",
@@ -237,6 +240,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Anchor.Anchor"
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
+            | "ExternAddr.ExternAddr"
     )
 }
 
@@ -486,6 +490,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "ZUtf8String",
         names: &["ZUtf8String"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "ExternAddr",
+        names: &["ExternAddr"],
         aliases: &[],
         uses: &[],
     },
@@ -999,7 +1009,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 80);
+        assert_eq!(RESERVED_MODULES.len(), 81);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

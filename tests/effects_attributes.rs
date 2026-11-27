@@ -343,7 +343,7 @@ fn attributes_after_a_bodyless_signature_start_the_next_declaration() {
         "{ext}@c_layout(pack = 1)\nrecord P {{ x: i32, y: i32 }}\n{main_abs}"
     ));
     accepts(&format!(
-        "{ext}@c_layout\nrecord Q {{ tag: i8, x: i32 }}\n@trusted\nextern view def read_q :: i64 -> Q\n{main_abs}"
+        "{ext}@c_layout\nrecord Q {{ tag: i8, x: i32 }}\n@trusted\nextern view def read_q :: ExternAddr -> Q\n{main_abs}"
     ));
     accepts(&format!(
         "{ext}@literal def K :: i64 = 3\ndef main :: unit -> i32 = \\() -> c_abs (0i32 - 5i32) + (K as i32)\n"

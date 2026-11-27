@@ -217,7 +217,11 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
         }
         // A Drop record carries a hidden live flag and owns a resource, not plain data.
         // A `@c_layout` record uses exact C layout and cannot sit inside an unmarked normalized record (W21).
-        if types.records[*id].user_drop || types.records[*id].c_layout.is_some() {
+        // `ExternAddr` is an opaque verified non-zero address wrapper, not a plain C struct (NS07).
+        if types.records[*id].user_drop
+            || types.records[*id].c_layout.is_some()
+            || extern_addr(ty, types)
+        {
             return false;
         }
         let names: BTreeSet<_> = types.records[*id]
@@ -436,6 +440,11 @@ pub fn view_record(ty: &Type, types: &TypeContext<'_>, view_name: &str) -> Resul
     let Type::Record(id, _) = ty else {
         return Err(format!("extern view '{view_name}' must copy a record type"));
     };
+    if extern_addr(ty, types) {
+        return Err(format!(
+            "extern view '{view_name}' copies the record 'ExternAddr', which is an opaque address rather than a C struct"
+        ));
+    }
     if any_zstring(ty, types) {
         let short = types.records[*id]
             .name
@@ -548,12 +557,23 @@ pub fn any_zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
     zstring(ty, types) || zutf8string(ty, types)
 }
 
+/// NS07: whether `ty` is the standard `ExternAddr` non-zero address opaque record.
+pub fn extern_addr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Record(id, args)
+            if args.is_empty()
+                && types.records[*id].origin == crate::check::ModuleOrigin::Std
+                && types.records[*id].name == "ExternAddr.ExternAddr"
+    )
+}
+
 /// M06: whether `ty` is allowed as the read result `T` of `extern "sym" view def f :: unit -> T`.
 pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> bool {
     match ty {
         Type::Integer(8 | 16 | 32 | 64, _) | Type::Binary(32 | 64) => true,
         Type::Handle(_, crate::syntax::HandleKind::Copy) => true,
-        Type::Record(..) => view_record(ty, types, name).is_ok(),
+        Type::Record(..) => !extern_addr(ty, types) && view_record(ty, types, name).is_ok(),
         _ => matches!(
             nullable(ty, types),
             Some(Nullable::Handle(Type::Handle(
@@ -564,9 +584,9 @@ pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> 
     }
 }
 
-/// M06: whether `ty` is allowed as the result `H` of `extern "sym" address def f :: unit -> H`.
-pub fn data_symbol_address_type(ty: &Type) -> bool {
-    matches!(ty, Type::Handle(_, crate::syntax::HandleKind::Copy))
+/// M06 / NS07: whether `ty` is allowed as the result `H` of `extern "sym" address def f :: unit -> H`.
+pub fn data_symbol_address_type(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(ty, Type::Handle(_, crate::syntax::HandleKind::Copy)) || extern_addr(ty, types)
 }
 
 /// W15 / W20 / M06: a `std::Maybe<P>` whose `None` passes or returns as a C null pointer on native targets.

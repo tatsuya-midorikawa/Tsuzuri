@@ -169,6 +169,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
         };
         if let Type::Record(id, arguments) = ty
             && !crate::abi::any_zstring(ty, &module.types())
+            && !crate::abi::extern_addr(ty, &module.types())
         {
             // The convention variants of a record are one type (A29).
             let ty = &codegen_identity(ty);

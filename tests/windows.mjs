@@ -889,7 +889,7 @@ if (isMain) {
   assert.equal(execute(fontExe, [], false).status, 7, "CreateFontIndirectW with @c_layout LogFont");
   console.log("Windows MSVC: W21 @c_layout Win32 header parity & CreateFontIndirectW passed");
 
-  // W24: extern view live HeapAlloc / HeapFree round-trip and null trap with call-site location.
+  // W24 + NS07: extern view with ExternAddr live HeapAlloc / HeapFree round-trip, zero rejection, and misaligned trap site.
   const winViewDir = join(directory, "win-extern-view");
   mkdirSync(winViewDir);
   writeFileSync(join(winViewDir, "Main.tz"), [
@@ -901,31 +901,34 @@ if (isMain) {
     "@trusted",
     'extern "HeapFree" def heap_free :: i64 -> i32u -> i64 -> i32',
     "@trusted",
-    "extern view def read_point :: i64 -> Point",
+    "extern view def read_point :: ExternAddr -> Point",
     "@trusted",
-    "extern view def write_point :: i64 -> ref Point -> unit",
+    "extern view def write_point :: ExternAddr -> ref Point -> unit",
     "def main :: Array<string> -> i32 = \\args ->",
     "    if args.length > 0 then",
-    "        (read_point 0).x",
+    "        let bad = Maybe.get (ExternAddr.of_i64 2)",
+    "        (read_point bad).x",
     "    else",
+    "        let zero_none = match ExternAddr.of_i64 0 with | Maybe.None -> 0i32 | Maybe.Some _ -> 99i32",
     "        let heap = process_heap ()",
-    "        let address = heap_alloc heap 8i32u 8",
+    "        let raw = heap_alloc heap 8i32u 8",
+    "        let address = Maybe.get (ExternAddr.of_i64 raw)",
     "        let point = Point { x: 40i32, y: 2i32 }",
     "        write_point address (ref point)",
     "        let back = read_point address",
-    "        let _ = heap_free heap 0i32u address",
-    "        back.x + back.y",
+    "        let _ = heap_free heap 0i32u raw",
+    "        back.x + back.y + zero_none",
     "",
   ].join("\n"));
   for (const optimization of ["-O0", "-O3"]) {
     const viewExe = join(directory, `win-view${optimization}.exe`);
     cli(["build", winViewDir, "--no-cache", optimization, "--trap-info", "-o", viewExe]);
     assert.equal(execute(viewExe, [], false).status, 42, `extern view HeapAlloc ${optimization}`);
-    const trapped = execute(viewExe, ["null"], false);
-    assert.equal(trapped.status >>> 0, 0xc000001d, `extern view null trap ${optimization}`);
-    assert.match(trapped.stderr, /index out of bounds at .*Main\.tz:14:/, `extern view trap site ${optimization}: ${trapped.stderr}`);
+    const trapped = execute(viewExe, ["misaligned"], false);
+    assert.equal(trapped.status >>> 0, 0xc000001d, `extern view misaligned trap ${optimization}`);
+    assert.match(trapped.stderr, /index out of bounds at .*Main\.tz:15:/, `extern view trap site ${optimization}: ${trapped.stderr}`);
   }
-  console.log("Windows MSVC: W24 extern view HeapAlloc round-trip & null trap passed");
+  console.log("Windows MSVC: W24/NS07 extern view ExternAddr HeapAlloc round-trip & trap passed");
 
   // W17: `@link("gdi32")` links GdiFlush without `-l gdi32` and emits `declare dllimport`.
   const w17WinDir = join(directory, "win-w17-link");

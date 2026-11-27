@@ -35,6 +35,7 @@ const FLOORS: &[(&str, usize)] = &[
     ("Env", 4),
     ("ErrGroup", 8),
     ("Exception", 0),
+    ("ExternAddr", 5),
     ("File", 14),
     ("Format", 2),
     ("Gen", 24),

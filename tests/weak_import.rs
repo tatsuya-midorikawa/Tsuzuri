@@ -133,12 +133,16 @@ extern \"m17_str\" view def read_str :: unit -> Maybe<CFString>
 @trusted @weak
 extern \"m17_q\" address def queue_addr :: unit -> Maybe<Queue>
 
+@trusted @weak
+extern \"m17_ea\" address def raw_addr :: unit -> Maybe<ExternAddr>
+
 @no_alloc @no_copy @terminates
 def probe :: unit -> i32 = \\() ->
     let a = match read_ver () with | Maybe.Some _ -> 1i32 | Maybe.None -> 0i32
     let b = match read_str () with | Maybe.Some _ -> 2i32 | Maybe.None -> 0i32
     let c = match queue_addr () with | Maybe.Some _ -> 4i32 | Maybe.None -> 0i32
-    a + b + c
+    let d = match raw_addr () with | Maybe.Some _ -> 8i32 | Maybe.None -> 0i32
+    a + b + c + d
 
 export def run :: i32 = probe ()
 ";

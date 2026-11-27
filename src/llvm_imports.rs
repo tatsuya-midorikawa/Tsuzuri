@@ -78,7 +78,49 @@ impl FunctionEmitter<'_, '_> {
         let global = format!("@{}", data.symbol);
         if self.module.weak_symbols.contains(&data.symbol) {
             return match data.access {
-                crate::syntax::DataAccess::Address => self.nullable_from_c(result, &global),
+                crate::syntax::DataAccess::Address => {
+                    let payload = crate::abi::std_maybe_payload(result, &self.module.types())
+                        .expect("validated weak data symbol Maybe<H>")
+                        .clone();
+                    if crate::abi::extern_addr(&payload, &self.module.types()) {
+                        let Type::Union(id, _) = result else {
+                            unreachable!()
+                        };
+                        let some_case = self.module.unions[*id]
+                            .cases
+                            .iter()
+                            .position(|(name, p)| name == "Some" && p.is_some())
+                            .expect("std::Maybe has Some");
+                        let present = self.value(format!("icmp ne ptr {global}, null"));
+                        let ok_block = self.label();
+                        let miss_block = self.label();
+                        let done_block = self.label();
+                        self.branch(&present, &ok_block, &miss_block);
+
+                        self.begin(&miss_block);
+                        let none_val = self.nullary_value(result, "None");
+                        let from_miss = self.block.clone();
+                        self.jump(&done_block);
+
+                        self.begin(&ok_block);
+                        let raw_i64 = self.value(format!("ptrtoint ptr {global} to i64"));
+                        let pty = self.ty(&payload);
+                        let ea = self.value(format!(
+                            "insertvalue {pty} zeroinitializer, i64 {raw_i64}, 0"
+                        ));
+                        let ok_val = self.construct_value(result, some_case, Some((ea, pty)));
+                        let from_ok = self.block.clone();
+                        self.jump(&done_block);
+
+                        self.begin(&done_block);
+                        let llvm = self.ty(result);
+                        self.value(format!(
+                            "phi {llvm} [ {none_val}, %{from_miss} ], [ {ok_val}, %{from_ok} ]"
+                        ))
+                    } else {
+                        self.nullable_from_c(result, &global)
+                    }
+                }
                 crate::syntax::DataAccess::Read => {
                     let payload = crate::abi::std_maybe_payload(result, &self.module.types())
                         .expect("validated weak data symbol Maybe<T>")
@@ -142,7 +184,17 @@ impl FunctionEmitter<'_, '_> {
             };
         }
         match data.access {
-            crate::syntax::DataAccess::Address => global,
+            crate::syntax::DataAccess::Address => {
+                if crate::abi::extern_addr(result, &self.module.types()) {
+                    let raw_i64 = self.value(format!("ptrtoint ptr {global} to i64"));
+                    self.value(format!(
+                        "insertvalue {} zeroinitializer, i64 {raw_i64}, 0",
+                        self.ty(result)
+                    ))
+                } else {
+                    global
+                }
+            }
             crate::syntax::DataAccess::Read => match result {
                 Type::Integer(bits, _) => {
                     let align = usize::from(*bits) / 8;
@@ -176,14 +228,16 @@ impl FunctionEmitter<'_, '_> {
     ) -> String {
         match direction {
             crate::syntax::ViewDirection::Read => {
-                let address = self.expression(&arguments[0]);
+                let ea = self.expression(&arguments[0]);
+                let ea_ty = self.ty(&arguments[0].ty);
+                let address = self.value(format!("extractvalue {ea_ty} {ea}, 0"));
                 let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
                 let (size, align) = host_abi::record_layout(result, self.module);
                 self.host_pointer(&ptr, &size.to_string(), align, false);
                 self.read_host_record(result, &ptr)
             }
             crate::syntax::ViewDirection::Write => {
-                let address = self.expression(&arguments[0]);
+                let ea = self.expression(&arguments[0]);
                 // M21: a borrowed temporary lives in a slot until the record is written, as in `host_call`.
                 let mut operands = Vec::new();
                 let source_ref = if let TypedExprKind::BorrowOperand(operand) = &arguments[1].kind {
@@ -194,6 +248,8 @@ impl FunctionEmitter<'_, '_> {
                 let Type::Reference(record_ty, false) = &arguments[1].ty else {
                     unreachable!("validated extern view write parameter")
                 };
+                let ea_ty = self.ty(&arguments[0].ty);
+                let address = self.value(format!("extractvalue {ea_ty} {ea}, 0"));
                 let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
                 let (size, align) = host_abi::record_layout(record_ty, self.module);
                 self.host_pointer(&ptr, &size.to_string(), align, false);

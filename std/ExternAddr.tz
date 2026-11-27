@@ -1,0 +1,88 @@
+/// A verified non-zero 64-bit host memory address (`NS07`).
+/// Construct with `ExternAddr.of_i64` or `ExternAddr.of_i64u` and pass to `extern view` declarations.
+record ExternAddr { raw: i64 } deriving (Eq, Ord, Hash)
+
+/// Wraps a non-zero signed 64-bit address in `Some`, or returns `None` when `raw == 0`.
+///
+/// @complexity O(1)
+///
+/// ```tsuzuri run=0%204096
+/// let zero = match ExternAddr.of_i64 0 with | Maybe.Some _ -> 1 | Maybe.None -> 0
+/// let ok = match ExternAddr.of_i64 4096 with | Maybe.Some a -> ExternAddr.to_i64 a | Maybe.None -> -1
+/// $"{zero} {ok}"
+/// ```
+pure def of_i64 :: i64 -> Maybe<ExternAddr>
+fn of_i64 raw =
+    if raw == 0 then
+        Maybe.None
+    else
+        Maybe.Some (ExternAddr { raw: raw })
+
+/// Wraps a non-zero unsigned 64-bit address in `Some`, or returns `None` when `raw == 0i64u`.
+///
+/// @complexity O(1)
+///
+/// ```tsuzuri run=0%208192
+/// let zero = match ExternAddr.of_i64u 0i64u with | Maybe.Some _ -> 1i64u | Maybe.None -> 0i64u
+/// let ok = match ExternAddr.of_i64u 8192i64u with | Maybe.Some a -> ExternAddr.to_i64u a | Maybe.None -> 0i64u
+/// $"{zero} {ok}"
+/// ```
+pure def of_i64u :: i64u -> Maybe<ExternAddr>
+fn of_i64u raw =
+    if raw == 0i64u then
+        Maybe.None
+    else
+        Maybe.Some (ExternAddr { raw: raw as i64 })
+
+/// Returns the underlying non-zero signed 64-bit address.
+///
+/// @complexity O(1)
+///
+/// ```tsuzuri run=4096
+/// match ExternAddr.of_i64 4096 with
+/// | Maybe.Some addr -> ExternAddr.to_i64 addr
+/// | Maybe.None -> 0
+/// ```
+pure def to_i64 :: ExternAddr -> i64
+fn to_i64 addr = addr.raw
+
+/// Returns the underlying non-zero unsigned 64-bit address.
+///
+/// @complexity O(1)
+///
+/// ```tsuzuri run=4096
+/// match ExternAddr.of_i64u 4096i64u with
+/// | Maybe.Some addr -> ExternAddr.to_i64u addr
+/// | Maybe.None -> 0i64u
+/// ```
+pure def to_i64u :: ExternAddr -> i64u
+fn to_i64u addr = addr.raw as i64u
+
+/// Advances `addr` by `delta` bytes in unsigned 64-bit address space, returning `None` on overflow,
+/// underflow, or if the resulting address would be `0`.
+///
+/// @complexity O(1)
+///
+/// ```tsuzuri run=4112%200
+/// let base = match ExternAddr.of_i64 4096 with | Maybe.Some a -> a | Maybe.None -> ExternAddr.of_i64 1 |> Maybe.get
+/// let plus16 = match ExternAddr.offset 16 base with | Maybe.Some a -> ExternAddr.to_i64 a | Maybe.None -> -1
+/// let to_zero = match ExternAddr.offset (-4096) base with | Maybe.Some _ -> 1 | Maybe.None -> 0
+/// $"{plus16} {to_zero}"
+/// ```
+pure def offset :: i64 -> ExternAddr -> Maybe<ExternAddr>
+fn offset delta addr =
+    let base = addr.raw as i64u
+    if delta >= 0 then
+        let step = delta as i64u
+        let moved = Int.wrapping_add base step
+        if moved < base || moved == 0i64u then
+            Maybe.None
+        else
+            Maybe.Some (ExternAddr { raw: moved as i64 })
+    else
+        let mag = Int.wrapping_sub 0i64u (delta as i64u)
+        if base <= mag then
+            Maybe.None
+        else
+            let moved = Int.wrapping_sub base mag
+            Maybe.Some (ExternAddr { raw: moved as i64 })

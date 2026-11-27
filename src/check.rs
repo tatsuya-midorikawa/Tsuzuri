@@ -9987,12 +9987,12 @@ fn check_modules_collect(
                                 &signature.result
                             };
                             if signature.parameters != [Type::Unit]
-                                || !crate::abi::data_symbol_address_type(addr_ty)
+                                || !crate::abi::data_symbol_address_type(addr_ty, &types)
                             {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::DataSymbolSignature,
                                     format!(
-                                        "data symbol '{}' takes the address of a C variable and must have signature 'unit -> H' where H is a copy extern type",
+                                        "data symbol '{}' takes the address of a C variable and must have signature 'unit -> H' where H is a copy extern type or ExternAddr",
                                         function.name.text
                                     ),
                                     function.name.span,
@@ -10008,18 +10008,21 @@ fn check_modules_collect(
                         signature.parameters.as_slice(),
                         &signature.result,
                     ) {
-                        ([Type::Integer(64, true)], rec @ Type::Record(..)) => {
+                        ([addr], rec @ Type::Record(..))
+                            if crate::abi::extern_addr(addr, &types) =>
+                        {
                             (crate::syntax::ViewDirection::Read, rec)
                         }
-                        ([Type::Integer(64, true), Type::Reference(rec, false)], Type::Unit)
-                            if matches!(rec.as_ref(), Type::Record(..)) =>
+                        ([addr, Type::Reference(rec, false)], Type::Unit)
+                            if crate::abi::extern_addr(addr, &types)
+                                && matches!(rec.as_ref(), Type::Record(..)) =>
                         {
                             (crate::syntax::ViewDirection::Write, rec.as_ref())
                         }
                         _ => {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::ExternViewSignature,
-                                "an extern view is 'i64 -> R' to read or 'i64 -> ref R -> unit' to write, with R a record",
+                                "an extern view is 'ExternAddr -> R' to read or 'ExternAddr -> ref R -> unit' to write, with R a record (convert a raw address with 'ExternAddr.of_i64')",
                                 function.name.span,
                             ));
                         }
