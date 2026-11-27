@@ -663,10 +663,21 @@ pub fn analyze_with_limits(
                             crate::check::Builtin::ObjcRetain | crate::check::Builtin::ObjcDowncast
                         )
                         .then_some(instance.builtin.name());
+                        let mut named = false;
                         for ty in &instance.types {
                             if let Some(class) = objc_class(ty) {
                                 objc_uses[id].push((class, expression.span, calls));
+                                named = true;
                             }
+                        }
+                        // `ObjC.Object` is no declared class and has no audit row, but the call
+                        // reaches the runtime all the same: the site stands under its name.
+                        if !named && calls.is_some() {
+                            objc_uses[id].push((
+                                crate::syntax::OBJC_OBJECT.to_owned(),
+                                expression.span,
+                                calls,
+                            ));
                         }
                     }
                 }
@@ -807,11 +818,13 @@ pub fn analyze_with_limits(
             sites.entry(key).or_insert(site);
         };
         for (class, span, calls) in &objc_uses[id] {
-            class_uses.entry(class.clone()).or_default().insert((
-                span.source.unwrap_or(usize::MAX),
-                span.start,
-                span.end,
-            ));
+            if module.objc.classes.contains_key(class) {
+                class_uses.entry(class.clone()).or_default().insert((
+                    span.source.unwrap_or(usize::MAX),
+                    span.start,
+                    span.end,
+                ));
+            }
             // Retaining and the checked cast call the Objective-C runtime (M01 spec 6).
             if let Some(callee) = calls {
                 add(Site {
