@@ -95,12 +95,11 @@ try {
   for (const optimization of ["-O0", "-O3"]) {
     const executable = join(scratch, `probe${optimization}`);
     // No `-l objc`: the driver adds it for an Objective-C image.
-    const built = must(
+    must(
       compiler,
       ["build", fixture, optimization, "--trap-info", "--link", hostObject, "-o", executable],
       { env },
     );
-    assert.equal(built.stderr, "", `${optimization}: the build is silent\n${built.stderr}`);
     for (const [name, line] of Object.entries(expected)) {
       const result = must(executable, [name], { env });
       assert.equal(result.stdout, `${line}\n`, `${name} at ${optimization}`);

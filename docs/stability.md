@@ -140,6 +140,7 @@ Array／List の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は 20
 - **std への instance の追加**: orphan 規則により、振り分けの位置に利用者の型を持つ利用者のインスタンスは std のインスタンス追加と重なりませんが、次の 3 つは利用者のソースに影響しえます。(1) 振り分けの位置に裸の型変数を持つ std のインスタンス（例: `Map`・`HashMap` の `Index` に対する利用者の `Index<Map<K, i64>, K, i64>`、および `Tensor` のスカラー演算 `Mul<'a, Tensor<'a>, Tensor<'a>>` など）は重なりえます。こうした std のインスタンスは固定の一覧テストに載せ、その追加は承認を要する互換性のない変更として release notes で予告します。(2) orphan 規則の対象外のクラス（`Eq`・`Ord`・`Bits` など）のインスタンスを std の型に足すと、同じ型への利用者のインスタンスと重なりえます。(3) std のインスタンスが増えると、候補が 2 つ以上になって曖昧になる式がありえます。
 
 - **macOS の既定の最低 OS 版（M17 / D-67 分岐 6）**: `[macos] min_version` も `MACOSX_DEPLOYMENT_TARGET` もないときの macOS 向けビルドの最低 OS 版（Mach-O `LC_BUILD_VERSION` の `minos`）は、名前付きの `--target aarch64-apple-darwin` と同じく `12.0` に固定します（以前は Apple clang の `--target native` でビルド機の OS 版になり、`--target aarch64-apple-darwin` や同梱の zig では `MACOSX_DEPLOYMENT_TARGET` が効きませんでした）。より新しい OS 版を対象にするときは `Tsuzuri.toml` の `[macos] min_version` または `MACOSX_DEPLOYMENT_TARGET` を使います。生成される LLVM IR は変わりません。
+- **組み込みのモジュール `ObjC` の予約と Objective-C の構文（M01・M02 / D-67 分岐 1）**: `ObjC` は標準ライブラリの予約モジュール名になりました。同じ名前の利用者のモジュール `ObjC.tz` は `E1011` になります（ファイル名を変えてください）。あわせて、`extern` の直後の `class`（既存の予約語の新しい位置）と、文脈キーワード `sync`（`extern class` の直後）・`category`（`extern` の直後）、属性 `@returns_retained`・`@returns_not_retained` を足しました。どれも今まで構文エラーだった位置だけで意味を持つので、既存のソースの意味は変わりません。
 
 edition ごとに std を複製することはしません。型と instance が edition の数だけ分かれ、パッケージの間で値を渡せなくなるからです。
 

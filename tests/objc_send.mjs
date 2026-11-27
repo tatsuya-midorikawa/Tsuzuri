@@ -180,8 +180,10 @@ const env = { ...process.env, TSUZURI_CACHE_DIR: "" };
 let ran = 0;
 try {
   // 2. The call types against clang, first: a wrong type would make the runs below meaningless.
+  // Apple's clang is the reference: it knows the options that keep every message a plain send.
   const referenceIr = join(scratch, "reference.ll");
-  must(clang, [
+  must("xcrun", [
+    "clang",
     "-target",
     "arm64-apple-macosx12.0",
     "-fobjc-arc",

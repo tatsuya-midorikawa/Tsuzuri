@@ -374,9 +374,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`、`ZUtf8String`、`Linalg`、`ObjC`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で、`ZUtf8String` は M06 で、`Linalg` は NC08 で、`ObjC`（std のファイルを持たない組み込みのモジュール。型 `ObjC.Object`・`ObjC.Class`・`ObjC.Sel` と関数を持ちます。[Objective-C のクラスとメッセージ送信](#objective-c-のクラスとメッセージ送信)）は M01 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
 
 `HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
@@ -521,6 +521,63 @@ macOS の対応は Apple Silicon（Arm64）だけです。`clang -dumpmachine` �
 `--buffer FUNCTION:POINTER:LENGTH`（引数は C の名前か 1 始まりの位置）は、ポインターとその直後の長さの 2 引数を 1 つの `ref [T]` にします。上記の buffer の ABI は要素へのポインターと `int64_t` の要素数をこの順に渡すので、ポインターは `const` な要素（`long`・`long long` は `[i64]`、`double` は `[f64]`、`unsigned char`・`char`・`void` は `[ubyte]`）へのポインター、長さは直後の 64-bit 整数（`size_t` を含む）でなければならず、それ以外は `W2002` です。長さは要素の数（`void` ならバイト数）として渡ります。空の配列は NULL と長さ 0 で渡ることがあります。注釈がヘッダーにない関数・引数を指す、同じ引数を 2 回指す場合は `E2000` です。
 名前は、関数とフィールドを snake_case（`glClearColor` → `gl_clear_color`）、レコード・不透明な struct・型別名を PascalCase（`point_t` → `PointT`）にし、enum の定数とマクロは C の名前のままにします。予約語、`_`、修飾なしの組み込み関数名（`sqrt`、`abs` など）、予約された型名（`Vec`、組み込みクラス名など）には末尾に `_` を付けます。名前の衝突、ASCII の C 識別子でない名前、リンク名の規則（`tz_`・`tsuzuri`・`__` の接頭辞とランタイムの予約名）に反するシンボル、static・inline・可変長引数・プロトタイプなしの関数、asm ラベルや overloadable でシンボルが C の名前と異なる関数、呼び出し規約を変える属性を持つ関数、`returns_twice` の関数、大域変数は `W2002` で省きます。
 既存の出力は、1 行目がマーカーのファイルだけを上書きします。手書きのファイル、シンボリックリンク、ディレクトリ、ヘッダー自身への出力は `E2003` です。
+
+#### Objective-C のクラスとメッセージ送信
+
+Apple のターゲット（macOS Arm64）では、Objective-C のクラスを型として宣言し、メソッドを宣言どおりの C の型で呼び出せます（M01・M02）。生ポインター型・ポインター演算・`unsafe` は導入しません。安全性の根拠は `extern def` と同じく「宣言が正しいこと」であり、`@trusted` と権限 `ffi` の監査の対象です。
+
+```text
+class_decl  = [doc] ["@trusted"] ["@weak"] ["private"] "extern" [RuntimeName] "class" ["sync"] Name ":" Base [ "{" { member } "}" ]
+category    = [doc] ["@trusted"] ["private"] "extern" "category" Name ":" Class "{" { member } "}"
+member      = [doc] { "@returns_retained" | "@returns_not_retained" } ["class"] [Selector] name "::" Type
+```
+
+- `extern class NSWindow : NSResponder` はクラスを型として宣言します。基底は必須で、根は組み込みの `ObjC.Object` です（`extern class NSObject : ObjC.Object`）。宣言の連鎖はホストの階層の部分列でよく、Tsuzuri の型に継承は入りません（基底への暗黙の変換はなく、`ObjC.upcast` を使います）。文字列を 1 つ書くと実行時のクラス名になります（`extern "NSWindow" class Window : NSResponder`。C の識別子で 255 バイトまで）。`class` は既存の予約語の新しい位置、`sync`（`class` の直後で同じ行に識別子が続くとき）と `category`（`extern` の直後）は文脈キーワードです。
+- クラスの値は Objective-C の物体への強い参照を 1 つ所有します。Copy でも Clone でもなく、代入・引数・戻り値はムーブで、drop のときに `objc_release` を 1 回呼びます。record・union・タプル・`Maybe`・`Vec`・配列に格納できます。`Maybe<C>` はポインター 1 つで、`None` が nil です。`Maybe` でない `C` の位置に nil が来ると、境界で `null extern handle` のトラップになります。
+- 既定のクラスと `ObjC.Object` の値は、`extern type local` と同じく作成したスレッドに束縛されます（Send でも Sync でもなく、関数値に捕捉できず（`E1005`）、tzroutine などで開始する関数が触ると `E1013` `pinned_code_spawned`）。`extern class sync C` の値は Send かつ Sync で、tzroutine の本体へムーブしたり `Arc<C>` で共有したりできます。`sync` の基底を持つクラスは `sync` でなければなりません（`E1008` `objc_class_sync_base`）。
+- `ObjC.Class`（`Class`）と `ObjC.Sel`（`SEL`）は `extern type copy` と同じ性質（Copy・所有なし）の組み込みの型です。
+
+組み込みのモジュール `ObjC`（std のファイルを持たない予約モジュール。利用者の `ObjC.tz` は `E1011`）の関数は、直接の呼び出しでだけ使えます（関数値は `E1008` `objc_builtin_not_called`）。
+
+| 名前 | 型 | 意味 |
+| --- | --- | --- |
+| `ObjC.retain` | `ref C -> C` | `objc_retain` を呼び、同じ物体の所有値を返します |
+| `ObjC.upcast` | `ref C -> ref B` | 基底の型の借用として見ます（命令なし） |
+| `ObjC.upcast_owned` | `C -> B` | 所有値の型を基底に変えます（命令なし） |
+| `ObjC.downcast` | `ref C -> Maybe<D>` | `objc_opt_isKindOfClass` が真なら retain して `Some`、偽なら `None`（`D` が `ObjC.Object` なら検査なしで `Some`） |
+| `ObjC.sel` | `string -> ObjC.Sel` | 文字列リテラルか `const` の文字列のセレクター |
+| `ObjC.literal` | `string -> NSString` | 補間のない文字列リテラルの定数 NSString（期待型は実行時名 `NSString` のクラス、その基底、`ObjC.Object`） |
+
+`B`・`D` と `ObjC.literal` の結果は期待型から決まります（決まらなければ `E1015`）。`B` は `C` 自身か宣言の連鎖の祖先でなければならず（`E1003` `objc_not_superclass`）、型引数がクラスでなければ `E1005` `objc_target_not_class` です。セレクターは識別子 1 つ（`length`）か、`識別子:` のくり返し（`setTitle:`、`initWithBytes:length:encoding:`）で、1,024 バイトまでです（形の誤りは `E1008` `objc_invalid_selector`、長さは `E1017` `objc_class_limit`）。
+
+`extern def` では、物体は引数に `ref C`・`Maybe<ref C>`（+0 の借用）、結果に `C`・`Maybe<C>` と書けます。結果は +0 として受け取り、直後に retain します（呼び出しに `clang.arc.attachedcall` の bundle を付けます）。`@returns_retained` を `extern def` の前に書くと +1 として受け取り、retain しません（`@returns_not_retained` は既定と同じ意味）。`ObjC.Class`・`ObjC.Sel` は `extern def` の引数・結果と静的コールバックの引数に書けます。所有する `C` の引数は `E1008` `objc_owned_object_argument`、それ以外の位置（`export def`、`@c_layout` の field、`FnPtr<F>`、コールバックの物体、`extern view`、`ref mut`、バッファの要素）は `E1008` `objc_object_position` です。物体を保持する C の大域変数は `extern "sym" view def f :: unit -> C`（または `Maybe<C>`）で読め、読んだ値は retain されます。
+
+クラスとカテゴリーの本体にはメンバー（メソッド）を宣言します。先頭の `class` はクラスメソッド、文字列はセレクターです（引数のないメンバーは省略でき、名前がセレクターになります）。インスタンスメソッド `m :: P1 -> ... -> R` は `C.m :: ref C -> P1 -> ... -> R`、クラスメソッドは受け手を取らずに `C.m :: P1 -> ... -> R` として呼びます。カテゴリー `extern category Cat : C { ... }` は型ではなく名前空間で、`Cat.m` と呼びます。基底のメンバーは派生の名前で呼べ（`NSWindow.alloc ()`）、受け手の型と、結果の `Self`・`Maybe<Self>`（instancetype）は呼び出しに使ったクラスになります。呼び出しはすべての引数を与えた直接の呼び出しに限ります（`E1008` `objc_method_not_called`）。連鎖の中（基底を含む）で同じ名前を 2 度宣言すると `E1001` `duplicate_objc_member` です。
+
+```tsuzuri
+@trusted
+extern class NSObject : ObjC.Object {
+    class alloc :: unit -> Self
+    init :: unit -> Maybe<Self>
+}
+
+@trusted
+extern class NSString : NSObject {
+    "initWithBytes:length:encoding:" init_with_bytes :: ref [ubyte] -> i64u -> Maybe<Self>
+    length :: unit -> i64u
+    "isEqualToString:" is_equal_to_string :: ref NSString -> bool
+}
+```
+
+- 送信は `objc_msgSend` の直接の呼び出しに下がり、呼び出しの関数型はメンバーの型から作ります。`bool` は `BOOL`（`i1 zeroext`）、8・16 bit の整数はその幅のまま（`signext`／`zeroext`）、`f32`・`f64` は浮動小数点のレジスターで渡ります（`extern def` の `bool` と狭幅整数が 32-bit に正規化されるのとは異なります）。`ref mut bool` は 1 バイトの一時領域へのポインターです。そのほかの引数（ハンドル、`ref`／`ref mut` の record とスカラー、バッファ、コールバック、`FnPtr`）は `extern def` と同じです。バッファはポインターと要素数（`i64`）の 2 つの C の引数になります。
+- `@c_layout` の record を `ref` なしで書くと C の構造体の値渡し・値返しになります（AAPCS64。`NSPoint`・`NSRect` は浮動小数点のレジスター、`NSRange` は整数のレジスター、16 バイトを超える record は複写へのポインターと `sret`）。印のない record の値、バッファと record の結果は `E1008` `objc_member_type` です。
+- セレクターの `:` の数は、下げた C の引数の数と一致しなければなりません。引数が `:` より多いと `E1008` `objc_variadic_method`（可変長のメソッドは宣言できません）、それ以外の不一致と、引数のあるメンバーでのセレクターの省略は `E1008` `objc_selector_arity` です。
+- 所有は Cocoa の命名規則（族）で決まります。最初のセレクターの部分から先頭の `_` を除いたものが `alloc`・`new`・`copy`・`mutableCopy`・`init` で始まり、次の文字が小文字でないメンバーは、結果が物体のとき +1 の結果を返します（`init` はインスタンスメソッドに限ります）。`init` の族は受け手を消費します（`C.init :: C -> Maybe<C>`）。それ以外の結果は +0 として受け取り、直後に retain します。`@returns_retained`・`@returns_not_retained` はメンバーの前にも書け、結果の所有だけを上書きします（結果が物体でなければ `E1008` `objc_returns_retained_not_object`）。物体の引数は `ref C`・`Maybe<ref C>` です。
+- tzroutine を起動するネイティブのプログラムでは、送信は外部関数の呼び出しと同じくブロッキング呼び出しとして包まれます。
+
+到達した Objective-C の使用（`ObjC.*` の呼び出し、送信、物体を引数か結果に持つ `extern def` の呼び出し）は、WebAssembly では `E1008` `abi_native_only`、Apple でないネイティブのターゲットでは `E1008` `abi_apple_only` です。宣言だけならどのターゲットでも出力は変わりません。Objective-C を使う IR をリンクするとき、driver は `-lobjc` を足します（framework のクラスには `--framework AppKit` などが要ります）。`@weak` を `extern class` の前に書くと、クラスの参照を読むたびに不在を検査し、不在なら `@weak` の関数と同じ報告とトラップになります。`ObjC.retain`・`ObjC.downcast`・送信・物体の drop は効果 `extern` です。`@trusted` のない `extern class`・`extern category` を使うと `W1010` の対象になり、`tsuzuri audit` はクラスとカテゴリーごとに `extern` の行を出します（`symbol` は `OBJC_CLASS_$_<実行時名>`、`used` は使用の数）。
+
+制限: メンバーの本体・プロトコル・`super` への送信、Block、例外の受け取り、autorelease pool の組み込み関数、物体の出力引数（`NSError **`）と弱い参照はありません。autorelease pool は `objc_autoreleasePoolPush`・`objc_autoreleasePoolPop` を `extern` で宣言して使います。Objective-C の例外が Tsuzuri のフレームを越えると異常終了します。コードで作った `NSWindow` は、`close` の前に `setReleasedWhenClosed:` へ `false` を送ります（既定では `close` が自分を release し、所有と二重になります）。
 
 ### コンパイル時定数
 
@@ -5199,7 +5256,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1007` | edition 2026 のソースの、`E0004` と同じ 6 種の表記（`--warn canonical` 指定時のみ。正準形への書き換えを修正案として持つ） |
 | `W1008` | 効果の属性が検査されない（インスタンスのないジェネリック関数）か、`const def` の実行時の本体だけを検査する |
 | `W1009` | 契約の行が何も確かめない（常に真・使わない結果の名前）か、`--contracts test` で性質テストを作れない |
-| `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
+| `W1010` | `@trusted` のない `extern` の関数・`extern class`・`extern category` の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
 | `W1012` | edition 2026 におけるラムダ引数・`for...in`・計算式束縛の反駁可能パターン（edition 2027 以降では `E1021` エラー） |
 | `W1013` | editions 2026・2027 のルートのソースにおける終端ありの素の `..` のスライス（`legacy_bare_slice_range`、既定で有効、`..<` への `certain` 修正案）、およびマニフェストなしの最新 edition ソースの素の `..` のスライス（`bare_slice_range_meaning_changed`） |
 | `W1014` | スライスの境界・`^` のオフセット（`negative_literal_range_bound`）、または組み込みの 6 型の添字（`negative_literal_index`）に書かれた値が 0 でない負の整数リテラル（既定で有効） |
