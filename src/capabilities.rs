@@ -407,9 +407,10 @@ pub struct ExternUse {
     pub weak: bool,
     /// The references from functions that are not extern, by source and start, without repeats.
     pub uses: Vec<Span>,
-    /// M01: an `extern class` (`function` is `usize::MAX`): `name` is the class and `symbol` its
-    /// class object `OBJC_CLASS_$_<runtime name>`.
-    pub class: bool,
+    /// M01, M02: an `extern class` or `extern category` (`function` is `usize::MAX`): `name` is
+    /// the class or category and `symbol` the class object `OBJC_CLASS_$_<runtime name>`. `None`
+    /// for an extern function.
+    pub objc: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -826,6 +827,29 @@ pub fn analyze_with_limits(
             }
         }
         for &(target, span) in &edges[id] {
+            // M02: a message send is a use of the class or category that the call names. The
+            // function that stands for the send is no declaration of the program, so it has no
+            // row of its own.
+            if let TypedExprKind::HostCall(import, _) = &functions[target].body.kind
+                && let Some(send) = &import.objc
+            {
+                class_uses.entry(send.owner.clone()).or_default().insert((
+                    span.source.unwrap_or(usize::MAX),
+                    span.start,
+                    span.end,
+                ));
+                add(Site {
+                    capability: Capability::Ffi,
+                    span,
+                    callee: send.display.clone(),
+                    function: function.clone(),
+                    scope,
+                    via: Vec::new(),
+                    source_span: Some(functions[target].span),
+                    primitive: None,
+                });
+                continue;
+            }
             if is_extern(target) {
                 // M01: a call of an extern function that takes or returns a class uses it.
                 let signature = &functions[target].signature;
@@ -1003,6 +1027,9 @@ pub fn analyze_with_limits(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if import.objc.is_some() {
+            continue;
+        }
         let uses = externs
             .remove(&id)
             .unwrap_or_default()
@@ -1029,7 +1056,7 @@ pub fn analyze_with_limits(
             framework: import.framework.clone(),
             weak: import.weak,
             uses,
-            class: false,
+            objc: None,
         });
     }
     // M01: one row for each `extern class`, with the uses of the class as a type argument of
@@ -1062,7 +1089,42 @@ pub fn analyze_with_limits(
             framework: None,
             weak: info.weak,
             uses,
-            class: true,
+            objc: Some("class"),
+        });
+    }
+    // M02: one row for each `extern category`, with the class object of the class it extends.
+    for (qualified, info) in &module.objc.categories {
+        let uses = class_uses
+            .remove(qualified)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(source, start, end)| Span {
+                start,
+                end,
+                source: (source != usize::MAX).then_some(source),
+            })
+            .collect();
+        let Some(runtime_name) = module.objc.runtime_name(&info.class) else {
+            continue;
+        };
+        extern_uses.push(ExternUse {
+            function: usize::MAX,
+            name: qualified.rsplit('.').next().unwrap_or(qualified).to_owned(),
+            symbol: crate::llvm::objc_class_symbol(runtime_name),
+            view: None,
+            data: None,
+            package: info
+                .span
+                .source
+                .and_then(|source| sources.get(source))
+                .and_then(|source| source.package.clone()),
+            span: info.span,
+            trusted: info.trusted.then_some(0),
+            link: None,
+            framework: None,
+            weak: false,
+            uses,
+            objc: Some("category"),
         });
     }
     extern_uses.sort_by(|left, right| {
@@ -1235,7 +1297,7 @@ pub fn untrusted_externs(analysis: &Analysis, root_only: bool) -> Vec<Diagnostic
                 DiagnosticKind::UntrustedExtern,
                 format!(
                     "extern {} '{}' is used but not marked '@trusted'; review its contract and add '@trusted' above its declaration",
-                    if extern_use.class { "class" } else { "function" },
+                    extern_use.objc.unwrap_or("function"),
                     extern_use.name
                 ),
                 extern_use.span,

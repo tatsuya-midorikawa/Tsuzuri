@@ -1809,7 +1809,11 @@ fn extern_symbols(module: &CheckedModule) -> BTreeSet<String> {
         .functions
         .iter()
         .filter_map(|function| match &function.body.kind {
-            TypedExprKind::HostCall(import, _) if !import.lowers_inline() => {
+            // M02 D12: a message send may block (a modal run loop), so `objc_msgSend` is wrapped
+            // like the extern functions.
+            TypedExprKind::HostCall(import, _)
+                if !import.lowers_inline() || import.objc.is_some() =>
+            {
                 Some(import.native_symbol.clone())
             }
             _ => None,
@@ -4357,14 +4361,16 @@ pub(crate) fn validate_objc_target(
     };
     for &id in reachable {
         let function = &module.functions[id];
-        let span = if matches!(function.body.kind, TypedExprKind::HostCall(..)) {
-            function
-                .signature
-                .parameters
-                .iter()
-                .chain(std::iter::once(&function.signature.result))
-                .any(holds_object)
-                .then_some(function.span)
+        let span = if let TypedExprKind::HostCall(import, _) = &function.body.kind {
+            // M02: a message send is a use whatever its types are.
+            (import.objc.is_some()
+                || function
+                    .signature
+                    .parameters
+                    .iter()
+                    .chain(std::iter::once(&function.signature.result))
+                    .any(holds_object))
+            .then_some(function.span)
         } else {
             find_use(&function.body)
         };
@@ -7904,7 +7910,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                     &self.module.functions[id].signature.result,
                 );
             }
-            if import.callbacks {
+            // M02: a message send lowers where it is called, like a callback extern.
+            if import.callbacks || import.objc.is_some() {
                 return self.host_call(
                     import,
                     arguments,

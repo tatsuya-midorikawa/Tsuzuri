@@ -236,6 +236,10 @@ impl FunctionEmitter<'_, '_> {
         let mut types = Vec::new();
         let mut values = Vec::new();
         let platform = crate::target::current_platform();
+        // M02: a message send. The arguments lower as those of an extern function; only the
+        // callee (`objc_msgSend` with the receiver and the selector first) and the widths of
+        // `bool` and of the small integers differ.
+        let send = import.objc.as_deref();
         // W36: a `@c_layout` record result is the C struct by value. Its class does not depend on
         // the parameters, and a result in memory has its temporary before any argument is evaluated.
         let by_value_result =
@@ -412,6 +416,8 @@ impl FunctionEmitter<'_, '_> {
                     continue;
                 }
                 let (c_llvm_ty, align) = match inner.as_ref() {
+                    // M02: Objective-C's `BOOL *` points to one byte.
+                    Type::Bool if send.is_some() => ("i8", 1),
                     Type::Bool | Type::Integer(32, _) => ("i32", 4),
                     Type::Integer(8, _) => ("i8", 1),
                     Type::Integer(16, _) => ("i16", 2),
@@ -423,7 +429,7 @@ impl FunctionEmitter<'_, '_> {
                 };
                 let cur = self.value(format!("load {}, ptr {value}", self.ty(inner)));
                 let encoded = if **inner == Type::Bool {
-                    self.value(format!("zext i1 {cur} to i32"))
+                    self.value(format!("zext i1 {cur} to {c_llvm_ty}"))
                 } else {
                     cur
                 };
@@ -481,6 +487,15 @@ impl FunctionEmitter<'_, '_> {
                 continue;
             }
             let input = self.ty(&argument.ty);
+            if send.is_some()
+                && let Some(extension) = objc::small_scalar_extension(&argument.ty)
+            {
+                // M02 spec 5: `bool` and the 8- and 16-bit integers keep their width, with the
+                // extension that the callee may rely on (clang's `i1 zeroext`, `i8 signext`).
+                types.push(format!("{input} {extension}"));
+                values.push(format!("{input} {extension} {value}"));
+                continue;
+            }
             let abi = abi_type(&argument.ty);
             let value = match argument.ty {
                 Type::Bool | Type::Integer(8 | 16, false) => {
@@ -491,6 +506,45 @@ impl FunctionEmitter<'_, '_> {
             };
             types.push(abi.clone());
             values.push(format!("{abi} {value}"));
+        }
+        if let Some(send) = send {
+            // M02 spec 6: the receiver and the selector are the first two arguments. An instance
+            // method's receiver is its first argument, already lowered to the object's pointer;
+            // a class method reads the reference of its class. The selector is read after every
+            // argument is evaluated. The places behind the insertion move by its length.
+            let at = usize::from(send.class.is_none());
+            let mut inserted = Vec::new();
+            if let Some(class) = &send.class {
+                inserted.push(format!("ptr {}", self.objc_classref(class)));
+            }
+            inserted.push(format!("ptr {}", self.objc_selref(&send.selector)));
+            let shift = inserted.len();
+            for (offset, value) in inserted.into_iter().enumerate() {
+                types.insert(at + offset, "ptr".into());
+                values.insert(at + offset, value);
+            }
+            for (position, ..) in &mut by_values {
+                if *position >= at {
+                    *position += shift;
+                }
+            }
+            for (position, ..) in &mut widen {
+                if *position >= at {
+                    *position += shift;
+                }
+            }
+            for (slot, ..) in &mut count_checks {
+                if let Some(slot) = slot
+                    && *slot >= at
+                {
+                    *slot += shift;
+                }
+            }
+            for (position, ..) in &mut deferred_nullable_records {
+                if *position >= at {
+                    *position += shift;
+                }
+            }
         }
         // W13: validate `@count(..., i32 | i32u)` bounds after all arguments are evaluated and
         // before widening compact strings so a trap never leaks a widened copy.
@@ -530,10 +584,14 @@ impl FunctionEmitter<'_, '_> {
             values[position] = format!("ptr {converted}");
         }
         let result_nullable = crate::abi::nullable(result, &self.module.types()).is_some();
+        let small_result = send.and_then(|_| objc::small_scalar_extension(result));
         let mut output = if let Some(class) = &result_class {
             class.result_type()
         } else if *result == Type::Unit || out.is_some() {
             "void".to_owned()
+        } else if let Some(extension) = small_result {
+            // M02 spec 5: `zeroext i1`, `signext i8`, ... as the callee returns them.
+            format!("{extension} {}", self.ty(result))
         } else {
             abi_type(&crate::abi::c_view(result, &self.module.types()))
         };
@@ -607,15 +665,21 @@ impl FunctionEmitter<'_, '_> {
             types = lowered_types;
             values = lowered_values;
         }
-        self.intrinsics.insert(extern_declare(
-            self.module,
-            self.globals.wasm,
-            &import.wasm_module,
-            &import.wasm_name,
-            &import.native_symbol,
-            &output,
-            &types,
-        ));
+        if send.is_some() {
+            // M02 D11: `objc_msgSend` has one variadic declaration; each call names its own
+            // function type, so the arguments go to the registers of that type.
+            self.globals.objc.msg_send();
+        } else {
+            self.intrinsics.insert(extern_declare(
+                self.module,
+                self.globals.wasm,
+                &import.wasm_module,
+                &import.wasm_name,
+                &import.native_symbol,
+                &output,
+                &types,
+            ));
+        }
         if !self.globals.wasm
             && import.explicit
             && self.module.weak_symbols.contains(&import.native_symbol)
@@ -678,7 +742,7 @@ impl FunctionEmitter<'_, '_> {
                             emitter.guard(&valid, TrapKind::NullHandle);
                         }
                         let decoded = if *ty == Type::Bool {
-                            emitter.value(format!("icmp ne i32 {raw}, 0"))
+                            emitter.value(format!("icmp ne {c_llvm_ty} {raw}, 0"))
                         } else {
                             raw
                         };
@@ -735,6 +799,8 @@ impl FunctionEmitter<'_, '_> {
                 self.guard(&valid, TrapKind::NullHandle);
             }
             match result {
+                // M02: a message returns `bool` and the small integers in their own width.
+                _ if small_result.is_some() => value,
                 Type::Bool => self.value(format!("icmp ne i32 {value}, 0")),
                 Type::Integer(8 | 16, _) => {
                     self.value(format!("trunc i32 {value} to {}", self.ty(result)))

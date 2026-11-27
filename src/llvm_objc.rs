@@ -45,6 +45,11 @@ pub(super) struct ObjcGlobals {
     attached_call: bool,
     /// The classes declared `@weak` whose reference the code reads, by runtime name (M17).
     weak_classes: BTreeSet<String>,
+    /// Some emitted code sends a message (M02).
+    msg_send: bool,
+    /// The constant NSStrings of `ObjC.literal`, numbered in the order of their first use, by
+    /// their UTF-16 code units (M02).
+    cfstrings: BTreeMap<Vec<u16>, usize>,
 }
 
 impl ObjcGlobals {
@@ -58,6 +63,26 @@ impl ObjcGlobals {
     pub(super) fn attached_call(&mut self) {
         self.used = true;
         self.attached_call = true;
+    }
+
+    /// Marks a call of `objc_msgSend` (M02).
+    pub(super) fn msg_send(&mut self) {
+        self.used = true;
+        self.msg_send = true;
+    }
+}
+
+/// The one declaration of `objc_msgSend`, as clang writes it (M02 D11).
+const MSG_SEND_DECLARE: &str = "declare ptr @objc_msgSend(ptr, ptr, ...)";
+
+/// M02 spec 5: the extension attribute of `ty` where a message passes or returns it in its own
+/// width: `zeroext` for `bool` and the unsigned 8- and 16-bit integers, `signext` for the signed
+/// ones. `None` for every other type, which a message passes as an `extern def` does.
+pub(super) fn small_scalar_extension(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::Bool | Type::Integer(8 | 16, false) => Some("zeroext"),
+        Type::Integer(8 | 16, true) => Some("signext"),
+        _ => None,
     }
 }
 
@@ -196,7 +221,17 @@ impl FunctionEmitter<'_, '_> {
                     .expect("the checker validated the argument of ObjC.sel");
                 self.objc_selref(&selector)
             }
-            _ => unreachable!("not a function of the module ObjC that M01 lowers"),
+            // M02 spec 7: a constant NSString object, which no retain or release changes.
+            Builtin::ObjcLiteral => {
+                let text = crate::check::constant_string(argument, &self.module.statics)
+                    .expect("the checker validated the argument of ObjC.literal");
+                self.globals.objc.used = true;
+                let units: Vec<u16> = text.encode_utf16().collect();
+                let next = self.globals.objc.cfstrings.len();
+                let number = *self.globals.objc.cfstrings.entry(units).or_insert(next);
+                format!("@tz.objc.cfstring.{number}")
+            }
+            _ => unreachable!("not a function of the module ObjC"),
         }
     }
 }
@@ -263,12 +298,59 @@ pub(super) fn finish(globals: &mut Globals, output: &mut String) {
             used.join(", ")
         );
     }
+    // M02 spec 7: the constant NSStrings, in clang's layout: ASCII without a NUL as bytes
+    // (flags 1992, the length in bytes), anything else as UTF-16 (flags 2000, the length in
+    // units). The data ends in a zero unit that the length does not count.
+    if !objc.cfstrings.is_empty() {
+        let _ = writeln!(
+            output,
+            "@__CFConstantStringClassReference = external global [0 x i32]"
+        );
+    }
+    let mut cfstrings: Vec<(&Vec<u16>, usize)> = objc
+        .cfstrings
+        .iter()
+        .map(|(units, number)| (units, *number))
+        .collect();
+    cfstrings.sort_by_key(|(_, number)| *number);
+    for (units, number) in cfstrings {
+        let ascii = units.iter().all(|unit| (1..0x80).contains(unit));
+        let (flags, length) = if ascii {
+            let bytes: String = units.iter().map(|unit| format!("\\{unit:02X}")).collect();
+            let _ = writeln!(
+                output,
+                "@tz.objc.cfstring.data.{number} = private unnamed_addr constant [{} x i8] c\"{bytes}\\00\", section \"__TEXT,__cstring,cstring_literals\", align 1",
+                units.len() + 1
+            );
+            (1992, units.len())
+        } else {
+            let data: Vec<String> = units
+                .iter()
+                .chain(std::iter::once(&0))
+                .map(|unit| format!("i16 {unit}"))
+                .collect();
+            let _ = writeln!(
+                output,
+                "@tz.objc.cfstring.data.{number} = private unnamed_addr constant [{} x i16] [{}], section \"__TEXT,__ustring\", align 2",
+                units.len() + 1,
+                data.join(", ")
+            );
+            (2000, units.len())
+        };
+        let _ = writeln!(
+            output,
+            "@tz.objc.cfstring.{number} = private global {{ ptr, i32, ptr, i64 }} {{ ptr @__CFConstantStringClassReference, i32 {flags}, ptr @tz.objc.cfstring.data.{number}, i64 {length} }}, section \"__DATA,__cfstring\", align 8"
+        );
+    }
     let mut declarations: Vec<&str> = RUNTIME
         .iter()
         .filter(|(symbol, _)| objc.runtime.contains(symbol))
         .filter(|(symbol, _)| !output.lines().any(|line| declares(line, symbol)))
         .map(|(_, declaration)| *declaration)
         .collect();
+    if objc.msg_send && !output.lines().any(|line| declares(line, "objc_msgSend")) {
+        declarations.push(MSG_SEND_DECLARE);
+    }
     if objc.attached_call {
         declarations.push(ATTACHED_CALL_DECLARE);
     }

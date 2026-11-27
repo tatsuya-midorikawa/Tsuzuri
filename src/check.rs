@@ -7777,7 +7777,8 @@ impl Names {
             return Some(own);
         }
         if let Some(category) = self.objc.categories.get(path)
-            && (category.public || category.name.rsplit_once('.').map(|(owner, _)| owner) == Some(module))
+            && (category.public
+                || category.name.rsplit_once('.').map(|(owner, _)| owner) == Some(module))
             && self.searchable_path(module, path)
         {
             return Some(path.to_owned());
@@ -11112,6 +11113,8 @@ fn check_modules_collect(
     if zstring_record_id.is_some() {
         validate_zstring_literals(&functions)?;
     }
+    // M02: before the constants are folded, so that a `const` is not taken for a literal.
+    validate_objc_literals(&functions)?;
     let zutf8string_record_id = names
         .records
         .get("ZUtf8String.ZUtf8String")
@@ -11469,6 +11472,37 @@ fn validate_zstring_literals(functions: &[CheckedFunction]) -> Result<(), Diagno
     Ok(())
 }
 
+/// M02 spec 7: the argument of `ObjC.literal` is one string literal without interpolation
+/// (`E1005` `objc_literal_argument`), as that of `ZString.literal` is. A use that is not a
+/// direct call is reported by `validate_objc_builtins`.
+fn validate_objc_literals(functions: &[CheckedFunction]) -> Result<(), Diagnostic> {
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && matches!(
+                    &callee.kind,
+                    TypedExprKind::Function(FunctionRef::Builtin(instance))
+                        if instance.builtin == Builtin::ObjcLiteral
+                )
+                && let [argument] = arguments.as_slice()
+                && !matches!(argument.kind, TypedExprKind::String(_))
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ObjcLiteralArgument,
+                    "'ObjC.literal' requires a plain string literal without interpolation; a text that is known only at run time needs a call of NSString",
+                    argument.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 /// M01: checks every use of the built-in module `ObjC`: each function is called directly, its
 /// type arguments are Objective-C object types, the target of an upcast is an ancestor of the
 /// argument's class, and the argument of `ObjC.sel` is a string literal that is a selector.
@@ -11548,7 +11582,33 @@ fn validate_objc_builtins(
                         objc_selector(&selector, argument.span)?;
                         continue;
                     }
-                    Builtin::ObjcLiteral => {}
+                    // M02 spec 7: the expected type is the class that the runtime knows as
+                    // NSString, a class of its declared chain of bases, or `ObjC.Object`. The
+                    // argument was checked before the constants were folded.
+                    Builtin::ObjcLiteral => {
+                        let target = &instance.types[0];
+                        let allowed = match target {
+                            Type::Handle(name, kind) if kind.objc() => {
+                                &**name == crate::syntax::OBJC_OBJECT
+                                    || objc.classes.values().any(|class| {
+                                        class.runtime_name == "NSString"
+                                            && objc.is_ancestor(name, &class.name)
+                                    })
+                            }
+                            _ => false,
+                        };
+                        if !allowed {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ObjcLiteralType,
+                                format!(
+                                    "'ObjC.literal' makes a constant NSString: the expected type is the extern class whose runtime name is NSString, one of its bases, or 'ObjC.Object', not {}; a derived class such as NSMutableString needs a call of its own",
+                                    target.display(types)
+                                ),
+                                expr.span,
+                            ));
+                        }
+                        continue;
+                    }
                     _ => unreachable!("is_objc lists the builtins of ObjC"),
                 }
                 pending.push(argument);
@@ -12702,7 +12762,12 @@ fn declare_objc_sends(
                 else {
                     continue;
                 };
-                (category.class.clone(), member.clone(), true, category.trusted)
+                (
+                    category.class.clone(),
+                    member.clone(),
+                    true,
+                    category.trusted,
+                )
             }
             None => {
                 let Some(declaring) = names.objc.chain(&owner).into_iter().find(|class| {

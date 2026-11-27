@@ -1,0 +1,340 @@
+// M02: typed message sends, end to end. tests/objc_send.mjs links this program with
+// tests/objc_send_host.m and runs one case for each argument. Every expected line is computed in the
+// suite from the host's own arithmetic and object counts, never from this compiler.
+
+@c_layout
+record TzPoint { x: f64, y: f64 }
+
+@c_layout
+record TzSize { width: f64, height: f64 }
+
+@c_layout
+record TzRect { origin: TzPoint, size: TzSize }
+
+@c_layout
+record TzRange { location: i64u, length: i64u }
+
+@c_layout
+record TzBig { a: f64, b: f64, c: f64, d: f64, e: f64, f: f64 }
+
+@c_layout
+record TzPair { left: i32, right: i32 }
+
+@c_layout
+record TzColor { r: f32, g: f32, b: f32 }
+
+@trusted
+extern class NSObject : ObjC.Object {
+    class alloc :: unit -> Self
+    init :: unit -> Maybe<Self>
+    class "class" class_object :: unit -> ObjC.Class
+    "respondsToSelector:" responds :: ObjC.Sel -> bool
+}
+
+@trusted
+extern class TzSend : NSObject {
+    "initWithValue:" init_with_value :: i64 -> Maybe<Self>
+    class "makeWithValue:" make_with_value :: i64 -> Self
+    class "newWithValue:" new_with_value :: i64 -> Self
+    class answer :: unit -> i64
+    "copyTwin" copy_twin :: unit -> ObjC.Object
+    twin :: unit -> TzSend
+    "maybeTwin:" maybe_twin :: bool -> Maybe<TzSend>
+    tag :: unit -> i64
+    value :: unit -> i64
+    "setValue:" set_value :: i64 -> unit
+    "isPositive" is_positive :: unit -> bool
+    "flip:" flip :: bool -> bool
+    "narrow:" narrow :: i8 -> i8
+    "ubyte:" ubyte :: i8u -> i8u
+    "shorter:" shorter :: i16 -> i16
+    "ushorter:" ushorter :: i16u -> i16u
+    "int32:" int32 :: i32 -> i32
+    "uint32:" uint32 :: i32u -> i32u
+    "half:" half :: f32 -> f32
+    "twice:" twice :: f64 -> f64
+    "takeChar:short:uchar:ushort:flag:f:" take :: i8 -> i16 -> i8u -> i16u -> bool -> f32 -> i64
+    "sum:b:c:d:e:f:g:h:i:j:" sum :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64
+    "mixInt:d:i:f:flag:" mix_scalars :: i64 -> f64 -> i32 -> f32 -> bool -> f64
+    "sumBytes:length:" sum_bytes :: ref [ubyte] -> i64
+    "fill:" fill :: ref mut i64 -> unit
+    "tell:" tell :: ref mut bool -> unit
+    "isSame:" is_same :: ref TzSend -> bool
+    "valueOr:" value_or :: Maybe<ref TzSend> -> i64
+    "apply:to:" apply :: (i64 -> i64) -> i64 -> i64
+    point :: unit -> TzPoint
+    frame :: unit -> TzRect
+    range :: unit -> TzRange
+    big :: unit -> TzBig
+    pair :: unit -> TzPair
+    color :: unit -> TzColor
+    "areaOf:" area_of :: TzRect -> f64
+    "offset:by:" offset :: TzPoint -> f64 -> TzPoint
+    "grow:by:" grow :: TzRange -> i64u -> TzRange
+    "scale:by:" scale :: TzBig -> f64 -> TzBig
+    "sumPair:" sum_pair :: TzPair -> i64
+    "luma:" luma :: TzColor -> f64
+    "mix:with:at:" mix :: TzRect -> TzRect -> TzPoint -> f64
+    "spill:b:c:d:e:range:" spill :: i64 -> i64 -> i64 -> i64 -> i64 -> TzRange -> i64
+}
+
+@trusted
+extern class TzSendChild : TzSend
+
+@trusted
+extern category Extras : TzSend {
+    doubled :: unit -> i64
+    class extra :: unit -> i64
+}
+
+@trusted
+extern class sync TzSendShared : NSObject {
+    ping :: unit -> i64
+}
+
+@trusted
+extern "tzsend_live" def live :: unit -> i64
+
+@trusted
+@count(2, none)
+extern "tzsend_class_is" def class_is :: ObjC.Class -> ref utf8string -> i32
+
+@trusted
+extern "objc_autoreleasePoolPush" def pool_push :: unit -> i64
+
+@trusted
+extern "objc_autoreleasePoolPop" def pool_pop :: i64 -> unit
+
+def triple :: i64 -> i64 = \value -> value * 3
+
+// A value with two decimal places as an integer: the suite compares integers.
+def cents :: f64 -> i64 = \value -> (value * 100.0) as i64
+
+// The families: who owns the result, counted by the host's live objects.
+def family_counts :: unit -> string = \() ->
+    let made = TzSend.make_with_value 1
+    let created = TzSend.new_with_value 2
+    let a = live ()
+    let copied = TzSend.copy_twin (ref created)
+    let twin = TzSend.twin (ref created)
+    let b = live ()
+    let c = TzSend.value (ref made) + TzSend.value (ref twin)
+    let kept: Maybe<TzSend> = ObjC.downcast (ref copied)
+    let d = match kept with
+        | Maybe.Some other -> TzSend.value (ref other)
+        | Maybe.None -> -1
+    $"{a} {b} {c} {d}"
+
+def families :: unit -> string = \() ->
+    let pool = pool_push ()
+    let counts = family_counts ()
+    let after = live ()
+    pool_pop pool
+    $"{counts} {after} {live ()}"
+
+// alloc and init: `init` consumes its receiver; a failed init returns nil and leaves nothing.
+def init_counts :: unit -> string = \() ->
+    let first = match TzSend.init_with_value (TzSend.alloc ()) 7 with
+        | Maybe.Some object -> TzSend.value (ref object) + 100 * live ()
+        | Maybe.None -> -1
+    let allocated = TzSend.alloc ()
+    let second = match TzSend.init_with_value allocated (0 - 1) with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0
+    let plain = match TzSend.init (TzSend.alloc ()) with
+        | Maybe.Some object -> TzSend.value (ref object) + 100 * live ()
+        | Maybe.None -> -1
+    $"{first} {second} {plain}"
+
+def inits :: unit -> string = \() ->
+    let pool = pool_push ()
+    let counts = init_counts ()
+    pool_pop pool
+    $"{counts} {live ()}"
+
+def scalars :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let a = TzSend.is_positive (ref object)
+    let b = TzSend.flip (ref object) true
+    let c = TzSend.flip (ref object) false
+    let d = TzSend.narrow (ref object) (0i8 - 127i8 - 1i8)
+    let e = TzSend.ubyte (ref object) 255i8u
+    let f = TzSend.shorter (ref object) (0i16 - 32767i16 - 1i16)
+    let g = TzSend.ushorter (ref object) 65535i16u
+    let h = TzSend.int32 (ref object) (0i32 - 2147483647i32)
+    let i = TzSend.uint32 (ref object) 4294967295i32u
+    let j = cents ((TzSend.half (ref object) 2.5f32) as f64)
+    let k = cents (TzSend.twice (ref object) 1.5)
+    $"{a} {b} {c} {d} {e} {f} {g} {h} {i} {j} {k}"
+
+def many :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let a = TzSend.take (ref object) (0i8 - 1i8) (0i16 - 2i16) 200i8u 60000i16u true 1.5f32
+    let b = TzSend.sum (ref object) 1 2 3 4 5 6 7 8 9 10
+    let c = cents (TzSend.mix_scalars (ref object) 1 2.5 3i32 0.25f32 true)
+    $"{a} {b} {c}"
+
+def buffers :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let bytes = [1i8u, 2i8u, 3i8u, 250i8u]
+    let a = TzSend.sum_bytes (ref object) (ref bytes)
+    let mut filled = 0
+    TzSend.fill (ref object) (ref mut filled)
+    let mut flag = false
+    TzSend.tell (ref object) (ref mut flag)
+    let first = flag
+    TzSend.tell (ref object) (ref mut flag)
+    $"{a} {filled} {first} {flag}"
+
+def objects :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let other = TzSend.new_with_value 9
+    let a = TzSend.is_same (ref object) (ref object)
+    let b = TzSend.is_same (ref object) (ref other)
+    let c = TzSend.value_or (ref object) (Maybe.Some (ref other))
+    let d = TzSend.value_or (ref object) Maybe.None
+    let e = TzSend.apply (ref object) triple 4
+    TzSend.set_value (ref object) 11
+    let f = TzSend.value (ref object)
+    let g = match TzSend.maybe_twin (ref object) true with
+        | Maybe.Some twin -> TzSend.value (ref twin)
+        | Maybe.None -> -1
+    let h = match TzSend.maybe_twin (ref object) false with
+        | Maybe.Some _ -> 1
+        | Maybe.None -> 0
+    $"{a} {b} {c} {d} {e} {f} {g} {h}"
+
+def classes :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let child = TzSendChild.new_with_value 6
+    let a = class_is (TzSend.class_object ()) (ref u8"TzSend\0")
+    let b = class_is (TzSendChild.class_object ()) (ref u8"TzSendChild\0")
+    let c = class_is (TzSendChild.class_object ()) (ref u8"TzSend\0")
+    let d = TzSend.responds (ref object) (ObjC.sel "twin")
+    let e = TzSend.responds (ref object) (ObjC.sel "noSuchMethod")
+    let f = TzSendChild.tag (ref child)
+    let g = TzSend.tag (ObjC.upcast (ref child))
+    let h = TzSend.tag (ref object)
+    let i = TzSendChild.value (ref child)
+    let j = TzSend.answer () + TzSendChild.answer ()
+    let k = Extras.doubled (ref object) + Extras.extra ()
+    $"{a} {b} {c} {d} {e} {f} {g} {h} {i} {j} {k}"
+
+def struct_results :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let p = TzSend.point (ref object)
+    let r = TzSend.frame (ref object)
+    let n = TzSend.range (ref object)
+    let b = TzSend.big (ref object)
+    let i = TzSend.pair (ref object)
+    let c = TzSend.color (ref object)
+    let floats = cents (p.x + 2.0 * p.y + r.origin.x + 2.0 * r.origin.y + 3.0 * r.size.width + 4.0 * r.size.height)
+    let big = cents (b.a + 2.0 * b.b + 3.0 * b.c + 4.0 * b.d + 5.0 * b.e + 6.0 * b.f)
+    let color = cents ((c.r as f64) + 2.0 * (c.g as f64) + 4.0 * (c.b as f64))
+    $"{floats} {n.location} {n.length} {big} {i.left} {i.right} {color}"
+
+def struct_arguments :: unit -> string = \() ->
+    let object = TzSend.new_with_value 5
+    let rect = TzRect { origin: TzPoint { x: 1.5, y: 2.5 }, size: TzSize { width: 3.0, height: 4.5 } }
+    let a = cents (TzSend.area_of (ref object) rect)
+    let moved = TzSend.offset (ref object) (TzPoint { x: 1.0, y: 2.0 }) 0.25
+    let b = cents (moved.x + 10.0 * moved.y)
+    let grown = TzSend.grow (ref object) (TzRange { location: 3i64u, length: 4i64u }) 5i64u
+    let scaled = TzSend.scale (ref object) (TzBig { a: 1.0, b: 2.0, c: 3.0, d: 4.0, e: 5.0, f: 6.0 }) 1.5
+    let c = cents (scaled.a + scaled.b + scaled.c + scaled.d + scaled.e + scaled.f)
+    let d = TzSend.sum_pair (ref object) (TzPair { left: 7i32, right: 0i32 - 3i32 })
+    let e = cents (TzSend.luma (ref object) (TzColor { r: 0.5f32, g: 0.25f32, b: 2.0f32 }))
+    let other = TzRect { origin: TzPoint { x: 5.0, y: 6.0 }, size: TzSize { width: 7.0, height: 8.0 } }
+    let whole = TzRect { origin: TzPoint { x: 1.0, y: 2.0 }, size: TzSize { width: 3.0, height: 4.0 } }
+    let f = cents (TzSend.mix (ref object) whole other (TzPoint { x: 9.0, y: 10.0 }))
+    let g = TzSend.spill (ref object) 1 2 3 4 5 (TzRange { location: 6i64u, length: 7i64u })
+    $"{a} {b} {grown.location} {grown.length} {c} {d} {e} {f} {g}"
+
+// A send from a tzroutine: the program spawns, so its sends are wrapped as blocking calls.
+def routine :: unit -> string = \() ->
+    let shared = TzSendShared.alloc ()
+    let results: Channel<i64> = Channel.make 1
+    let out = Channel.share results
+    tzroutine {
+        let moved = shared
+        let value = match TzSendShared.init moved with
+            | Maybe.Some object -> TzSendShared.ping (ref object)
+            | Maybe.None -> -1
+        Channel.send out value
+    }
+    match Channel.recv results with
+    | Maybe.Some value -> $"{value}"
+    | Maybe.None -> "closed"
+
+// The same messages as `reference_calls` of tests/objc_send_reference.m, in the same order: the
+// suite compares the type of every `objc_msgSend` call here with clang's (M02 S4).
+def reference_calls :: ref [ubyte] -> i64 = \bytes ->
+    let object = TzSend.new_with_value 5
+    let made = TzSend.make_with_value 6
+    let built = match TzSend.init_with_value (TzSend.alloc ()) 7 with
+        | Maybe.Some built -> built
+        | Maybe.None -> ObjC.retain (ref object)
+    let _a = TzSend.is_positive (ref object)
+    let _b = TzSend.flip (ref object) true
+    let _c = TzSend.narrow (ref object) 1i8
+    let _d = TzSend.ubyte (ref object) 2i8u
+    let _e = TzSend.shorter (ref object) 3i16
+    let _f = TzSend.ushorter (ref object) 4i16u
+    let _g = TzSend.int32 (ref object) 5i32
+    let _h = TzSend.uint32 (ref object) 6i32u
+    let _i = TzSend.half (ref object) 1.5f32
+    let _j = TzSend.twice (ref object) 2.5
+    let _k = TzSend.take (ref object) 1i8 2i16 3i8u 4i16u true 1.5f32
+    let _l = TzSend.sum (ref object) 1 2 3 4 5 6 7 8 9 10
+    let _m = TzSend.mix_scalars (ref object) 1 2.5 3i32 0.25f32 true
+    let _n = TzSend.sum_bytes (ref object) bytes
+    let mut filled = 0
+    TzSend.fill (ref object) (ref mut filled)
+    let mut flag = false
+    TzSend.tell (ref object) (ref mut flag)
+    let _o = TzSend.is_same (ref object) (ref made)
+    let _p = TzSend.value_or (ref object) (Maybe.Some (ref built))
+    let _q = TzSend.apply (ref object) triple 4
+    let point = TzSend.point (ref object)
+    let frame = TzSend.frame (ref object)
+    let range = TzSend.range (ref object)
+    let big = TzSend.big (ref object)
+    let pair = TzSend.pair (ref object)
+    let color = TzSend.color (ref object)
+    let _r = TzSend.area_of (ref object) frame
+    let _s = TzSend.offset (ref object) point 0.25
+    let _t = TzSend.grow (ref object) range 5i64u
+    let _u = TzSend.scale (ref object) big 1.5
+    let _v = TzSend.sum_pair (ref object) pair
+    let _w = TzSend.luma (ref object) color
+    let _x = TzSend.mix (ref object) frame frame point
+    let _y = TzSend.spill (ref object) 1 2 3 4 5 range
+    let _z = TzSend.class_object ()
+    let _aa = TzSend.responds (ref object) (ObjC.sel "twin")
+    let _ab = Extras.doubled (ref object)
+    Extras.extra () + filled
+
+def reference :: unit -> string = \() ->
+    let pool = pool_push ()
+    let bytes = [1i8u, 2i8u]
+    let total = reference_calls (ref bytes)
+    pool_pop pool
+    $"{total} {live ()}"
+
+def main :: Array<string> -> i32 = \arguments ->
+    let given = arguments.length > 0
+    let text =
+        if given && arguments[0] == "families" then families ()
+        elif given && arguments[0] == "inits" then inits ()
+        elif given && arguments[0] == "scalars" then scalars ()
+        elif given && arguments[0] == "many" then many ()
+        elif given && arguments[0] == "buffers" then buffers ()
+        elif given && arguments[0] == "objects" then objects ()
+        elif given && arguments[0] == "classes" then classes ()
+        elif given && arguments[0] == "struct_results" then struct_results ()
+        elif given && arguments[0] == "struct_arguments" then struct_arguments ()
+        elif given && arguments[0] == "routine" then routine ()
+        elif given && arguments[0] == "reference" then reference ()
+        else "unknown case"
+    do! IO.writeln text
+    0
