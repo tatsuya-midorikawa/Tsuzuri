@@ -1013,6 +1013,79 @@ def main :: unit -> i32 = \\() ->
     fs::remove_dir_all(root).ok();
 }
 
+/// An inherited member that is called through a derived class is a use of both classes: the
+/// class that the call names, and the base whose declaration the send trusts.
+#[test]
+fn the_audit_counts_an_inherited_send_on_the_declaring_class() {
+    let program = |base: &str, derived: &str| {
+        format!(
+            "\
+{base}extern class NSObject : ObjC.Object {{
+    class alloc :: unit -> Self
+    init :: unit -> Maybe<Self>
+    hash :: unit -> i64u
+}}
+
+{derived}extern class NSString : NSObject
+
+def main :: unit -> i32 = \\() ->
+    match NSString.init (NSString.alloc ()) with
+    | Maybe.Some text ->
+        let _hash = NSString.hash (ref text)
+        0
+    | Maybe.None -> 2
+"
+        )
+    };
+    for (base, derived, warned, quiet) in [
+        ("", "@trusted\n", "NSObject", "NSString"),
+        ("@trusted\n", "", "NSString", "NSObject"),
+    ] {
+        let root = temp_project("audit-inherited", &[("Main.tz", &program(base, derived))]);
+        let output = Command::new(bin())
+            .arg("audit")
+            .arg(&root)
+            .arg("--json")
+            .env("TSUZURI_CACHE_DIR", "")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        let row = |name: &str| {
+            text.lines()
+                .find(|line| {
+                    line.contains("\"type\":\"extern\"")
+                        && line.contains(&format!("\"name\":\"{name}\""))
+                })
+                .unwrap_or_else(|| panic!("no row for {name}:\n{text}"))
+                .to_owned()
+        };
+        // The three sends name NSString and are declared by NSObject.
+        for name in ["NSObject", "NSString"] {
+            assert!(row(name).contains("\"used\":3"), "{}", row(name));
+        }
+        assert!(row(warned).contains("\"trusted\":false"), "{text}");
+        assert!(row(quiet).contains("\"trusted\":true"), "{text}");
+
+        let checked = Command::new(bin())
+            .arg("check")
+            .arg(&root)
+            .args(["--warn", "untrusted-extern", "--json"])
+            .env("TSUZURI_CACHE_DIR", "")
+            .output()
+            .unwrap();
+        let warnings = String::from_utf8_lossy(&checked.stdout).into_owned()
+            + &String::from_utf8_lossy(&checked.stderr);
+        assert!(
+            warnings.contains(&format!(
+                "extern class '{warned}' is used but not marked '@trusted'"
+            )),
+            "{warnings}"
+        );
+        assert!(!warnings.contains(&format!("'{quiet}'")), "{warnings}");
+        fs::remove_dir_all(root).ok();
+    }
+}
+
 #[test]
 fn the_api_of_a_class_is_its_header_and_members() {
     let api_of = |label: &str, source: &str| {

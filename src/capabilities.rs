@@ -827,17 +827,21 @@ pub fn analyze_with_limits(
             }
         }
         for &(target, span) in &edges[id] {
-            // M02: a message send is a use of the class or category that the call names. The
+            // M02: a message send is a use of the class or category that the call names, and of
+            // the base that declares an inherited member: the contract that a person confirms
+            // with `@trusted` is the declaring one, so its row must not read as unused. The
             // function that stands for the send is no declaration of the program, so it has no
             // row of its own.
             if let TypedExprKind::HostCall(import, _) = &functions[target].body.kind
                 && let Some(send) = &import.objc
             {
-                class_uses.entry(send.owner.clone()).or_default().insert((
-                    span.source.unwrap_or(usize::MAX),
-                    span.start,
-                    span.end,
-                ));
+                for used in [&send.owner, &send.declaring] {
+                    class_uses.entry(used.clone()).or_default().insert((
+                        span.source.unwrap_or(usize::MAX),
+                        span.start,
+                        span.end,
+                    ));
+                }
                 add(Site {
                     capability: Capability::Ffi,
                     span,

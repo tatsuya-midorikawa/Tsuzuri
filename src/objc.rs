@@ -81,6 +81,10 @@ pub struct ObjcSend {
     /// The qualified name of the class or category that the call names, whose audit row counts
     /// the use.
     pub owner: String,
+    /// The qualified name of the class or category that declares the member: `owner`, or a base
+    /// of `owner` for an inherited member. Its audit row counts the use too, because the trust
+    /// of the send is the trust of this declaration.
+    pub declaring: String,
 }
 
 /// The method families of Cocoa's naming rules that change ownership (M02 D8).

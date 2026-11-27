@@ -12760,7 +12760,7 @@ fn declare_objc_sends(
     for (owner, member_name) in pairs {
         // The class that receives the message, the declaration of the member, and whether the
         // owner declares the member itself (its function validates the declaration).
-        let (class, member, own, trusted) = match names.objc.categories.get(&owner) {
+        let (class, member, declaring, trusted) = match names.objc.categories.get(&owner) {
             Some(category) => {
                 let Some(member) = category
                     .members
@@ -12772,7 +12772,7 @@ fn declare_objc_sends(
                 (
                     category.class.clone(),
                     member.clone(),
-                    true,
+                    owner.clone(),
                     category.trusted,
                 )
             }
@@ -12794,11 +12794,12 @@ fn declare_objc_sends(
                 (
                     owner.clone(),
                     member,
-                    declaring.name == owner,
+                    declaring.name.clone(),
                     declaring.trusted,
                 )
             }
         };
+        let own = declaring == owner;
         let Some(runtime_name) = names.objc.runtime_name(&class).map(str::to_owned) else {
             continue;
         };
@@ -12899,6 +12900,7 @@ fn declare_objc_sends(
                     retained,
                     display,
                     owner: owner.clone(),
+                    declaring,
                 })),
             },
         );
