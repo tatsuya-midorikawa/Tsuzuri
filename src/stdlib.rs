@@ -1089,6 +1089,14 @@ mod tests {
                 "std/Tensor.tz: Pow<Tensor<'a>, 'a, Tensor<'a>>",
                 "std/Tensor.tz: Pow<'a, View<'a>, Tensor<'a>>",
                 "std/Tensor.tz: Pow<View<'a>, 'a, Tensor<'a>>",
+                "std/Complex.tz: Add<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Add<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Sub<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Sub<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Mul<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Mul<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Div<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Div<'a, Complex<'a>, Complex<'a>>",
             ]
         );
     }
