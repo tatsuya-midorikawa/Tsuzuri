@@ -211,6 +211,9 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
         | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
+        // M01: retaining and the checked cast call the Objective-C runtime.
+        ObjcRetain | ObjcDowncast => Some(Outside),
+        ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)
         }
@@ -1594,7 +1597,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            171
+            173
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
         assert!(!builtin_impure(Builtin::ZUtf8StringLiteral));

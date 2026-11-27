@@ -303,6 +303,29 @@ fn refuses_the_conventions_that_it_would_not_implement() {
         expect_refusal(ir, construct);
         expect_wasm_refusal(ir, construct);
     }
+    // W36: a `@c_layout` record by value in an `extern def` lowers to these forms where it is not
+    // one integer or float (an AArch64 pair of words and HFA, the System V eightbytes). They are C
+    // conventions of the platform too, and `--backend llvm` builds them.
+    let by_value = [
+        (
+            "declare [2 x i64] @g()\ndefine i64 @f() {\n  %r = call [2 x i64] @g()\n  %v = extractvalue [2 x i64] %r, 0\n  ret i64 %v\n}\n",
+            "the result type [2 x i64] of an external function",
+        ),
+        (
+            "declare { double, double } @g()\ndefine double @f() {\n  %r = call { double, double } @g()\n  %v = extractvalue { double, double } %r, 0\n  ret double %v\n}\n",
+            "the result type { double, double } of an external function",
+        ),
+        (
+            "declare void @g([2 x double])\ndefine void @f() {\n  call void @g([2 x double] zeroinitializer)\n  ret void\n}\n",
+            "the parameter type [2 x double] of an external function",
+        ),
+    ];
+    for (ir, construct) in by_value {
+        expect_refusal(ir, construct);
+    }
+    // A record that lowers to one integer is an ordinary scalar of the C convention.
+    let integer = "declare i64 @g(i64)\ndefine i64 @f(i64 %x) {\n  %r = call i64 @g(i64 %x)\n  ret i64 %r\n}\n";
+    backend::compile(integer, &options(1)).expect("native: a record in one integer");
     // The functions of this module are external, so the call is not one that the translators keep.
     backend::compile(musttail, &options(1)).expect("native: an ordinary call");
     backend::compile_wasm(musttail, 1, false).expect("wasm: an ordinary call");

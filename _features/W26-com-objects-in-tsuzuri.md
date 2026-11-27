@@ -68,7 +68,7 @@ def main :: unit -> i32 = \() ->
 ### 着手条件
 
 - [W22](_completed/W22-fnptr-values.md)・[W23](_completed/W23-anchor-state.md) が done、[W25](W25-extern-interface-com.md) の Phase 1 が done。確認: `grep -nE "^\| W(22\|23\|25) " _features/README.md`。
-- Phase 2: [W21](_completed/W21-c-layout-records.md) の Phase 1 が done（`@c_layout` と `read_host_record`・`write_host_record`）。Phase 3: W25 の Phase 3、[W36](W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡しの分類と、呼ばれる側の下げ方）と [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T]`・`@count`）が done。どれも依存の欄（README の表）に無い Phase ごとの前提。
+- Phase 2: [W21](_completed/W21-c-layout-records.md) の Phase 1 が done（`@c_layout` と `read_host_record`・`write_host_record`）。Phase 3: W25 の Phase 3、[W36](_completed/W36-c-layout-by-value.md) の Phase 1（`@c_layout` record の値渡しの分類と、呼ばれる側の下げ方）と [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)（`ref mut [T]`・`@count`）が done。どれも依存の欄（README の表）に無い Phase ごとの前提。
 - 決定事項の D1・D6 が承認済み（Phase 3 は D10 と W25 の D10 も）。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target wasm32`）と `check --json`、コールバックを使う fixture（`tests/fixtures/ffi_extensions`）の IR を `target/scratch/w26/before/` に保存する。
 
@@ -186,7 +186,7 @@ OS がスロット `s` を呼ぶと、コンパイラが生成した thunk が�
 
 ### 8. Phase 3: `IDropTarget` と `ITextStoreACP`
 
-- `IDropTarget`: `POINTL` の値渡しの引数を、[W36](W36-c-layout-by-value.md) の分類（Phase 1 は Windows x64・Arm64。`llvm_byvalue::classify`）でコールバックにも許す。呼ばれる側の wrapper は、引数を W36 の `by_value_from_abi` で、結果を `by_value_to_abi` で下げる（W36 は呼ばれる側を対象外にし、W26 の範囲とする。W36 の D6）。`OleInitialize`・`RegisterDragDrop(hwnd, ref target)`・`RevokeDragDrop`。`DWORD *pdwEffect` は `ref mut i32u`。
+- `IDropTarget`: `POINTL` の値渡しの引数を、[W36](_completed/W36-c-layout-by-value.md) の分類（Phase 1 は Windows x64・Arm64。`llvm_byvalue::classify`）でコールバックにも許す。呼ばれる側の wrapper は、引数を W36 の `by_value_from_abi` で、結果を `by_value_to_abi` で下げる（W36 は呼ばれる側を対象外にし、W26 の範囲とする。W36 の D6）。`OleInitialize`・`RegisterDragDrop(hwnd, ref target)`・`RevokeDragDrop`。`DWORD *pdwEffect` は `ref mut i32u`。
 - `ITextStoreACP`: 呼び出し側が渡した buffer に書く引数（`GetText` の `WCHAR *pchPlain` と長さ `cchPlainReq`）を、コールバックの引数 `ref mut [i16u]` として渡す。長さの位置は interface の本体の `@count`（W25 の Phase 3、W13）で示す。`TS_RUNINFO *` の配列は `ref mut [R]`（`R` は `@c_layout`）。
 - どちらも Windows だけで、`E2002`・`E1008` の規則は W25 と同じ。
 
@@ -218,7 +218,7 @@ OS がスロット `s` を呼ぶと、コンパイラが生成した thunk が�
 ## 前提とする他チケットのインターフェース
 
 - [W25](W25-extern-interface-com.md): `InterfaceInfo`（平らなスロット・IID）、`llvm_com::iid_constant`、`Result<J, i32>` の下げ方、`ref J`・`Maybe<ref J>` の ABI の種類、`Com.IUnknown`、組み込みのモジュール `Com`、kind `com_target_not_interface`。Phase 3 の interface の本体の `@count`。
-- [W36](W36-c-layout-by-value.md)（Phase 3）: `llvm_byvalue::{ByValue, classify}` と `FunctionEmitter::{by_value_slot, by_value_from_abi, by_value_to_abi}`（`POINTL` の値渡しの分類と、呼ばれる側の下げ方）。
+- [W36](_completed/W36-c-layout-by-value.md)（Phase 3）: `llvm_byvalue::{ByValue, classify}` と `FunctionEmitter::{by_value_slot, by_value_from_abi, by_value_to_abi}`（`POINTL` の値渡しの分類と、呼ばれる側の下げ方）。
 - [W22](_completed/W22-fnptr-values.md): `FnPtr<F>`・`FnPtr.of name`（`ptr @tz.callback.<name>` に下がる。Copy・Send・Sync）。W26 は `F` に使える型を仕様 4 だけ広げる。
 - [W23](_completed/W23-anchor-state.md): `Anchor.create`・`Anchor.token`・`Anchor.read`・`Anchor.update` と `Anchor.Error`（`Stale`・`WrongType`・`WrongThread`・`Busy`）。所有者のスレッドの検査と、`read`・`update` の最中の再入の `Busy`。W23 のランタイム（`tsuzuri_tz_anchor_*`）を持つので、Windows の `--emit object` は W23 と同じく既存の `E2002`。W23 の D8（`Anchor<T>` は Send でも Sync でもなく、`T` に Send を求めないので、W19 の `local` のハンドルを持てる）により、Phase 2 の例は提供者の interface の値を `Anchor<T>` の `T` に入れる。
 - [W12](_completed/W12-static-callback-lifetime.md): 仕様 1・2 の契約（`main` の後はトラップ）と「包みは 1 種類」。
@@ -326,4 +326,4 @@ C の側が OS の役をする（vtable を通して呼び、`AddRef`・`Release
 | D7 | 複数の interface は `Com.object` に `I.Methods` の組を渡す（2〜8 個） | D1 の `Com.object` の引数の型を広げるだけで、名前も承認済みの決定も足さない。新しい構文も要らない。UI Automation（`Simple`・`Fragment`・`FragmentRoot`）と TSF（テキストストアとシンク）に要る数 | 既定案（実装者はこの案に従う） |
 | D8 | オブジェクトは agile にしない（`IMarshal`・`IAgileObject` に答えない） | 別のアパートメントからの呼び出しを COM の標準のマーシャリングで作ったスレッドへ戻す。`Anchor` の `WrongThread` が最後の守り | 既定案（実装者はこの案に従う） |
 | D9 | `Com.anchor_error` は仕様 6 の表の HRESULT を返す | 実装ごとに違う値を返すと、呼んだ側の再試行やエラーの表示がそろわない | 既定案（実装者はこの案に従う） |
-| D10 | Phase 3 にコールバックの値渡しの record（`POINTL`）と buffer の引数（`ref mut [T]` と `@count`）を足す | `IDropTarget`・`ITextStoreACP` に要る。値渡しの分類は [W36](W36-c-layout-by-value.md) の D1・D4（E05 の決定と W21 D4 を `@c_layout` の extern の位置に限って改めたもの）のものを、コールバックの呼ばれる側にも使う（呼ばれる側への広げはこの決定の範囲）。`@count` の置き場は W25 の D10 に従う | 要承認（承認前は Phase 3 に着手しない） |
+| D10 | Phase 3 にコールバックの値渡しの record（`POINTL`）と buffer の引数（`ref mut [T]` と `@count`）を足す | `IDropTarget`・`ITextStoreACP` に要る。値渡しの分類は [W36](_completed/W36-c-layout-by-value.md) の D1・D4（E05 の決定と W21 D4 を `@c_layout` の extern の位置に限って改めたもの）のものを、コールバックの呼ばれる側にも使う（呼ばれる側への広げはこの決定の範囲）。`@count` の置き場は W25 の D10 に従う | 要承認（承認前は Phase 3 に着手しない） |

@@ -238,7 +238,8 @@ struct Links {
     unions: Vec<Option<usize>>,
     /// Extern types by qualified name.
     handles: BTreeMap<String, usize>,
-    /// Functions, externs, and constants by qualified name.
+    /// Functions, externs, and constants by qualified name. A function that stands for a message
+    /// send (M02) is here under its own name and refers to the member that the send calls.
     callables: BTreeMap<String, usize>,
 }
 
@@ -381,6 +382,9 @@ fn define_declarations(
         handles: BTreeMap::new(),
         callables: BTreeMap::new(),
     };
+    // M02: the members of Objective-C classes and categories by the qualified name of their
+    // owner and their own name.
+    let mut objc_members: BTreeMap<(String, String), usize> = BTreeMap::new();
     for module in modules {
         let program = module.program;
         let name = module.name;
@@ -472,6 +476,94 @@ fn define_declarations(
             links
                 .handles
                 .insert(format!("{name}.{}", handle.name.text), definition);
+        }
+        for class in &program.extern_classes {
+            let definition = index.define(plain(
+                &class.name,
+                SymbolKind::Record,
+                name,
+                class.header_with(&typed(&class.name.text)),
+                class.visibility,
+            ));
+            links
+                .handles
+                .insert(format!("{name}.{}", class.name.text), definition);
+        }
+        // M02: a member is a method of its class or category. Its parameters are those of the
+        // send, as the call writes them: the receiver first, then the declared ones, in the
+        // words of the declaration (`Self` is the class that the call names).
+        let owners = program
+            .extern_classes
+            .iter()
+            .map(|class| {
+                (
+                    &class.name,
+                    class.name.text.clone(),
+                    class.visibility,
+                    &class.members,
+                )
+            })
+            .chain(program.extern_categories.iter().map(|category| {
+                (
+                    &category.name,
+                    crate::docgen::type_text(&category.class),
+                    category.visibility,
+                    &category.members,
+                )
+            }));
+        for (owner, receiver, visibility, members) in owners {
+            let qualified = format!("{name}.{}", owner.text);
+            let container = links.handles.get(&qualified).copied();
+            for member in members {
+                let send = format!(
+                    "{name}.$objc${}${}",
+                    qualified.replace('.', "$"),
+                    member.name.text
+                );
+                let Some(function) = checked.get(&send) else {
+                    continue;
+                };
+                let mut parameters = Vec::new();
+                if member.class_method.is_none() {
+                    // `init` consumes its receiver; every other member borrows it.
+                    let mode = match function.signature.parameters.first() {
+                        Some(Type::Reference(..)) => "ref",
+                        _ => "own",
+                    };
+                    parameters.push(format!("receiver: {mode} {receiver}"));
+                }
+                // A method without arguments is written `unit -> R`; with a receiver the
+                // `unit` is no argument of the call.
+                let takes_nothing = matches!(
+                    member.parameters.as_slice(),
+                    [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "unit"
+                );
+                if member.class_method.is_some() || !takes_nothing {
+                    parameters.extend(member.parameters.iter().enumerate().map(
+                        |(position, parameter)| {
+                            format!(
+                                "arg{}: {}",
+                                position + 1,
+                                crate::docgen::type_text(parameter)
+                            )
+                        },
+                    ));
+                }
+                let definition = index.define(Definition {
+                    container,
+                    parameters,
+                    result: crate::docgen::type_text(&member.result),
+                    plain_signature: function.plain_signature(),
+                    ..plain(
+                        &member.name,
+                        SymbolKind::Method,
+                        name,
+                        format!("{}.{}: {}", shown, owner.text, member.header()),
+                        visibility,
+                    )
+                });
+                objc_members.insert((qualified.clone(), member.name.text.clone()), definition);
+            }
         }
         for constant in &program.constants {
             let detail = resolve_type(&constant.ty, name, names)
@@ -625,6 +717,20 @@ fn define_declarations(
             }
         }
     }
+    // M02: a call `Owner.member` calls the function that stands for the send. It refers to the
+    // member's declaration, which a base class holds when `Owner` inherits the member.
+    for function in functions {
+        if let TypedExprKind::HostCall(import, _) = &function.body.kind
+            && let Some(send) = &import.objc
+            && let Some(member) = send.display.rsplit('.').next()
+            && let Some(&definition) =
+                objc_members.get(&(send.declaring.clone(), member.to_owned()))
+        {
+            links
+                .callables
+                .insert(function.qualified_name(), definition);
+        }
+    }
     links
 }
 
@@ -712,6 +818,23 @@ pub(super) fn collect(
                 handle.name.span,
                 handle.header_with(&typed(&handle.name.text)),
             );
+        }
+        for class in &program.extern_classes {
+            index.document(&class.name, class.doc.as_ref());
+            index.symbol(
+                &class.name,
+                23,
+                class.name.span,
+                class.header_with(&typed(&class.name.text)),
+            );
+            for member in &class.members {
+                index.document(&member.name, member.doc.as_ref());
+            }
+        }
+        for category in &program.extern_categories {
+            for member in &category.members {
+                index.document(&member.name, member.doc.as_ref());
+            }
         }
         for alias in &program.type_aliases {
             index.document(&alias.name, alias.doc.as_ref());
@@ -1264,8 +1387,11 @@ fn index_function(
             && expression.span.source.is_some()
             && let Some(&definition) = links.callables.get(&functions[id].qualified_name())
         {
-            // A qualified spelling ends with the function name.
-            let start = spelled.end.saturating_sub(functions[id].name.len());
+            // A qualified spelling ends with the function name: the declared one, which is the
+            // member's name for the function that stands for a message send (M02).
+            let start = spelled
+                .end
+                .saturating_sub(index.definitions[definition].name.len());
             if start >= spelled.start {
                 index.reference(Span { start, ..spelled }, definition, Role::Read);
             }

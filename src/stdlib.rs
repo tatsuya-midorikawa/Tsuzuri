@@ -171,6 +171,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Complex",
     // NC08: portable linear algebra and tensor contractions.
     "Linalg",
+    // M01: Objective-C classes, selectors and ownership; a built-in module without a std file.
+    "ObjC",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -757,6 +759,11 @@ mod tests {
                 names.push(("type", handle.name.text.clone()));
             }
         }
+        for class in &program.extern_classes {
+            if class.visibility == Visibility::Public {
+                names.push(("type", class.name.text.clone()));
+            }
+        }
         for class in &program.classes {
             names.push(("class", class.name.text.clone()));
         }
@@ -999,7 +1006,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 80);
+        assert_eq!(RESERVED_MODULES.len(), 81);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

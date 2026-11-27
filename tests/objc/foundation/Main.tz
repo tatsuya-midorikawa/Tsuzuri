@@ -1,0 +1,113 @@
+// M02: the example of the ticket against Foundation, a constant NSString (`ObjC.literal`), and
+// AppKit's NSWindow with its struct arguments and results. The window is created deferred and is
+// never ordered in, the application is never activated, and no run loop runs.
+// tests/objc_send.mjs builds this program with `--framework AppKit`.
+
+@c_layout
+record NSPoint { x: f64, y: f64 }
+
+@c_layout
+record NSSize { width: f64, height: f64 }
+
+@c_layout
+record NSRect { origin: NSPoint, size: NSSize }
+
+@trusted
+extern class NSObject : ObjC.Object {
+    class alloc :: unit -> Self
+    init :: unit -> Maybe<Self>
+}
+
+@trusted
+extern class NSValue : NSObject
+
+@trusted
+extern class NSNumber : NSValue {
+    class "numberWithDouble:" with_double :: f64 -> Self
+    "doubleValue" double_value :: unit -> f64
+    "floatValue" float_value :: unit -> f32
+    "boolValue" bool_value :: unit -> bool
+}
+
+@trusted
+extern class NSString : NSObject {
+    "initWithBytes:length:encoding:" init_with_bytes :: ref [ubyte] -> i64u -> Maybe<Self>
+    length :: unit -> i64u
+    "isEqualToString:" is_equal_to_string :: ref NSString -> bool
+}
+
+@trusted
+extern class NSResponder : NSObject
+
+@trusted
+extern class NSApplication : NSResponder {
+    class "sharedApplication" shared :: unit -> NSApplication
+    "setActivationPolicy:" set_activation_policy :: i64 -> bool
+}
+
+@trusted
+extern class NSWindow : NSResponder {
+    "initWithContentRect:styleMask:backing:defer:" init_with_content_rect :: NSRect -> i64u -> i64u -> bool -> Maybe<Self>
+    "setTitle:" set_title :: ref NSString -> unit
+    title :: unit -> NSString
+    "contentRectForFrameRect:" content_rect_for_frame_rect :: NSRect -> NSRect
+    frame :: unit -> NSRect
+    "isVisible" is_visible :: unit -> bool
+    "setReleasedWhenClosed:" set_released_when_closed :: bool -> unit
+    close :: unit -> unit
+}
+
+@trusted
+extern "objc_autoreleasePoolPush" def pool_push :: unit -> i64
+
+@trusted
+extern "objc_autoreleasePoolPop" def pool_pop :: i64 -> unit
+
+// The example of the ticket: "2.5 2.5 true 5 true".
+def numbers :: unit -> string = \() ->
+    let n = NSNumber.with_double 2.5
+    let bytes = Utf8String.to_bytes u8"こんにちは"
+    match NSString.init_with_bytes (NSString.alloc ()) (ref bytes) 4i64u with
+    | Maybe.None -> "no string"
+    | Maybe.Some s ->
+        let expected: NSString = ObjC.literal "こんにちは"
+        let d = NSNumber.double_value (ref n)
+        let f = NSNumber.float_value (ref n)
+        let b = NSNumber.bool_value (ref n)
+        let count = NSString.length (ref s)
+        let same = NSString.is_equal_to_string (ref s) (ref expected)
+        $"{d} {f} {b} {count} {same}"
+
+// An ASCII and an empty constant string, and a window that is never shown.
+def window :: unit -> string = \() ->
+    let ascii: NSString = ObjC.literal "Tsuzuri"
+    let empty: NSObject = ObjC.literal ""
+    let empty_length = match ObjC.downcast (ref empty) with
+        | Maybe.Some (text: NSString) -> NSString.length (ref text)
+        | Maybe.None -> 99i64u
+    let application = NSApplication.shared ()
+    // NSApplicationActivationPolicyProhibited: no Dock icon and no activation.
+    let _policy = NSApplication.set_activation_policy (ref application) 2
+    let content = NSRect { origin: NSPoint { x: 10.0, y: 20.0 }, size: NSSize { width: 320.0, height: 200.0 } }
+    // A titled window (style mask 1) with a buffered backing store (2), deferred.
+    match NSWindow.init_with_content_rect (NSWindow.alloc ()) content 1i64u 2i64u true with
+    | Maybe.None -> "no window"
+    | Maybe.Some created ->
+        // The program owns the window; closing must not release it again.
+        NSWindow.set_released_when_closed (ref created) false
+        let title: NSString = ObjC.literal "窓 window"
+        NSWindow.set_title (ref created) (ref title)
+        let shown = NSWindow.title (ref created)
+        let inner = NSWindow.content_rect_for_frame_rect (ref created) (NSWindow.frame (ref created))
+        let visible = NSWindow.is_visible (ref created)
+        NSWindow.close (ref created)
+        $"{NSString.length (ref ascii)} {empty_length} {NSString.length (ref shown)} {(inner.size.width) as i64} {(inner.size.height) as i64} {visible}"
+
+def main :: unit -> i32 = \() ->
+    let pool = pool_push ()
+    let first = numbers ()
+    let second = window ()
+    pool_pop pool
+    do! IO.writeln first
+    do! IO.writeln second
+    0

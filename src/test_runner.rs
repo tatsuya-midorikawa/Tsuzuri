@@ -500,13 +500,15 @@ pub fn build_debug_runner(
     if pdb.is_some() {
         text = llvm::with_codeview(text);
     }
-    let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let mut sys_libraries = crate::driver::system_libraries(module, &text, links);
+    crate::driver::add_objc_libraries(&mut sys_libraries, &text, platform, links);
     let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
     let sdk_link_args = crate::driver::prepare_link_extras(
         platform,
         &tool("TSUZURI_CLANG", "clang"),
         links,
         &sys_frameworks,
+        &sys_libraries,
     )?;
     let link_extras = crate::driver::LinkExtras {
         system_libraries: &sys_libraries,
@@ -1007,13 +1009,15 @@ fn compile_native_runner(
     if platform.windows() {
         text = llvm::windows_abi(text, module, true);
     }
-    let sys_libraries = crate::driver::system_libraries(module, &text, links);
+    let mut sys_libraries = crate::driver::system_libraries(module, &text, links);
+    crate::driver::add_objc_libraries(&mut sys_libraries, &text, platform, links);
     let sys_frameworks = crate::driver::system_frameworks(module, &text, links);
     let sdk_link_args = crate::driver::prepare_link_extras(
         platform,
         &tool("TSUZURI_CLANG", "clang"),
         links,
         &sys_frameworks,
+        &sys_libraries,
     )?;
     let link_extras = crate::driver::LinkExtras {
         system_libraries: &sys_libraries,

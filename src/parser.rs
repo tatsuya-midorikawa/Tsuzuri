@@ -39,6 +39,8 @@ struct Attributes {
     c_layout: Option<CLayoutMark>,
     link: Option<LinkMark>,
     weak: Option<Span>,
+    /// `@returns_retained` (`true`) or `@returns_not_retained` (`false`) and its span (M01).
+    returns: Option<(bool, Span)>,
 }
 
 struct LinkMark {
@@ -79,7 +81,12 @@ mod noncanonical;
 enum ExternDeclaration {
     Type(ExternTypeDecl),
     Function(SignatureDecl),
+    Class(Box<ExternClassDecl>),
+    Category(Box<ExternCategoryDecl>),
 }
+
+/// The most members that one `extern class` or `extern category` declares (M02).
+const MAX_OBJC_MEMBERS: usize = 4096;
 
 const LET_BANG_REC: &str = "a 'let!' binding cannot be recursive; define the function with 'let rec' and bind its result with 'let!'";
 const CHECKED_LET_REC: &str =
@@ -90,6 +97,55 @@ const REC_NEEDS_LAMBDA: &str =
     "a 'let rec' binding needs a lambda such as '\\n -> ...'; bind other values with 'let'";
 const STRAY_MEMBER: &str =
     "'and' continues a 'let rec' group; start it with 'let rec' before the 'and'";
+
+/// `E0002` `objc_self_position` when `ty` writes `Self` anywhere: a member of an extern class
+/// writes `Self` only as its whole result or as `Maybe<Self>` (M02 D3).
+fn objc_self_free(ty: &TypeExpr) -> Result<(), Diagnostic> {
+    let mut pending = vec![ty];
+    while let Some(ty) = pending.pop() {
+        match &ty.kind {
+            TypeExprKind::Named(word) if word == "Self" => {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ObjcSelfPosition,
+                    "'Self' stands for the class that the member is called on only as the whole result or as 'Maybe<Self>'; name the class here",
+                    ty.span,
+                ));
+            }
+            TypeExprKind::Named(_) | TypeExprKind::Variable(_) | TypeExprKind::Length(_) => {}
+            TypeExprKind::Apply(head, arguments) => {
+                if head.text == "Self" {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ObjcSelfPosition,
+                        "'Self' stands for the class that the member is called on only as the whole result or as 'Maybe<Self>'; name the class here",
+                        head.span,
+                    ));
+                }
+                pending.extend(arguments.iter());
+            }
+            TypeExprKind::Regions(inner, _)
+            | TypeExprKind::Quantified(_, inner)
+            | TypeExprKind::Array(inner)
+            | TypeExprKind::ArrayView(inner)
+            | TypeExprKind::List(inner)
+            | TypeExprKind::Reference(inner, _)
+            | TypeExprKind::Own(inner)
+            | TypeExprKind::Mut(inner)
+            | TypeExprKind::Pure(inner) => pending.push(inner),
+            TypeExprKind::FixedArray(element, length) => {
+                pending.push(element);
+                pending.push(length);
+            }
+            TypeExprKind::Tuple(elements) => pending.extend(elements.iter()),
+            TypeExprKind::AnonymousUnion(members) => pending.extend(members.iter()),
+            TypeExprKind::Function(parameters, result) => {
+                pending.extend(parameters.iter());
+                pending.push(result);
+            }
+            TypeExprKind::Dyn(_) => {}
+        }
+    }
+    Ok(())
+}
 
 /// Whether the last of `statements` is a `let rec` binding or a member of its group, which an
 /// `and` continues.
@@ -620,6 +676,8 @@ impl Parser<'_> {
             constants: Vec::new(),
             externs: Vec::new(),
             extern_types: Vec::new(),
+            extern_classes: Vec::new(),
+            extern_categories: Vec::new(),
             records: Vec::new(),
             unions: Vec::new(),
             functions: Vec::new(),
@@ -638,6 +696,7 @@ impl Parser<'_> {
             c_layouts: Vec::new(),
             links: Vec::new(),
             weaks: Vec::new(),
+            returns_retained: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -706,9 +765,19 @@ impl Parser<'_> {
                     c_layout,
                     link,
                     weak,
+                    returns,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
+                if let Some((_, span)) = returns
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedReturnsRetainedAttribute,
+                        "'@returns_retained' and '@returns_not_retained' apply to an extern function or a member of an extern class whose result is an Objective-C object",
+                        span,
+                    ));
+                }
                 if let Some(mark) = &c_layout
                     && !self.at(&TokenKind::Record)
                 {
@@ -838,7 +907,39 @@ impl Parser<'_> {
                 match self.extern_declaration(doc, visibility, column, &|name| {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
+                    ExternDeclaration::Class(mut declaration) => {
+                        self.objc_declaration_attributes(
+                            "an 'extern class'",
+                            link.as_ref().map(|mark| mark.span),
+                            None,
+                            counts.first().map(|count| count.span),
+                            returns.map(|(_, span)| span),
+                            trusted.as_ref().and_then(|mark| mark.first),
+                        )?;
+                        declaration.trusted = trusted.map(|mark| mark.span);
+                        declaration.weak = weak;
+                        program.extern_classes.push(*declaration)
+                    }
+                    ExternDeclaration::Category(mut declaration) => {
+                        self.objc_declaration_attributes(
+                            "an 'extern category'",
+                            link.as_ref().map(|mark| mark.span),
+                            weak,
+                            counts.first().map(|count| count.span),
+                            returns.map(|(_, span)| span),
+                            trusted.as_ref().and_then(|mark| mark.first),
+                        )?;
+                        declaration.trusted = trusted.map(|mark| mark.span);
+                        program.extern_categories.push(*declaration)
+                    }
                     ExternDeclaration::Type(declaration) => {
+                        if let Some((_, span)) = returns {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedReturnsRetainedAttribute,
+                                "'@returns_retained' and '@returns_not_retained' apply to an extern function or a member of an extern class whose result is an Objective-C object",
+                                span,
+                            ));
+                        }
                         if let Some(mark) = &link {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::MisplacedLinkAttribute,
@@ -877,6 +978,20 @@ impl Parser<'_> {
                         program.extern_types.push(declaration)
                     }
                     ExternDeclaration::Function(signature) => {
+                        if let Some((retained, span)) = returns {
+                            if signature.view || signature.data.is_some() {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedReturnsRetainedAttribute,
+                                    "'@returns_retained' and '@returns_not_retained' apply to an extern function or a member of an extern class whose result is an Objective-C object",
+                                    span,
+                                ));
+                            }
+                            program.returns_retained.push(OwnershipAttribute {
+                                target: signature.name.clone(),
+                                retained,
+                                span,
+                            });
+                        }
                         if let Some(_access) = signature.data {
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
@@ -1631,6 +1746,15 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.weak = Some(weak_span);
+            } else if let Some(returns) = self.returns_retained_attribute() {
+                if attributes.returns.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ReturnsRetainedConflict,
+                        "a declaration takes one of '@returns_retained' and '@returns_not_retained', once; remove the other",
+                        returns.1,
+                    ));
+                }
+                attributes.returns = Some(returns);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1825,6 +1949,21 @@ impl Parser<'_> {
             ));
         }
         Ok(Some(span))
+    }
+
+    /// `@returns_retained` or `@returns_not_retained` before an `extern def` or a member of an
+    /// `extern class` (M01, M02): whether the result is a +1 reference.
+    fn returns_retained_attribute(&mut self) -> Option<(bool, Span)> {
+        if !self.at(&TokenKind::At) {
+            return None;
+        }
+        let retained = match self.tokens.get(self.position + 1).map(|token| &token.kind) {
+            Some(TokenKind::Ident(name)) if name == "returns_retained" => true,
+            Some(TokenKind::Ident(name)) if name == "returns_not_retained" => false,
+            _ => return None,
+        };
+        let at = self.take().span;
+        Some((retained, at.through(self.take().span)))
     }
 
     /// `@count(position, length)` before an `extern` function declaration (W13).
@@ -5398,6 +5537,16 @@ impl Parser<'_> {
         taken: &dyn Fn(&str) -> bool,
     ) -> Result<ExternDeclaration, Diagnostic> {
         let link = self.link_name()?;
+        if self.at(&TokenKind::Class) {
+            return self
+                .extern_class(doc, visibility, link)
+                .map(|declaration| ExternDeclaration::Class(Box::new(declaration)));
+        }
+        if matches!(&self.current().kind, TokenKind::Ident(word) if word == "category") {
+            return self
+                .extern_category(doc, visibility, link)
+                .map(|declaration| ExternDeclaration::Category(Box::new(declaration)));
+        }
         if self.eat(&TokenKind::Type) {
             if let Some(link) = &link {
                 let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
@@ -5528,6 +5677,368 @@ impl Parser<'_> {
         signature.view = view;
         signature.data = data;
         Ok(ExternDeclaration::Function(signature))
+    }
+
+    /// The attributes that an `extern class` or `extern category` (`what`) does not take, each
+    /// by the span of its first occurrence (M01, M02).
+    fn objc_declaration_attributes(
+        &self,
+        what: &str,
+        link: Option<Span>,
+        weak: Option<Span>,
+        count: Option<Span>,
+        returns: Option<Span>,
+        trusted_property: Option<Span>,
+    ) -> Result<(), Diagnostic> {
+        if let Some(span) = link {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedLinkAttribute,
+                "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                span,
+            ));
+        }
+        if let Some(span) = weak {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedWeakAttribute,
+                "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                span,
+            ));
+        }
+        if let Some(span) = count {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedCountAttribute,
+                format!("'@count' applies to an 'extern' function declaration, not {what}"),
+                span,
+            ));
+        }
+        if let Some(span) = returns {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedReturnsRetainedAttribute,
+                "'@returns_retained' and '@returns_not_retained' apply to an extern function or a member of an extern class whose result is an Objective-C object",
+                span,
+            ));
+        }
+        if let Some(span) = trusted_property {
+            return Err(Diagnostic::of(
+                DiagnosticKind::TrustedTypeProperty,
+                format!("'@trusted' on {what} takes no properties; write '@trusted' alone"),
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    /// `class [sync] Name : Base [{ members }]` after `extern ["RuntimeName"]` (M01, M02).
+    fn extern_class(
+        &mut self,
+        doc: Option<Documentation>,
+        visibility: Visibility,
+        link: Option<Box<LinkName>>,
+    ) -> Result<ExternClassDecl, Diagnostic> {
+        let syntax = |message: &str, span: Span| {
+            Diagnostic::of(DiagnosticKind::ExternClassSyntax, message, span)
+        };
+        self.take();
+        let runtime_name = match link {
+            Some(link) => {
+                if let Some((_, span)) = link.module {
+                    return Err(syntax(
+                        "an extern class takes one string, its Objective-C runtime name; remove the other",
+                        span,
+                    ));
+                }
+                Some((link.symbol, link.span))
+            }
+            None => None,
+        };
+        let first = self.ident()?;
+        let modifier_follows =
+            !self.newline_before_current() && matches!(self.current().kind, TokenKind::Ident(_));
+        let (sync, name) = match first.text.as_str() {
+            "sync" if modifier_follows => (Some(first.span), self.ident()?),
+            "local" | "copy" if modifier_follows => {
+                return Err(syntax(
+                    "an extern class takes no 'local' or 'copy': its values are bound to their thread unless the class is declared 'sync'",
+                    first.span,
+                ));
+            }
+            _ => (None, first),
+        };
+        if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
+            return Err(syntax(
+                "an extern class has no type parameters or definition; write 'extern class Name : Base'",
+                self.current().span,
+            ));
+        }
+        if self.at(&TokenKind::LeftBrace) || !self.eat(&TokenKind::Colon) {
+            return Err(syntax(
+                "an extern class names its base class, as in 'extern class NSObject : ObjC.Object'",
+                if self.at(&TokenKind::End) {
+                    name.span
+                } else {
+                    self.current().span
+                },
+            ));
+        }
+        if !matches!(self.current().kind, TokenKind::Ident(_)) || self.newline_before_current() {
+            return Err(syntax(
+                "expected the base class after ':', such as 'ObjC.Object' or another extern class",
+                self.current().span,
+            ));
+        }
+        let base = self.qualified_ident()?;
+        let base = TypeExpr {
+            kind: TypeExprKind::Named(base.text),
+            span: base.span,
+        };
+        if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
+            return Err(syntax(
+                "the base of an extern class is a class name without type arguments or a definition",
+                self.current().span,
+            ));
+        }
+        let (body, members) = if self.at(&TokenKind::LeftBrace) {
+            (true, self.objc_members()?)
+        } else {
+            (false, Vec::new())
+        };
+        Ok(ExternClassDecl {
+            doc,
+            visibility,
+            runtime_name,
+            sync,
+            name,
+            base,
+            body,
+            members,
+            trusted: None,
+            weak: None,
+        })
+    }
+
+    /// `category Name : Class { members }` after `extern` (M02).
+    fn extern_category(
+        &mut self,
+        doc: Option<Documentation>,
+        visibility: Visibility,
+        link: Option<Box<LinkName>>,
+    ) -> Result<ExternCategoryDecl, Diagnostic> {
+        let syntax = |message: &str, span: Span| {
+            Diagnostic::of(DiagnosticKind::ExternCategorySyntax, message, span)
+        };
+        if let Some(link) = link {
+            let first = link.module.as_ref().map_or(link.span, |(_, span)| *span);
+            return Err(syntax(
+                "an extern category takes no link name: it adds members to a class that has its own runtime name; remove the string",
+                first,
+            ));
+        }
+        self.take();
+        let first = self.ident()?;
+        if first.text == "sync"
+            && !self.newline_before_current()
+            && matches!(self.current().kind, TokenKind::Ident(_))
+        {
+            return Err(syntax(
+                "an extern category takes no 'sync': the class that it extends decides it",
+                first.span,
+            ));
+        }
+        let name = first;
+        if !self.eat(&TokenKind::Colon)
+            || !matches!(self.current().kind, TokenKind::Ident(_))
+            || self.newline_before_current()
+        {
+            return Err(syntax(
+                "an extern category names the class that it extends, as in 'extern category Geometry : NSView { ... }'",
+                self.current().span,
+            ));
+        }
+        let class = self.qualified_ident()?;
+        let class = TypeExpr {
+            kind: TypeExprKind::Named(class.text),
+            span: class.span,
+        };
+        if !self.at(&TokenKind::LeftBrace) {
+            return Err(syntax(
+                "an extern category lists its members in braces after the class name",
+                self.current().span,
+            ));
+        }
+        let members = self.objc_members()?;
+        Ok(ExternCategoryDecl {
+            doc,
+            visibility,
+            name,
+            class,
+            members,
+            trusted: None,
+        })
+    }
+
+    /// `{ member ... }`: the members of an `extern class` or `extern category`, separated by
+    /// line breaks or `;` (M02).
+    fn objc_members(&mut self) -> Result<Vec<ObjcMember>, Diagnostic> {
+        self.expect(&TokenKind::LeftBrace, "'{' before the members")?;
+        let mut members = Vec::new();
+        loop {
+            while self.eat(&TokenKind::Semicolon) {}
+            if self.eat(&TokenKind::RightBrace) {
+                return Ok(members);
+            }
+            if members.len() == MAX_OBJC_MEMBERS {
+                return Err(self.error_of(
+                    DiagnosticKind::ObjcClassLimit,
+                    format!(
+                        "an extern class or category declares at most {MAX_OBJC_MEMBERS} members; move the others to an extern category"
+                    ),
+                ));
+            }
+            members.push(self.objc_member()?);
+        }
+    }
+
+    /// `[doc] {@returns_*} [class] ["selector:"] name :: Type` (M02).
+    fn objc_member(&mut self) -> Result<ObjcMember, Diagnostic> {
+        let syntax = |message: &str, span: Span| {
+            Diagnostic::of(DiagnosticKind::ExternClassMemberSyntax, message, span)
+        };
+        let doc = self.take_doc();
+        let mut returns = None;
+        while self.at(&TokenKind::At) {
+            let Some(mark) = self.returns_retained_attribute() else {
+                // Every other attribute keeps its own diagnostic for a wrong target.
+                let attributes = self.attributes()?;
+                if let Some(count) = attributes.counts.first() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedCountAttribute,
+                        "'@count' applies to an 'extern' function declaration, not a member of an extern class",
+                        count.span,
+                    ));
+                }
+                if let Some(mark) = attributes.trusted {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::TrustedWrongTarget,
+                        "'@trusted' applies to an extern declaration; write it before the 'extern class' or 'extern category'",
+                        mark.span,
+                    ));
+                }
+                if let Some(mark) = attributes.link {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedLinkAttribute,
+                        "'@link' applies to an extern function declaration with a link name; remove it or declare the function with extern \"symbol\"",
+                        mark.span,
+                    ));
+                }
+                if let Some(span) = attributes.weak {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedWeakAttribute,
+                        "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                        span,
+                    ));
+                }
+                if let Some(mark) = attributes.c_layout {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedCLayoutAttribute,
+                        "'@c_layout' applies to a record declaration",
+                        mark.span,
+                    ));
+                }
+                return Err(syntax(
+                    "a member of an extern class takes only '@returns_retained' or '@returns_not_retained'",
+                    self.current().span,
+                ));
+            };
+            if returns.is_some() {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ReturnsRetainedConflict,
+                    "a declaration takes one of '@returns_retained' and '@returns_not_retained', once; remove the other",
+                    mark.1,
+                ));
+            }
+            returns = Some(mark);
+        }
+        let class_method = self.at(&TokenKind::Class).then(|| self.take().span);
+        let selector = if let TokenKind::String(literal) = &self.current().kind {
+            let text = match literal {
+                StringLiteral::Utf8(text) => Some(text.clone()),
+                StringLiteral::Utf16(units) => String::from_utf16(units).ok(),
+            };
+            let span = self.take().span;
+            let Some(text) = text else {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InvalidLinkNameText,
+                    "an Objective-C selector must contain valid Unicode scalars",
+                    span,
+                ));
+            };
+            Some((text.into_boxed_str(), span))
+        } else {
+            None
+        };
+        if !matches!(self.current().kind, TokenKind::Ident(_)) {
+            return Err(syntax(
+                "expected a member, as in 'length :: unit -> i64u' or '\"setTitle:\" set_title :: ref NSString -> unit'",
+                self.current().span,
+            ));
+        }
+        let name = self.ident()?;
+        if self.at(&TokenKind::Less) {
+            return Err(syntax(
+                "a member of an extern class has no type parameters",
+                self.current().span,
+            ));
+        }
+        if !self.at(&TokenKind::DoubleColon) {
+            return Err(syntax(
+                "expected '::' and the member's function type, as in 'length :: unit -> i64u'",
+                self.current().span,
+            ));
+        }
+        self.take();
+        let outer = std::mem::replace(&mut self.extern_signature, true);
+        let ty = self.type_expr();
+        self.extern_signature = outer;
+        let ty = ty?;
+        let TypeExprKind::Function(mut parameters, result) = ty.kind else {
+            return Err(syntax(
+                "a member has a function type; a method without arguments is 'unit -> R'",
+                ty.span,
+            ));
+        };
+        let mut result = *result;
+        while let TypeExprKind::Function(more, tail) = result.kind {
+            parameters.extend(more);
+            result = *tail;
+        }
+        if self.at(&TokenKind::Equal) {
+            return Err(syntax(
+                "a member of an extern class has no body: the Objective-C class implements it; remove the '=' and what follows",
+                self.current().span,
+            ));
+        }
+        for parameter in &parameters {
+            objc_self_free(parameter)?;
+        }
+        match &result.kind {
+            TypeExprKind::Named(word) if word == "Self" => {}
+            TypeExprKind::Apply(head, arguments)
+                if head.text == "Maybe"
+                    && matches!(
+                        arguments.as_ref(),
+                        [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "Self"
+                    ) => {}
+            _ => objc_self_free(&result)?,
+        }
+        Ok(ObjcMember {
+            doc,
+            returns,
+            class_method,
+            selector,
+            name,
+            parameters,
+            result,
+        })
     }
 
     /// Reads the optional strings of `extern "symbol" def` and `extern "module" "symbol" def`.

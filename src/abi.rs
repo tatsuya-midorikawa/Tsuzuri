@@ -539,18 +539,164 @@ pub fn any_zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
     zstring(ty, types) || zutf8string(ty, types)
 }
 
+/// M01: whether `ty` holds an Objective-C type anywhere: an object (an `extern class` or
+/// `ObjC.Object`), `ObjC.Class` or `ObjC.Sel`, also inside a function or `FnPtr` type.
+pub fn reaches_objc(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let objc = |part: &Type| part.is_objc_object() || part.is_objc_runtime_handle();
+    match ty {
+        Type::Function(parameters, result) => {
+            parameters.iter().any(|ty| reaches_objc(ty, types)) || reaches_objc(result, types)
+        }
+        Type::FnPtr(inner) => reaches_objc(inner, types),
+        Type::Reference(inner, _) => reaches_objc(inner, types),
+        _ => types.reaches(ty, objc),
+    }
+}
+
+/// M01: `ObjC.Class` or `ObjC.Sel`, a shared borrow of one, or a `Maybe` of either: the forms
+/// that an extern function and a static callback take and that an extern function returns.
+fn objc_runtime_value(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let plain = |ty: &Type| {
+        ty.is_objc_runtime_handle()
+            || matches!(ty, Type::Reference(inner, false) if inner.is_objc_runtime_handle())
+    };
+    plain(ty) || std_maybe_payload(ty, types).is_some_and(plain)
+}
+
+/// M01: how an `extern def` signature misuses an Objective-C type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjcMisuse {
+    /// An owned object as an argument: the host borrows its arguments (`ref C`).
+    OwnedArgument,
+    /// A position that takes no Objective-C type.
+    Position,
+}
+
+/// M01 spec 3: the first misuse of an Objective-C type in the signature of an `extern def`.
+/// An object is an argument as `ref C` or `Maybe<ref C>` (+0) and a result as `C` or `Maybe<C>`;
+/// `ObjC.Class` and `ObjC.Sel` are also arguments of a static callback.
+pub fn objc_extern_misuse(
+    parameters: &[Type],
+    result: &Type,
+    types: &TypeContext<'_>,
+) -> Option<ObjcMisuse> {
+    let borrowed_object =
+        |ty: &Type| matches!(ty, Type::Reference(inner, false) if inner.is_objc_object());
+    for parameter in parameters {
+        if !reaches_objc(parameter, types) {
+            continue;
+        }
+        if let Type::Function(callback_parameters, callback_result) = parameter {
+            if reaches_objc(callback_result, types)
+                || callback_parameters
+                    .iter()
+                    .any(|ty| reaches_objc(ty, types) && !objc_runtime_value(ty, types))
+            {
+                return Some(ObjcMisuse::Position);
+            }
+            continue;
+        }
+        let payload = std_maybe_payload(parameter, types).unwrap_or(parameter);
+        if borrowed_object(payload) || objc_runtime_value(parameter, types) {
+            continue;
+        }
+        return Some(if payload.is_objc_object() {
+            ObjcMisuse::OwnedArgument
+        } else {
+            ObjcMisuse::Position
+        });
+    }
+    if reaches_objc(result, types) {
+        let payload = std_maybe_payload(result, types).unwrap_or(result);
+        if !payload.is_objc_object() && !payload.is_objc_runtime_handle() {
+            return Some(ObjcMisuse::Position);
+        }
+    }
+    None
+}
+
+/// M01: whether `ty` is an Objective-C object or a `Maybe` of one: the results that
+/// `@returns_retained` applies to and that a data symbol reads with a retain.
+pub fn objc_object_result(ty: &Type, types: &TypeContext<'_>) -> bool {
+    std_maybe_payload(ty, types).unwrap_or(ty).is_objc_object()
+}
+
+/// M02 spec 5: what is wrong with the type of a member of an `extern class`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjcMemberError {
+    /// An owned object as an argument (the receiver of `init` aside).
+    OwnedArgument,
+    /// An Objective-C type in a position that takes none (M01 spec 3).
+    Position,
+    /// A type that a message cannot carry: a record without `@c_layout` by value (as a parameter
+    /// or a result), a buffer result, a wide number, or any other aggregate.
+    Type,
+}
+
+/// M02 spec 5: checks the parameters after the receiver and the result of a member. A parameter
+/// is what an `extern def` takes (scalars, handles, `ref` and `ref mut` of records and scalars,
+/// buffers, callbacks, `FnPtr`) or a `@c_layout` record by value; a record without `@c_layout`
+/// by value is refused instead of passed as a pointer. A result is a scalar, `unit`, an object,
+/// a handle, a `Maybe` of those, or a `@c_layout` record by value.
+pub fn objc_member_types(
+    parameters: &[Type],
+    result: &Type,
+    types: &TypeContext<'_>,
+) -> Result<(), ObjcMemberError> {
+    match objc_extern_misuse(parameters, result, types) {
+        Some(ObjcMisuse::OwnedArgument) => return Err(ObjcMemberError::OwnedArgument),
+        Some(ObjcMisuse::Position) => return Err(ObjcMemberError::Position),
+        None => {}
+    }
+    let alone = matches!(parameters, [Type::Unit]);
+    for parameter in parameters {
+        let allowed = match parameter {
+            Type::Unit => alone,
+            Type::Function(..) => callback(parameter, types),
+            Type::FnPtr(_) => fnptr(parameter, types),
+            Type::Record(..) => c_layout_record(parameter, types),
+            _ => extern_parameter(parameter, types),
+        };
+        if !allowed || has_invalid_extern_maybe(std::slice::from_ref(parameter), &Type::Unit, types)
+        {
+            return Err(ObjcMemberError::Type);
+        }
+    }
+    let scalar = result.exportable()
+        || *result == Type::Unit
+        || is_handle(result)
+        || matches!(nullable(result, types), Some(Nullable::Handle(_)));
+    if !scalar && !c_layout_record(result, types) {
+        return Err(ObjcMemberError::Type);
+    }
+    Ok(())
+}
+
+/// M02 spec 2: the C arguments that the parameters after the receiver lower to: none for `unit`,
+/// a pointer and a length for a buffer, one for anything else.
+pub fn objc_c_arguments(parameters: &[Type]) -> usize {
+    parameters
+        .iter()
+        .map(|parameter| match parameter {
+            Type::Unit => 0,
+            _ if extern_buffer_parameter(parameter).is_some() => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
 /// M06: whether `ty` is allowed as the read result `T` of `extern "sym" view def f :: unit -> T`.
 pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> bool {
     match ty {
         Type::Integer(8 | 16 | 32 | 64, _) | Type::Binary(32 | 64) => true,
         Type::Handle(_, crate::syntax::HandleKind::Copy) => true,
+        // M01: an Objective-C object is read with a retain, so the value owns a reference.
+        Type::Handle(_, kind) if kind.objc() => true,
         Type::Record(..) => view_record(ty, types, name).is_ok(),
         _ => matches!(
             nullable(ty, types),
-            Some(Nullable::Handle(Type::Handle(
-                _,
-                crate::syntax::HandleKind::Copy
-            )))
+            Some(Nullable::Handle(Type::Handle(_, kind)))
+                if kind.copy() || kind.objc()
         ),
     }
 }
@@ -747,8 +893,75 @@ pub fn out_result(ty: &Type) -> bool {
     Buffer::of(ty).is_some() || matches!(ty, Type::Record(..))
 }
 
-/// The LLVM / C scalar or pointer type of one lowered host parameter or result (W14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// W36: how a record in an `extern def` parameter or result position crosses the C boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordPassing {
+    /// `const T *` / `T *` for a parameter, the leading out parameter `T *out` for a result (E05, W21).
+    Pointer,
+    /// The C struct itself, passed and returned as the C ABI of the target does it.
+    ByValue,
+}
+
+/// W36: the passing of `ty` in a parameter or result position of an `extern def`. A `@c_layout`
+/// record without `ref` is the C struct by value; an unmarked record, `ref R` and `ref mut R` are
+/// pointers; anything that is not a record is `None`. `export def` does not use this: its records
+/// stay pointers. A callback takes no record at all ([`callback`]).
+pub fn extern_record_passing(ty: &Type, types: &TypeContext<'_>) -> Option<RecordPassing> {
+    match ty {
+        Type::Record(..) if any_zstring(ty, types) => None,
+        Type::Record(..) if c_layout_record(ty, types) => Some(RecordPassing::ByValue),
+        Type::Record(..) => Some(RecordPassing::Pointer),
+        Type::Reference(inner, _) if matches!(inner.as_ref(), Type::Record(..)) => {
+            extern_record_passing(inner, types).map(|_| RecordPassing::Pointer)
+        }
+        _ => None,
+    }
+}
+
+/// W36: the C shape of a `@c_layout` record, independent of the target: its packing and the C types
+/// of its fields in order. Two records of one shape have one layout and pass the same way on every
+/// target, so two declarations of one symbol may name either (W14).
+fn c_layout_shape(ty: &Type, types: &TypeContext<'_>, depth: usize, shape: &mut String) {
+    match ty {
+        Type::Integer(bits, _) => {
+            shape.push('i');
+            shape.push_str(&bits.to_string());
+        }
+        Type::Binary(32) => shape.push_str("float"),
+        Type::Binary(64) => shape.push_str("double"),
+        Type::FixedArray(element, _) => {
+            shape.push('[');
+            shape.push_str(&ty.fixed_length().unwrap_or(0).to_string());
+            shape.push_str(" x ");
+            c_layout_shape(element, types, depth + 1, shape);
+            shape.push(']');
+        }
+        Type::Record(id, arguments)
+            if depth < crate::syntax::MAX_NESTING && types.records[*id].c_layout.is_some() =>
+        {
+            shape.push_str("struct");
+            if let Some(pack) = types.records[*id].c_layout.and_then(|layout| layout.pack) {
+                shape.push_str(" pack(");
+                shape.push_str(&pack.to_string());
+                shape.push(')');
+            }
+            shape.push_str(" { ");
+            for (index, field) in types.record_fields(*id, arguments).iter().enumerate() {
+                if index > 0 {
+                    shape.push_str(", ");
+                }
+                c_layout_shape(field, types, depth + 1, shape);
+            }
+            shape.push_str(" }");
+        }
+        // Handles, `Maybe` of one, `FnPtr` and borrowed NUL-terminated strings are one pointer.
+        _ => shape.push_str("ptr"),
+    }
+}
+
+/// The LLVM / C scalar or pointer type of one lowered host parameter or result (W14), or a
+/// `@c_layout` record by value (W36), whose lowering depends on the target.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CType {
     I32,
     I64,
@@ -756,54 +969,67 @@ pub enum CType {
     F64,
     Ptr,
     Void,
+    /// W36: a C struct by value, named by its target-independent shape (`c_layout_shape`).
+    ByValue(String),
 }
 
 /// The native 64-bit C ABI register/stack class of a `CType` (W14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AbiClass {
     I32,
     Word64,
     F32,
     F64,
     Void,
+    /// W36: a C struct by value. Only a struct of the same shape passes the same way on every target.
+    ByValue(String),
 }
 
 impl CType {
-    pub fn class(self) -> AbiClass {
+    pub fn class(&self) -> AbiClass {
         match self {
             Self::I32 => AbiClass::I32,
             Self::I64 | Self::Ptr => AbiClass::Word64,
             Self::F32 => AbiClass::F32,
             Self::F64 => AbiClass::F64,
             Self::Void => AbiClass::Void,
+            Self::ByValue(shape) => AbiClass::ByValue(shape.clone()),
         }
     }
 
-    pub fn llvm(self) -> &'static str {
+    /// The LLVM type of a scalar or pointer; `None` for a struct by value, which
+    /// `llvm_byvalue::classify` lowers for the target.
+    pub fn llvm(&self) -> Option<&'static str> {
         match self {
-            Self::I32 => "i32",
-            Self::I64 => "i64",
-            Self::F32 => "float",
-            Self::F64 => "double",
-            Self::Ptr => "ptr",
-            Self::Void => "void",
+            Self::I32 => Some("i32"),
+            Self::I64 => Some("i64"),
+            Self::F32 => Some("float"),
+            Self::F64 => Some("double"),
+            Self::Ptr => Some("ptr"),
+            Self::Void => Some("void"),
+            Self::ByValue(_) => None,
         }
     }
 
-    fn canonical(self, other: Self) -> Self {
+    fn canonical(&self, other: &Self) -> Self {
         debug_assert_eq!(self.class(), other.class());
-        if self == other { self } else { Self::I64 }
+        if self == other {
+            self.clone()
+        } else {
+            Self::I64
+        }
     }
 }
 
 impl AbiClass {
-    pub fn description(self) -> &'static str {
+    pub fn description(&self) -> String {
         match self {
-            Self::I32 => "a 32-bit integer",
-            Self::Word64 => "a 64-bit integer or pointer",
-            Self::F32 => "a 32-bit float",
-            Self::F64 => "a 64-bit float",
-            Self::Void => "void",
+            Self::I32 => "a 32-bit integer".into(),
+            Self::Word64 => "a 64-bit integer or pointer".into(),
+            Self::F32 => "a 32-bit float".into(),
+            Self::F64 => "a 64-bit float".into(),
+            Self::Void => "void".into(),
+            Self::ByValue(shape) => format!("the C {shape} by value"),
         }
     }
 }
@@ -820,15 +1046,15 @@ impl CSignature {
     /// Returns `true` when any position differed in `CType` (`ptr` vs `i64`).
     pub fn merge_canonical(&mut self, other: &Self) -> bool {
         let mut mixed = false;
-        for (slot, &next) in self.parameters.iter_mut().zip(&other.parameters) {
-            if *slot != next {
+        for (slot, next) in self.parameters.iter_mut().zip(&other.parameters) {
+            if slot != next {
                 mixed = true;
                 *slot = slot.canonical(next);
             }
         }
         if self.result != other.result {
             mixed = true;
-            self.result = self.result.canonical(other.result);
+            self.result = self.result.canonical(&other.result);
         }
         mixed
     }
@@ -886,9 +1112,19 @@ pub fn c_signature(
     counts: &[(usize, crate::syntax::CountLength)],
     types: &TypeContext<'_>,
 ) -> CSignature {
+    let by_value = |ty: &Type| {
+        (extern_record_passing(ty, types) == Some(RecordPassing::ByValue)).then(|| {
+            let mut shape = String::new();
+            c_layout_shape(ty, types, 0, &mut shape);
+            CType::ByValue(shape)
+        })
+    };
     let mut lowered = Vec::new();
     let viewed_result = c_view(result, types);
-    if out_result(&viewed_result) {
+    // W36: a `@c_layout` record result is the C struct by value, not the leading out pointer. Where
+    // the target returns it in memory, the `sret` pointer is not a parameter of this signature.
+    let result_by_value = by_value(&viewed_result);
+    if result_by_value.is_none() && out_result(&viewed_result) {
         lowered.push(CType::Ptr);
     }
     for (index, parameter) in parameters.iter().enumerate() {
@@ -920,6 +1156,10 @@ pub fn c_signature(
             lowered.push(CType::Ptr);
             continue;
         }
+        if let Some(record) = by_value(parameter) {
+            lowered.push(record);
+            continue;
+        }
         let viewed = c_view(parameter, types);
         let inner = match viewed.as_ref() {
             Type::Reference(inner, false) => inner.as_ref(),
@@ -933,7 +1173,9 @@ pub fn c_signature(
             lowered.push(c_scalar(&viewed));
         }
     }
-    let lowered_result = if *viewed_result == Type::Unit || out_result(&viewed_result) {
+    let lowered_result = if let Some(record) = result_by_value {
+        record
+    } else if *viewed_result == Type::Unit || out_result(&viewed_result) {
         CType::Void
     } else {
         c_scalar(&viewed_result)

@@ -170,6 +170,12 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::AnchorRelease
         | Builtin::ZStringLiteral
         | Builtin::ZUtf8StringLiteral
+        | Builtin::ObjcRetain
+        | Builtin::ObjcUpcast
+        | Builtin::ObjcUpcastOwned
+        | Builtin::ObjcDowncast
+        | Builtin::ObjcSel
+        | Builtin::ObjcLiteral
         | Builtin::ListCons
         | Builtin::ListTail
         | Builtin::ArrayConcat

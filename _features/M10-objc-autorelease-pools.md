@@ -5,7 +5,7 @@
 | ID | M10 |
 | 優先度 | P2 |
 | 規模 | M（Phase 1・2） |
-| 依存 | [M01](M01-objc-class-types.md), ([M02](M02-objc-typed-message-send.md)) |
+| 依存 | [M01](_completed/M01-objc-class-types.md), ([M02](_completed/M02-objc-typed-message-send.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 4（プールのない tzroutine で Foundation を使うと永久に漏れる。200 万個で maxrss が 5.6 から 51.8 MiB。Foundation をリンクした -O3）」に当たる。HEAD `804b7970` で確認） |
@@ -55,7 +55,7 @@ M01 の `extern def` と M02 の型付きの送信は、+0 の物体の結果を
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する。** **承認が記録されるまで、該当する Phase に着手しない。** D-67 の分岐 1（X′）は承認済み（2026-11-26）。Phase 1 は決定事項 D4（D-55 の登録）、Phase 2 は加えて D3 の承認が要る。
-- [M01](M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、ObjC を使うプログラムの判定、`-lobjc`、`abi_apple_only`）。[M02](M02-objc-typed-message-send.md) は弱い依存で、Phase 1 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。Phase 2 は M02 の Phase 1 が done であること（安全の根拠が M02 の直後の retain だから）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
+- [M01](_completed/M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、ObjC を使うプログラムの判定、`-lobjc`、`abi_apple_only`）。[M02](_completed/M02-objc-typed-message-send.md) は弱い依存で、Phase 1 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。Phase 2 は M02 の Phase 1 が done であること（安全の根拠が M02 の直後の retain だから）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - 「現状」の再現を着手時の HEAD で実行し、食い違えばこのチケットを直してから始める。
 - ベースライン: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm`（native、`--target aarch64-apple-darwin`、`--target wasm32`）、`--emit header`、`check --json`、`--emit exe` の `@main`（Rust のテストで `llvm::emit(&module, Entry::Console)`）を `target/scratch/m10/base/` に保存する。M01 の fixture（ObjC を使う）も含める。
 
@@ -331,8 +331,8 @@ void objc_autoreleasePoolPop(void *pool);
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`HandleKind::ObjcLocal`・`ObjcSync`、`llvm::uses_objc(text)`（IR が `!"Objective-C Version"` を含むか）とモジュールのフラグを出す条件、`-lobjc` の自動の追加（5 つのリンク行）、`abi_apple_only`、`ObjC` の名前の登録の表。判定が利用者の手書きの宣言で真になるなら止めて報告する（S2）。
-- [M02](M02-objc-typed-message-send.md)（弱い依存）: +0 の物体の結果の retain（M01 の D6 の `clang.arc.attachedcall` の bundle。M02 の D6 がこれに従う。Phase 2 の安全の根拠）。ハンドシェイクが効けば返された物体はプールを経ないが、呼ばれた側の内部の autorelease は残るので、Phase 1 の規律は変わらない。
+- [M01](_completed/M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`HandleKind::ObjcLocal`・`ObjcSync`、`llvm::uses_objc(text)`（IR が `!"Objective-C Version"` を含むか）とモジュールのフラグを出す条件、`-lobjc` の自動の追加（5 つのリンク行）、`abi_apple_only`、`ObjC` の名前の登録の表。判定が利用者の手書きの宣言で真になるなら止めて報告する（S2）。
+- [M02](_completed/M02-objc-typed-message-send.md)（弱い依存）: +0 の物体の結果の retain（M01 の D6 の `clang.arc.attachedcall` の bundle。M02 の D6 がこれに従う。Phase 2 の安全の根拠）。ハンドシェイクが効けば返された物体はプールを経ないが、呼ばれた側の内部の autorelease は残るので、Phase 1 の規律は変わらない。
 - W19 の `Position::Pinning`・`pinning_argument_mask`・`E1013`（`pinned_code_spawned`）。TZ08 の `tsuzuri_tz_lock_thread`・`unlock`。D-61 の `TZROUTINE_SCOPE_ENTER`・`LEAVE`。
 
 ## 他チケットへ提供するインターフェース

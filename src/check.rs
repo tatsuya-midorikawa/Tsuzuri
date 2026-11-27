@@ -690,7 +690,13 @@ impl Type {
             | Self::Utf8String
             | Self::Vec(_)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned | HandleKind::Local)
+            | Self::Handle(
+                _,
+                HandleKind::Owned
+                | HandleKind::Local
+                | HandleKind::ObjcLocal
+                | HandleKind::ObjcSync,
+            )
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
             | Self::Reference(_, true)
@@ -731,8 +737,25 @@ impl Type {
             // A fixed-length array owns nothing but its elements (A16).
             Self::FixedArray(element, _) => element.needs_drop(types),
             Self::Tuple(elements) => elements.iter().any(|ty| ty.needs_drop(types)),
+            // An Objective-C object value owns one strong reference, which its drop releases (M01).
+            Self::Handle(_, kind) => kind.objc(),
             _ => false,
         }
+    }
+
+    /// Whether this is an Objective-C object type: an `extern class` or `ObjC.Object` (M01).
+    pub fn is_objc_object(&self) -> bool {
+        matches!(self, Self::Handle(_, kind) if kind.objc())
+    }
+
+    /// Whether this is `ObjC.Class` or `ObjC.Sel`, the copy handles of the Objective-C runtime
+    /// (M01).
+    pub fn is_objc_runtime_handle(&self) -> bool {
+        matches!(
+            self,
+            Self::Handle(name, HandleKind::Copy)
+                if matches!(&**name, crate::syntax::OBJC_CLASS | crate::syntax::OBJC_SEL)
+        )
     }
 
     pub(crate) fn is_noncopy_record(&self, types: &TypeContext<'_>) -> bool {
@@ -1109,10 +1132,9 @@ impl Type {
                 |ty| {
                     !matches!(
                         ty,
-                        Type::Reference(_, true)
-                            | Type::Once(_)
-                            | Type::Handle(_, HandleKind::Owned | HandleKind::Local)
-                    ) && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
+                        Type::Reference(_, true) | Type::Once(_)
+                    ) && !matches!(ty, Type::Handle(_, kind) if kind.owned())
+                        && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                         && !matches!(ty, Type::Shared(_, kind) if !kind.atomic())
                         && !matches!(ty, Type::Shared(value, kind) if !value.can_sync(types) && kind.atomic())
                         && !ty.has_user_drop(types)
@@ -1125,7 +1147,13 @@ impl Type {
         match self {
             Self::Reference(_, true)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
+            | Self::Handle(
+                _,
+                HandleKind::Owned
+                | HandleKind::Local
+                | HandleKind::ObjcLocal
+                | HandleKind::ObjcSync,
+            ) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
             Self::Shared(value, kind) => kind.atomic() && value.can_sync(types),
@@ -1168,7 +1196,8 @@ impl Type {
             return types.stored_all(self, |ty| {
                 !ty.is_unresolved()
                     && !ty.is_unsend_record(types)
-                    && !matches!(ty, Type::Reference(..) | Type::Handle(_, HandleKind::Local))
+                    && !matches!(ty, Type::Reference(..))
+                    && !matches!(ty, Type::Handle(_, kind) if kind.thread_bound())
                     && !matches!(ty, Type::Dyn(dyn_type) if !dyn_type.send || dyn_type.borrowed)
                     && !matches!(ty, Type::Shared(value, kind) if !kind.atomic() || !value.can_sync(types))
             });
@@ -1185,7 +1214,7 @@ impl Type {
             | Self::Partial(_)
             | Self::Application(..)
             | Self::Reference(..)
-            | Self::Handle(_, HandleKind::Local) => false,
+            | Self::Handle(_, HandleKind::Local | HandleKind::ObjcLocal) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it
@@ -1219,7 +1248,7 @@ impl Type {
             | Self::ArrayView(_)
             | Self::Length(_)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned | HandleKind::Copy)
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Copy | HandleKind::ObjcSync)
             | Self::FnPtr(_)
             | Self::Function(..) => true,
         }
@@ -1241,19 +1270,25 @@ impl Type {
 
     /// W19: whether a value of this type owns a thread-bound `extern type local` handle.
     pub(crate) fn holds_local_handle(&self, types: &TypeContext<'_>) -> bool {
-        !types.stored_all(self, |ty| !matches!(ty, Type::Handle(_, HandleKind::Local)))
+        !types.stored_all(
+            self,
+            |ty| !matches!(ty, Type::Handle(_, kind) if kind.thread_bound()),
+        )
     }
 
     /// W19: whether this type reaches a thread-bound `extern type local` handle (including borrows).
     pub(crate) fn reaches_local_handle(&self, types: &TypeContext<'_>) -> bool {
-        types.reaches(self, |ty| matches!(ty, Type::Handle(_, HandleKind::Local)))
+        types.reaches(
+            self,
+            |ty| matches!(ty, Type::Handle(_, kind) if kind.thread_bound()),
+        )
     }
 
     /// W19: the display name of the first `extern type local` handle this type reaches.
     pub(crate) fn first_local_handle_name(&self, types: &TypeContext<'_>) -> Option<String> {
         let found = std::cell::RefCell::new(None);
         types.reaches(self, |ty| {
-            if matches!(ty, Type::Handle(_, HandleKind::Local)) {
+            if matches!(ty, Type::Handle(_, kind) if kind.thread_bound()) {
                 let display = ty.display(types);
                 let shown = display.strip_prefix("Main.").unwrap_or(&display).to_owned();
                 *found.borrow_mut() = Some(shown);
@@ -1295,8 +1330,10 @@ impl Type {
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
             Self::Reference(_, true)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned | HandleKind::Local) => false,
-            Self::Handle(_, HandleKind::Copy) => true,
+            | Self::Handle(_, HandleKind::Owned | HandleKind::Local | HandleKind::ObjcLocal) => {
+                false
+            }
+            Self::Handle(_, HandleKind::Copy | HandleKind::ObjcSync) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
             Self::Dyn(dyn_type) => dyn_type.copy && !dyn_type.borrowed,
@@ -1384,7 +1421,7 @@ impl Type {
     /// extern handle, a dyn value that is not Copy, or an `Owned.Function` (C10, W18).
     pub(crate) fn holds_host_state(&self, types: &TypeContext<'_>) -> bool {
         types.reaches(self, |ty| {
-            matches!(ty, Type::Handle(_, HandleKind::Owned | HandleKind::Local))
+            matches!(ty, Type::Handle(_, kind) if kind.owned())
                 || matches!(ty, Type::Dyn(dyn_type) if !dyn_type.copy)
                 || ty.is_owned_function(types)
         })
@@ -1753,6 +1790,18 @@ pub enum Builtin {
     ZStringLiteral,
     /// M06: `ZUtf8String.literal :: string -> ref ZUtf8String`, rewritten to a borrow of static UTF-8+NUL data.
     ZUtf8StringLiteral,
+    /// `ObjC.retain :: ref C -> C`: another strong reference to the same object (M01).
+    ObjcRetain,
+    /// `ObjC.upcast :: ref C -> ref B`: the borrow seen as a base class; no code (M01).
+    ObjcUpcast,
+    /// `ObjC.upcast_owned :: C -> B`: the owned value as a base class; no code (M01).
+    ObjcUpcastOwned,
+    /// `ObjC.downcast :: ref C -> Maybe<D>`: a checked cast that retains on success (M01).
+    ObjcDowncast,
+    /// `ObjC.sel :: string -> ObjC.Sel`: the selector of a compile-time string (M01).
+    ObjcSel,
+    /// `ObjC.literal :: string -> NSString`: a constant NSString object (M02).
+    ObjcLiteral,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2387,6 +2436,12 @@ impl Builtin {
         Self::AnchorRelease,
         Self::ZStringLiteral,
         Self::ZUtf8StringLiteral,
+        Self::ObjcRetain,
+        Self::ObjcUpcast,
+        Self::ObjcUpcastOwned,
+        Self::ObjcDowncast,
+        Self::ObjcSel,
+        Self::ObjcLiteral,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2774,6 +2829,12 @@ impl Builtin {
             Self::AnchorRelease => "Anchor.__release",
             Self::ZStringLiteral => "ZString.literal",
             Self::ZUtf8StringLiteral => "ZUtf8String.literal",
+            Self::ObjcRetain => "ObjC.retain",
+            Self::ObjcUpcast => "ObjC.upcast",
+            Self::ObjcUpcastOwned => "ObjC.upcast_owned",
+            Self::ObjcDowncast => "ObjC.downcast",
+            Self::ObjcSel => "ObjC.sel",
+            Self::ObjcLiteral => "ObjC.literal",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -3556,6 +3617,34 @@ impl Builtin {
             Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
                 self.anchor_scheme()
             }
+            // M01: the type arguments are Objective-C classes, which `validate_objc_builtins`
+            // checks where the program calls them; a scheme cannot say it.
+            Self::ObjcRetain => (vec![Reference(Box::new(a()), false)], a(), Vec::new()),
+            Self::ObjcUpcast => (
+                vec![Reference(Box::new(a()), false)],
+                Reference(Box::new(Var("b")), false),
+                Vec::new(),
+            ),
+            Self::ObjcUpcastOwned => (vec![a()], Var("b"), Vec::new()),
+            Self::ObjcDowncast => (
+                vec![Reference(Box::new(a()), false)],
+                BuiltinType::Std {
+                    module: "Maybe",
+                    name: "Maybe",
+                    args: vec![Var("b")],
+                },
+                Vec::new(),
+            ),
+            Self::ObjcSel => (
+                vec![Concrete(Type::String)],
+                Concrete(Type::Handle(
+                    crate::syntax::OBJC_SEL.into(),
+                    HandleKind::Copy,
+                )),
+                Vec::new(),
+            ),
+            // M02: the expected type decides the result.
+            Self::ObjcLiteral => (vec![Concrete(Type::String)], a(), Vec::new()),
             Self::ZStringLiteral => (
                 vec![Concrete(Type::String)],
                 Reference(
@@ -4397,6 +4486,20 @@ impl Builtin {
             || name.starts_with("ReceiveOnly.")
     }
 
+    /// Whether this is a function of the built-in module `ObjC`, which only a direct call names
+    /// and the LLVM lowering emits inline (M01, M02).
+    pub(crate) fn is_objc(self) -> bool {
+        matches!(
+            self,
+            Self::ObjcRetain
+                | Self::ObjcUpcast
+                | Self::ObjcUpcastOwned
+                | Self::ObjcDowncast
+                | Self::ObjcSel
+                | Self::ObjcLiteral
+        )
+    }
+
     pub(crate) fn is_anchor(self) -> bool {
         matches!(
             self,
@@ -5123,6 +5226,8 @@ pub struct CheckedModule {
     pub link_frameworks: BTreeMap<String, BTreeSet<String>>,
     /// M17: explicit extern symbols (functions and data symbols) annotated with `@weak`.
     pub weak_symbols: BTreeSet<String>,
+    /// M01, M02: the `extern class` and `extern category` declarations. Empty without them.
+    pub objc: crate::objc::ObjcClasses,
 }
 
 /// A generic function as it was declared, before specialization (E15).
@@ -5530,6 +5635,13 @@ pub struct HostImport {
     pub framework: Option<String>,
     /// M17: whether this declaration carries `@weak`.
     pub weak: bool,
+    /// M01: declared `@returns_retained`: the Objective-C object that the function returns is a
+    /// +1 reference, which the caller owns without retaining it.
+    pub returns_retained: bool,
+    /// M02: a message send: the function stands for one member of an `extern class` or
+    /// `extern category` called on one class, and lowers to a call of `objc_msgSend` with the
+    /// member's C types instead of a call of `native_symbol`.
+    pub objc: Option<Box<crate::objc::ObjcSend>>,
 }
 
 impl HostImport {
@@ -5541,6 +5653,13 @@ impl HostImport {
 
     /// Whether calls lower inline at each call site without a standalone function body or C prototype.
     pub fn lowers_inline(&self) -> bool {
+        self.view.is_some() || self.data.is_some() || self.objc.is_some()
+    }
+
+    /// An extern view or a data symbol: code that the compiler itself writes to read or write
+    /// host memory, which calls no function of the host. A message send (M02) lowers inline too
+    /// but calls foreign code, so the effect analysis does not vouch for it.
+    pub fn reads_host_memory(&self) -> bool {
         self.view.is_some() || self.data.is_some()
     }
 
@@ -6404,6 +6523,16 @@ struct Names {
     handles: BTreeMap<String, NameInfo>,
     handle_kinds: Vec<HandleKind>,
     handle_aliases: BTreeMap<String, Vec<String>>,
+    /// The `extern class` and `extern category` declarations, resolved (M01, M02). Empty in a
+    /// program without them.
+    objc: crate::objc::ObjcClasses,
+    /// Whether some type expression named `ObjC.Object`, whose values are bound to their thread
+    /// like those of an `extern type local` (M01).
+    objc_object_used: std::sync::atomic::AtomicBool,
+    /// The function that stands for a member called on a class or category, by the qualified
+    /// name of that class or category and the member's name (M02). Only the pairs that some
+    /// expression of the program spells are there.
+    objc_sends: BTreeMap<(String, String), usize>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
     /// The qualified name of each record declaration, by record id: the canonical order of anonymous
@@ -7643,7 +7772,45 @@ impl Names {
         self.check_module(module, name, span)
     }
 
+    /// M02: the qualified name of the `extern class` or `extern category` that `path` names from
+    /// `module`, when it names one: the owner of `path.member`.
+    fn objc_class(&self, module: &str, path: &str, span: Span) -> Option<String> {
+        if self.objc.is_empty() {
+            return None;
+        }
+        // A category is no type: its own module names it bare, another one with the module.
+        let own = format!("{module}.{path}");
+        if self.objc.categories.contains_key(&own) {
+            return Some(own);
+        }
+        if let Some(category) = self.objc.categories.get(path)
+            && (category.public
+                || category.name.rsplit_once('.').map(|(owner, _)| owner) == Some(module))
+            && self.searchable_path(module, path)
+        {
+            return Some(path.to_owned());
+        }
+        match self.quiet_named_type(module, path, span)? {
+            NamedType::Handle(info)
+                if self.objc.classes.contains_key(&info.name) && info.visible_from(module) =>
+            {
+                Some(info.name.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn type_choice(&self, module: &str, name: &str) -> Choice<NamedType<'_>> {
+        // M01: `ObjC.Object`, `ObjC.Class` and `ObjC.Sel` belong to a built-in module without a
+        // source file, which no module search finds.
+        let builtin = name.strip_prefix(KEY_PATH).unwrap_or(name);
+        if matches!(
+            builtin,
+            crate::syntax::OBJC_OBJECT | crate::syntax::OBJC_CLASS | crate::syntax::OBJC_SEL
+        ) && let Some(info) = self.handles.get(builtin)
+        {
+            return Choice::Found(NamedType::Handle(info), 0);
+        }
         let own = format!("{module}.{name}");
         if let Some(info) = self.records.get(&own) {
             return Choice::Found(NamedType::Record(info), 0);
@@ -8811,6 +8978,8 @@ fn check_modules_collect(
     let mut external_functions = BTreeMap::new();
     let mut trusted_by_id: BTreeMap<usize, u8> = BTreeMap::new();
     let mut counts_by_id: BTreeMap<usize, Vec<CountAttribute>> = BTreeMap::new();
+    // M01: the span of the `@returns_*` attribute of an extern function, by function id.
+    let mut ownership_by_id: BTreeMap<usize, Span> = BTreeMap::new();
     let mut link_libraries: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut link_frameworks: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut weak_symbols: BTreeSet<String> = BTreeSet::new();
@@ -8844,6 +9013,8 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    returns_retained: false,
+                    objc: None,
                 }
             } else if external.view {
                 HostImport {
@@ -8858,6 +9029,8 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    returns_retained: false,
+                    objc: None,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8878,6 +9051,8 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    returns_retained: false,
+                    objc: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -8900,6 +9075,8 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    returns_retained: false,
+                    objc: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8970,6 +9147,16 @@ fn check_modules_collect(
                         import.framework = Some(link_attr.library.clone());
                     }
                 }
+            }
+            // M01: `@returns_retained`; `@returns_not_retained` states the default. Whether the
+            // result is an object is checked with the resolved signature.
+            let ownership_attribute = module.program.returns_retained.iter().find(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            });
+            if let Some(attribute) = ownership_attribute {
+                import.returns_retained = attribute.retained;
+                ownership_by_id.insert(function_declarations.len(), attribute.span);
             }
             // E15: the `@trusted` mark of this declaration. An extern type may share the name, so
             // the mark is matched by the position of the declared name.
@@ -9171,6 +9358,55 @@ fn check_modules_collect(
                 .push(qualified);
         }
     }
+    // M01: an `extern class` is a handle type too. The classes come after every `extern type`, so
+    // a program without them keeps every handle id.
+    for module in modules {
+        for class in &module.program.extern_classes {
+            if diagnostics.is_full() {
+                break;
+            }
+            let qualified = format!("{}.{}", module.name, class.name.text);
+            let info = NameInfo {
+                id: names.handles.len(),
+                name: qualified.clone(),
+                module: module.name.to_owned(),
+                visibility: class.visibility,
+            };
+            if reserved_type_name(&class.name.text)
+                || names.records.contains_key(&qualified)
+                || names.handles.insert(qualified.clone(), info).is_some()
+            {
+                diagnostics.push(duplicate(&class.name));
+                continue;
+            }
+            names.handle_kinds.push(if class.sync.is_some() {
+                HandleKind::ObjcSync
+            } else {
+                HandleKind::ObjcLocal
+            });
+            names
+                .handle_aliases
+                .entry(class.name.text.clone())
+                .or_default()
+                .push(qualified);
+        }
+    }
+    // M01: the types of the built-in module `ObjC`, which has no source file, after every declared
+    // handle. They are written with the module name and have no unqualified alias.
+    for (name, kind) in [
+        (crate::syntax::OBJC_OBJECT, HandleKind::ObjcLocal),
+        (crate::syntax::OBJC_CLASS, HandleKind::Copy),
+        (crate::syntax::OBJC_SEL, HandleKind::Copy),
+    ] {
+        let info = NameInfo {
+            id: names.handles.len(),
+            name: name.to_owned(),
+            module: "ObjC".to_owned(),
+            visibility: Visibility::Public,
+        };
+        names.handles.insert(name.to_owned(), info);
+        names.handle_kinds.push(kind);
+    }
     names.flush_renamed(diagnostics).check()?;
     // The generic declarations behind anonymous unions (A24), after every other union, only when
     // some module writes the syntax: a program without it keeps every id and output.
@@ -9335,6 +9571,8 @@ fn check_modules_collect(
             diagnostics.push(error);
         }
     }
+    names.flush_renamed(diagnostics).check()?;
+    resolve_objc_classes(modules, &mut names, diagnostics);
     names.flush_renamed(diagnostics).check()?;
     let mut c_layout_by_name: BTreeMap<String, crate::syntax::CLayout> = BTreeMap::new();
     for module in modules {
@@ -9570,6 +9808,14 @@ fn check_modules_collect(
         &mut function_declarations,
         diagnostics,
     )?;
+    // M02: one function for each member of an `extern class` or `extern category` that the
+    // program may call, after every other declaration so that their ids stay as they are.
+    let objc_members = declare_objc_sends(
+        &mut names,
+        &mut function_declarations,
+        &mut external_functions,
+        &mut trusted_by_id,
+    );
     for head in classes.drop_heads() {
         match head {
             Type::Record(id, _) => records[*id].user_drop = true,
@@ -9754,6 +10000,15 @@ fn check_modules_collect(
             let Type::Function(public_parameters, public_result) = &public_type else {
                 unreachable!()
             };
+            // M01: an exported function hands no Objective-C type to its host.
+            if function.exported
+                && (public_parameters
+                    .iter()
+                    .any(|ty| crate::abi::reaches_objc(ty, &types))
+                    || crate::abi::reaches_objc(public_result, &types))
+            {
+                return Err(objc_position(function.name.span));
+            }
             if function.exported
                 && (public_parameters
                     .iter()
@@ -9842,7 +10097,17 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if let Some(data) = external_functions[&id].data.clone() {
+                if external_functions[&id].objc.is_some() {
+                    // M02: a member is validated once, on the class or category that declares
+                    // it; the function of a derived class repeats the same declaration.
+                    if let Some(check) = objc_members.get(&id) {
+                        let send = external_functions[&id]
+                            .objc
+                            .as_deref()
+                            .expect("checked above");
+                        validate_objc_member(function, &signature, check, send, &types)?;
+                    }
+                } else if let Some(data) = external_functions[&id].data.clone() {
                     if let Some((_, _, _, _, first_fn_span)) = explicit_symbols.get(&data.symbol) {
                         return Err(Diagnostic::of(
                             DiagnosticKind::ConflictingExternDeclaration,
@@ -9857,6 +10122,14 @@ fn check_modules_collect(
                             "first defined here",
                             *first_fn_span,
                         ));
+                    }
+                    // M01: a data symbol reads an Objective-C object (with a retain) and
+                    // nothing else of the Objective-C types.
+                    if crate::abi::reaches_objc(&signature.result, &types)
+                        && !(data.access == crate::syntax::DataAccess::Read
+                            && crate::abi::objc_object_result(&signature.result, &types))
+                    {
+                        return Err(objc_position(function.name.span));
                     }
                     let is_weak = external_functions[&id].weak;
                     match data.access {
@@ -9994,6 +10267,34 @@ fn check_modules_collect(
                     }
                     external_functions.get_mut(&id).unwrap().view = Some(direction);
                 } else {
+                    // M01: the positions of Objective-C types, before the general ABI rules,
+                    // which would accept an object as any other handle.
+                    match crate::abi::objc_extern_misuse(
+                        &signature.parameters,
+                        &signature.result,
+                        &types,
+                    ) {
+                        Some(crate::abi::ObjcMisuse::OwnedArgument) => {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ObjcOwnedObjectArgument,
+                                "an extern function borrows its Objective-C arguments; write the parameter as 'ref C' or 'Maybe<ref C>'",
+                                function.name.span,
+                            ));
+                        }
+                        Some(crate::abi::ObjcMisuse::Position) => {
+                            return Err(objc_position(function.name.span));
+                        }
+                        None => {}
+                    }
+                    if let Some(span) = ownership_by_id.get(&id)
+                        && !crate::abi::objc_object_result(&signature.result, &types)
+                    {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::ObjcReturnsRetainedNotObject,
+                            "'@returns_retained' and '@returns_not_retained' say who owns an Objective-C object result; this function returns no extern class value, so remove the attribute",
+                            *span,
+                        ));
+                    }
                     if crate::abi::has_invalid_extern_maybe(
                         &signature.parameters,
                         &signature.result,
@@ -10819,6 +11120,8 @@ fn check_modules_collect(
     if zstring_record_id.is_some() {
         validate_zstring_literals(&functions)?;
     }
+    // M02: before the constants are folded, so that a `const` is not taken for a literal.
+    validate_objc_literals(&functions)?;
     let zutf8string_record_id = names
         .records
         .get("ZUtf8String.ZUtf8String")
@@ -10834,6 +11137,8 @@ fn check_modules_collect(
         &names.const_functions,
         &types,
     )?;
+    // M01: after the constants are folded, so that `ObjC.sel` sees a `const` string as a literal.
+    validate_objc_builtins(&functions, &names.objc, &statics, &types)?;
     if let Some(zstring_id) = zstring_record_id {
         lower_zstring_literals(&mut functions, zstring_id, &mut statics, &types)?;
     }
@@ -10891,13 +11196,22 @@ fn check_modules_collect(
         uses_dyn: modules
             .iter()
             .any(|input| !input.program.dyn_types.is_empty()),
+        // M01: the values of an `extern class` that is not `sync`, and of `ObjC.Object`, are
+        // bound to their thread too.
         thread_bound: modules.iter().any(|input| {
             input
                 .program
                 .extern_types
                 .iter()
                 .any(|decl| decl.kind == HandleKind::Local)
-        }),
+                || input
+                    .program
+                    .extern_classes
+                    .iter()
+                    .any(|class| class.sync.is_none())
+        }) || names
+            .objc_object_used
+            .load(std::sync::atomic::Ordering::Relaxed),
         gpu: Default::default(),
         statics,
         effects: None,
@@ -10907,6 +11221,12 @@ fn check_modules_collect(
         link_libraries,
         link_frameworks,
         weak_symbols,
+        objc: crate::objc::ObjcClasses {
+            object_used: names
+                .objc_object_used
+                .load(std::sync::atomic::Ordering::Relaxed),
+            ..names.objc.clone()
+        },
     };
     validate_callbacks(&module)?;
     diagnostics.extend(pure_rules::validate_templates(&module));
@@ -11155,6 +11475,221 @@ fn validate_zstring_literals(functions: &[CheckedFunction]) -> Result<(), Diagno
                 Ok(())
             })?;
         }
+    }
+    Ok(())
+}
+
+/// M02 spec 7: the argument of `ObjC.literal` is one string literal without interpolation
+/// (`E1005` `objc_literal_argument`), as that of `ZString.literal` is. A use that is not a
+/// direct call is reported by `validate_objc_builtins`.
+fn validate_objc_literals(functions: &[CheckedFunction]) -> Result<(), Diagnostic> {
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && matches!(
+                    &callee.kind,
+                    TypedExprKind::Function(FunctionRef::Builtin(instance))
+                        if instance.builtin == Builtin::ObjcLiteral
+                )
+                && let [argument] = arguments.as_slice()
+                && !matches!(argument.kind, TypedExprKind::String(_))
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ObjcLiteralArgument,
+                    "'ObjC.literal' requires a plain string literal without interpolation; a text that is known only at run time needs a call of NSString",
+                    argument.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// M01: checks every use of the built-in module `ObjC`: each function is called directly, its
+/// type arguments are Objective-C object types, the target of an upcast is an ancestor of the
+/// argument's class, and the argument of `ObjC.sel` is a string literal that is a selector.
+/// A program that names no `ObjC` function passes without a diagnostic.
+fn validate_objc_builtins(
+    functions: &[CheckedFunction],
+    objc: &crate::objc::ObjcClasses,
+    statics: &BTreeMap<usize, StaticData>,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    let objc_builtin = |expr: &TypedExpr| match &expr.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) if instance.builtin.is_objc() => {
+            Some(instance.clone())
+        }
+        _ => None,
+    };
+    let class_of = |ty: &Type, builtin: Builtin, span: Span| -> Result<String, Diagnostic> {
+        match ty {
+            Type::Handle(name, kind) if kind.objc() => Ok(name.to_string()),
+            _ => Err(Diagnostic::of(
+                DiagnosticKind::ObjcTargetNotClass,
+                format!(
+                    "'{}' works on Objective-C objects: an extern class or 'ObjC.Object'; {} is not one",
+                    builtin.name(),
+                    ty.display(types)
+                ),
+                span,
+            )),
+        }
+    };
+    for function in functions {
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            if let TypedExprKind::Call(callee, arguments) = &expr.kind
+                && let Some(instance) = objc_builtin(callee)
+            {
+                let builtin = instance.builtin;
+                let [argument] = arguments.as_slice() else {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ObjcBuiltinNotCalled,
+                        format!("'{}' takes one argument", builtin.name()),
+                        expr.span,
+                    ));
+                };
+                match builtin {
+                    Builtin::ObjcRetain => {
+                        class_of(&instance.types[0], builtin, argument.span)?;
+                    }
+                    Builtin::ObjcUpcast | Builtin::ObjcUpcastOwned => {
+                        let from = class_of(&instance.types[0], builtin, argument.span)?;
+                        let to = class_of(&instance.types[1], builtin, expr.span)?;
+                        if !objc.is_ancestor(&to, &from) {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ObjcNotSuperclass,
+                                format!(
+                                    "'{}' converts to a base class: {} is not {} or a class of its declared chain of bases; use 'ObjC.downcast' for a checked cast",
+                                    builtin.name(),
+                                    instance.types[1].display(types),
+                                    instance.types[0].display(types)
+                                ),
+                                expr.span,
+                            ));
+                        }
+                    }
+                    Builtin::ObjcDowncast => {
+                        class_of(&instance.types[0], builtin, argument.span)?;
+                        class_of(&instance.types[1], builtin, expr.span)?;
+                    }
+                    Builtin::ObjcSel => {
+                        let Some(selector) = constant_string(argument, statics) else {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ObjcSelectorNotConstant,
+                                "'ObjC.sel' takes a selector that the compiler knows: a string literal without interpolation or a 'const' string",
+                                argument.span,
+                            ));
+                        };
+                        objc_selector(&selector, argument.span)?;
+                        continue;
+                    }
+                    // M02 spec 7: the expected type is the class that the runtime knows as
+                    // NSString, a class of its declared chain of bases, or `ObjC.Object`. The
+                    // argument was checked before the constants were folded.
+                    Builtin::ObjcLiteral => {
+                        let target = &instance.types[0];
+                        let allowed = match target {
+                            Type::Handle(name, kind) if kind.objc() => {
+                                &**name == crate::syntax::OBJC_OBJECT
+                                    || objc.classes.values().any(|class| {
+                                        class.runtime_name == "NSString"
+                                            && objc.is_ancestor(name, &class.name)
+                                    })
+                            }
+                            _ => false,
+                        };
+                        if !allowed {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::ObjcLiteralType,
+                                format!(
+                                    "'ObjC.literal' makes a constant NSString: the expected type is the extern class whose runtime name is NSString, one of its bases, or 'ObjC.Object', not {}; a derived class such as NSMutableString needs a call of its own",
+                                    target.display(types)
+                                ),
+                                expr.span,
+                            ));
+                        }
+                        continue;
+                    }
+                    _ => unreachable!("is_objc lists the builtins of ObjC"),
+                }
+                pending.push(argument);
+                continue;
+            }
+            if let Some(instance) = objc_builtin(expr) {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::ObjcBuiltinNotCalled,
+                    format!(
+                        "'{}' must be called directly with its argument; it cannot be used as a function value",
+                        instance.builtin.name()
+                    ),
+                    expr.span,
+                ));
+            }
+            expr.try_for_each_child(&mut |child| {
+                pending.push(child);
+                Ok(())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// The text of `expr` when it is a string literal or a `const` string that the compiler folded
+/// (M01). A string with unpaired surrogates has no text.
+pub(crate) fn constant_string(
+    expr: &TypedExpr,
+    statics: &BTreeMap<usize, StaticData>,
+) -> Option<String> {
+    let mut expr = expr;
+    loop {
+        match &expr.kind {
+            TypedExprKind::String(StringLiteral::Utf16(units)) => {
+                return String::from_utf16(units).ok();
+            }
+            TypedExprKind::String(StringLiteral::Utf8(text)) => return Some(text.clone()),
+            TypedExprKind::Static(id) => expr = &statics.get(id)?.value,
+            _ => return None,
+        }
+    }
+}
+
+/// M01: `E1008` `objc_object_position` at `span`.
+fn objc_position(span: Span) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::ObjcObjectPosition,
+        "an Objective-C type cannot be here: an extern function takes an object as 'ref C' or 'Maybe<ref C>' and returns 'C' or 'Maybe<C>', and 'ObjC.Class' and 'ObjC.Sel' are also arguments of a static callback; exports, '@c_layout' fields, FnPtr, callbacks, extern views, 'ref mut' and buffers take none",
+        span,
+    )
+}
+
+/// M01, M02: `E1008` `objc_invalid_selector` or `E1017` `objc_class_limit` unless `selector` is
+/// an Objective-C selector of at most `MAX_SELECTOR_BYTES` bytes.
+fn objc_selector(selector: &str, span: Span) -> Result<(), Diagnostic> {
+    if selector.len() > crate::objc::MAX_SELECTOR_BYTES {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcClassLimit,
+            format!(
+                "an Objective-C selector has at most {} bytes; this one has {}",
+                crate::objc::MAX_SELECTOR_BYTES,
+                selector.len()
+            ),
+            span,
+        ));
+    }
+    if !crate::objc::valid_selector(selector) {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcInvalidSelector,
+            format!(
+                "'{selector}' is not an Objective-C selector; write one identifier, as in \"length\", or identifiers that each end in ':', as in \"setTitle:\" or \"initWithBytes:length:encoding:\""
+            ),
+            span,
+        ));
     }
     Ok(())
 }
@@ -11409,6 +11944,18 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             &module.functions[id].body.kind,
             TypedExprKind::HostCall(import, _) if import.data.is_some()
         );
+        if let TypedExprKind::HostCall(import, _) = &module.functions[id].body.kind
+            && let Some(send) = &import.objc
+        {
+            return Diagnostic::of(
+                DiagnosticKind::ObjcMethodNotCalled,
+                format!(
+                    "'{}' sends a message and must be called directly with all its arguments; it cannot be a function value or be applied in part",
+                    send.display
+                ),
+                span,
+            );
+        }
         Diagnostic::of(
             DiagnosticKind::ExternViewCallForm,
             if is_data {
@@ -11466,6 +12013,10 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
                         "FnPtr.of requires a concrete top-level user function without captures; move the logic into a 'def' and pass its name",
                         argument.span,
                     ));
+                }
+                // M01: a function pointer value carries no Objective-C type.
+                if crate::abi::reaches_objc(&expression.ty, &types) {
+                    return Err(objc_position(expression.span));
                 }
                 if !crate::abi::fnptr(&expression.ty, &types) {
                     return Err(Diagnostic::of(
@@ -11682,6 +12233,7 @@ fn recovery_module(
         link_libraries: BTreeMap::new(),
         link_frameworks: BTreeMap::new(),
         weak_symbols: BTreeSet::new(),
+        objc: Default::default(),
     }
 }
 
@@ -11841,6 +12393,688 @@ fn field_names_help(record: &str, fields: &[(String, Type)]) -> String {
         .collect();
     let more = if fields.len() > 16 { ", ..." } else { "" };
     format!("the fields of '{record}' are: {}{more}", shown.join(", "))
+}
+
+/// M01: resolves the base of every `extern class` and checks the chains once: the base is a
+/// class, no chain has a cycle or more than `MAX_CLASS_DEPTH` classes, a class with a `sync` base
+/// is `sync`, and the runtime name is a C identifier. Fills `names.objc.classes`; a program
+/// without an `extern class` leaves it empty.
+fn resolve_objc_classes(
+    modules: &[ModuleInput<'_>],
+    names: &mut Names,
+    diagnostics: &mut Diagnostics,
+) {
+    use crate::objc::{MAX_CLASS_DEPTH, ObjcClassInfo};
+    let mut classes: BTreeMap<String, ObjcClassInfo> = BTreeMap::new();
+    for module in modules {
+        for class in &module.program.extern_classes {
+            if diagnostics.is_full() {
+                return;
+            }
+            let qualified = format!("{}.{}", module.name, class.name.text);
+            // A duplicate name was reported at its registration; the first declaration stands.
+            if classes.contains_key(&qualified)
+                || !names
+                    .handles
+                    .get(&qualified)
+                    .is_some_and(|info| names.handle_kinds[info.id].objc())
+            {
+                continue;
+            }
+            let runtime_name = class.runtime_name().to_owned();
+            if !crate::objc::valid_class_name(&runtime_name) {
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::InvalidObjcClassName,
+                    format!(
+                        "'{runtime_name}' cannot be an Objective-C class name; the runtime name is a C identifier of at most {} bytes, as in extern \"NSWindow\" class Window : NSResponder",
+                        crate::objc::MAX_CLASS_NAME_BYTES
+                    ),
+                    class
+                        .runtime_name
+                        .as_ref()
+                        .map_or(class.name.span, |(_, span)| *span),
+                ));
+                continue;
+            }
+            let TypeExprKind::Named(base_name) = &class.base.kind else {
+                unreachable!("the parser reads the base of an extern class as a name")
+            };
+            let base = if base_name == crate::syntax::OBJC_OBJECT {
+                None
+            } else if base_name == crate::syntax::OBJC_CLASS || base_name == crate::syntax::OBJC_SEL
+            {
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::ObjcClassBaseNotClass,
+                    format!(
+                        "the base of an extern class is 'ObjC.Object' or another extern class; '{base_name}' is not an object type"
+                    ),
+                    class.base.span,
+                ));
+                continue;
+            } else {
+                match names.named_type(module.name, base_name, class.base.span) {
+                    Ok(NamedType::Handle(info)) if names.handle_kinds[info.id].objc() => {
+                        if let Err(error) =
+                            info.require_visible("extern class", module.name, class.base.span)
+                        {
+                            diagnostics.push(error);
+                            continue;
+                        }
+                        Some(info.name.clone())
+                    }
+                    Ok(other) => {
+                        diagnostics.push(Diagnostic::of(
+                            DiagnosticKind::ObjcClassBaseNotClass,
+                            format!(
+                                "the base of an extern class is 'ObjC.Object' or another extern class; '{base_name}' is {}",
+                                match other.kind() {
+                                    "extern type" => "an extern type".to_owned(),
+                                    kind => format!("a {kind}"),
+                                }
+                            ),
+                            class.base.span,
+                        ));
+                        continue;
+                    }
+                    Err(error) => {
+                        diagnostics.push(error);
+                        continue;
+                    }
+                }
+            };
+            classes.insert(
+                qualified.clone(),
+                ObjcClassInfo {
+                    name: qualified,
+                    runtime_name,
+                    base,
+                    sync: class.sync.is_some(),
+                    trusted: class.trusted.is_some(),
+                    weak: class.weak.is_some(),
+                    depth: 0,
+                    public: class.visibility == Visibility::Public,
+                    span: class.name.span,
+                    members: objc_member_infos(&class.members, module.name),
+                },
+            );
+        }
+    }
+    // The depth of each chain. A walk that does not reach the root within the limit either runs
+    // in a cycle or is too deep; a class whose base failed above ends its chain there.
+    let names_in_order: Vec<String> = classes.keys().cloned().collect();
+    let mut rejected = BTreeSet::new();
+    for name in &names_in_order {
+        let mut depth = 1;
+        let mut current = classes[name].base.clone();
+        let mut cycle = false;
+        while let Some(base) = current {
+            if base == *name {
+                cycle = true;
+                break;
+            }
+            depth += 1;
+            if depth > 2 * (MAX_CLASS_DEPTH + 1) {
+                break;
+            }
+            current = classes.get(&base).and_then(|info| info.base.clone());
+        }
+        let info = &classes[name];
+        if cycle {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::ObjcClassBaseCycle,
+                format!(
+                    "the bases of extern class '{}' lead back to itself; every chain ends at 'ObjC.Object'",
+                    type_display(name)
+                ),
+                info.span,
+            ));
+            rejected.insert(name.clone());
+        } else if depth > 2 * (MAX_CLASS_DEPTH + 1) {
+            // The chain runs into a cycle that this class is not part of; the classes of the
+            // cycle report it.
+            rejected.insert(name.clone());
+        } else if depth > MAX_CLASS_DEPTH {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::ObjcClassLimit,
+                format!(
+                    "extern class '{}' has {depth} classes in its chain of bases; the limit is {MAX_CLASS_DEPTH}; name a base nearer to the root, since a declared chain may skip classes of the host's hierarchy",
+                    type_display(name)
+                ),
+                info.span,
+            ));
+            rejected.insert(name.clone());
+        } else {
+            classes.get_mut(name).expect("listed above").depth = depth;
+        }
+    }
+    for name in &names_in_order {
+        let info = &classes[name];
+        if !info.sync
+            && let Some(base) = &info.base
+            && classes.get(base).is_some_and(|base| base.sync)
+        {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::ObjcClassSyncBase,
+                format!(
+                    "extern class '{}' has the 'sync' base '{}', so it must be 'sync' too: 'ObjC.upcast' would let another thread use it; write 'extern class sync {}'",
+                    type_display(name),
+                    type_display(base),
+                    name.rsplit('.').next().unwrap_or(name)
+                ),
+                info.span,
+            ));
+        }
+    }
+    for name in rejected {
+        classes.remove(&name);
+    }
+    // M02: a member name is declared once in a chain, the bases included: `C.m` names one member.
+    let duplicate_member = |member: &crate::objc::ObjcMemberInfo, owner: &str| {
+        Diagnostic::of(
+            DiagnosticKind::DuplicateObjcMember,
+            format!(
+                "'{}' is declared more than once for '{}' (its bases included); a selector may have several names, but a name stands for one member, so rename one",
+                member.name,
+                type_display(owner)
+            ),
+            member.span,
+        )
+    };
+    for name in &names_in_order {
+        let Some(info) = classes.get(name) else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        let mut base = info.base.as_deref();
+        while let Some(current) = base.and_then(|base| classes.get(base)) {
+            seen.extend(current.members.iter().map(|member| member.name.as_str()));
+            base = current.base.as_deref();
+        }
+        for member in &info.members {
+            if diagnostics.is_full() {
+                break;
+            }
+            if !seen.insert(member.name.as_str()) {
+                diagnostics.push(duplicate_member(member, name));
+            }
+        }
+    }
+    names.objc.classes = classes;
+    // M02: the categories. A category is a namespace of members, not a type; its name shares the
+    // module's type names so that `Name.member` stays unambiguous.
+    for module in modules {
+        for category in &module.program.extern_categories {
+            if diagnostics.is_full() {
+                return;
+            }
+            let qualified = format!("{}.{}", module.name, category.name.text);
+            if reserved_type_name(&category.name.text)
+                || names.records.contains_key(&qualified)
+                || names.unions.contains_key(&qualified)
+                || names.handles.contains_key(&qualified)
+                || names.type_aliases.contains_key(&qualified)
+                || names.objc.categories.contains_key(&qualified)
+            {
+                diagnostics.push(duplicate(&category.name));
+                continue;
+            }
+            let TypeExprKind::Named(class_name) = &category.class.kind else {
+                unreachable!("the parser reads the class of an extern category as a name")
+            };
+            let class = match names.named_type(module.name, class_name, category.class.span) {
+                Ok(NamedType::Handle(info))
+                    if names.handle_kinds[info.id].objc()
+                        && names.objc.classes.contains_key(&info.name) =>
+                {
+                    if let Err(error) =
+                        info.require_visible("extern class", module.name, category.class.span)
+                    {
+                        diagnostics.push(error);
+                        continue;
+                    }
+                    info.name.clone()
+                }
+                Ok(_) => {
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::ObjcClassBaseNotClass,
+                        format!(
+                            "an extern category adds members to an extern class; '{class_name}' is not one"
+                        ),
+                        category.class.span,
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    diagnostics.push(error);
+                    continue;
+                }
+            };
+            let members = objc_member_infos(&category.members, module.name);
+            let mut seen = BTreeSet::new();
+            for member in &members {
+                if !seen.insert(member.name.as_str()) {
+                    diagnostics.push(duplicate_member(member, &qualified));
+                }
+            }
+            names.objc.categories.insert(
+                qualified.clone(),
+                crate::objc::ObjcCategoryInfo {
+                    name: qualified,
+                    class,
+                    trusted: category.trusted.is_some(),
+                    public: category.visibility == Visibility::Public,
+                    span: category.name.span,
+                    members,
+                },
+            );
+        }
+    }
+}
+
+/// M02: what the checker still has to validate of a member, by the id of the function that
+/// stands for it on the class or category that declares it.
+struct ObjcMemberCheck {
+    /// The span of the written selector, or of the name.
+    selector_span: Span,
+    /// Whether the selector is written; a member with arguments must write it.
+    written: bool,
+    /// The span of `@returns_retained` or `@returns_not_retained`.
+    returns: Option<Span>,
+    /// Whether the function takes the receiver as its first parameter.
+    receiver: bool,
+}
+
+/// M02: declares the functions that stand for message sends. A member `m` of the class `D` is
+/// called as `C.m` for `D` and every class `C` that derives from it, with `Self` and the receiver
+/// typed as `C`; each pair `(C, m)` is one function whose body is a `HostCall` that lowers to
+/// `objc_msgSend` where it is called. Every member gets the function of its own class (or
+/// category), which also carries the validation of the declaration; a pair of a derived class
+/// and an inherited member is declared only when some expression of the program spells it.
+/// Returns the checks of the declared members by function id. Without members nothing changes.
+fn declare_objc_sends(
+    names: &mut Names,
+    function_declarations: &mut Vec<(String, FunctionDecl)>,
+    external_functions: &mut BTreeMap<usize, HostImport>,
+    trusted_by_id: &mut BTreeMap<usize, u8>,
+) -> BTreeMap<usize, ObjcMemberCheck> {
+    let mut checks = BTreeMap::new();
+    let member_names: BTreeSet<&str> = names
+        .objc
+        .classes
+        .values()
+        .flat_map(|class| class.members.iter())
+        .chain(
+            names
+                .objc
+                .categories
+                .values()
+                .flat_map(|category| category.members.iter()),
+        )
+        .map(|member| member.name.as_str())
+        .collect();
+    if member_names.is_empty() {
+        return checks;
+    }
+    // The pairs of an owner (the qualified name of a class or category) and a member name.
+    let mut pairs: BTreeSet<(String, String)> = BTreeSet::new();
+    for (qualified, class) in &names.objc.classes {
+        for member in &class.members {
+            pairs.insert((qualified.clone(), member.name.clone()));
+        }
+    }
+    for (qualified, category) in &names.objc.categories {
+        for member in &category.members {
+            pairs.insert((qualified.clone(), member.name.clone()));
+        }
+    }
+    // The inherited members that the program names: `Owner.member` spelled in some body.
+    for (module, function) in function_declarations.iter() {
+        let mut visit = |expression: &Expr| {
+            let ExprKind::Field(_, field) = &expression.kind else {
+                return;
+            };
+            if !member_names.contains(field.text.as_str()) {
+                return;
+            }
+            let Some((path, _)) = expression_path(expression) else {
+                return;
+            };
+            let Some((owner, member)) = path.rsplit_once('.') else {
+                return;
+            };
+            if let Some(class) = names.objc_class(module, owner, expression.span)
+                && names.objc.member(&class, member).is_some()
+            {
+                pairs.insert((class, member.to_owned()));
+            }
+        };
+        function.body.visit(&mut visit);
+        for contract in &function.contracts {
+            contract.condition.visit(&mut visit);
+        }
+    }
+    let named = |name: String, span: Span| TypeExpr {
+        kind: TypeExprKind::Named(name),
+        span,
+    };
+    for (owner, member_name) in pairs {
+        // The class that receives the message, the declaration of the member, and whether the
+        // owner declares the member itself (its function validates the declaration).
+        let (class, member, declaring, trusted) = match names.objc.categories.get(&owner) {
+            Some(category) => {
+                let Some(member) = category
+                    .members
+                    .iter()
+                    .find(|member| member.name == member_name)
+                else {
+                    continue;
+                };
+                (
+                    category.class.clone(),
+                    member.clone(),
+                    owner.clone(),
+                    category.trusted,
+                )
+            }
+            None => {
+                let Some(declaring) = names.objc.chain(&owner).into_iter().find(|class| {
+                    class
+                        .members
+                        .iter()
+                        .any(|member| member.name == member_name)
+                }) else {
+                    continue;
+                };
+                let member = declaring
+                    .members
+                    .iter()
+                    .find(|member| member.name == member_name)
+                    .expect("found above")
+                    .clone();
+                (
+                    owner.clone(),
+                    member,
+                    declaring.name.clone(),
+                    declaring.trusted,
+                )
+            }
+        };
+        let own = declaring == owner;
+        let Some(runtime_name) = names.objc.runtime_name(&class).map(str::to_owned) else {
+            continue;
+        };
+        let declaration = &member.declaration;
+        let span = declaration.name.span;
+        let this = |span: Span| named(key_path(&class), span);
+        // `Self` and `Maybe<Self>` stand for the class that the call names (instancetype).
+        let result = match &declaration.result.kind {
+            TypeExprKind::Named(word) if word == "Self" => this(declaration.result.span),
+            TypeExprKind::Apply(head, arguments)
+                if matches!(
+                    arguments.as_ref(),
+                    [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "Self"
+                ) =>
+            {
+                TypeExpr {
+                    kind: TypeExprKind::Apply(
+                        head.clone(),
+                        vec![this(arguments[0].span)].into_boxed_slice(),
+                    ),
+                    span: declaration.result.span,
+                }
+            }
+            _ => declaration.result.clone(),
+        };
+        // A family applies to a member that returns an object; `init` only to an instance method
+        // (clang's rule). The object types are the classes and `ObjC.Object`.
+        let result_object = {
+            let payload = match &result.kind {
+                TypeExprKind::Apply(head, arguments)
+                    if head.text == "Maybe" && arguments.len() == 1 =>
+                {
+                    &arguments[0]
+                }
+                _ => &result,
+            };
+            matches!(
+                &payload.kind,
+                TypeExprKind::Named(name)
+                    if matches!(
+                        names.quiet_named_type(&member.module, name, payload.span),
+                        Some(NamedType::Handle(info)) if names.handle_kinds[info.id].objc()
+                    )
+            )
+        };
+        let family = crate::objc::method_family(&member.selector).filter(|family| {
+            result_object && (*family != crate::objc::Family::Init || !member.class_method)
+        });
+        let retained = match declaration.returns {
+            Some((retained, _)) => retained,
+            None => family.is_some(),
+        };
+        let mut parameters = Vec::new();
+        if !member.class_method {
+            // The receiver is borrowed (+0); `init` consumes it and hands back the result.
+            let receiver = this(span);
+            parameters.push(if family == Some(crate::objc::Family::Init) {
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::Own(Box::new(receiver)),
+                }
+            } else {
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::Reference(Box::new(receiver), false),
+                }
+            });
+        }
+        // A method without arguments is written `unit -> R`; with a receiver the `unit` goes.
+        let takes_nothing = matches!(
+            declaration.parameters.as_slice(),
+            [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "unit"
+        );
+        if member.class_method || !takes_nothing {
+            parameters.extend(declaration.parameters.iter().cloned());
+        }
+        let id = function_declarations.len();
+        let short = |qualified: &str| qualified.rsplit('.').next().unwrap_or(qualified).to_owned();
+        let display = format!("{}.{}", short(&owner), member.name);
+        external_functions.insert(
+            id,
+            HostImport {
+                native_symbol: "objc_msgSend".to_owned(),
+                wasm_module: "tsuzuri".to_owned(),
+                wasm_name: "objc_msgSend".to_owned(),
+                explicit: false,
+                callbacks: false,
+                counts: Vec::new(),
+                view: None,
+                data: None,
+                library: None,
+                framework: None,
+                weak: false,
+                returns_retained: retained,
+                objc: Some(Box::new(crate::objc::ObjcSend {
+                    selector: member.selector.clone(),
+                    class: member.class_method.then_some(runtime_name),
+                    retained,
+                    display,
+                    owner: owner.clone(),
+                    declaring,
+                })),
+            },
+        );
+        if trusted {
+            trusted_by_id.insert(id, 0);
+        }
+        if own {
+            checks.insert(
+                id,
+                ObjcMemberCheck {
+                    selector_span: declaration
+                        .selector
+                        .as_ref()
+                        .map_or(span, |(_, span)| *span),
+                    written: declaration.selector.is_some(),
+                    returns: declaration.returns.map(|(_, span)| span),
+                    receiver: !member.class_method,
+                },
+            );
+        }
+        names
+            .objc_sends
+            .insert((owner.clone(), member.name.clone()), id);
+        function_declarations.push((
+            member.module.clone(),
+            FunctionDecl {
+                doc: None,
+                name: Ident {
+                    // No source name has a '$', so the function cannot collide with a declaration.
+                    text: format!("$objc${}${}", owner.replace('.', "$"), member.name),
+                    span,
+                    provenance: Provenance::Generated,
+                },
+                regions: Vec::new(),
+                recursion: None,
+                visibility: Visibility::Public,
+                exported: false,
+                constant: false,
+                pure: false,
+                parameters: parameters
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, ty)| Parameter {
+                        name: Ident {
+                            text: format!("$host_arg{index}"),
+                            span: ty.span,
+                            provenance: Provenance::Generated,
+                        },
+                        mutable: false,
+                        ty,
+                        json: None,
+                    })
+                    .collect(),
+                result,
+                constraints: Vec::new(),
+                body: Expr {
+                    kind: ExprKind::Unit,
+                    span,
+                    depth: 1,
+                },
+                contracts: Vec::new(),
+            },
+        ));
+    }
+    checks
+}
+
+/// M02 specs 2 and 5: checks the declaration of a member with its resolved types: the selector's
+/// shape and length, that its colons count the C arguments, the types that a message carries,
+/// and that an ownership attribute stands before an object result.
+fn validate_objc_member(
+    function: &FunctionDecl,
+    signature: &Signature,
+    check: &ObjcMemberCheck,
+    send: &crate::objc::ObjcSend,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    let span = function.name.span;
+    objc_selector(&send.selector, check.selector_span)?;
+    let parameters = &signature.parameters[usize::from(check.receiver)..];
+    let arguments = parameters
+        .iter()
+        .filter(|parameter| **parameter != Type::Unit)
+        .count();
+    if !check.written && arguments > 0 {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcSelectorArity,
+            format!(
+                "member '{}' takes arguments, so it writes its selector before the name, as in \"setTitle:\" set_title :: ref NSString -> unit",
+                send.display
+            ),
+            span,
+        ));
+    }
+    match crate::abi::objc_member_types(parameters, &signature.result, types) {
+        Ok(()) => {}
+        Err(crate::abi::ObjcMemberError::OwnedArgument) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcOwnedObjectArgument,
+                "a message borrows its Objective-C arguments; write the parameter as 'ref C' or 'Maybe<ref C>'",
+                span,
+            ));
+        }
+        Err(crate::abi::ObjcMemberError::Position) => return Err(objc_position(span)),
+        Err(crate::abi::ObjcMemberError::Type) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcMemberType,
+                format!(
+                    "member '{}' has a type that a message cannot carry; parameters are scalars, objects as 'ref C', handles, 'ref' and 'ref mut' records and scalars, buffers, callbacks and '@c_layout' records by value, and results are scalars, unit, objects, handles and '@c_layout' records; a record without '@c_layout' and a buffer result are not passed as hidden pointers",
+                    send.display
+                ),
+                span,
+            ));
+        }
+    }
+    let colons = crate::objc::selector_arity(&send.selector);
+    let lowered = crate::abi::objc_c_arguments(parameters);
+    if lowered != colons {
+        if arguments > colons {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcVariadicMethod,
+                format!(
+                    "member '{}' takes {arguments} arguments, but its selector '{}' has {colons} colon(s); arguments beyond the colons would be variadic, which a member cannot declare",
+                    send.display, send.selector
+                ),
+                check.selector_span,
+            ));
+        }
+        let buffers = parameters
+            .iter()
+            .any(|parameter| crate::abi::extern_buffer_parameter(parameter).is_some());
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcSelectorArity,
+            format!(
+                "the selector '{}' of member '{}' has {colons} colon(s), but the member passes {lowered} C argument(s){}; write one colon for each",
+                send.selector,
+                send.display,
+                if buffers {
+                    " (a buffer passes two: its pointer and its length)"
+                } else {
+                    ""
+                }
+            ),
+            check.selector_span,
+        ));
+    }
+    if let Some(attribute) = check.returns
+        && !crate::abi::objc_object_result(&signature.result, types)
+    {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcReturnsRetainedNotObject,
+            "'@returns_retained' and '@returns_not_retained' say who owns an Objective-C object result; this member returns no extern class value, so remove the attribute",
+            attribute,
+        ));
+    }
+    Ok(())
+}
+
+/// M02: the members of an `extern class` or `extern category` of `module`, as declared.
+fn objc_member_infos(
+    members: &[crate::syntax::ObjcMember],
+    module: &str,
+) -> Vec<crate::objc::ObjcMemberInfo> {
+    members
+        .iter()
+        .map(|member| crate::objc::ObjcMemberInfo {
+            name: member.name.text.clone(),
+            selector: member.selector().to_owned(),
+            class_method: member.class_method.is_some(),
+            module: module.to_owned(),
+            span: member.name.span,
+            declaration: member.clone(),
+        })
+        .collect()
 }
 
 fn duplicate(name: &Ident) -> Diagnostic {
@@ -12267,6 +13501,13 @@ fn resolve_type_with_kinds(
                     NamedType::Record(info) => Type::Record(info.id, Box::default()),
                     NamedType::Union(info) => Type::Union(info.id, Box::default()),
                     NamedType::Handle(info) => {
+                        // M01: `ObjC.Object` is bound to its thread, like a class that is not
+                        // `sync`, and makes the `pinned` analysis run.
+                        if info.name == crate::syntax::OBJC_OBJECT {
+                            names
+                                .objc_object_used
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                         Type::Handle(info.name.as_str().into(), names.handle_kinds[info.id])
                     }
                     NamedType::Alias(_) => {
@@ -13192,6 +14433,10 @@ fn validate_c_layout_records(
                 continue;
             }
             match field_ty {
+                // M01: a C struct holds no Objective-C type: nothing would retain or release it.
+                _ if crate::abi::reaches_objc(field_ty, types) => {
+                    diagnostics.push(objc_position(field_span));
+                }
                 Type::Bool => {
                     diagnostics.push(Diagnostic::of(
                         DiagnosticKind::CLayoutBoolField,
@@ -21247,6 +22492,13 @@ impl<'a> Checker<'a> {
             ExprKind::Field(_, field) => field.span,
             _ => expression.span,
         };
+        // M02: `Class.member` and `Category.member` name the function that sends the message.
+        if let Some((owner, member)) = path.rsplit_once('.')
+            && let Some(owner) = self.names.objc_class(self.module, owner, span)
+            && let Some(&id) = self.names.objc_sends.get(&(owner, member.to_owned()))
+        {
+            return Ok(Some(self.function(id)));
+        }
         self.names.check_path(self.module, &path, span)?;
         if let Some(canonical) = self.names.canonical(self.module, &path) {
             let standard = canonical.split_once('.').is_some_and(|(module, _)| {

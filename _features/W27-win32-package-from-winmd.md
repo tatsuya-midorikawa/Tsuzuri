@@ -156,7 +156,7 @@ tsuzuri bindgen --winmd FILE --api LIST -o DIR [--json]
 | ANSI の関数（`PSTR`・`PCSTR` を取る `…A`） | `ANSI variant; use the W function` |
 | union と、union の field を持つ構造体（明示の FieldLayout） | `union (no union layout in Tsuzuri)` |
 | x64 と ARM64 で配置か存在が違う宣言（`[SupportedArchitecture]`） | `architecture-specific layout` |
-| 可変長引数、値で返す構造体、値で渡す構造体（[W36](W36-c-layout-by-value.md) が入る前。入った後は、W36 が対応する target では `ref` の無い `@c_layout` record に写す） | `by-value struct` など |
+| 可変長引数、値で返す構造体、値で渡す構造体（[W36](_completed/W36-c-layout-by-value.md) が入る前。入った後は、W36 が対応する target では `ref` の無い `@c_layout` record に写す） | `by-value struct` など |
 | `INVALID_HANDLE_VALUE`（-1）を失敗の値に持つハンドルの結果 | `invalid handle value -1 is not representable` |
 | `[NullNullTerminated]`・`[MemorySize]` の buffer、`[NativeArrayInfo]` の無いポインター | `pointer without a length` |
 | 文字列の定数 | `string constant`（`ZString` の定数の形が決まるまで） |

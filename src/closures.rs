@@ -722,6 +722,19 @@ fn lower_expression(
             };
             expression.kind = Function(FunctionRef::User(id));
         }
+        // M01, M02: `ObjC.sel` and `ObjC.literal` read their compile-time string where they are
+        // called, so the call keeps its callee instead of going through a shared wrapper.
+        Call(callee, arguments)
+            if matches!(
+                &callee.kind,
+                Function(FunctionRef::Builtin(instance))
+                    if matches!(instance.builtin, Builtin::ObjcSel | Builtin::ObjcLiteral)
+            ) =>
+        {
+            for argument in arguments {
+                lower_expression(argument, functions, types, generated, origin)?;
+            }
+        }
         Call(callee, arguments)
             if matches!(
                 &callee.kind,

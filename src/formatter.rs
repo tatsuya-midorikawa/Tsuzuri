@@ -171,6 +171,51 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         handle.kind_span = None;
         canonical.ident(&mut handle.name);
     }
+    let objc_members = |canonical: &mut Canonical, members: &mut [ObjcMember]| {
+        for member in members {
+            Canonical::doc(&mut member.doc);
+            if let Some((_, span)) = &mut member.returns {
+                *span = Span::default();
+            }
+            if let Some(span) = &mut member.class_method {
+                *span = Span::default();
+            }
+            if let Some((_, span)) = &mut member.selector {
+                *span = Span::default();
+            }
+            canonical.ident(&mut member.name);
+            for parameter in &mut member.parameters {
+                canonical.ty(parameter);
+            }
+            canonical.ty(&mut member.result);
+        }
+    };
+    for class in &mut program.extern_classes {
+        Canonical::doc(&mut class.doc);
+        if let Some((_, span)) = &mut class.runtime_name {
+            *span = Span::default();
+        }
+        for span in [&mut class.sync, &mut class.trusted, &mut class.weak]
+            .into_iter()
+            .flatten()
+        {
+            *span = Span::default();
+        }
+        canonical.hints.objc_headers.insert(class.name.span.end);
+        canonical.ident(&mut class.name);
+        canonical.ty(&mut class.base);
+        objc_members(&mut canonical, &mut class.members);
+    }
+    for category in &mut program.extern_categories {
+        Canonical::doc(&mut category.doc);
+        if let Some(span) = &mut category.trusted {
+            *span = Span::default();
+        }
+        canonical.hints.objc_headers.insert(category.name.span.end);
+        canonical.ident(&mut category.name);
+        canonical.ty(&mut category.class);
+        objc_members(&mut canonical, &mut category.members);
+    }
     for constant in &mut program.constants {
         Canonical::doc(&mut constant.doc);
         canonical.ident(&mut constant.name);
@@ -323,6 +368,10 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         canonical.ident(&mut attribute.target);
         attribute.span = Span::default();
     }
+    for attribute in &mut program.returns_retained {
+        canonical.ident(&mut attribute.target);
+        attribute.span = Span::default();
+    }
     for attribute in &mut program.c_layouts {
         canonical.ident(&mut attribute.target);
         attribute.span = Span::default();
@@ -364,6 +413,9 @@ struct Hints {
     /// precedes it and a `?` keeps the space written after it (`?a` and `? a` differ), so only these
     /// get `| :? i64`.
     type_tests: BTreeSet<usize>,
+    /// Where the name of each `extern class` and `extern category` ends (M01, M02): the `:`
+    /// after it stands between two names, as in `extern class NSWindow : NSResponder`.
+    objc_headers: BTreeSet<usize>,
 }
 
 fn column(source: &str, offset: usize) -> usize {
@@ -739,6 +791,10 @@ fn spacing(
     }
     if previous.kind == Colon && hints.type_tests.contains(&previous.span.start) {
         return "";
+    }
+    // M01: the `:` before the base of an `extern class`, with a space on both sides.
+    if current.kind == Colon && hints.objc_headers.contains(&previous.span.end) {
+        return " ";
     }
     if previous.kind == Question
         && previous

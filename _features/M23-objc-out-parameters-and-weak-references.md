@@ -5,7 +5,7 @@
 | ID | M23 |
 | 優先度 | P2（Cocoa の失敗の報告の大半は `NSError **` で返り、M01・M02 だけでは型付きで受け取れない。今も `ref mut i64` と手で書く retain で受け取れ、循環も手で切れるので P1 にしない） |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M01](M01-objc-class-types.md), [M02](M02-objc-typed-message-send.md) |
+| 依存 | [M01](_completed/M01-objc-class-types.md), [M02](_completed/M02-objc-typed-message-send.md) |
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md)。今は `NSError **` を取るメンバーを `W2002` で省いている） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1「Objective-C との型付きの連携がない」のうち ARC の一部（物体の出力引数 `NSError **` と弱い参照 `__weak`）。M01 の対象外に理由なしで置かれ、M07 は `NSError **` を取るメンバーを `W2002` で省くので、行き先のチケットがなかった。起票の後の網羅性の検査で見つけた」に当たる。HEAD `804b7970` で確認） |
@@ -84,7 +84,7 @@ def main :: unit -> i32 = \() ->
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない（`grep -n '利用者が決めた点' _features/GUIDE.md`）。
-- Phase 1: D1・D2 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み、2026-11-26）。[M01](M01-objc-class-types.md) と [M02](M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
+- Phase 1: D1・D2 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み、2026-11-26）。[M01](_completed/M01-objc-class-types.md) と [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
 - Phase 2: D8・D9 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み）、M01 が done。Phase 1 が done でなくてもよい。
 - 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
 - 環境: arm64 の macOS と Apple clang と SDK。Rust のテストはどのホストでも走る。
@@ -464,8 +464,8 @@ def stop :: ref Controller -> unit = \controller ->
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](M01-objc-class-types.md): 物体の型の判定（`HandleKind::ObjcLocal`・`ObjcSync` と述語）、`Maybe<C>` の niche、位置の検査と kind `objc_object_position`・`objc_target_not_class`・`objc_builtin_not_called`・`abi_apple_only`、`validate_objc_target`、`objc_used`、`declare` の 1 行の規則、D6、監査の行。名前が違えば止めて報告する（GUIDE-LITE §11）。
-- [M02](M02-objc-typed-message-send.md): `abi::objc_parameter`、セレクターの数の `c`、`host_call` の分割、`ObjcCallSite`。
+- [M01](_completed/M01-objc-class-types.md): 物体の型の判定（`HandleKind::ObjcLocal`・`ObjcSync` と述語）、`Maybe<C>` の niche、位置の検査と kind `objc_object_position`・`objc_target_not_class`・`objc_builtin_not_called`・`abi_apple_only`、`validate_objc_target`、`objc_used`、`declare` の 1 行の規則、D6、監査の行。名前が違えば止めて報告する（GUIDE-LITE §11）。
+- [M02](_completed/M02-objc-typed-message-send.md): `abi::objc_parameter`、セレクターの数の `c`、`host_call` の分割、`ObjcCallSite`。
 - [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `CopyOut`・`finish_copy_outs`・`uses_w13_native_only`。[W15](_completed/W15-abi-nullable-handles.md): `nullable_to_c`、`abi_nullable_payload`。[W23](_completed/W23-anchor-state.md): `Anchor<T>` に入れる規則。
 - 任意: [M04](M04-objc-blocks.md) の D10（Phase 2）、[M05](M05-objc-exception-boundary.md) の例外の経路、[M10](M10-objc-autorelease-pools.md) の `ObjC.with_autorelease_pool`。
 

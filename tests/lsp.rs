@@ -3898,3 +3898,87 @@ fn the_channel_call_rewrite_is_a_quick_fix() {
         assert_eq!(new_text, [expected], "{actions}");
     }
 }
+
+/// M02: a member of an Objective-C class or category is a method in the index. A call `Owner.member`
+/// refers to the declaration, also when `Owner` inherits the member, and signature help shows the
+/// receiver and the declared parameters.
+#[test]
+fn objc_members_have_references_definitions_hover_and_signature_help() {
+    use serde_json::json;
+    let source = "\
+@trusted
+extern class NSObject : ObjC.Object {
+    class alloc :: unit -> Self
+    /// The hash of the receiver.
+    hash :: unit -> i64u
+}
+
+@trusted
+extern class NSString : NSObject
+
+@trusted
+extern category Extras : NSObject {
+    \"isEqual:\" is_equal :: ref NSObject -> bool
+}
+
+def digest :: ref NSString -> i64u
+fn digest text = NSString.hash text
+
+def same :: ref NSObject -> ref NSObject -> bool
+fn same a b = Extras.is_equal a b
+";
+    let responses = scripted(&[("Main.tz", source)], "utf-16", |uri| {
+        let main = uri("Main.tz");
+        let request = |id: u64, method: &str, needle: &str| {
+            let mut params = json!({"textDocument": {"uri": main}, "position": position(source, needle, "utf-16")});
+            if method == "textDocument/references" {
+                params["context"] = json!({"includeDeclaration": true});
+            }
+            json!({"id": id, "method": method, "params": params})
+        };
+        vec![
+            request(1, "textDocument/references", "hash :: unit"),
+            request(2, "textDocument/signatureHelp", "text\n\ndef same"),
+            request(3, "textDocument/definition", "is_equal a b"),
+            request(4, "textDocument/hover", "hash text"),
+            request(5, "textDocument/signatureHelp", "b\n"),
+        ]
+    });
+    let starts: Vec<_> = responses[0]["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{}", responses[0]))
+        .iter()
+        .map(|location| location["range"]["start"].clone())
+        .collect();
+    // The declaration, and the call through the derived class.
+    assert_eq!(
+        starts,
+        [
+            json!({"line": 4, "character": 4}),
+            json!({"line": 16, "character": 26}),
+        ]
+    );
+    assert_eq!(
+        responses[1]["result"],
+        json!({"signatures": [{"label": "hash (receiver: ref NSObject) -> i64u", "parameters": [{"label": "receiver: ref NSObject"}]}], "activeSignature": 0, "activeParameter": 0}),
+        "{}",
+        responses[1]
+    );
+    assert_eq!(
+        responses[2]["result"]["range"]["start"],
+        json!({"line": 12, "character": 15}),
+        "{}",
+        responses[2]
+    );
+    let hover = responses[3]["result"].to_string();
+    assert!(hover.contains("The hash of the receiver."), "{hover}");
+    // The type is the one of the send that the call names: the receiver is the derived class.
+    assert!(hover.contains("ref Main.NSString -> i64u"), "{hover}");
+    assert_eq!(
+        responses[4]["result"]["signatures"][0]["label"],
+        "is_equal (receiver: ref NSObject) (arg1: ref NSObject) -> bool",
+        "{}",
+        responses[4]
+    );
+    assert_eq!(responses[4]["result"]["activeParameter"], 1);
+}
