@@ -106,6 +106,7 @@ record Pair { a: i8, b: i64 }
 @trusted extern \"v_rec\" view def v_rec :: unit -> Pair
 @trusted extern \"v_h\" view def v_h_again :: unit -> H
 @trusted extern \"v_h\" address def addr_h :: unit -> H
+@trusted extern \"v_h\" address def addr_ea :: unit -> ExternAddr
 
 def main :: unit -> i32 = \\() -> 0i32
 ";
@@ -120,6 +121,7 @@ def main :: unit -> i32 = \\() -> 0i32
         "extern \"u\" view def f :: unit -> unit\n0\n",
         "extern \"z\" view def f :: unit -> ZString\n0\n",
         "extern \"zu\" view def f :: unit -> ZUtf8String\n0\n",
+        "extern \"ea\" view def f :: unit -> ExternAddr\n0\n",
         "extern \"a\" address def f :: unit -> i64\n0\n",
         "extern type copy H\nextern \"a\" address def f :: unit -> Maybe<H>\n0\n",
         "extern type Owned\nextern \"a\" address def f :: unit -> Owned\n0\n",

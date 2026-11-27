@@ -39,7 +39,7 @@ n
 ### 着手条件
 
 - `node scripts/repo-kb.mjs brief W38`。「現状」の表を HEAD で繰り返し、同じ結果になることを確かめる。食い違えば、このチケットを直してから始める。
-- [W31](W31-top-level-loop-before-do.md) と [W02](W02-break-in-do-function.md) が `main` に入っているかを確かめる（「W31・W02 との関係」）。入っていれば、その上に作る。
+- [W31](_completed/W31-top-level-loop-before-do.md) と [W02](_completed/W02-break-in-do-function.md) が `main` に入っているかを確かめる（「W31・W02 との関係」）。入っていれば、その上に作る。
 
 ### 停止条件
 
@@ -136,8 +136,8 @@ fn entry_value(&mut self, mut prefix: Vec<(Local, TypedExpr)>, value: &Expr, sta
 
 ### W31・W02 との関係
 
-- [W02](W02-break-in-do-function.md) が変えるのは、`check_implicit` と `implicit_root` の先頭の判定（`runs_directly`）である。このチケットの行とは重ならず、意味も独立している（`$entry` の `normal_loop_depth` は 0 のまま）。
-- [W31](W31-top-level-loop-before-do.md) は、`implicit_prefix` に `direct_controls` を足し、`if builder.is_none()` の枝に 2 回目の呼び出しと `assumed_direct` を足す。このチケットは同じ枝の 1 回目の呼び出しを変えるので、テキストは衝突する。
+- [W02](_completed/W02-break-in-do-function.md) が変えるのは、`check_implicit` と `implicit_root` の先頭の判定（`runs_directly`）である。このチケットの行とは重ならず、意味も独立している（`$entry` の `normal_loop_depth` は 0 のまま）。
+- [W31](_completed/W31-top-level-loop-before-do.md) は、`implicit_prefix` に `direct_controls` を足し、`if builder.is_none()` の枝に 2 回目の呼び出しと `assumed_direct` を足す。このチケットは同じ枝の 1 回目の呼び出しを変えるので、テキストは衝突する。
 - 意味の上の関係: W31 の `direct_controls` の規則 (b)「最後の文は取らない」と、このチケットの `head` は、同じ規則（`$entry` の最後の文は入口の値）を別の呼び出しに当てる。両方が入った後は、`while` などの制御の文の後に裸の `do` と最後の式がある形は W31 の D4（`direct_root`）、制御の文の無い形はこのチケットの `entry_value` に進む。
 - 推奨の順: W02 → W31 → W38（優先度の順）。後から入る方の PR が、組み合わせの形（`let mut n = 0` / `while n < 3 do n = n + 1` / `do Debug.print "x"` / `n` は W31 の経路、a はこのチケットの経路）をテストに足す。W31 の「対象外」の行（「素の `do` を含み束縛の無いトップレベルの計算の、最後の式」）と落とし穴の HEAD の注記は、このチケットを指す。
 

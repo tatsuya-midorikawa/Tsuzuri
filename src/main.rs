@@ -291,6 +291,7 @@ Build options:
                          Read the sources of a project without a Tsuzuri.toml with this edition
     --warn untrusted-extern
                          Report W1010 at extern functions that are used but not marked '@trusted'
+    --warn unwrap          Report W1011 at Maybe.get, Result.get, and Result.get_error in root code
     --report parallel      check only: print the Array calls that Parallel can replace and whether the
                            callbacks of the Parallel calls are pure, on stdout
     --contracts off|check|test|prove
@@ -417,6 +418,8 @@ struct Arguments {
     warn_canonical: bool,
     /// E15: report W1010 at the root package's used extern functions without `@trusted`.
     warn_untrusted_extern: bool,
+    /// NS05: report W1011 at root-package uses of `Maybe.get`, `Result.get`, and `Result.get_error`.
+    warn_unwrap: bool,
     /// F15 `check --report parallel`: print the parallel report on stdout after a successful check.
     report_parallel: bool,
     format_check: bool,
@@ -477,6 +480,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             warn_implicit_copy: false,
             warn_canonical: false,
             warn_untrusted_extern: false,
+            warn_unwrap: false,
             report_parallel: false,
             format_check: false,
             test_filter: None,
@@ -541,6 +545,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     let mut warn_implicit_copy = false;
     let mut warn_untrusted_extern = false;
     let mut warn_canonical = false;
+    let mut warn_unwrap = false;
     let mut report_parallel = false;
     let mut format_check = false;
     let mut test_filter = None;
@@ -690,6 +695,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                         Some("implicit-copy") => &mut warn_implicit_copy,
                         Some("canonical") => &mut warn_canonical,
                         Some("untrusted-extern") => &mut warn_untrusted_extern,
+                        Some("unwrap") => &mut warn_unwrap,
                         _ => {
                             return Err(command_line_error(
                                 DiagnosticKind::OptionInvalidValue,
@@ -1595,7 +1601,8 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
             || deny_warnings
             || warn_implicit_copy
             || warn_canonical
-            || warn_untrusted_extern)
+            || warn_untrusted_extern
+            || warn_unwrap)
     {
         return Err(command_line_error(
             DiagnosticKind::OptionInvalidForCommand,
@@ -1896,6 +1903,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         warn_implicit_copy,
         warn_canonical,
         warn_untrusted_extern,
+        warn_unwrap,
         report_parallel,
         format_check,
         test_filter,
@@ -2479,6 +2487,7 @@ fn run_doctest_action(arguments: &Arguments, project: &Project) -> u8 {
             implicit_copy: arguments.warn_implicit_copy,
             canonical: arguments.warn_canonical,
             untrusted_extern: arguments.warn_untrusted_extern,
+            unwrap: arguments.warn_unwrap,
         },
         allow_overflow: arguments.allow_overflow,
     };
@@ -3375,8 +3384,8 @@ struct AuditArguments {
 }
 
 /// The names that `--warn` takes, in the fixed order of D-55: `implicit-copy`, `canonical` (A22),
-/// `untrusted-extern` (E15), each once it is implemented.
-const WARNINGS: [&str; 3] = ["implicit-copy", "canonical", "untrusted-extern"];
+/// `untrusted-extern` (E15), `unwrap` (NS05).
+const WARNINGS: [&str; 4] = ["implicit-copy", "canonical", "untrusted-extern", "unwrap"];
 
 const AUDIT_USAGE: &str = "usage: tsuzuri audit [PATH] [--json] [--deny-warnings]";
 
@@ -4408,6 +4417,11 @@ fn cli(
     } else {
         Vec::new()
     };
+    let unwraps = if arguments.warn_unwrap {
+        module.unwrap_warnings()
+    } else {
+        Vec::new()
+    };
     let mut all_warnings: Vec<_> = module
         .warnings
         .iter()
@@ -4420,7 +4434,8 @@ fn cli(
             .into_iter()
             .chain(copies)
             .chain(canonical)
-            .chain(untrusted),
+            .chain(untrusted)
+            .chain(unwraps),
         0,
     );
     write_diagnostics(err, &warnings, &project, arguments.json);
@@ -6803,6 +6818,9 @@ mod tests {
             assert!(arguments.warn_untrusted_extern, "{action}");
             assert!(!arguments.warn_implicit_copy, "{action}");
             assert!(!parse(&[action, "Main.tz"]).unwrap().warn_untrusted_extern);
+            let arguments = parse(&[action, "Main.tz", "--warn", "unwrap"]).unwrap();
+            assert!(arguments.warn_unwrap, "{action}");
+            assert!(!parse(&[action, "Main.tz"]).unwrap().warn_unwrap);
         }
         let both = parse(&[
             "check",
@@ -6811,17 +6829,19 @@ mod tests {
             "untrusted-extern",
             "--warn",
             "implicit-copy",
+            "--warn",
+            "unwrap",
         ])
         .unwrap();
-        assert!(both.warn_implicit_copy && both.warn_untrusted_extern);
+        assert!(both.warn_implicit_copy && both.warn_untrusted_extern && both.warn_unwrap);
         for (values, message) in [
             (
                 vec!["check", "Main.tz", "--warn"],
-                "--warn requires a warning name; supported: implicit-copy, canonical, untrusted-extern",
+                "--warn requires a warning name; supported: implicit-copy, canonical, untrusted-extern, unwrap",
             ),
             (
                 vec!["check", "Main.tz", "--warn", "shadowing"],
-                "unknown warning 'shadowing' for --warn; supported: implicit-copy, canonical, untrusted-extern",
+                "unknown warning 'shadowing' for --warn; supported: implicit-copy, canonical, untrusted-extern, unwrap",
             ),
             (
                 vec![

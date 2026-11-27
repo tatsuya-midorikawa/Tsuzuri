@@ -390,6 +390,40 @@ impl Checker<'_> {
                     soft,
                 );
             }
+            ExprKind::IfLet(if_let) => {
+                let value = self.expression(&if_let.value, None)?;
+                let fallback_span = if if_let.has_else {
+                    if_let.else_branch.span
+                } else {
+                    if_let.pattern.span
+                };
+                let arms = [
+                    MatchArm {
+                        pattern: if_let.pattern.clone(),
+                        guard: if_let.guard.clone(),
+                        body: if_let.then_branch.clone(),
+                        span: if_let.pattern.span.through(if_let.then_branch.span),
+                    },
+                    MatchArm {
+                        pattern: Pattern {
+                            kind: PatternKind::Wildcard,
+                            span: fallback_span,
+                            depth: 1,
+                        },
+                        guard: None,
+                        body: if_let.else_branch.clone(),
+                        span: fallback_span,
+                    },
+                ];
+                return self.match_value_with_soft(
+                    value,
+                    &arms,
+                    expected,
+                    expression.span,
+                    Some(MatchOrigin::IfLet),
+                    soft,
+                );
+            }
             _ => unreachable!("control expression kinds checked by expression"),
         };
         if let Some(expected) = expected {

@@ -1208,3 +1208,303 @@ fn index_view_requires_ref_fix_is_certain_and_check_clean() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn nc20_index_borrow_mut_windows_chains_and_indexed_compound_assign() {
+    use tsuzuri::syntax::Edition;
+    use tsuzuri::{analyze_with_edition, llvm};
+
+    let check_err = |src: &str, edition: Edition, code: &str| {
+        let err = analyze_with_edition(src, edition)
+            .expect_err(src)
+            .into_data();
+        assert_eq!(err.code, code, "{src}\n{err:?}");
+        err
+    };
+
+    // 1. `ref mut t[[Slice.Sel...]]` and 2028 `ref mut t[1..2, ..]` produce `Tensor.Mut`,
+    //    field base in 2027 works while leaving sibling field readable, and `Mut` base is reusable after sub-window dies.
+    let ok_2028 = "\
+record Model { w: Tensor<f64>, b: Tensor<f64> }
+def main :: unit -> i32 = \\() ->
+    let mut t = Tensor.init [3, 4] (\\i -> i as f64)
+    let mut w: Tensor.Mut<f64> = ref mut t[0..1, ..]
+    Tensor.fill 9.0 (ref mut w)
+    t[2, ..] *= 2.0
+    t[2, 3] -= 1.0
+    t[^0, 0] += 0.5
+    t[^0, ..] += 1.0
+    let mut inferred = Tensor.zeros [4]
+    inferred[[0]] += 1.5
+    let mut model = Model { w: Tensor.zeros [2, 2], b: Tensor.ones [2] }
+    let mut mw = ref mut model.w[[Slice.Sel.Whole, Slice.Sel.Whole]]
+    let sib = Tensor.sum (Tensor.view (ref model.b))
+    Tensor.fill sib (ref mut mw)
+    let mut raw = [1.0, 2.0, 3.0, 4.0]
+    let mut m = Tensor.borrow_mut [2, 2] (ref mut raw)
+    let mut sub = ref mut m[0..0, ..]
+    Tensor.fill 7.0 (ref mut sub)
+    (deref (ref mut m))[1, 1] += 5.0
+    let mut w2 = ref mut t[1..2, ..]
+    let mut w3 = ref mut w2[0, ..]
+    Tensor.fill 3.0 (ref mut w3)
+    w2[1, ..] += 1.0
+    let mut cplx = Tensor.of_array [2] [Complex.of 1.0 2.0, Complex.of 3.0 4.0]
+    cplx[0..1] += Complex.of 0.5 (-0.5)
+    let mut ov = Tensor.init [5] (\\i -> i * 10)
+    let snap_v = ref ov[..^1]
+    let prev = Tensor.to_tensor (ref snap_v)
+    ov[1..] += prev
+    0i32
+";
+    let module = analyze_with_edition(ok_2028, Edition::E2028).expect("valid 2028 NC20 program");
+    for wasm in [false, true] {
+        let ir = llvm::emit_target(&module, llvm::Entry::Console, wasm).unwrap();
+        assert!(llvm::duplicate_declarations(&ir).is_empty());
+    }
+
+    // 2. Field base in edition 2026 rejected with E1014 (`mutate_immutable_value`), and using `model` while `mw` lives is E1014.
+    let e26_field = check_err(
+        "record Model { w: Tensor<f64>, b: Tensor<f64> }\nlet mut model = Model { w: Tensor.zeros [2, 2], b: Tensor.ones [2] }\nlet mut mw = ref mut model.w[[Slice.Sel.Whole]]\nTensor.fill 1.0 (ref mut mw)\n0",
+        Edition::E2026,
+        "E1014",
+    );
+    assert_eq!(e26_field.kind, Some("mutate_immutable_value"));
+
+    let model_live = check_err(
+        "record Model { w: Tensor<f64>, b: Tensor<f64> }\ndef main :: unit -> i32 = \\() ->\n    let mut model = Model { w: Tensor.zeros [2, 2], b: Tensor.ones [2] }\n    let mut mw = ref mut model.w[[Slice.Sel.Whole]]\n    let _v = Tensor.view (ref model.w)\n    Tensor.fill 1.0 (ref mut mw)\n    0i32\n",
+        Edition::E2027,
+        "E1014",
+    );
+    assert_eq!(model_live.kind, Some("borrow_conflict"));
+
+    // 3. Temporary base, immutable local, shared ref, element path, Drop.drop root, live window conflict.
+    check_err(
+        "def mk :: i64 -> Tensor<f64> = \\n -> Tensor.zeros [n]\ndef main :: unit -> i32 = \\() ->\n    let _w = ref mut (mk 4)[1..2]\n    0i32\n",
+        Edition::E2028,
+        "E1013",
+    );
+    check_err(
+        "def main :: unit -> i32 = \\() ->\n    let t: Tensor<f64> = Tensor.zeros [4, 4]\n    let _w = ref mut t[1..2, ..]\n    0i32\n",
+        Edition::E2028,
+        "E1014",
+    );
+    check_err(
+        "def f :: ref Tensor<f64> -> unit = \\t -> { let _w = ref mut t[1..2]; () }\n0",
+        Edition::E2028,
+        "E1014",
+    );
+    check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut ts: [Tensor<f64>] = [Tensor.zeros [4]]\n    let _w = ref mut ts[0][1..2]\n    0i32\n",
+        Edition::E2028,
+        "E1014",
+    );
+    check_err(
+        "record Holder { t: Tensor<f64> }\ninstance Drop<Holder> {\n    fn drop self =\n        let _w = ref mut self.t[[Slice.Sel.Whole]]\n        ()\n}\n0",
+        Edition::E2027,
+        "E1012",
+    );
+    check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4]\n    let mut w = ref mut t[1..2]\n    let _n = Tensor.as_array (ref t)\n    Tensor.fill 1.0 (ref mut w)\n    0i32\n",
+        Edition::E2028,
+        "E1014",
+    );
+
+    // 4. Key reading base is allowed; key mutating base is E1014 (`borrow_conflict`).
+    analyze_with_edition(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let mut w = ref mut t[0 ..< (Tensor.as_array (ref t)).length / 8, ..]\n    Tensor.fill 1.0 (ref mut w)\n    0i32\n",
+        Edition::E2028,
+    )
+    .expect("key may read base");
+    let key_mut = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let _w = ref mut t[{ t = Tensor.zeros [4, 4]; 1 }..2, ..]\n    0i32\n",
+        Edition::E2028,
+        "E1014",
+    );
+    assert_eq!(key_mut.kind, Some("borrow_conflict"));
+
+    // 5. Mask & `[Slice.Axis]` keys.
+    let mask_ref = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4]\n    let mask = Tensor.of_array [4] [true, false, true, false]\n    let _w = ref mut t[mask]\n    0i32\n",
+        Edition::E2028,
+        "E1003",
+    );
+    assert_eq!(mask_ref.kind, Some("index_ref_on_value"));
+
+    let axis_ref = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let _w = ref mut t[[Slice.range 1 3]]\n    0i32\n",
+        Edition::E2028,
+        "E1042",
+    );
+    assert_eq!(axis_ref.kind, Some("index_view_not_writable"));
+    assert_eq!(
+        axis_ref.help.as_deref(),
+        Some(
+            "use Slice.Sel keys for a writable window, for example 'ref mut t[1..<3, ..]' in edition 2028"
+        )
+    );
+
+    let mask_assign = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4]\n    let mask = Tensor.of_array [4] [true, false, true, false]\n    t[mask] += 1.0\n    0i32\n",
+        Edition::E2028,
+        "E1005",
+    );
+    assert_eq!(mask_assign.kind, Some("no_instance"));
+    assert_eq!(
+        mask_assign.help.as_deref(),
+        Some("a mask or a list of positions selects copies; '+=' needs positions, ranges or '..'")
+    );
+
+    // 6. Chained writable windows (D14).
+    let chain_ref_mut = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let _w = ref mut t[1..3, ..][0, ..]\n    0i32\n",
+        Edition::E2028,
+        "E1013",
+    );
+    assert_eq!(chain_ref_mut.kind, Some("borrow_of_temporary"));
+    assert_eq!(
+        chain_ref_mut.help.as_deref(),
+        Some(
+            "bind the inner window first: 'let mut w = ref mut t[1..3, ..]', then 'ref mut w[0, ..]'"
+        )
+    );
+
+    let chain_range_assign = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    t[1..3, ..][0, ..] += 1.0\n    0i32\n",
+        Edition::E2028,
+        "E0002",
+    );
+    assert_eq!(chain_range_assign.kind, Some("slice_must_be_borrowed"));
+
+    let chain_long_assign = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let a = [Slice.Sel.Whole, Slice.Sel.Whole]\n    let b = [Slice.Sel.Whole, Slice.Sel.Whole]\n    t[a][b] += 1.0\n    0i32\n",
+        Edition::E2027,
+        "E1013",
+    );
+    assert_eq!(chain_long_assign.kind, Some("borrow_of_temporary"));
+    assert_eq!(
+        chain_long_assign.help.as_deref(),
+        Some("bind the inner window first: 'let mut w = ref mut t[a]', then 'w[b] += ...'")
+    );
+
+    let chain_long_ref = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let a = [Slice.Sel.Whole, Slice.Sel.Whole]\n    let b = [Slice.Sel.Whole, Slice.Sel.Whole]\n    let _w = ref mut t[a][b]\n    0i32\n",
+        Edition::E2027,
+        "E1013",
+    );
+    assert_eq!(
+        chain_long_ref.help.as_deref(),
+        Some("bind the inner window first: 'let mut w = ref mut t[a]', then 'ref mut w[b]'")
+    );
+
+    let builtin_elem_base = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut ts: [Tensor<f64>] = [Tensor.zeros [4, 4]]\n    ts[0][[1, 2]] += 1.0\n    0i32\n",
+        Edition::E2027,
+        "E1014",
+    );
+    assert_eq!(builtin_elem_base.kind, Some("mutate_immutable_value"));
+
+    let chain_axis_inner = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let b = [Slice.Sel.Whole]\n    t[[Slice.range 1 3]][b] += 1.0\n    0i32\n",
+        Edition::E2027,
+        "E1042",
+    );
+    assert_eq!(chain_axis_inner.kind, Some("index_view_not_writable"));
+    assert_eq!(
+        chain_axis_inner.help.as_deref(),
+        Some(
+            "use Slice.Sel keys for a writable window, for example 'ref mut t[1..<3, ..]' in edition 2028"
+        )
+    );
+
+    let chain_val_inner = check_err(
+        "\
+record Row { xs: [i64] }
+record Grid { rows: [Row] }
+instance Index<Grid, i64, Row> { fn index i self = self.rows[deref i] }
+instance Index<Row, i64, i64> { fn index j self = self.xs[deref j] }
+instance IndexMut<Row, i64, i64> { fn index_mut j v self = self.xs[deref j] = v }
+def main :: unit -> i32 = \\() ->
+    let mut g = Grid { rows: [Row { xs: [1, 2] }] }
+    g[0][1] += 5
+    0i32
+",
+        Edition::E2027,
+        "E1013",
+    );
+    assert_eq!(chain_val_inner.kind, Some("borrow_of_temporary"));
+    assert_eq!(chain_val_inner.help, None);
+
+    // 7. Element type checks (`Complex<f64>` element -> E1005 compound_assign_unsupported_target; `f64` `%=` -> E1005 Rem<f64>).
+    let cplx_elem = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t = Tensor.of_array [2] [Complex.of 1.0 2.0, Complex.of 3.0 4.0]\n    t[[0]] += Complex.of 1.0 0.0\n    0i32\n",
+        Edition::E2027,
+        "E1005",
+    );
+    assert_eq!(cplx_elem.kind, Some("compound_assign_unsupported_target"));
+    assert_eq!(
+        cplx_elem.message,
+        "'+=' on an element of type Complex<f64> is not available"
+    );
+    assert_eq!(cplx_elem.help.as_deref(), Some("write 't[k] = t[k] + e'"));
+
+    let f64_rem_elem = check_err(
+        "def main :: unit -> i32 = \\() ->\n    let mut t = Tensor.zeros [2]\n    t[[0]] %= 2.0\n    0i32\n",
+        Edition::E2027,
+        "E1005",
+    );
+    assert_eq!(f64_rem_elem.kind, Some("no_instance"));
+    assert!(f64_rem_elem.message.contains("Rem<f64>"));
+
+    // 8. Overlapping window (`a[1..] += ref a[..^1]` on both `Tensor` and `Tensor.Mut`), plus `$k` and `$e` guards!
+    for overlap_src in [
+        "def main :: unit -> i32 = \\() ->\n    let mut a = Tensor.init [5] (\\i -> i * 10)\n    a[1..] += ref a[..^1]\n    0i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut raw = [0, 10, 20, 30, 40]\n    let mut m = Tensor.borrow_mut [5] (ref mut raw)\n    m[1..] += ref m[..^1]\n    0i32\n",
+    ] {
+        let ov = check_err(overlap_src, Edition::E2028, "E1014");
+        assert_eq!(ov.kind, Some("borrow_conflict"), "{overlap_src}");
+        assert!(
+            ov.help
+                .as_deref()
+                .is_some_and(|h| h.contains("Tensor.to_tensor") && h.contains("Tensor.clone")),
+            "{overlap_src}: {ov:?}"
+        );
+    }
+
+    for guard_src in [
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let u: Tensor<f64> = Tensor.ones [3, 4]\n    t[1..3, ..] += { t = Tensor.zeros [1]; u }\n    0i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let u: Tensor<f64> = Tensor.ones [3, 4]\n    t[1..3, ..] += { t = Tensor.zeros [1]; ref u }\n    0i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    let u: Tensor<f64> = Tensor.ones [4]\n    t[{ t = Tensor.zeros [4, 4]; 1 }, ..] += u\n    0i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    t[{ t = Tensor.zeros [4, 4]; 1 }, 2] += 1.0\n    0i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4, 4]\n    t[1, 2] += { t = Tensor.zeros [4, 4]; 1.0 }\n    0i32\n",
+    ] {
+        let g = check_err(guard_src, Edition::E2028, "E1014");
+        assert_eq!(g.kind, Some("borrow_conflict"), "{guard_src}\n{g:?}");
+    }
+
+    // Step 0 in `IndexBorrowMut` traps at runtime.
+    let dir = std::env::temp_dir().join(format!("tsuzuri-nc20-step0-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Tsuzuri.toml"),
+        "[package]\nname = \"step0\"\nversion = \"0.1.0\"\nedition = \"2028\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("Main.tz"),
+        "def main :: unit -> i32 = \\() ->\n    let mut t: Tensor<f64> = Tensor.zeros [4]\n    let zero = 0\n    let _w = ref mut t[0..zero..2]\n    0i32\n",
+    )
+    .unwrap();
+    let exe = dir.join(if cfg!(windows) { "step0.exe" } else { "step0" });
+    let build = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["build", "-O0", "-o"])
+        .arg(&exe)
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(build.status.success());
+    let out = std::process::Command::new(&exe).output().unwrap();
+    assert!(!out.status.success(), "step 0 must trap");
+    let _ = std::fs::remove_dir_all(&dir);
+}

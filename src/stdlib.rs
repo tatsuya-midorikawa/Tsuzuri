@@ -2,6 +2,13 @@
 
 use crate::syntax::TokenKind;
 
+pub(crate) fn is_embedded_source(path: &str, text: &str) -> bool {
+    SOURCES.iter().any(|&(p, t)| {
+        p == path
+            && (t.len() == text.len() && (std::ptr::eq(t.as_ptr(), text.as_ptr()) || t == text))
+    })
+}
+
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
@@ -75,6 +82,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/Anchor.tz", include_str!("../std/Anchor.tz")),
     ("std/ZString.tz", include_str!("../std/ZString.tz")),
     ("std/ZUtf8String.tz", include_str!("../std/ZUtf8String.tz")),
+    ("std/ExternAddr.tz", include_str!("../std/ExternAddr.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
     ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
 ];
@@ -168,6 +176,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ZString",
     // M06: NUL-terminated UTF-8 strings for C / POSIX / Objective-C APIs.
     "ZUtf8String",
+    // NS07: non-zero 64-bit host addresses for extern view.
+    "ExternAddr",
     "Complex",
     // NC08: portable linear algebra and tensor contractions.
     "Linalg",
@@ -239,6 +249,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Anchor.Anchor"
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
+            | "ExternAddr.ExternAddr"
     )
 }
 
@@ -488,6 +499,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
     OptIn {
         module: "ZUtf8String",
         names: &["ZUtf8String"],
+        aliases: &[],
+        uses: &[],
+    },
+    OptIn {
+        module: "ExternAddr",
+        names: &["ExternAddr"],
         aliases: &[],
         uses: &[],
     },
@@ -1006,7 +1023,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 81);
+        assert_eq!(RESERVED_MODULES.len(), 82);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
@@ -1086,6 +1103,24 @@ mod tests {
                 "std/Tensor.tz: Pow<Tensor<'a>, 'a, Tensor<'a>>",
                 "std/Tensor.tz: Pow<'a, View<'a>, Tensor<'a>>",
                 "std/Tensor.tz: Pow<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: AddAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: AddAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: SubAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: SubAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: MulAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: MulAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: DivAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: DivAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: RemAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: RemAssign<Mut<'a>, 'a>",
+                "std/Complex.tz: Add<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Add<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Sub<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Sub<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Mul<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Mul<'a, Complex<'a>, Complex<'a>>",
+                "std/Complex.tz: Div<Complex<'a>, 'a, Complex<'a>>",
+                "std/Complex.tz: Div<'a, Complex<'a>, Complex<'a>>",
             ]
         );
     }

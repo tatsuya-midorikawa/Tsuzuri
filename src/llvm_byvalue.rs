@@ -499,7 +499,7 @@ pub(crate) fn validate(
             .parameters
             .iter()
             .map(|ty| (ty, false))
-            .chain([(&signature.result, true)])
+            .chain([(import.c_result(&signature.result), true)])
             .filter(|(ty, _)| {
                 crate::abi::extern_record_passing(ty, &types)
                     == Some(crate::abi::RecordPassing::ByValue)

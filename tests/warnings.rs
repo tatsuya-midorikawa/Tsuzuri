@@ -636,3 +636,299 @@ fn deprecation_warnings_reach_the_cli_and_match_with_and_without_the_frontend_ca
     assert!(denied.2.contains("warning[W1005]"), "{denied:?}");
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn warn_unwrap_reports_maybe_and_result_get_in_root_package() {
+    use std::process::Command;
+
+    let dep_code = "\
+def unwrap_dep :: own Maybe<i64> -> i64 = \\m -> Maybe.get m
+";
+    let user_maybe = "\
+def get :: i64 -> i64 = \\n -> n + 1
+";
+    let app_main = "\
+record Item { id: i64 } deriving (Json)
+
+def generic_unwrap :: own Maybe<'a> -> 'a = \\m -> Maybe.get m
+def unused_generic :: own Result<'a, string> -> 'a = \\r -> Result.get r
+
+test \"unwrap allowed in test\" =
+    assert (Maybe.get (Some 1) == 1)
+
+bench \"unwrap allowed in bench\" = \\iterations ->
+    let mut i = 0
+    let mut sum = 0
+    while i < iterations do
+        sum = sum + Maybe.get (Some 1)
+        i = i + 1
+
+let a = Maybe.get (Some 10)
+let b = std::Maybe.get (Some 20)
+let c = Some 30 |> Maybe.get
+let d = Array.sum (ref (Array.map Maybe.get (ref [Some 1, Some 2])))
+let ok_r: Result<i64, i64> = Result.Ok 5
+let err_r: Result<i64, i64> = Result.Error 6
+let e = Result.get ok_r + Result.get_error err_r
+let f = generic_unwrap (Some 7) + (generic_unwrap (Some \"ab\")).length
+let g = DepLib::Helper.unwrap_dep (Some 8) + Maybe.get 9
+let _json = Json.encode (ref (Item { id: 1 }))
+a + b + c + d + e + f + g
+";
+    let root = package_root(
+        "warn-unwrap",
+        &[
+            (
+                "dep-lib/Tsuzuri.toml",
+                "[package]\nname = \"dep-lib\"\nversion = \"0.1.0\"\n",
+            ),
+            ("dep-lib/Helper.tz", dep_code),
+            (
+                "app/Tsuzuri.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2027\"\n[dependencies]\ndep-lib = { path = \"../dep-lib\" }\n",
+            ),
+            ("app/Maybe.tz", user_maybe),
+            ("app/Main.tz", app_main),
+        ],
+    );
+    let app = root.join("app");
+    let cache = root.join("cache");
+
+    // Note: in `app`, `Maybe.tz` defines a local `Maybe` module, so unqualified `Maybe.get` resolves
+    // to `Maybe.tz`'s `get :: i64 -> i64`! Let's test unqualified std `Maybe.get` in a separate module
+    // `UseStd.tz` without local shadowing, while `Main.tz` verifies user `Maybe.get 9` is NOT flagged!
+    let use_std = "\
+record Item { id: i64 } deriving (Encode, Decode)
+
+def generic_unwrap :: own Maybe<'a> -> 'a = \\m -> Maybe.get m
+def unused_generic :: own Result<'a, string> -> 'a = \\r -> Result.get r
+
+test \"unwrap allowed in test\" =
+    assert (Maybe.get (Some 1) == 1)
+
+bench \"unwrap allowed in bench\" = \\iterations ->
+    let mut i = 0
+    let mut sum = 0
+    while i < iterations do
+        sum = sum + Maybe.get (Some 1)
+        i = i + 1
+    sum
+
+def run_all :: unit -> i64 = \\() ->
+    let a = Maybe.get (Some 10)
+    let b = std::Maybe.get (Some 20)
+    let c = Some 30 |> Maybe.get
+    let d = Array.sum (Array.map Maybe.get [Some 1, Some 2])
+    let ok_r: Result<i64, i64> = Result.Ok 5
+    let err_r: Result<i64, i64> = Result.Error 6
+    let e = Result.get ok_r + Result.get_error err_r
+    let f = generic_unwrap (Some 7) + (generic_unwrap (Some \"ab\")).length
+    let g = DepLib::Helper.unwrap_dep (Some 8) + CustomMaybe.get 9
+    let _encoded = Json.encode (Item { id: 1 })
+    let _decoded: Result<Item, Json.Error> = Result.bind (\\v -> Json.decode (ref v)) _encoded
+    a + b + c + d + e + f + g
+";
+    std::fs::remove_file(app.join("Maybe.tz")).unwrap();
+    std::fs::write(app.join("CustomMaybe.tz"), user_maybe).unwrap();
+    std::fs::write(app.join("UseStd.tz"), use_std).unwrap();
+    std::fs::write(app.join("Main.tz"), "UseStd.run_all ()\n").unwrap();
+
+    // Also test a module named `Maybe.tz` in a sub-namespace (`Shadowed::Sub::Maybe` imported via `using`)
+    // to prove `Maybe.get` on a user module does not trigger W1011 while `std::Maybe.get` does.
+    let shadowed_dir = root.join("shadowed");
+    std::fs::create_dir_all(shadowed_dir.join("Sub")).unwrap();
+    std::fs::write(
+        shadowed_dir.join("Tsuzuri.toml"),
+        "[package]\nname = \"shadowed\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    std::fs::write(shadowed_dir.join("Sub/Maybe.tz"), user_maybe).unwrap();
+    std::fs::write(
+        shadowed_dir.join("Main.tz"),
+        "using Shadowed::Sub\nMaybe.get 41 + std::Maybe.get (std::Maybe.Some 0)\n",
+    )
+    .unwrap();
+    let shadowed_out = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .args(["check"])
+        .arg(&shadowed_dir)
+        .args(["--warn", "unwrap", "--json"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        shadowed_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shadowed_out.stderr)
+    );
+    let shadowed_lines: Vec<serde_json::Value> = String::from_utf8(shadowed_out.stderr)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(shadowed_lines.len(), 1, "{shadowed_lines:#?}");
+    assert_eq!(shadowed_lines[0]["code"], "W1011");
+    assert_eq!(shadowed_lines[0]["kind"], "unchecked_unwrap");
+    assert_eq!(shadowed_lines[0]["span"]["line"], 2);
+    assert_eq!(shadowed_lines[0]["span"]["column"], 16);
+
+    // Without `--warn unwrap`, zero W1011 warnings are emitted.
+    let quiet = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .arg("--json")
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        quiet.status.success(),
+        "{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&quiet.stderr).contains("W1011"),
+        "{}",
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+
+    // With `--warn unwrap`, exactly the 8 root-package sites in `UseStd.tz` are reported once each:
+    // generic_unwrap (1), unused_generic (1), a, b, c, d, Result.get, Result.get_error (6) = 8 total.
+    let warned = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--json"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        warned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warned.stderr)
+    );
+    let items: Vec<serde_json::Value> = String::from_utf8(warned.stderr)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"W1011\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(items.len(), 8, "{items:#?}");
+    assert!(items.iter().all(|item| item["kind"] == "unchecked_unwrap"));
+    assert!(
+        items[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("'Maybe.get' traps on 'None'")
+    );
+    assert!(
+        items[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("'Result.get' traps on 'Error'")
+    );
+    assert!(
+        items[7]["message"]
+            .as_str()
+            .unwrap()
+            .contains("'Result.get_error' traps on 'Ok'")
+    );
+
+    // `--deny-warnings` turns `--warn unwrap` into exit status 1.
+    let denied = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--deny-warnings"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert_eq!(denied.status.code(), Some(1));
+
+    // `explain W1011` and `explain unchecked_unwrap` both succeed.
+    for query in ["W1011", "unchecked_unwrap"] {
+        let explain = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["explain", query])
+            .output()
+            .unwrap();
+        assert!(explain.status.success(), "{query}");
+        assert!(
+            String::from_utf8_lossy(&explain.stdout).contains("Maybe.get"),
+            "{query}"
+        );
+    }
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn warn_unwrap_checks_handwritten_instance_methods_and_class_defaults_but_skips_deriving() {
+    use std::process::Command;
+
+    let root = package_root(
+        "warn-unwrap-methods",
+        &[
+            (
+                "app/Tsuzuri.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2027\"\n",
+            ),
+            (
+                "app/Extractor.tt",
+                "\
+class Extractor<'a> {
+    def extract :: ref 'a -> i64
+    def extract_default :: ref 'a -> i64
+    fn extract_default _x = Maybe.get (Maybe.Some 7)
+}
+",
+            ),
+            (
+                "app/Main.tz",
+                "\
+record Boxed { v: Maybe<i64> } deriving (Encode, Decode)
+record Plain { n: i64 } deriving (Eq, Display)
+
+instance Extractor.Extractor<Boxed> {
+    fn extract b = Maybe.get b.v
+}
+
+def main :: unit -> i32 = \\() ->
+    let b = Boxed { v: Maybe.Some 5 }
+    let _enc = Json.encode b
+    (Extractor.extract (ref b) + Extractor.extract_default (ref b) - 12) as i32
+",
+            ),
+        ],
+    );
+    let app = root.join("app");
+    let cache = root.join("cache");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--json"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let items: Vec<serde_json::Value> = String::from_utf8(out.stderr)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"W1011\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        items.len(),
+        2,
+        "expected exactly 2 W1011 warnings (class default + handwritten instance method, 0 from deriving): {items:#?}"
+    );
+    let denied = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--deny-warnings"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert_eq!(denied.status.code(), Some(1));
+    std::fs::remove_dir_all(root).unwrap();
+}

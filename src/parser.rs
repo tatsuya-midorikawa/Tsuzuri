@@ -39,6 +39,7 @@ struct Attributes {
     c_layout: Option<CLayoutMark>,
     link: Option<LinkMark>,
     weak: Option<Span>,
+    last_error: Option<Span>,
     /// `@returns_retained` (`true`) or `@returns_not_retained` (`false`) and its span (M01).
     returns: Option<(bool, Span)>,
 }
@@ -69,6 +70,7 @@ struct TrustedMark {
     span: Span,
     at: Span,
     first: Option<Span>,
+    pure_span: Option<Span>,
 }
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -393,6 +395,10 @@ struct Parser<'a> {
     site_lambdas: usize,
     /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
     in_ensures: bool,
+    /// NC20: unborrowed window brackets (`(span, multi_axis)`) whose `]` was immediately followed
+    /// by a compound-assignment token, waiting to see if the bracket expression itself becomes the
+    /// direct LHS of `op=`.
+    pending_window_borrows: Vec<(Span, bool)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -462,6 +468,7 @@ impl<'a> Parser<'a> {
             site_contracts: Vec::new(),
             site_lambdas: 0,
             in_ensures: false,
+            pending_window_borrows: Vec::new(),
         }
     }
 
@@ -506,6 +513,7 @@ impl<'a> Parser<'a> {
             site_contracts: Vec::new(),
             site_lambdas: self.site_lambdas,
             in_ensures: self.in_ensures,
+            pending_window_borrows: Vec::new(),
         };
         #[cfg(test)]
         PROBES.with(|probes| {
@@ -696,6 +704,7 @@ impl Parser<'_> {
             c_layouts: Vec::new(),
             links: Vec::new(),
             weaks: Vec::new(),
+            last_error: Vec::new(),
             returns_retained: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
@@ -765,6 +774,7 @@ impl Parser<'_> {
                     c_layout,
                     link,
                     weak,
+                    last_error,
                     returns,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
@@ -803,6 +813,15 @@ impl Parser<'_> {
                         DiagnosticKind::MisplacedWeakAttribute,
                         "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
                         weak_span,
+                    ));
+                }
+                if let Some(last_error_span) = last_error
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedLastErrorAttribute,
+                        "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                        last_error_span,
                     ));
                 }
                 if let Some(mark) = &trusted
@@ -908,10 +927,11 @@ impl Parser<'_> {
                     defined_names.contains(name) || signatures.contains_key(name)
                 })? {
                     ExternDeclaration::Class(mut declaration) => {
-                        self.objc_declaration_attributes(
+                        Self::objc_declaration_attributes(
                             "an 'extern class'",
                             link.as_ref().map(|mark| mark.span),
                             None,
+                            last_error,
                             counts.first().map(|count| count.span),
                             returns.map(|(_, span)| span),
                             trusted.as_ref().and_then(|mark| mark.first),
@@ -921,10 +941,11 @@ impl Parser<'_> {
                         program.extern_classes.push(*declaration)
                     }
                     ExternDeclaration::Category(mut declaration) => {
-                        self.objc_declaration_attributes(
+                        Self::objc_declaration_attributes(
                             "an 'extern category'",
                             link.as_ref().map(|mark| mark.span),
                             weak,
+                            last_error,
                             counts.first().map(|count| count.span),
                             returns.map(|(_, span)| span),
                             trusted.as_ref().and_then(|mark| mark.first),
@@ -952,6 +973,13 @@ impl Parser<'_> {
                                 DiagnosticKind::MisplacedWeakAttribute,
                                 "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
                                 weak_span,
+                            ));
+                        }
+                        if let Some(last_error_span) = last_error {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedLastErrorAttribute,
+                                "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                last_error_span,
                             ));
                         }
                         if let Some(count) = counts.first() {
@@ -993,6 +1021,13 @@ impl Parser<'_> {
                             });
                         }
                         if let Some(_access) = signature.data {
+                            if let Some(last_error_span) = last_error {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLastErrorAttribute,
+                                    "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                    last_error_span,
+                                ));
+                            }
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedCountAttribute,
@@ -1010,6 +1045,13 @@ impl Parser<'_> {
                                 ));
                             }
                         } else if signature.view {
+                            if let Some(last_error_span) = last_error {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLastErrorAttribute,
+                                    "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                    last_error_span,
+                                ));
+                            }
                             if let Some(mark) = &link {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedLinkAttribute,
@@ -1052,6 +1094,16 @@ impl Parser<'_> {
                                 weak_span,
                             ));
                         }
+                        if let Some(mark) = &trusted
+                            && last_error.is_some()
+                            && let Some(pure_span) = mark.pure_span
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::TrustedPureLastError,
+                                "'@last_error' reads the calling thread's error state, so the extern cannot be '@trusted pure'; remove 'pure'",
+                                pure_span,
+                            ));
+                        }
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
                                 target: signature.name.clone(),
@@ -1084,6 +1136,12 @@ impl Parser<'_> {
                             program.weaks.push(WeakAttribute {
                                 target: signature.name.clone(),
                                 span: weak_span,
+                            });
+                        }
+                        if let Some(last_error_span) = last_error {
+                            program.last_error.push(LastErrorAttribute {
+                                target: signature.name.clone(),
+                                span: last_error_span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1184,6 +1242,26 @@ impl Parser<'_> {
                             return Err(self.error_of(
                                 DiagnosticKind::ExpectedSingleTypeArgument,
                                 "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    "IndexBorrowMut" => {
+                        if arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "IndexBorrowMut instances take three type arguments: IndexBorrowMut<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    "AddAssign" | "SubAssign" | "MulAssign" | "DivAssign" | "RemAssign" => {
+                        if arguments.len() != 2 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "AddAssign, SubAssign, MulAssign, DivAssign and RemAssign instances take two type arguments: AddAssign<Target, Rhs>",
                             ));
                         }
                         let ty = arguments.remove(0);
@@ -1746,6 +1824,15 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.weak = Some(weak_span);
+            } else if let Some(last_error_span) = self.last_error_attribute()? {
+                if attributes.last_error.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LastErrorRepeated,
+                        "'@last_error' appears twice on one declaration; remove one",
+                        last_error_span,
+                    ));
+                }
+                attributes.last_error = Some(last_error_span);
             } else if let Some(returns) = self.returns_retained_attribute() {
                 if attributes.returns.is_some() {
                     return Err(Diagnostic::of(
@@ -1780,6 +1867,7 @@ impl Parser<'_> {
         let mut span = at.through(self.take().span);
         let mut properties = 0u8;
         let mut first = None;
+        let mut pure_span = None;
         while !self.newline_before_current()
             && let TokenKind::Ident(name) = &self.current().kind
         {
@@ -1800,6 +1888,9 @@ impl Parser<'_> {
                     property,
                 ));
             }
+            if name == "pure" {
+                pure_span = Some(property);
+            }
             properties |= bit;
             first.get_or_insert(property);
             span = span.through(property);
@@ -1810,6 +1901,7 @@ impl Parser<'_> {
             span,
             at,
             first,
+            pure_span,
         }))
     }
 
@@ -1946,6 +2038,36 @@ impl Parser<'_> {
                 DiagnosticKind::WeakAttributeSyntax,
                 "'@weak' takes no arguments",
                 span,
+            ));
+        }
+        Ok(Some(span))
+    }
+
+    fn last_error_attribute(&mut self) -> Result<Option<Span>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "last_error"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let span = at.through(self.take().span);
+        if !self.newline_before_current() && self.at(&TokenKind::LeftParen) {
+            let paren = self.current().span;
+            self.take();
+            while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::End) {
+                self.take();
+            }
+            if self.at(&TokenKind::RightParen) {
+                self.take();
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::LastErrorArguments,
+                "'@last_error' takes no arguments; write '@last_error' before the extern declaration",
+                paren,
             ));
         }
         Ok(Some(span))
@@ -2756,6 +2878,21 @@ impl Parser<'_> {
             loop {
                 let class = self.qualified_ident()?;
                 let ty = self.single_type_argument()?;
+                if matches!(
+                    class.text.as_str(),
+                    "AddAssign"
+                        | "SubAssign"
+                        | "MulAssign"
+                        | "DivAssign"
+                        | "RemAssign"
+                        | "IndexBorrowMut"
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExpectedSingleTypeArgument,
+                        format!("{} cannot be used as a type class constraint", class.text),
+                        class.span,
+                    ));
+                }
                 constraints.push(ConstraintExpr {
                     name: ConstraintName::Class(class),
                     ty,
@@ -4600,6 +4737,9 @@ impl Parser<'_> {
     fn computation_if(&mut self) -> Result<ComputationStatement, Diagnostic> {
         self.enter()?;
         let start = self.take().span;
+        if self.eat(&TokenKind::Let) {
+            return self.computation_if_let(start);
+        }
         let condition = self.expression(0, false)?;
         let keyword = self.eat(&TokenKind::Then);
         let yes = if keyword {
@@ -4607,29 +4747,7 @@ impl Parser<'_> {
         } else {
             self.computation_block()?
         };
-        let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
-            && (!keyword
-                || !self.newline_before_current()
-                || self.column(self.current().span) >= self.column(start));
-        let no = if has_else {
-            self.eat(&TokenKind::Else);
-            Some(if self.at(&TokenKind::If) || self.at(&TokenKind::Elif) {
-                let statement = self.computation_if()?;
-                ComputationBlock {
-                    span: statement.span,
-                    depth: statement.depth() + 1,
-                    statements: vec![statement],
-                }
-            } else {
-                if keyword {
-                    self.computation_body()?
-                } else {
-                    self.computation_block()?
-                }
-            })
-        } else {
-            None
-        };
+        let no = self.computation_else(keyword, start)?;
         self.nesting -= 1;
         Ok(ComputationStatement {
             span: start.through(self.tokens[self.position - 1].span),
@@ -4637,11 +4755,95 @@ impl Parser<'_> {
         })
     }
 
+    fn computation_if_let(&mut self, start: Span) -> Result<ComputationStatement, Diagnostic> {
+        let pattern = Box::new(self.pattern(0)?);
+        self.expect(&TokenKind::Equal, "'=' after the 'if let' pattern")?;
+        let value = self.expression(0, false)?;
+        let guard = if self.eat(&TokenKind::When) {
+            Some(self.expression(0, false)?)
+        } else {
+            None
+        };
+        let keyword = self.eat(&TokenKind::Then);
+        let then_branch = if keyword {
+            self.computation_body()?
+        } else {
+            self.computation_block()?
+        };
+        let else_branch = self.computation_else(keyword, start)?;
+        self.nesting -= 1;
+        Ok(ComputationStatement {
+            span: start.through(self.tokens[self.position - 1].span),
+            kind: ComputationStatementKind::IfLet(Box::new(ComputationIfLet {
+                pattern,
+                value,
+                guard,
+                then_branch,
+                else_branch,
+            })),
+        })
+    }
+
+    fn computation_else(
+        &mut self,
+        keyword: bool,
+        start: Span,
+    ) -> Result<Option<ComputationBlock>, Diagnostic> {
+        let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
+            && (!keyword
+                || !self.newline_before_current()
+                || self.column(self.current().span) >= self.column(start));
+        if !has_else {
+            return Ok(None);
+        }
+        self.eat(&TokenKind::Else);
+        Ok(Some(
+            if self.at(&TokenKind::Elif)
+                || (self.at(&TokenKind::If) && !self.newline_before_current())
+            {
+                let statement = self.computation_if()?;
+                ComputationBlock {
+                    span: statement.span,
+                    depth: statement.depth() + 1,
+                    statements: vec![statement],
+                }
+            } else if keyword {
+                self.computation_body()?
+            } else {
+                self.computation_block()?
+            },
+        ))
+    }
+
     fn expression(&mut self, minimum: u8, allow_record: bool) -> Result<Expr, Diagnostic> {
         self.expression_inner(minimum, allow_record, false)
     }
 
     fn expression_inner(
+        &mut self,
+        minimum: u8,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
+        let outer_pending = if minimum == 0 {
+            Some(std::mem::take(&mut self.pending_window_borrows))
+        } else {
+            None
+        };
+        let result = self.expression_inner_body(minimum, allow_record, stop_at_newline);
+        if let Some(outer) = outer_pending {
+            let inner = std::mem::replace(&mut self.pending_window_borrows, outer);
+            let left = result?;
+            if let Some((bad_span, multi_axis)) = inner.first().copied() {
+                Self::require_window_borrow(None, multi_axis, bad_span)?;
+            }
+            Ok(left)
+        } else {
+            result
+        }
+    }
+
+    fn expression_inner_body(
         &mut self,
         minimum: u8,
         allow_record: bool,
@@ -4687,6 +4889,45 @@ impl Parser<'_> {
                 let depth = left.depth.max(right.depth) + 1;
                 left = self.make(
                     ExprKind::Assign(Box::new(left), Box::new(right)),
+                    span,
+                    depth,
+                )?;
+                continue;
+            }
+            if minimum == 0
+                && let Some(op) = match self.current().kind {
+                    TokenKind::PlusEqual => Some(BinaryOp::Add),
+                    TokenKind::MinusEqual => Some(BinaryOp::Subtract),
+                    TokenKind::StarEqual => Some(BinaryOp::Multiply),
+                    TokenKind::SlashEqual => Some(BinaryOp::Divide),
+                    TokenKind::PercentEqual => Some(BinaryOp::Remainder),
+                    _ => None,
+                }
+            {
+                if matches!(
+                    left.kind,
+                    ExprKind::Slice { mutable: None, .. }
+                        | ExprKind::MultiIndex { borrow: None, .. }
+                ) {
+                    self.pending_window_borrows
+                        .retain(|(pending_span, _)| *pending_span != left.span);
+                }
+                if let Some((bad_span, multi_axis)) = self.pending_window_borrows.first().copied() {
+                    self.pending_window_borrows.clear();
+                    self.nesting -= 1;
+                    Self::require_window_borrow(None, multi_axis, bad_span)?;
+                }
+                let op_span = self.take().span;
+                let right = self.expression_inner(0, allow_record, stop_at_newline)?;
+                let span = left.span.through(right.span);
+                let depth = left.depth.max(right.depth) + 1;
+                left = self.make(
+                    ExprKind::CompoundAssign {
+                        op,
+                        op_span,
+                        target: Box::new(left),
+                        value: Box::new(right),
+                    },
                     span,
                     depth,
                 )?;
@@ -5148,6 +5389,17 @@ impl Parser<'_> {
         Ok(IndexComponent::Range(Box::new(key)))
     }
 
+    fn compound_assign_follows(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+        )
+    }
+
     fn require_window_borrow(
         borrowed: Option<bool>,
         multi_axis: bool,
@@ -5240,7 +5492,12 @@ impl Parser<'_> {
                     ))
                 }
                 IndexComponent::Range(range) => {
-                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    let mutable = if borrowed.is_none() && self.compound_assign_follows() {
+                        self.pending_window_borrows.push((span, false));
+                        None
+                    } else {
+                        Some(Self::require_window_borrow(borrowed, false, span)?)
+                    };
                     let depth = range
                         .start
                         .iter()
@@ -5280,7 +5537,10 @@ impl Parser<'_> {
             .iter()
             .any(|(comp, _)| matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_)));
         if has_range_or_whole {
-            Self::require_window_borrow(borrowed, true, span)?;
+            let defer = borrowed.is_none() && self.compound_assign_follows();
+            if !defer {
+                Self::require_window_borrow(borrowed, true, span)?;
+            }
             if components
                 .iter()
                 .all(|(comp, _)| matches!(comp, IndexComponent::Whole(_)))
@@ -5290,6 +5550,9 @@ impl Parser<'_> {
                     "a key made only of '..' selects everything; borrow the value itself with 'ref t'",
                     span,
                 ));
+            }
+            if defer {
+                self.pending_window_borrows.push((span, true));
             }
         }
 
@@ -5682,10 +5945,10 @@ impl Parser<'_> {
     /// The attributes that an `extern class` or `extern category` (`what`) does not take, each
     /// by the span of its first occurrence (M01, M02).
     fn objc_declaration_attributes(
-        &self,
         what: &str,
         link: Option<Span>,
         weak: Option<Span>,
+        last_error: Option<Span>,
         count: Option<Span>,
         returns: Option<Span>,
         trusted_property: Option<Span>,
@@ -5701,6 +5964,13 @@ impl Parser<'_> {
             return Err(Diagnostic::of(
                 DiagnosticKind::MisplacedWeakAttribute,
                 "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
+                span,
+            ));
+        }
+        if let Some(span) = last_error {
+            return Err(Diagnostic::of(
+                DiagnosticKind::MisplacedLastErrorAttribute,
+                "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
                 span,
             ));
         }
@@ -6351,7 +6621,8 @@ impl Parser<'_> {
         self.record_symbolic_prefix(&token, mut_span, term, &value);
         if let Some(mutable) = borrow {
             match &mut value.kind {
-                ExprKind::Slice { .. } => {
+                ExprKind::Slice { mutable: slot, .. } => {
+                    *slot = Some(mutable);
                     return Ok(Expr {
                         span: token.span.through(value.span),
                         ..value
@@ -6435,7 +6706,8 @@ impl Parser<'_> {
         let span = token.span.through(value.span);
         if let Some(mutable) = borrow {
             match &mut value.kind {
-                ExprKind::Slice { .. } => {
+                ExprKind::Slice { mutable: slot, .. } => {
+                    *slot = Some(mutable);
                     return Ok(Expr { span, ..value });
                 }
                 ExprKind::MultiIndex { borrow: slot, .. } => {
@@ -6487,6 +6759,9 @@ impl Parser<'_> {
 
     fn conditional(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
+        if self.eat(&TokenKind::Let) {
+            return self.conditional_let(start);
+        }
         let condition = Box::new(self.expression(0, false)?);
         let keyword = self.eat(&TokenKind::Then);
         let then_branch = Box::new(self.conditional_body(keyword)?);
@@ -6508,6 +6783,45 @@ impl Parser<'_> {
         )
     }
 
+    fn conditional_let(&mut self, start: Span) -> Result<Expr, Diagnostic> {
+        let pattern = self.pattern(0)?;
+        self.expect(&TokenKind::Equal, "'=' after the 'if let' pattern")?;
+        let value = self.expression(0, false)?;
+        let guard = if self.eat(&TokenKind::When) {
+            Some(self.expression(0, false)?)
+        } else {
+            None
+        };
+        let keyword = self.eat(&TokenKind::Then);
+        let then_branch = self.conditional_body(keyword)?;
+        let else_opt = self.conditional_else_opt(keyword, start)?;
+        let has_else = else_opt.is_some();
+        let else_branch = match else_opt {
+            Some(branch) => branch,
+            None => self.make(ExprKind::Unit, then_branch.span, 1)?,
+        };
+        let span = start.through(else_branch.span);
+        let depth = pattern
+            .depth
+            .max(value.depth)
+            .max(guard.as_ref().map_or(0, |guard| guard.depth))
+            .max(then_branch.depth)
+            .max(else_branch.depth)
+            + 1;
+        self.make(
+            ExprKind::IfLet(Box::new(IfLetExpr {
+                pattern,
+                value,
+                guard,
+                then_branch,
+                else_branch,
+                has_else,
+            })),
+            span,
+            depth,
+        )
+    }
+
     fn conditional_body(&mut self, keyword: bool) -> Result<Expr, Diagnostic> {
         if keyword {
             self.body_expression()
@@ -6522,12 +6836,23 @@ impl Parser<'_> {
         start: Span,
         then_span: Span,
     ) -> Result<Expr, Diagnostic> {
+        match self.conditional_else_opt(keyword, start)? {
+            Some(branch) => Ok(branch),
+            None => self.make(ExprKind::Unit, then_span, 1),
+        }
+    }
+
+    fn conditional_else_opt(
+        &mut self,
+        keyword: bool,
+        start: Span,
+    ) -> Result<Option<Expr>, Diagnostic> {
         let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
             && (!keyword
                 || !self.newline_before_current()
                 || self.column(self.current().span) >= self.column(start));
         if !has_else {
-            return self.make(ExprKind::Unit, then_span, 1);
+            return Ok(None);
         }
         if self.at(&TokenKind::Else) {
             self.take();
@@ -6537,9 +6862,9 @@ impl Parser<'_> {
             self.enter()?;
             let branch = self.conditional()?;
             self.nesting -= 1;
-            Ok(branch)
+            Ok(Some(branch))
         } else {
-            self.conditional_body(keyword)
+            self.conditional_body(keyword).map(Some)
         }
     }
 }
@@ -6674,7 +6999,10 @@ mod tests {
                 assert!(debug.contains("Slice"));
                 assert!(!debug.contains("Borrow("));
                 // C08: the borrow's kind decides the slice's.
-                assert_eq!(debug.contains("mutable: true"), prefix.contains("mut"));
+                assert_eq!(
+                    debug.contains("mutable: Some(true)"),
+                    prefix.contains("mut")
+                );
             }
         }
         for source in [

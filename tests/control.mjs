@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,6 +82,7 @@ const cases = [
   ["branch_jump_temporaries", [1], 0n],
   ["match_jump_temporaries", [0], 4n],
   ["match_jump_temporaries", [1], 0n],
+  ["direct_nested", [], 63n],
   ["inclusive", [1, 4, 0], 10n],
   ["inclusive", [4, 1, 1], 10n],
   ["inclusive", [4, 1, 0], 0n],
@@ -147,6 +148,18 @@ for (const count of [0n, 1n, 2n, 3n, 10n, 4096n]) {
   cases.push(["continue_sum", [count], total]);
   cases.push(["break_owned", [count], (count < 4n ? count : 4n) * 4n]);
   cases.push(["continue_owned", [count], count / 2n * 4n]);
+}
+for (const limit of [-3n, 0n, 1n, 5n, 4096n]) {
+  cases.push(["direct_break", [limit], limit >= 1n ? limit : 1n]);
+}
+for (const count of [0n, 1n, 4n, 20n]) {
+  let total = 0n;
+  for (let i = 0n; i < count; i++) {
+    if (i % 3n === 0n) continue;
+    if (i === 10n) break;
+    total += BigInt(`item-${i}`.length);
+  }
+  cases.push(["direct_continue_owned", [count], total]);
 }
 for (let kind = 0; kind <= 10; kind++) cases.push(["break_temporaries", [kind], 1n]);
 for (const n of [0, 1, 2, 126, 127, -1, -2, -127, -128]) {
@@ -538,6 +551,18 @@ int main(int argc, char **argv) {
     for (let i = 0; i < 32; i++) assert.equal(exports.tz_loop_copies(8192n), 34058240n);
     assert.ok(exports.memory.buffer.byteLength <= 16 * 1024 * 1024);
   }
+  const directRunDir = join(temporary, "direct-break-run");
+  mkdirSync(directRunDir);
+  writeFileSync(join(directRunDir, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == 5 then break\n    do! IO.writeln $\"n={n}\"\n    n as i32\n");
+  const ranDirect = execute(compiler, ["run", directRunDir], false);
+  assert.equal(ranDirect.status, 1);
+  assert.match(ranDirect.stderr, /program exited with code 5/);
+  assert.equal(ranDirect.stdout.replace(/\r\n/g, "\n"), "n=5\n");
+  const directBin = join(temporary, process.platform === "win32" ? "direct-break.exe" : "direct-break");
+  cli(["build", directRunDir, "-o", directBin]);
+  const ranBin = execute(directBin, [], false);
+  assert.equal(ranBin.status, 5);
+  assert.equal(ranBin.stdout.replace(/\r\n/g, "\n"), "n=5\n");
   console.log(`control: ${cases.length} cases, ownership cleanup, traps and loop boundaries passed on native/WASM at O0/O3`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

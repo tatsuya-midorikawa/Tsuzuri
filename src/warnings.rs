@@ -675,6 +675,11 @@ impl TypeReferences<'_> {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | While {
                 condition: left,
                 body: right,
@@ -696,6 +701,15 @@ impl TypeReferences<'_> {
                 self.expression(condition);
                 self.expression(then_branch);
                 self.expression(else_branch);
+            }
+            IfLet(if_let) => {
+                self.pattern(&if_let.pattern);
+                self.expression(&if_let.value);
+                if let Some(guard) = &if_let.guard {
+                    self.expression(guard);
+                }
+                self.expression(&if_let.then_branch);
+                self.expression(&if_let.else_branch);
             }
             Range {
                 start,
@@ -837,6 +851,17 @@ impl TypeReferences<'_> {
                     self.expression(condition);
                     self.computation(yes);
                     if let Some(no) = no {
+                        self.computation(no);
+                    }
+                }
+                IfLet(if_let) => {
+                    self.pattern(&if_let.pattern);
+                    self.expression(&if_let.value);
+                    if let Some(guard) = &if_let.guard {
+                        self.expression(guard);
+                    }
+                    self.computation(&if_let.then_branch);
+                    if let Some(no) = &if_let.else_branch {
                         self.computation(no);
                     }
                 }
@@ -1087,6 +1112,104 @@ pub(super) fn deprecated_uses(
                 ),
                 None => diagnostic,
             }
+        })
+        .collect()
+}
+
+/// NS05: which standard-library unchecked unwrap function a root-package site names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UnwrapTarget {
+    MaybeGet,
+    ResultGet,
+    ResultGetError,
+}
+
+impl UnwrapTarget {
+    fn of_std_function(function: &CheckedFunction) -> Option<Self> {
+        if function.origin.module != ModuleOrigin::Std {
+            return None;
+        }
+        match (function.module.as_str(), function.name.as_str()) {
+            ("Maybe", "get") => Some(Self::MaybeGet),
+            ("Result", "get") => Some(Self::ResultGet),
+            ("Result", "get_error") => Some(Self::ResultGetError),
+            _ => None,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::MaybeGet => {
+                "'Maybe.get' traps on 'None'; match on the 'Maybe' or use 'Maybe.default_value' / 'Maybe.default_with'"
+            }
+            Self::ResultGet => {
+                "'Result.get' traps on 'Error'; match on the 'Result', use 'Result { let! ... }', or use 'Result.default_value'"
+            }
+            Self::ResultGetError => {
+                "'Result.get_error' traps on 'Ok'; match on the 'Result' instead"
+            }
+        }
+    }
+}
+
+/// NS05: collects unchecked unwrap sites in root-package user functions (excluding `test`,
+/// `bench`, and compiler-generated `deriving` helpers) before specialization, so each written
+/// site is recorded once regardless of monomorphization count.
+pub(super) fn collect_unchecked_unwraps(
+    functions: &[CheckedFunction],
+    root_sources: &BTreeSet<usize>,
+    constants: &BTreeSet<usize>,
+    entry: Option<usize>,
+) -> Vec<(UnwrapTarget, Span)> {
+    let mut std_targets = BTreeMap::new();
+    for (id, function) in functions.iter().enumerate() {
+        if let Some(target) = UnwrapTarget::of_std_function(function) {
+            std_targets.insert(id, target);
+        }
+    }
+    if std_targets.is_empty() || root_sources.is_empty() {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (id, function) in functions.iter().enumerate() {
+        if function.origin.module != ModuleOrigin::User
+            || function.origin.test.is_some()
+            || function.origin.bench.is_some()
+            || (!function.origin.user_written_body && Some(id) != entry && !constants.contains(&id))
+        {
+            continue;
+        }
+        let mut pending = vec![&function.body];
+        while let Some(expression) = pending.pop() {
+            let callee = match &expression.kind {
+                TypedExprKind::Function(FunctionRef::User(callee))
+                | TypedExprKind::GenericFunction(callee, _)
+                | TypedExprKind::Closure(callee, _) => Some(*callee),
+                _ => None,
+            };
+            if let Some(callee) = callee
+                && let Some(&target) = std_targets.get(&callee)
+                && expression
+                    .span
+                    .source
+                    .is_some_and(|source| root_sources.contains(&source))
+            {
+                found.push((target, expression.span));
+            }
+            pending.extend(expression.children());
+        }
+    }
+    found.sort_by_key(|&(target, span)| (span.source, span.start, span.end, target));
+    found.dedup();
+    found
+}
+
+/// NS05: formats `W1011` (`unchecked_unwrap`) diagnostics for `--warn unwrap`.
+pub(super) fn unwrap_warnings(sites: &[(UnwrapTarget, Span)]) -> Vec<Diagnostic> {
+    sites
+        .iter()
+        .map(|&(target, span)| {
+            Diagnostic::of(DiagnosticKind::UncheckedUnwrap, target.message(), span)
         })
         .collect()
 }

@@ -418,6 +418,45 @@ function runGuiStage(compiler, clang, directory) {
   }
   console.log("Windows GUI: W19 extern type local Hdc (GetDC / GetDeviceCaps / ReleaseDC) passed across P=1 and P=4");
 
+  // W16: `@last_error` captures Win32 GetLastError() and clears stale SetLastError(123) before calls (direct and tzroutine).
+  const w16Dir = join(directory, "w16-last-error");
+  mkdirSync(w16Dir, { recursive: true });
+  writeFileSync(join(w16Dir, "Main.tz"), [
+    "@trusted @last_error",
+    'extern "CloseHandle" def close_raw :: i64 -> bool * i32u',
+    "@trusted @last_error",
+    'extern "GetCurrentProcessId" def current_pid :: unit -> i32u * i32u',
+    "@trusted",
+    'extern "SetLastError" def set_last_error :: i32u -> unit',
+    "def probe_once :: unit -> i32u = \\() ->",
+    "    let (ok, err_bad) = close_raw 0",
+    "    set_last_error 123i32u",
+    "    let (pid, err_cleared) = current_pid ()",
+    "    if !ok && pid > 0i32u && err_cleared == 0i32u then err_bad else 99i32u",
+    "def main :: unit -> i32 = \\() ->",
+    "    let direct = probe_once ()",
+    "    let ch: Channel<i64> = Channel.make 1",
+    "    let out = Channel.share (ref ch)",
+    "    tzroutine { Channel.send (ref out) (probe_once () as i64) }",
+    "    let spawned = (match Channel.recv (ref ch) with | Maybe.Some x -> x | Maybe.None -> 0) as i32u",
+    "    if direct == 6i32u && spawned == 6i32u then 6i32 else 91i32",
+    "",
+  ].join("\n"));
+  execute(compiler, ["check", w16Dir]);
+  for (const wasmTarget of ["wasm32", "wasm64"]) {
+    const wasmRes = execute(compiler, ["build", w16Dir, "--no-cache", "--target", wasmTarget, "-o", join(directory, `w16-${wasmTarget}.wasm`)], false);
+    assert.notEqual(wasmRes.status, 0);
+    assert.match(wasmRes.stderr, /error\[E1008\]/, `W16 ${wasmTarget} must fail with E1008:\n${wasmRes.stderr}`);
+  }
+  for (const optimization of ["-O0", "-O3"]) {
+    const w16Exe = join(directory, `w16-last-error${optimization}.exe`);
+    execute(compiler, ["build", w16Dir, "--no-cache", optimization, "-o", w16Exe]);
+    for (const procs of ["1", "4"]) {
+      assert.equal(execute(w16Exe, [], false, { TSUZURI_MAXPROCS: procs }).status, 6, `W16 ${toolchainLabel} ${optimization} P=${procs}`);
+    }
+  }
+  console.log(`Windows (${toolchainLabel}): W16 @last_error (CloseHandle=6, SetLastError(0) clear, tzroutines, WASM E1008) passed`);
+
   console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
 }
 
@@ -878,7 +917,7 @@ if (isMain) {
   }
   console.log("Windows MSVC: W36 @c_layout by value (PtInRect) passed");
 
-  // W24: extern view live HeapAlloc / HeapFree round-trip and null trap with call-site location.
+  // W24 + NS07: extern view with ExternAddr live HeapAlloc / HeapFree round-trip, zero rejection, and misaligned trap site.
   const winViewDir = join(directory, "win-extern-view");
   mkdirSync(winViewDir);
   writeFileSync(join(winViewDir, "Main.tz"), [
@@ -890,31 +929,34 @@ if (isMain) {
     "@trusted",
     'extern "HeapFree" def heap_free :: i64 -> i32u -> i64 -> i32',
     "@trusted",
-    "extern view def read_point :: i64 -> Point",
+    "extern view def read_point :: ExternAddr -> Point",
     "@trusted",
-    "extern view def write_point :: i64 -> ref Point -> unit",
+    "extern view def write_point :: ExternAddr -> ref Point -> unit",
     "def main :: Array<string> -> i32 = \\args ->",
     "    if args.length > 0 then",
-    "        (read_point 0).x",
+    "        let bad = Maybe.get (ExternAddr.of_i64 2)",
+    "        (read_point bad).x",
     "    else",
+    "        let zero_none = match ExternAddr.of_i64 0 with | Maybe.None -> 0i32 | Maybe.Some _ -> 99i32",
     "        let heap = process_heap ()",
-    "        let address = heap_alloc heap 8i32u 8",
+    "        let raw = heap_alloc heap 8i32u 8",
+    "        let address = Maybe.get (ExternAddr.of_i64 raw)",
     "        let point = Point { x: 40i32, y: 2i32 }",
     "        write_point address (ref point)",
     "        let back = read_point address",
-    "        let _ = heap_free heap 0i32u address",
-    "        back.x + back.y",
+    "        let _ = heap_free heap 0i32u raw",
+    "        back.x + back.y + zero_none",
     "",
   ].join("\n"));
   for (const optimization of ["-O0", "-O3"]) {
     const viewExe = join(directory, `win-view${optimization}.exe`);
     cli(["build", winViewDir, "--no-cache", optimization, "--trap-info", "-o", viewExe]);
     assert.equal(execute(viewExe, [], false).status, 42, `extern view HeapAlloc ${optimization}`);
-    const trapped = execute(viewExe, ["null"], false);
-    assert.equal(trapped.status >>> 0, 0xc000001d, `extern view null trap ${optimization}`);
-    assert.match(trapped.stderr, /index out of bounds at .*Main\.tz:14:/, `extern view trap site ${optimization}: ${trapped.stderr}`);
+    const trapped = execute(viewExe, ["misaligned"], false);
+    assert.equal(trapped.status >>> 0, 0xc000001d, `extern view misaligned trap ${optimization}`);
+    assert.match(trapped.stderr, /index out of bounds at .*Main\.tz:15:/, `extern view trap site ${optimization}: ${trapped.stderr}`);
   }
-  console.log("Windows MSVC: W24 extern view HeapAlloc round-trip & null trap passed");
+  console.log("Windows MSVC: W24/NS07 extern view ExternAddr HeapAlloc round-trip & trap passed");
 
   // W17: `@link("gdi32")` links GdiFlush without `-l gdi32` and emits `declare dllimport`.
   const w17WinDir = join(directory, "win-w17-link");

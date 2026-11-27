@@ -279,21 +279,22 @@ mod tests {
     /// The language server's analysis of `source` with the std modules that it names.
     fn editor(source: &str) -> EditorModule {
         let std_sources = crate::stdlib::sources_for([source]);
-        let input = |path, text, origin| crate::SourceInput {
+        let input = |path, text, origin, edition| crate::SourceInput {
             path,
             text,
             origin,
             namespace: "",
-            edition: Edition::E2026,
+            edition,
             package: None,
         };
-        let inputs: Vec<_> = std::iter::once(input("Main", source, ModuleOrigin::User))
-            .chain(
-                std_sources
-                    .iter()
-                    .map(|(path, text)| input(path, text, ModuleOrigin::Std)),
-            )
-            .collect();
+        let inputs: Vec<_> =
+            std::iter::once(input("Main", source, ModuleOrigin::User, Edition::E2026))
+                .chain(
+                    std_sources
+                        .iter()
+                        .map(|(path, text)| input(path, text, ModuleOrigin::Std, Edition::LATEST)),
+                )
+                .collect();
         let mut index = crate::check::semantic::SemanticIndex::default();
         crate::analyze_inputs_for_editor(
             &inputs,

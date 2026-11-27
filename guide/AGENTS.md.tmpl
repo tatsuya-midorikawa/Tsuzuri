@@ -30,7 +30,7 @@ Tsuzuri is not in your training data. Do not guess its syntax or its standard li
 - `.tsuzuri/`: build output, ignored by git.
 
 ## Frequent mistakes
-- There is no `pair.0`, `x += 1`, `else if` on a new line, or early `return`: use `match`, `x = x + 1`, `elif`, `if ... else`.
+- `x += 1` works (`+= -= *= /= %=`), while `**=` is E0002 (`x = x ** 2`). There is no `pair.0`, `else if` on a new line, or early `return`: use `match`, `elif`, `if ... else`.
 - Effects need `do!`: `do! IO.writeln "hi"`. `for i in a .. b` includes `b`.
 <!--if edition=2026-->
 - A `string`, `Vec`, or record holding one moves when passed by value; pass `ref x` to keep using it.

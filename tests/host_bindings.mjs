@@ -220,6 +220,216 @@ try {
   rejected(["build", join(empty, "Lib.tz"), "--emit", "bindings-cs", "-o", `${out}.cs`], "E2004", 1, "bindings need at least one 'export def' entry point");
   for (const suffix of [`.${extension}`, ".cs", ".py", ".hpp", ".txt", ".h"]) assert.ok(!existsSync(`${out}${suffix}`));
   console.log("host bindings: command line checks passed");
+
+  // NS02: nullable `Maybe<H>`, `Maybe<ref H>`, and `Maybe<ref R>` in `export def` across C, C++, Python, and C# (normal and --trap-mode return).
+  const ns02Dir = join(root, "ns02");
+  const ns02Out = join(ns02Dir, "out");
+  mkdirSync(ns02Out, { recursive: true });
+  const ns02HostC = join(ns02Dir, "ns02_host.c");
+  const ns02HostObj = join(ns02Dir, "ns02_host.o");
+  writeFileSync(ns02HostC, [
+    "#include <stdint.h>",
+    "#include <stdlib.h>",
+    "typedef struct { int64_t id; } ns02_item;",
+    "void *ns02_item_new(int64_t id) { ns02_item *p = malloc(sizeof(ns02_item)); p->id = id; return p; }",
+    "int64_t ns02_item_id(const void *p) { return ((const ns02_item *)p)->id; }",
+    "void ns02_item_free(void *p) { free(p); }",
+    "",
+  ].join("\n"));
+  execute(clang, ["-c", "-fPIC", "-O2", ns02HostC, "-o", ns02HostObj]);
+  writeFileSync(join(ns02Dir, "Main.tz"), [
+    "extern type Item",
+    "record Filter { min_id: i64, divisor: i64 }",
+    'extern "ns02_item_new" def item_new :: i64 -> Item',
+    'extern "ns02_item_id" def item_id :: ref Item -> i64',
+    'extern "ns02_item_free" def item_free :: Item -> unit',
+    "export def make_if_positive :: i64 -> Maybe<Item>",
+    "fn make_if_positive n = if n > 0 then Some (item_new n) else None",
+    "export def peek_or :: Maybe<ref Item> -> i64 -> i64",
+    "fn peek_or m fallback = match m with | Some h -> item_id h | None -> fallback",
+    "export def consume_filtered :: Maybe<Item> -> Maybe<ref Filter> -> i64",
+    "fn consume_filtered m mf =",
+    "    let bonus = match mf with | Some f -> f.min_id / f.divisor | None -> 0",
+    "    match m with",
+    "    | Some h ->",
+    "        let v = item_id (ref h)",
+    "        item_free h",
+    "        v + bonus",
+    "    | None -> -1 + bonus",
+    "",
+  ].join("\n"));
+  const ns02Lib = join(ns02Out, `libns02.${extension}`);
+  const ns02TrapLib = join(ns02Out, `libns02_trap.${extension}`);
+  execute(compiler, ["build", ns02Dir, "--emit", "shared", "--allocator", "counting", "--link", ns02HostObj, "-O2", "-o", ns02Lib]);
+  execute(compiler, ["build", ns02Dir, "--emit", "shared", "--trap-mode", "return", "--link", ns02HostObj, "-O2", "-o", ns02TrapLib]);
+  execute(compiler, ["build", ns02Dir, "--emit", "header", "--allocator", "counting", "-o", join(ns02Out, "ns02.h")]);
+  execute(compiler, ["build", ns02Dir, "--emit", "header", "--trap-mode", "return", "-o", join(ns02Out, "ns02_trap.h")]);
+  for (const kind of ["py", "cpp", "cs"]) {
+    const ext = kind === "py" ? "py" : kind === "cpp" ? "hpp" : "cs";
+    execute(compiler, ["build", ns02Dir, "--emit", `bindings-${kind}`, "-o", join(ns02Out, `ns02.${ext}`)]);
+    execute(compiler, ["build", ns02Dir, "--emit", `bindings-${kind}`, "--trap-mode", "return", "-o", join(ns02Out, `ns02_trap.${ext}`)]);
+  }
+  rejected(["build", ns02Dir, "--target", "wasm32", "-o", join(ns02Out, "ns02.wasm")], "E1008", 1);
+  rejected(["build", ns02Dir, "--target", "wasm32", "--emit", "bindings-js", "-o", join(ns02Out, "ns02.mjs")], "E1008", 1);
+
+  // Misaligned non-NULL Maybe<ref Filter> pointer from C traps cleanly (status == 1 in --trap-mode return).
+  const ns02AlignC = join(ns02Dir, "ns02_align.c");
+  writeFileSync(ns02AlignC, [
+    "#undef NDEBUG",
+    "#include <assert.h>",
+    "#include <stdint.h>",
+    '#include "ns02_trap.h"',
+    "int main(void) {",
+    "  uint64_t raw[4] = {0};",
+    "  const tz_record_4Main_6Filter *misaligned = (const tz_record_4Main_6Filter *)((const char *)raw + 1);",
+    "  tsuzuri_trap_info trap = {0, 0}; int64_t out = 0;",
+    "  assert(tsuzuri_try_consume_filtered(&trap, &out, 0, misaligned) == 1);",
+    "  assert(tsuzuri_try_consume_filtered(&trap, &out, 0, 0) == 0 && out == -1);",
+    "  return 0;",
+    "}",
+    "",
+  ].join("\n"));
+  const ns02AlignBin = join(ns02Dir, "ns02_align");
+  execute(clang, ["-std=c11", "-O2", "-I", ns02Out, ns02AlignC, ns02TrapLib, `-Wl,-rpath,${ns02Out}`, "-o", ns02AlignBin]);
+  execute(ns02AlignBin, []);
+
+  if (pythonVersion) {
+    const ns02PyTest = join(ns02Dir, "test_ns02.py");
+    writeFileSync(ns02PyTest, [
+      "import sys",
+      `sys.path.insert(0, ${JSON.stringify(ns02Out)})`,
+      "import ns02, ns02_trap",
+      "for mod, is_trap in ((ns02, False), (ns02_trap, True)):",
+      "    lib = mod.load()",
+      "    assert lib.make_if_positive(0) is None",
+      "    h = lib.make_if_positive(40)",
+      "    assert h is not None",
+      "    assert lib.peek_or(None, 99) == 99",
+      "    assert lib.peek_or(h, 99) == 40",
+      "    assert lib.consume_filtered(None, None) == -1",
+      "    assert lib.consume_filtered(None, mod.tz_record_4Main_6Filter(10, 5)) == 1",
+      "    assert lib.consume_filtered(h, mod.tz_record_4Main_6Filter(10, 5)) == 42",
+      "    try:",
+      "        lib.peek_or(0, 1)",
+      "        assert False",
+      "    except TypeError:",
+      "        pass",
+      "    if is_trap:",
+      "        try:",
+      "            lib.consume_filtered(None, mod.tz_record_4Main_6Filter(10, 0))",
+      "            assert False",
+      "        except mod.TsuzuriTrap:",
+      "            pass",
+      "",
+    ].join("\n"));
+    execute(python, [ns02PyTest]);
+  }
+
+  if (clangxxVersion) {
+    const ns02CppTest = join(ns02Dir, "test_ns02.cpp");
+    writeFileSync(ns02CppTest, [
+      "#undef NDEBUG",
+      "#include <cassert>",
+      "#include <stdexcept>",
+      "#ifdef TRAP_MODE",
+      '#include "ns02_trap.hpp"',
+      "namespace api = tsuzuri::ns02_trap;",
+      "#else",
+      '#include "ns02.hpp"',
+      "namespace api = tsuzuri::ns02;",
+      "#endif",
+      "int main() {",
+      "  assert(!api::make_if_positive(0).has_value());",
+      "  auto h = api::make_if_positive(40);",
+      "  assert(h.has_value());",
+      "  assert(api::peek_or(std::nullopt, 99) == 99);",
+      "  assert(api::peek_or(h, 99) == 40);",
+      "  assert(api::consume_filtered(std::nullopt, std::nullopt) == -1);",
+      "  tz_record_4Main_6Filter f{10, 5};",
+      "  assert(api::consume_filtered(std::nullopt, f) == 1);",
+      "  assert(api::consume_filtered(h, f) == 42);",
+      "  bool rejected_null_some = false;",
+      "  try { (void)api::peek_or(std::optional<tz_handle_4Main_4Item>(nullptr), 0); } catch (const std::invalid_argument &) { rejected_null_some = true; }",
+      "  assert(rejected_null_some);",
+      "#ifdef TRAP_MODE",
+      "  bool caught_trap = false;",
+      "  tz_record_4Main_6Filter bad{10, 0};",
+      "  try { (void)api::consume_filtered(std::nullopt, bad); } catch (const api::trap_error &) { caught_trap = true; }",
+      "  assert(caught_trap);",
+      "#else",
+      "  tsuzuri_allocation_stats stats{};",
+      "  tsuzuri_alloc_stats(&stats);",
+      "  assert(stats.live_bytes == 0);",
+      "#endif",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"));
+    const ns02CppPlain = join(ns02Dir, "ns02_cpp_plain");
+    execute(clangxx, ["-std=c++20", "-Wall", "-Wextra", "-Werror", "-O2", ns02CppTest, "-I", ns02Out, ns02Lib, `-Wl,-rpath,${ns02Out}`, "-o", ns02CppPlain]);
+    execute(ns02CppPlain, []);
+    const ns02CppTrap = join(ns02Dir, "ns02_cpp_trap");
+    execute(clangxx, ["-std=c++20", "-Wall", "-Wextra", "-Werror", "-O2", "-DTRAP_MODE", ns02CppTest, "-I", ns02Out, ns02TrapLib, `-Wl,-rpath,${ns02Out}`, "-o", ns02CppTrap]);
+    execute(ns02CppTrap, []);
+  }
+
+  if (major >= 8) {
+    const ns02CsProj = join(ns02Dir, "cs");
+    mkdirSync(ns02CsProj, { recursive: true });
+    copyFileSync(join(ns02Out, "ns02.cs"), join(ns02CsProj, "ns02.cs"));
+    copyFileSync(join(ns02Out, "ns02_trap.cs"), join(ns02CsProj, "ns02_trap.cs"));
+    writeFileSync(join(ns02CsProj, "ns02.csproj"), `<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net${major}.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
+`);
+    writeFileSync(join(ns02CsProj, "Program.cs"), [
+      "using System;",
+      "using System.Runtime.InteropServices;",
+      "using Tsuzuri.Bindings;",
+      "internal static class Program {",
+      "  private static void Check(bool ok, string msg) { if (!ok) throw new InvalidOperationException(msg); }",
+      "  public static void Main(string[] args) {",
+      "    NativeLibrary.SetDllImportResolver(typeof(Ns02).Assembly, (name, _, _) => name switch {",
+      "      Ns02.LibraryName => NativeLibrary.Load(args[0]),",
+      "      Ns02Trap.LibraryName => NativeLibrary.Load(args[1]),",
+      "      _ => IntPtr.Zero,",
+      "    });",
+      "    Check(Ns02.make_if_positive(0) is null, \"None return\");",
+      "    var h = Ns02.make_if_positive(40);",
+      "    Check(h is not null, \"Some return\");",
+      "    Check(Ns02.peek_or(null, 99) == 99, \"None borrow\");",
+      "    Check(Ns02.peek_or(h, 99) == 40, \"Some borrow\");",
+      "    Check(Ns02.consume_filtered(null, null) == -1, \"None owned + None record\");",
+      "    Ns02.tz_record_4Main_6Filter? f = new Ns02.tz_record_4Main_6Filter { min_id = 10, divisor = 5 };",
+      "    Check(Ns02.consume_filtered(null, in f) == 1, \"Some record\");",
+      "    Check(Ns02.consume_filtered(h, in f) == 42, \"Some owned + Some record\");",
+      "    bool badSome = false;",
+      "    try { Ns02.peek_or(new Ns02.tz_handle_4Main_4Item(0), 1); } catch (ArgumentException) { badSome = true; }",
+      "    Check(badSome, \"Some(0) rejected\");",
+      "    var ht = Ns02Trap.make_if_positive(40);",
+      "    Check(ht is not null, \"trap mode Some return\");",
+      "    Ns02Trap.tz_record_4Main_6Filter? ft = new Ns02Trap.tz_record_4Main_6Filter { min_id = 10, divisor = 5 };",
+      "    Check(Ns02Trap.consume_filtered(ht, in ft) == 42, \"trap mode Some owned + record\");",
+      "    bool trapped = false;",
+      "    Ns02Trap.tz_record_4Main_6Filter? bad = new Ns02Trap.tz_record_4Main_6Filter { min_id = 10, divisor = 0 };",
+      "    try { Ns02Trap.consume_filtered(null, in bad); } catch (Ns02Trap.TsuzuriTrapException) { trapped = true; }",
+      "    Check(trapped, \"trap caught\");",
+      "  }",
+      "}",
+      "",
+    ].join("\n"));
+    const environment = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
+    execute("dotnet", ["build", "-c", "Release", "-nologo", "-v", "q"], { cwd: ns02CsProj, env: environment });
+    execute("dotnet", [join(ns02CsProj, "bin", "Release", `net${major}.0`, "ns02.dll"), ns02Lib, ns02TrapLib], { env: environment });
+  }
+  console.log("host bindings: NS02 nullable exports and host bindings passed");
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

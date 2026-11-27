@@ -327,6 +327,15 @@ pub fn parse_target(value: &str) -> Result<(Target, Option<Triple>), String> {
     }
 }
 
+/// How `@last_error` clears and reads the thread-local OS error on a native target (W16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LastErrorAccess {
+    /// Win32 `SetLastError(0)` and `GetLastError()`.
+    Win32,
+    /// POSIX `int *sym(void)` (`__errno_location` on Linux, `__error` on macOS).
+    Errno(&'static str),
+}
+
 /// The questions a native build asks about where its output runs.
 ///
 /// Without a triple the answers describe the machine the compiler runs on, exactly as the
@@ -380,6 +389,17 @@ impl Platform {
         match self.0 {
             Some(triple) => matches!(triple.os(), Os::Linux),
             None => cfg!(target_os = "linux"),
+        }
+    }
+
+    /// How `@last_error` clears and reads the thread-local OS error (W16).
+    pub const fn last_error_access(self) -> LastErrorAccess {
+        if self.windows() {
+            LastErrorAccess::Win32
+        } else if self.mach_o() {
+            LastErrorAccess::Errno("__error")
+        } else {
+            LastErrorAccess::Errno("__errno_location")
         }
     }
 

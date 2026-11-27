@@ -999,6 +999,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
 | `--edition 2026\|2027\|2028` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2028。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
+| `--warn unwrap` | ルートのパッケージの利用者コード（`test`・`bench` の本体を除く）で標準ライブラリの `Maybe.get`・`Result.get`・`Result.get_error` を参照している箇所に `W1011` を出します。 |
 | `--report parallel` | `check` だけ。検査が通ったあと、`Parallel` に置き換えられる `Array` の呼び出しの提案と、`Parallel` の呼び出しのコールバックが純粋か（`parallel_safe`）を標準出力に出します（`--json` で JSON Lines。自動では書き換えません）。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。macOS・Linux の実行ファイルは、`TSUZURI_TRAP_REPORT` があればトラップの呼び出しの連鎖も書きます。 |
 | `--overflow-report` | `build`・`run`（`test` は既定）で、範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告します（native は標準エラー、WASM は `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `<出力>.overflow.json`）。値は変わりません。診断用で、配布ビルドには使いません。 |
@@ -1148,7 +1149,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | 字句・構文・予約語 | `tests/frontend.rs`、`tests/diagnostics.rs`、`src/parser.rs` の test module、`tests/formatter.rs`、`tests/editions.rs`（edition ごとの予約語・manifest の `edition`） | `examples.mjs`、`features.mjs`（関係する suite） |
 | 型・型クラス・多相 | `tests/polymorphism.rs`、`tests/higher_kinds.rs`、`tests/deriving.rs`、`tests/union_types.rs` | `features.mjs typeclasses`・`deriving`・`higher_kinds` |
 | 匿名共用体（A24・A25・A26。`src/anonymous_union.rs`、拡大と絞り込みは `src/control.rs` の `retag`・`narrowing_pattern`、インスタンスの本体は `src/polymorph.rs` の `Specializer::union_method`・`union_codec`） | `tests/anonymous_unions.rs`（構文・正規化・注入・型テスト・網羅性・インスタンス・名前の隠蔽・api-diff・find・拡大・絞り込み・組み込みの `Eq`／`Ord`／`Hash`／`Display`・`Encode`／`Decode` と JSON の種類の重なり）、`tests/formatter.rs`、`tests/debug_info.rs`、`src/syntax_codec.rs` の test module | `features.mjs anonymous_unions`（native と WASM の `-O0`／`-O3`、`live == 0`）、`debugger.mjs`、`frontend_cache.mjs` |
-| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs`、`tests/mutable_slices.rs`（排他スライスと、その場の書き込みが残す借用。A31）、`tests/rc.rs`（`Rc`・`Arc` と lock のコールバックの書き込み） | `features.mjs borrowed_records`・`mutable_slices`・`in_place_writes`・`rc`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
+| 所有権・借用・region | `tests/types_ownership.rs`、`tests/borrowed_records.rs`、`tests/slices.rs`、`tests/mutable_slices.rs`（排他スライスと、その場の書き込みが残す借用。A31）、`tests/rc.rs`（`Rc`・`Arc` と lock のコールバックの書き込み）、`tests/loop_growth.rs`（収束するループの借用の増え方の上限余裕。A35） | `features.mjs borrowed_records`・`mutable_slices`・`in_place_writes`・`rc`、`control.mjs`、`TSUZURI_PROGFUZZ_KIND=owned progfuzz.mjs` |
 | 制御構文・パターン | `tests/control.rs`、`tests/match_exhaustiveness.rs` | `control.mjs`、`features.mjs` |
 | 計算式・IO | `tests/computations.rs`、`tests/removed_features.rs`（以前の `IO` の関数名の `E1040`、E17） | `computations.mjs`、`io.mjs` |
 | コレクション・std | `tests/stdlib.rs`、`tests/map_set.rs`、`tests/vec.rs`、`tests/iteration_protocol.rs` | `features.mjs map_set`・`iteration_protocol`・`vec` |

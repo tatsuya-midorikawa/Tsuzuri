@@ -370,6 +370,11 @@ export def tensors :: i64 -> i64 = \_n ->
     let _mip = Tensor.mul_in_place (ref view) (ref mut m)
     let _dip = Tensor.div_in_place (ref view) (ref mut m)
     let _rip = Tensor.rem_in_place (ref view) (ref mut m)
+    Tensor.add_scalar_in_place 1 (ref mut m)
+    Tensor.sub_scalar_in_place 1 (ref mut m)
+    Tensor.mul_scalar_in_place 2 (ref mut m)
+    Tensor.div_scalar_in_place 2 (ref mut m)
+    Tensor.rem_scalar_in_place 3 (ref mut m)
     let _neg = Tensor.neg (ref view)
     let _negi = Tensor.neg_into (ref view) (ref mut m)
     let _abs = Tensor.abs (ref view)
@@ -457,6 +462,11 @@ export def tensors :: i64 -> i64 = \_n ->
     let _la8 = (Linalg.svd (Linalg.SvdOptions { full_matrices: false }) (ref spdv), Linalg.svdvals (ref spdv), Linalg.pinv 1e-12 (ref spdv), Linalg.matrix_rank 0.0 (ref spdv))
     let _la9 = (Linalg.eigh (ref spdv), Linalg.eigvalsh (ref spdv), Linalg.eigh_complex (ref tc2v), Linalg.eigvalsh_complex (ref tc2v), Linalg.eig (ref spdv), Linalg.eigvals (ref spdv))
     let _tops = ((tensor + upd) - tensor) * tensor / tensor % tensor + (-tensor) + (tensor ** tensor)
+    let _ea1 = ExternAddr.of_i64 4096
+    let _ea2 = ExternAddr.of_i64u 4096i64u
+    let ea = Maybe.get _ea1
+    let _ea3 = ExternAddr.offset 16 ea
+    let _ea4 = (ExternAddr.to_i64 ea, ExternAddr.to_i64u ea)
     let _disp = $"{upd} {view}"
     let _eq = upd == tensor
     (Tensor.data (ref view)).length

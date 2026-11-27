@@ -351,6 +351,7 @@ unit_enum!(MatchOrigin {
     ForDestructuring,
     LetDestructuring,
     Internal,
+    IfLet,
 });
 unit_enum!(Notation { Symbol, Keyword });
 unit_enum!(FormatAlign {
@@ -587,6 +588,7 @@ impl Wire for Program {
             c_layouts,
             links,
             weaks,
+            last_error,
             returns_retained,
             noncanonical,
             aliases,
@@ -623,6 +625,7 @@ impl Wire for Program {
         c_layouts.put(out)?;
         links.put(out)?;
         weaks.put(out)?;
+        last_error.put(out)?;
         returns_retained.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
@@ -662,6 +665,7 @@ impl Wire for Program {
             c_layouts: Vec::get(input)?,
             links: Vec::get(input)?,
             weaks: Vec::get(input)?,
+            last_error: Vec::get(input)?,
             returns_retained: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
@@ -853,6 +857,21 @@ impl Wire for WeakAttribute {
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(WeakAttribute {
+            target: Ident::get(input)?,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for LastErrorAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let LastErrorAttribute { target, span } = self;
+        target.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(LastErrorAttribute {
             target: Ident::get(input)?,
             span: Span::get(input)?,
         })
@@ -2109,6 +2128,35 @@ impl Wire for ExprKind {
                 keys.put(out)?;
                 borrow.put(out)
             }
+            IfLet(if_let) => {
+                out.tag("ExprKind", 51);
+                let IfLetExpr {
+                    pattern,
+                    value,
+                    guard,
+                    then_branch,
+                    else_branch,
+                    has_else,
+                } = if_let.as_ref();
+                pattern.put(out)?;
+                value.put(out)?;
+                guard.put(out)?;
+                then_branch.put(out)?;
+                else_branch.put(out)?;
+                has_else.put(out)
+            }
+            CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            } => {
+                out.tag("ExprKind", 52);
+                op.put(out)?;
+                op_span.put(out)?;
+                target.put(out)?;
+                value.put(out)
+            }
         }
     }
 
@@ -2237,7 +2285,7 @@ impl Wire for ExprKind {
                 Ok(Slice {
                     value: Box::get(input)?,
                     range: Box::get(input)?,
-                    mutable: bool::get(input)?,
+                    mutable: Option::<bool>::get(input)?,
                 })
             }),
             40 => variant(input, |input| {
@@ -2274,7 +2322,25 @@ impl Wire for ExprKind {
                     borrow: Option::<bool>::get(input)?,
                 })
             }),
-            51..=u8::MAX => Err(Invalid),
+            51 => variant(input, |input| {
+                Ok(IfLet(Box::new(IfLetExpr {
+                    pattern: Pattern::get(input)?,
+                    value: Expr::get(input)?,
+                    guard: Option::get(input)?,
+                    then_branch: Expr::get(input)?,
+                    else_branch: Expr::get(input)?,
+                    has_else: bool::get(input)?,
+                })))
+            }),
+            52 => variant(input, |input| {
+                Ok(CompoundAssign {
+                    op: BinaryOp::get(input)?,
+                    op_span: Span::get(input)?,
+                    target: Box::get(input)?,
+                    value: Box::get(input)?,
+                })
+            }),
+            53..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -2781,6 +2847,21 @@ impl Wire for ComputationStatementKind {
                 out.tag("ComputationStatementKind", 8);
                 value.put(out)
             }
+            IfLet(if_let) => {
+                out.tag("ComputationStatementKind", 9);
+                let ComputationIfLet {
+                    pattern,
+                    value,
+                    guard,
+                    then_branch,
+                    else_branch,
+                } = if_let.as_ref();
+                pattern.put(out)?;
+                value.put(out)?;
+                guard.put(out)?;
+                then_branch.put(out)?;
+                else_branch.put(out)
+            }
         }
     }
 
@@ -2815,7 +2896,16 @@ impl Wire for ComputationStatementKind {
                 Ok(While(Expr::get(input)?, ComputationBlock::get(input)?))
             }),
             8 => variant(input, |input| Ok(Expression(Expr::get(input)?))),
-            9..=u8::MAX => Err(Invalid),
+            9 => variant(input, |input| {
+                Ok(IfLet(Box::new(ComputationIfLet {
+                    pattern: Box::get(input)?,
+                    value: Expr::get(input)?,
+                    guard: Option::get(input)?,
+                    then_branch: ComputationBlock::get(input)?,
+                    else_branch: Option::get(input)?,
+                })))
+            }),
+            10..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -3111,6 +3201,27 @@ mod tests {
             )
             .unwrap(),
         );
+        seen.extend(
+            round_trips(
+                "def g :: Maybe<i64> -> Maybe<i64> = \\m ->\n    let a = if let Some n = m when n > 0 then n else 0\n    Maybe {\n        if let Some x = m when x > 0 then return a + x\n    }\n",
+                0,
+            )
+            .unwrap(),
+        );
+        seen.extend(
+            round_trips(
+                "@last_error\nextern \"CloseHandle\" def close_raw :: i64 -> bool * i32u\n",
+                0,
+            )
+            .unwrap(),
+        );
+        seen.extend(
+            round_trips(
+                "def f :: i64 -> i64 = \\n ->\n    let mut x = n\n    x += 1\n    x -= 2\n    x *= 3\n    x /= 2\n    x %= 5\n    x\n",
+                0,
+            )
+            .unwrap(),
+        );
         // Only the checker, the computation expansion and `Bits.ushr` make these variants.
         let mut program = parse_with_source_all("def f :: i64 = 1\n", 0).unwrap();
         let body = program.functions[0].body.clone();
@@ -3151,6 +3262,11 @@ mod tests {
                 arms: Vec::new(),
                 origin: MatchOrigin::Internal,
             }),
+            made(ExprKind::Match {
+                value: Box::new(body.clone()),
+                arms: Vec::new(),
+                origin: MatchOrigin::IfLet,
+            }),
             made(ExprKind::FromEnd(Box::new(body.clone()))),
             made(ExprKind::MultiIndex {
                 value: Box::new(body.clone()),
@@ -3183,11 +3299,11 @@ mod tests {
             ("Kind", 2),
             ("TypeExprKind", 19),
             ("StringLiteral", 2),
-            ("ExprKind", 51),
+            ("ExprKind", 52),
             ("IndexComponent", 3),
             ("SelectHead", 3),
             ("PatternKind", 15),
-            ("ComputationStatementKind", 9),
+            ("ComputationStatementKind", 10),
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
@@ -3199,7 +3315,7 @@ mod tests {
             ("ContractKind", 2),
             ("UnaryOp", 4),
             ("BinaryOp", 21),
-            ("MatchOrigin", 7),
+            ("MatchOrigin", 8),
             ("Notation", 2),
             ("FormatAlign", 3),
             ("FormatKind", 6),
@@ -3448,6 +3564,6 @@ add_one 41
         "00000003693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000001",
         "01664a4d010e050f0a01665051010050510101010001005253010150530102000200575801015058",
         "010345580100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000",
-        "00000000000000000300224500",
+        "0000000000000000000300224500",
     );
 }

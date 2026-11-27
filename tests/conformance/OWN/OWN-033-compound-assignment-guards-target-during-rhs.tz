@@ -1,0 +1,10 @@
+def bump :: ref mut i64 -> i64 = \r ->
+    deref r = 10
+    0
+
+let mut x = 1
+x += bump (ref mut x)
+x
+
+// rule: OWN-033
+// expect: check-error E1014 line=6 kind=borrow_conflict

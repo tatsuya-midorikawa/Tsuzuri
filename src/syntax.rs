@@ -169,6 +169,11 @@ pub enum TokenKind {
     Arrow,
     FatArrow,
     Equal,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
     Plus,
     Minus,
     Star,
@@ -332,6 +337,8 @@ pub struct Program {
     pub links: Vec<LinkAttribute>,
     /// The `@weak` attributes of this module's extern declarations (M17).
     pub weaks: Vec<WeakAttribute>,
+    /// The `@last_error` attributes of this module's extern function declarations (W16).
+    pub last_error: Vec<LastErrorAttribute>,
     /// The `@returns_retained` / `@returns_not_retained` attributes of this module's extern
     /// function declarations (M01). A member of an extern class carries its own.
     pub returns_retained: Vec<OwnershipAttribute>,
@@ -553,6 +560,13 @@ pub struct LinkAttribute {
 /// `@weak` before an `extern` declaration with a link name (M17).
 #[derive(Clone, Debug)]
 pub struct WeakAttribute {
+    pub target: Ident,
+    pub span: Span,
+}
+
+/// `@last_error` before an `extern ... def` declaration (W16).
+#[derive(Clone, Debug)]
+pub struct LastErrorAttribute {
     pub target: Ident,
     pub span: Span,
 }
@@ -1284,6 +1298,19 @@ pub enum BinaryOp {
     Pipe,
 }
 
+impl BinaryOp {
+    pub fn compound_symbol(self) -> &'static str {
+        match self {
+            Self::Add => "+=",
+            Self::Subtract => "-=",
+            Self::Multiply => "*=",
+            Self::Divide => "/=",
+            Self::Remainder => "%=",
+            _ => unreachable!("only + - * / % have compound assignment"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -1314,6 +1341,11 @@ impl Expr {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | NewArray(_, left, right)
             | NewList(_, left, right) => {
                 left.visit_mut(visitor);
@@ -1333,6 +1365,15 @@ impl Expr {
                 condition.visit_mut(visitor);
                 then_branch.visit_mut(visitor);
                 else_branch.visit_mut(visitor);
+            }
+            IfLet(if_let) => {
+                if_let.pattern.visit_expressions_mut(visitor);
+                if_let.value.visit_mut(visitor);
+                if let Some(guard) = &mut if_let.guard {
+                    guard.visit_mut(visitor);
+                }
+                if_let.then_branch.visit_mut(visitor);
+                if_let.else_branch.visit_mut(visitor);
             }
             While { condition, body } => {
                 condition.visit_mut(visitor);
@@ -1486,6 +1527,11 @@ impl Expr {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | NewArray(_, left, right)
             | NewList(_, left, right) => {
                 left.visit(visitor);
@@ -1505,6 +1551,15 @@ impl Expr {
                 condition.visit(visitor);
                 then_branch.visit(visitor);
                 else_branch.visit(visitor);
+            }
+            IfLet(if_let) => {
+                if_let.pattern.visit_expressions(visitor);
+                if_let.value.visit(visitor);
+                if let Some(guard) = &if_let.guard {
+                    guard.visit(visitor);
+                }
+                if_let.then_branch.visit(visitor);
+                if_let.else_branch.visit(visitor);
             }
             While { condition, body } => {
                 condition.visit(visitor);
@@ -1667,6 +1722,8 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Box<Expr>,
     },
+    /// `if let <pattern> = <value> [when <guard>] then <then_branch> [else <else_branch>]` (NS06).
+    IfLet(Box<IfLetExpr>),
     While {
         condition: Box<Expr>,
         body: Box<Expr>,
@@ -1715,11 +1772,11 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
-    /// `ref xs[a..b]`, or with `mutable` the exclusive `ref mut xs[a..b]` (C08 / NC17).
+    /// `ref xs[a..b]`, `ref mut xs[a..b]`, or an unborrowed window target `t[a..b] += u` (C08 / NC17 / NC20).
     Slice {
         value: Box<Expr>,
         range: Box<RangeKey>,
-        mutable: bool,
+        mutable: Option<bool>,
     },
     /// `base[c1, ..., cn]` with two or more components (NC18). `borrow` is `Some(false)` for
     /// `ref`, `Some(true)` for `ref mut`, as `Slice::mutable` is for one-component slices.
@@ -1733,6 +1790,13 @@ pub enum ExprKind {
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),
+    /// `target += value` (`+=`, `-=`, `*=`, `/=`, `%=`, NC20).
+    CompoundAssign {
+        op: BinaryOp,
+        op_span: Span,
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
     Cast(Box<Expr>, TypeExpr),
     /// `$"a{x}b"`: `texts` has one more element than `holes`.
     Interpolated(Box<Interpolation>),
@@ -1757,6 +1821,17 @@ pub struct TryExpr {
     pub body: Expr,
     pub arms: Vec<MatchArm>,
     pub finally: Option<Expr>,
+}
+
+/// An `if let` / `elif let` conditional pattern binding (NS06).
+#[derive(Clone, Debug)]
+pub struct IfLetExpr {
+    pub pattern: Pattern,
+    pub value: Expr,
+    pub guard: Option<Expr>,
+    pub then_branch: Expr,
+    pub else_branch: Expr,
+    pub has_else: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -2031,6 +2106,8 @@ pub enum MatchOrigin {
     ForDestructuring,
     /// An immutable `let <pattern> = ...` destructuring binding.
     LetDestructuring,
+    /// A conditional `if let <pattern> = ...` / `elif let <pattern> = ...` binding (NS06).
+    IfLet,
     /// A compiler-synthesized match (`for` channel/seq step or `select` arm dispatch).
     Internal,
 }
@@ -2048,7 +2125,7 @@ impl MatchOrigin {
             Self::ComputationDestructuring => Some("a computation binding"),
             Self::ForDestructuring => Some("a 'for' binding"),
             Self::LetDestructuring => Some("a 'let' binding"),
-            Self::Explicit | Self::FunctionGuard | Self::Internal => None,
+            Self::Explicit | Self::FunctionGuard | Self::IfLet | Self::Internal => None,
         }
     }
 }
@@ -2172,9 +2249,20 @@ pub enum ComputationStatementKind {
     Do(Expr),
     Operation(&'static str, Expr),
     If(Expr, ComputationBlock, Option<ComputationBlock>),
+    IfLet(Box<ComputationIfLet>),
     For(Box<Pattern>, Expr, ComputationBlock),
     While(Expr, ComputationBlock),
     Expression(Expr),
+}
+
+/// An `if let` / `elif let` statement inside a computation block (NS06).
+#[derive(Clone, Debug)]
+pub struct ComputationIfLet {
+    pub pattern: Box<Pattern>,
+    pub value: Expr,
+    pub guard: Option<Expr>,
+    pub then_branch: ComputationBlock,
+    pub else_branch: Option<ComputationBlock>,
 }
 
 #[derive(Clone, Debug)]
@@ -2219,6 +2307,17 @@ impl ComputationBlock {
                     condition.visit_mut(visitor);
                     yes.visit_expressions_mut(visitor);
                     if let Some(no) = no {
+                        no.visit_expressions_mut(visitor);
+                    }
+                }
+                IfLet(if_let) => {
+                    if_let.pattern.visit_expressions_mut(visitor);
+                    if_let.value.visit_mut(visitor);
+                    if let Some(guard) = &mut if_let.guard {
+                        guard.visit_mut(visitor);
+                    }
+                    if_let.then_branch.visit_expressions_mut(visitor);
+                    if let Some(no) = &mut if_let.else_branch {
                         no.visit_expressions_mut(visitor);
                     }
                 }
@@ -2268,6 +2367,17 @@ impl ComputationBlock {
                     condition.visit(visitor);
                     yes.visit_expressions(visitor);
                     if let Some(no) = no {
+                        no.visit_expressions(visitor);
+                    }
+                }
+                IfLet(if_let) => {
+                    if_let.pattern.visit_expressions(visitor);
+                    if_let.value.visit(visitor);
+                    if let Some(guard) = &if_let.guard {
+                        guard.visit(visitor);
+                    }
+                    if_let.then_branch.visit_expressions(visitor);
+                    if let Some(no) = &if_let.else_branch {
                         no.visit_expressions(visitor);
                     }
                 }
@@ -2321,6 +2431,13 @@ impl ComputationStatement {
                 .depth
                 .max(yes.depth)
                 .max(no.as_ref().map_or(0, |branch| branch.depth)),
+            IfLet(if_let) => if_let
+                .pattern
+                .depth
+                .max(if_let.value.depth)
+                .max(if_let.guard.as_ref().map_or(0, |guard| guard.depth))
+                .max(if_let.then_branch.depth)
+                .max(if_let.else_branch.as_ref().map_or(0, |branch| branch.depth)),
             For(pattern, source, body) => pattern.depth.max(source.depth).max(body.depth),
             While(source, body) => source.depth.max(body.depth),
         }

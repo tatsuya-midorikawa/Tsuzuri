@@ -338,10 +338,11 @@ fn std_tensor_operator_instances_share_or_trap_kernels_and_use_half_open_slices(
         );
     }
 
-    // Public functions and `*_or_trap` twins share `map2_kernel` and `map2_in_place_kernel`
-    // (1 `fn` definition + 4 calls = 5; 1 `fn` definition + 2 calls = 3).
+    // Public functions, `*_or_trap` twins, and NC20 compound-assignment helpers share
+    // `map2_kernel` and `map2_in_place_kernel` (1 `fn` definition + 4 calls = 5;
+    // 1 `fn` definition + 5 calls = 6).
     assert_eq!(nc06.matches("map2_kernel f ").count(), 5);
-    assert_eq!(nc06.matches("map2_in_place_kernel f ").count(), 3);
+    assert_eq!(nc06.matches("map2_in_place_kernel f ").count(), 6);
 
     // No bare `..` slice in the NC06 section (only `..<` or `..=`).
     for (idx, line) in nc06.lines().enumerate() {

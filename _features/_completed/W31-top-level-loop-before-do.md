@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 不要（文書の規則「結果型が未定なら、最初の `let!` か `do!` の右辺の型から選ぶ」（`computation-expressions/computation-expressions.md` の「ビルダー名を省略する」）と `docs/language.md` の「未確定の場合はブロック内の最初の `bind` 式の右辺型から推論されます」に実装を合わせる修正。今 `E1018` で拒否しているプログラムの一部を受け入れるだけで、受け入れていたプログラムの意味・IR・診断は変えない。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
 | 手本にする既存実装 | `src/computation.rs` の `Checker::implicit_prefix`（ビルダーを決める前に、先頭の通常の文を検査して `prefix` に積む）、`direct_block`（直接実行の本体の `while`・`for`・`if` の下げ方）、`Checker::implicit_root` の `entry && builder == "IO"` の枝（先頭を検査した後で直接実行へ切り替える） |

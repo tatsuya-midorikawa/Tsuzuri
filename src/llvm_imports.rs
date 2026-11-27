@@ -14,7 +14,8 @@ pub(super) fn header(module: &CheckedModule) -> String {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
-        let viewed_result = crate::abi::c_view(&function.signature.result, &module.types());
+        let viewed_result =
+            crate::abi::c_view(import.c_result(&function.signature.result), &module.types());
         let _ = writeln!(
             output,
             "{} {}({parameters});",
@@ -83,7 +84,49 @@ impl FunctionEmitter<'_, '_> {
         let global = format!("@{}", data.symbol);
         if self.module.weak_symbols.contains(&data.symbol) {
             return match data.access {
-                crate::syntax::DataAccess::Address => self.nullable_from_c(result, &global),
+                crate::syntax::DataAccess::Address => {
+                    let payload = crate::abi::std_maybe_payload(result, &self.module.types())
+                        .expect("validated weak data symbol Maybe<H>")
+                        .clone();
+                    if crate::abi::extern_addr(&payload, &self.module.types()) {
+                        let Type::Union(id, _) = result else {
+                            unreachable!()
+                        };
+                        let some_case = self.module.unions[*id]
+                            .cases
+                            .iter()
+                            .position(|(name, p)| name == "Some" && p.is_some())
+                            .expect("std::Maybe has Some");
+                        let present = self.value(format!("icmp ne ptr {global}, null"));
+                        let ok_block = self.label();
+                        let miss_block = self.label();
+                        let done_block = self.label();
+                        self.branch(&present, &ok_block, &miss_block);
+
+                        self.begin(&miss_block);
+                        let none_val = self.nullary_value(result, "None");
+                        let from_miss = self.block.clone();
+                        self.jump(&done_block);
+
+                        self.begin(&ok_block);
+                        let raw_i64 = self.value(format!("ptrtoint ptr {global} to i64"));
+                        let pty = self.ty(&payload);
+                        let ea = self.value(format!(
+                            "insertvalue {pty} zeroinitializer, i64 {raw_i64}, 0"
+                        ));
+                        let ok_val = self.construct_value(result, some_case, Some((ea, pty)));
+                        let from_ok = self.block.clone();
+                        self.jump(&done_block);
+
+                        self.begin(&done_block);
+                        let llvm = self.ty(result);
+                        self.value(format!(
+                            "phi {llvm} [ {none_val}, %{from_miss} ], [ {ok_val}, %{from_ok} ]"
+                        ))
+                    } else {
+                        self.nullable_from_c(result, &global)
+                    }
+                }
                 crate::syntax::DataAccess::Read => {
                     let payload = crate::abi::std_maybe_payload(result, &self.module.types())
                         .expect("validated weak data symbol Maybe<T>")
@@ -153,7 +196,17 @@ impl FunctionEmitter<'_, '_> {
             };
         }
         match data.access {
-            crate::syntax::DataAccess::Address => global,
+            crate::syntax::DataAccess::Address => {
+                if crate::abi::extern_addr(result, &self.module.types()) {
+                    let raw_i64 = self.value(format!("ptrtoint ptr {global} to i64"));
+                    self.value(format!(
+                        "insertvalue {} zeroinitializer, i64 {raw_i64}, 0",
+                        self.ty(result)
+                    ))
+                } else {
+                    global
+                }
+            }
             crate::syntax::DataAccess::Read => match result {
                 Type::Integer(bits, _) => {
                     let align = usize::from(*bits) / 8;
@@ -198,14 +251,16 @@ impl FunctionEmitter<'_, '_> {
     ) -> String {
         match direction {
             crate::syntax::ViewDirection::Read => {
-                let address = self.expression(&arguments[0]);
+                let ea = self.expression(&arguments[0]);
+                let ea_ty = self.ty(&arguments[0].ty);
+                let address = self.value(format!("extractvalue {ea_ty} {ea}, 0"));
                 let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
                 let (size, align) = host_abi::record_layout(result, self.module);
                 self.host_pointer(&ptr, &size.to_string(), align, false);
                 self.read_host_record(result, &ptr)
             }
             crate::syntax::ViewDirection::Write => {
-                let address = self.expression(&arguments[0]);
+                let ea = self.expression(&arguments[0]);
                 // M21: a borrowed temporary lives in a slot until the record is written, as in `host_call`.
                 let mut operands = Vec::new();
                 let source_ref = if let TypedExprKind::BorrowOperand(operand) = &arguments[1].kind {
@@ -216,6 +271,8 @@ impl FunctionEmitter<'_, '_> {
                 let Type::Reference(record_ty, false) = &arguments[1].ty else {
                     unreachable!("validated extern view write parameter")
                 };
+                let ea_ty = self.ty(&arguments[0].ty);
+                let address = self.value(format!("extractvalue {ea_ty} {ea}, 0"));
                 let ptr = self.value(format!("inttoptr i64 {address} to ptr"));
                 let (size, align) = host_abi::record_layout(record_ty, self.module);
                 self.host_pointer(&ptr, &size.to_string(), align, false);
@@ -231,8 +288,9 @@ impl FunctionEmitter<'_, '_> {
         &mut self,
         import: &HostImport,
         arguments: &[TypedExpr],
-        result: &Type,
+        full_result: &Type,
     ) -> String {
+        let result = import.c_result(full_result);
         let mut types = Vec::new();
         let mut values = Vec::new();
         let platform = crate::target::current_platform();
@@ -699,6 +757,60 @@ impl FunctionEmitter<'_, '_> {
             self.instruction("unreachable");
             self.begin(&ok_block);
         }
+        let mut errno_ptr = None;
+        if import.last_error && !self.globals.wasm {
+            if self.globals.blocking_externs {
+                self.instruction("call void @tsuzuri_tz_blocking_enter()");
+            }
+            match crate::target::current_platform().last_error_access() {
+                crate::target::LastErrorAccess::Win32 => {
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        "SetLastError",
+                        "void",
+                        &[String::from("i32")],
+                    ));
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        "GetLastError",
+                        "i32",
+                        &[],
+                    ));
+                    self.instruction("call void @SetLastError(i32 0)");
+                }
+                crate::target::LastErrorAccess::Errno(sym) => {
+                    let ret_ty = self
+                        .module
+                        .extern_abis
+                        .get(sym)
+                        .and_then(|sig| sig.result.llvm())
+                        .unwrap_or("ptr");
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        sym,
+                        ret_ty,
+                        &[],
+                    ));
+                    let ptr_val = if ret_ty == "ptr" {
+                        self.value(format!("call ptr @{sym}()"))
+                    } else {
+                        let raw = self.value(format!("call {ret_ty} @{sym}()"));
+                        self.value(format!("inttoptr {ret_ty} {raw} to ptr"))
+                    };
+                    self.instruction(format!("store i32 0, ptr {ptr_val}"));
+                    errno_ptr = Some(ptr_val);
+                }
+            }
+        }
         // M01: an Objective-C object result comes at +0 unless the declaration says
         // `@returns_retained`. The attached-call bundle makes the backend retain it right after
         // the call; a result that the canonical C type lowers to `i64` (W14) cannot carry the
@@ -720,6 +832,32 @@ impl FunctionEmitter<'_, '_> {
             import.native_symbol,
             values.join(", ")
         );
+        let capture_last_error = |emitter: &mut Self, errno_ptr: Option<&str>| -> Option<String> {
+            if !import.last_error || emitter.globals.wasm {
+                return None;
+            }
+            let err = match errno_ptr {
+                Some(ptr_val) => emitter.value(format!("load i32, ptr {ptr_val}")),
+                None => emitter.value("call i32 @GetLastError()"),
+            };
+            if emitter.globals.blocking_externs {
+                emitter.instruction("call void @tsuzuri_tz_blocking_exit()");
+            }
+            Some(err)
+        };
+        let pack_last_error =
+            |emitter: &mut Self, r_value: String, captured: Option<String>| -> String {
+                if let Some(err) = captured {
+                    let pair_ty = emitter.ty(full_result);
+                    let r_ty = emitter.ty(result);
+                    let first = emitter.value(format!(
+                        "insertvalue {pair_ty} zeroinitializer, {r_ty} {r_value}, 0"
+                    ));
+                    emitter.value(format!("insertvalue {pair_ty} {first}, i32 {err}, 1"))
+                } else {
+                    r_value
+                }
+            };
         let finish_copy_outs = |emitter: &mut Self, copy_outs: &[CopyOut]| {
             for item in copy_outs {
                 match item {
@@ -756,6 +894,7 @@ impl FunctionEmitter<'_, '_> {
         };
         if *result == Type::Unit || out.is_some() || sret.is_some() {
             self.instruction(call);
+            let captured = capture_last_error(self, errno_ptr.as_deref());
             finish_copy_outs(self, &copy_outs);
             self.free_copies(&copies);
             let output = if let Some(slot) = out {
@@ -766,9 +905,10 @@ impl FunctionEmitter<'_, '_> {
                 "0".into()
             };
             self.release_operands(operands);
-            return output;
+            return pack_last_error(self, output, captured);
         }
         let value = self.value(call);
+        let captured = capture_last_error(self, errno_ptr.as_deref());
         finish_copy_outs(self, &copy_outs);
         if let (Some(class), Some(layout)) = (&result_class, &result_layout) {
             // W36: the registers of the result go to a temporary, and the record is read from it
@@ -778,7 +918,7 @@ impl FunctionEmitter<'_, '_> {
             self.by_value_from_abi(class, &[(output, value)], &slot);
             let record = self.read_host_record(result, &slot);
             self.release_operands(operands);
-            return record;
+            return pack_last_error(self, record, captured);
         }
         let value = if convert_ptr_result {
             let pointer = self.value(format!("inttoptr i64 {value} to ptr"));
@@ -809,7 +949,7 @@ impl FunctionEmitter<'_, '_> {
             }
         };
         self.release_operands(operands);
-        output
+        pack_last_error(self, output, captured)
     }
 
     /// Frees the widened copies that `host_call` made of Latin-1 strings: a string that was UTF-16 is

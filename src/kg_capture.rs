@@ -399,6 +399,7 @@ fn declare_module(
         c_layouts: _,
         links: _,
         weaks: _,
+        last_error: _,
         returns_retained: _,
         noncanonical: _,
         aliases: _,

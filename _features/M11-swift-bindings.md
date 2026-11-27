@@ -5,7 +5,7 @@
 | ID | M11 |
 | 優先度 | P3（Swift のホストは、`--emit header` の C ヘッダーを bridging header で読めば、今でも Tsuzuri のライブラリを呼べる。足りないのは型付きの包みと、UTF-16 の受け渡し・`tsuzuri_free`・トラップの扱いの自動化である） |
 | 規模 | L（生成器 1 つ、`--emit` の種類 1 つ、Rust の検査、swiftc の E2E、文書） |
-| 依存 | ([NS02](NS02-export-and-bindings-nullable.md)) |
+| 依存 | ([NS02](_completed/NS02-export-and-bindings-nullable.md)) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（SwiftUI など Swift 専用の API には届かない）」に当たる。Swift の ABI を直接呼ぶことは D-67 の「改めないもの」なので、Swift だけの API へはホストの構成（Swift のアプリが Tsuzuri のライブラリを呼ぶ）で届く。このチケットは、その構成のバインディングの生成を足す。HEAD `804b7970` で確認） |
@@ -352,7 +352,7 @@ nonisolated public enum Quote {
 ## 前提とする他チケットのインターフェース
 
 - なし（単独で出荷できる）。
-- [NS02](NS02-export-and-bindings-nullable.md) が先に出荷されていれば、その `Shape::NullableHandle`・`Shape::NullableRecord`（NS02 の設計）と C ヘッダーの形（NS02 の仕様 1）を使って、仕様 3 の Optional を写す。
+- [NS02](_completed/NS02-export-and-bindings-nullable.md) が先に出荷されていれば、その `Shape::NullableHandle`・`Shape::NullableRecord`（NS02 の設計）と C ヘッダーの形（NS02 の仕様 1）を使って、仕様 3 の Optional を写す。
 
 ## 他チケットへ提供するインターフェース
 

@@ -1952,11 +1952,12 @@ const suites = {
           ["stash_owned_record", [n], n * 100n + 9n],
           ["lend_owned_record", [n], n * 100n + 49n],
           ["stash_slice", [n], n * 100n + 9n],
+          ["compound_assign_move", [n], (n + 50n) + (n + 2n) * 10n],
         ]),
       ];
     })(),
     inspect(ir) {
-      for (const name of ["self_update_loop", "recursive_accumulate", "branch_last_reads", "borrow_call_move", "slice_write_move"]) {
+      for (const name of ["self_update_loop", "recursive_accumulate", "branch_last_reads", "borrow_call_move", "slice_write_move", "make_acc_updated"]) {
         const body = ir.split("\n\n").find(block => block.startsWith("define ") && block.split("\n")[0].includes(`@tz.fn.Main.${name}(`));
         assert.ok(body, name);
         assert.equal((body.match(/call (?:nonnull )?ptr @tz\.alloc/g) ?? []).length, 1, name);
@@ -3120,6 +3121,26 @@ const suites = {
       ["scalar_refs", [], 41n],
     ],
   },
+  // NS06: `if let` and `elif let` conditional pattern bindings across owned values, anonymous unions,
+  // computation expressions, and `const def`.
+  if_let: {
+    cases: [
+      ["greet_len", [0n], 6n],
+      ["greet_len", [1n], 6n],
+      ["greet_len", [2n], 13n],
+      ["mixed_elif", [0n], 100n],
+      ["mixed_elif", [1n], 70n],
+      ["mixed_elif", [2n], -54n],
+      ["mixed_elif", [3n], 5n],
+      ["mixed_elif", [4n], -9n],
+      ["omitted_else_owned", [0n], 0n],
+      ["omitted_else_owned", [2n], 0n],
+      ["omitted_else_owned", [6n], (3n + 2n) + (3n + 4n)],
+      ["anon_and_computations", [0n], 42n + 0n + 13n],
+      ["anon_and_computations", [1n], 30n + 0n + 13n],
+      ["anon_and_computations", [3n], 30n + 8n + 13n],
+    ],
+  },
   // NC17 / NC18: edition 2028 inclusive range family, `^k`, and 1D Tensor slices against BigInt reference.
   range_reference: {
     cases: rangeReferenceCases,
@@ -3176,6 +3197,59 @@ const suites = {
       assert.match(ir, /@tz\.fn\.Tensor\.\$instance\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
+  },
+  // NC20: compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`), `AddAssign`..`RemAssign`, and `IndexBorrowMut`.
+  compound_assignment: {
+    cases: (() => {
+      const builtin = (n) => {
+        const x = (((n + 10n) - 3n) * 4n / 2n) % 100n;
+        const sLen = BigInt(`abcd(${x})`.length);
+        return x * 1000n + 1500n + sLen * 10n + 3n + 72n + 20n + n;
+      };
+      const tensorFields = (scale) => {
+        const vals = [11n, 22n, 33n, 14n, 25n, 36n].map((v) => v * scale - 2n);
+        vals[1] += 5n;
+        vals[3] += 3n;
+        vals[4] += 3n;
+        vals[5] += 3n;
+        return vals.reduce((a, b) => a + b, 0n) + 540n;
+      };
+      return [
+        ...[0n, 5n, -3n, 47n].map((n) => ["builtin_arithmetic", [n], builtin(n)]),
+        ["evaluation_order", [], 1206n],
+        ...[1n, 2n, -1n, 4n].map((s) => ["tensor_in_place_and_fields", [s], tensorFields(s)]),
+      ];
+    })(),
+    traps: [["trap_div_zero", []], ["trap_tensor_mismatch", []]],
+  },
+  compound_assignment_2028: {
+    cases: (() => {
+      const windowUpdates = (bonus) => {
+        const g = Array.from({ length: 12 }, (_, i) => BigInt(i + 1));
+        for (let c = 0; c < 4; c++) g[4 + c] *= 2n;
+        for (let r = 0; r < 3; r++) {
+          g[r * 4 + 0] += bonus;
+          g[r * 4 + 1] += bonus;
+        }
+        g[2 * 4 + 3] -= 1n;
+        g[2 * 4 + 0] += 10n;
+        for (let r = 0; r <= 1; r++) for (let c = 0; c < 4; c++) g[r * 4 + c] += 3n;
+        return g.reduce((a, b) => a + b, 0n);
+      };
+      const subwindowReborrow = () => {
+        const raw = Array.from({ length: 12 }, (_, i) => BigInt(i));
+        for (const r of [1, 2]) for (const c of [1, 2, 3]) raw[r * 4 + c] += 100n;
+        for (const c of [1, 2, 3]) raw[1 * 4 + c] *= 2n;
+        return raw.reduce((acc, x) => BigInt.asIntN(64, acc * 31n + x), 0n);
+      };
+      return [
+        ...[0n, 5n, -2n].map((b) => ["window_updates", [b], windowUpdates(b)]),
+        ["snapshot_shift_accumulate", [], 753100n],
+        ["subwindow_reborrow", [], subwindowReborrow()],
+      ];
+    })(),
+    traps: [["trap_window_oob", [3n]], ["trap_window_oob", [-1n]]],
+    trapKind: "assertion failed",
   },
   // F10: Atomic and Mutex; since TZ12 Routine.scope and tzroutines share them (Task.scope and Task.parallel
   // before). Every case is a closed expression that does not depend on the schedule: sums of commutative

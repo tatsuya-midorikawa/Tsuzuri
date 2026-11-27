@@ -1,0 +1,8 @@
+let mut n = 0
+while n < 3 do
+    n = n + 1
+do! IO.writeln $"n={n}"
+n
+
+// rule: CTL-033
+// expect: stdout "n=3\n3\n"

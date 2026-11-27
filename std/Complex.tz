@@ -166,7 +166,7 @@ fn div left right = div_smith left right
 pure def neg :: (Float<'a>, Neg<'a>, Copy<'a>) => Complex<'a> -> Complex<'a>
 fn neg z = Complex { re: -z.re, im: -z.im }
 
-/// Scales `z` by a real factor.
+/// Scales `z` by a real factor (`factor * z`).
 ///
 /// ```tsuzuri run=6+8i
 /// $"{Complex.of 3.0 4.0 |> Complex.scale 2.0}"
@@ -413,4 +413,36 @@ instance (Float<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => D
 
 instance (Float<'a>, Neg<'a>, Copy<'a>) => Neg<Complex<'a>> {
     fn neg z = Complex { re: -z.re, im: -z.im }
+}
+
+instance (Float<'a>, Add<'a>, Copy<'a>) => Add<Complex<'a>, 'a, Complex<'a>> {
+    fn add left right = Complex { re: left.re + deref right, im: left.im }
+}
+
+instance (Float<'a>, Add<'a>, Copy<'a>) => Add<'a, Complex<'a>, Complex<'a>> {
+    fn add left right = Complex { re: deref left + right.re, im: right.im }
+}
+
+instance (Float<'a>, Sub<'a>, Copy<'a>) => Sub<Complex<'a>, 'a, Complex<'a>> {
+    fn sub left right = Complex { re: left.re - deref right, im: left.im }
+}
+
+instance (Float<'a>, Sub<'a>, Neg<'a>, Copy<'a>) => Sub<'a, Complex<'a>, Complex<'a>> {
+    fn sub left right = Complex { re: deref left - right.re, im: -right.im }
+}
+
+instance (Float<'a>, Mul<'a>, Copy<'a>) => Mul<Complex<'a>, 'a, Complex<'a>> {
+    fn mul left right = Complex { re: left.re * deref right, im: left.im * deref right }
+}
+
+instance (Float<'a>, Mul<'a>, Copy<'a>) => Mul<'a, Complex<'a>, Complex<'a>> {
+    fn mul left right = Complex { re: deref left * right.re, im: deref left * right.im }
+}
+
+instance (Float<'a>, Div<'a>, Copy<'a>) => Div<Complex<'a>, 'a, Complex<'a>> {
+    fn div left right = Complex { re: left.re / deref right, im: left.im / deref right }
+}
+
+instance (Float<'a>, Numeric<'a>, Add<'a>, Sub<'a>, Mul<'a>, Div<'a>, Ord<'a>, Copy<'a>) => Div<'a, Complex<'a>, Complex<'a>> {
+    fn div left right = div_smith (from_real (deref left)) (deref right)
 }

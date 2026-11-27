@@ -1010,7 +1010,7 @@ fn step_mut axis step view =
 /// $"{data}"
 /// ```
 def flip_mut { r } :: own i64 -> ref mut { r } Mut<'a> { r } -> Mut<'a> { r }
-fn flip_mut axis view = step_mut axis (-1) view
+fn flip_mut axis view = step_mut axis (- 1) view
 
 // ---------------------------------------------------------------------------
 // Broadcasting
@@ -2176,6 +2176,180 @@ instance IndexMut<Mut<'a>, [Slice.Pos], 'a> {
         Array.write slot value self.data
 }
 
+instance IndexBorrowMut<Tensor<'a>, [Slice.Sel], Mut<'a>> {
+    fn index_borrow_mut sels self =
+        match sel_layout sels 0 (ref self.shape) (ref self.shape) true with
+        | (off, sh_v, st_v) ->
+            let sh = Vec.to_array sh_v
+            let st = Vec.to_array st_v
+            Mut { data: ref mut self.data[0 ..], offset: off, shape: sh, strides: st }
+}
+
+instance IndexBorrowMut<Mut<'a>, [Slice.Sel], Mut<'a>> {
+    fn index_borrow_mut sels self =
+        match sel_layout sels self.offset (ref self.shape) (ref self.strides) false with
+        | (off, sh_v, st_v) ->
+            let sh = Vec.to_array sh_v
+            let st = Vec.to_array st_v
+            Mut { data: ref mut self.data[0 ..], offset: off, shape: sh, strides: st }
+}
+
+instance Copy<'a> => Index<Mut<'a>, [i64], 'a> {
+    fn index coords self = self.data[offset_of_mut self coords]
+}
+
+instance Copy<'a> => Index<Mut<'a>, i64, 'a> {
+    fn index c0 self = self.data[strided_offset_1 self.offset (ref self.shape) (ref self.strides) (deref c0)]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1) -> self.data[strided_offset_2 self.offset (ref self.shape) (ref self.strides) c0 c1]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2) -> self.data[strided_offset_3 self.offset (ref self.shape) (ref self.strides) c0 c1 c2]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index coords self =
+        match coords with
+        | (c0, c1, c2, c3) -> self.data[strided_offset_4 self.offset (ref self.shape) (ref self.strides) c0 c1 c2 c3]
+}
+
+instance Copy<'a> => Index<Mut<'a>, Slice.Pos, 'a> {
+    fn index p0 self =
+        assert (self.shape.length == 1)
+        let c0 = resolve_pos_axis self.shape[0] p0
+        self.data[self.offset + c0 * self.strides[0]]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1) ->
+            assert (self.shape.length == 2)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1]]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2) ->
+            assert (self.shape.length == 3)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2]]
+}
+
+instance Copy<'a> => Index<Mut<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index coords self =
+        match coords with
+        | (p0, p1, p2, p3) ->
+            assert (self.shape.length == 4)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let c3 = resolve_pos_axis self.shape[3] (ref p3)
+            self.data[self.offset + c0 * self.strides[0] + c1 * self.strides[1] + c2 * self.strides[2] + c3 * self.strides[3]]
+}
+
+instance Copy<'a> => Index<Mut<'a>, [Slice.Pos], 'a> {
+    fn index coords self =
+        self.data[strided_pos_offset self.offset (ref self.shape) (ref self.strides) coords]
+}
+
+instance IndexMut<Tensor<'a>, [i64], 'a> {
+    fn index_mut coords value self =
+        let slot = dense_offset (ref self.shape) coords
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, i64, 'a> {
+    fn index_mut c0 value self =
+        let slot = dense_offset_1 (ref self.shape) (deref c0)
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1) ->
+            let slot = dense_offset_2 (ref self.shape) c0 c1
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2) ->
+            let slot = dense_offset_3 (ref self.shape) c0 c1 c2
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (i64 * i64 * i64 * i64), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (c0, c1, c2, c3) ->
+            let slot = dense_offset_4 (ref self.shape) c0 c1 c2 c3
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, Slice.Pos, 'a> {
+    fn index_mut p0 value self =
+        assert (self.shape.length == 1)
+        let slot = resolve_pos_axis self.shape[0] p0
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1) ->
+            assert (self.shape.length == 2)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let slot = c0 * self.shape[1] + c1
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1, p2) ->
+            assert (self.shape.length == 3)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let slot = (c0 * self.shape[1] + c1) * self.shape[2] + c2
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, (Slice.Pos * Slice.Pos * Slice.Pos * Slice.Pos), 'a> {
+    fn index_mut coords value self =
+        match coords with
+        | (p0, p1, p2, p3) ->
+            assert (self.shape.length == 4)
+            let c0 = resolve_pos_axis self.shape[0] (ref p0)
+            let c1 = resolve_pos_axis self.shape[1] (ref p1)
+            let c2 = resolve_pos_axis self.shape[2] (ref p2)
+            let c3 = resolve_pos_axis self.shape[3] (ref p3)
+            let slot = ((c0 * self.shape[1] + c1) * self.shape[2] + c2) * self.shape[3] + c3
+            Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
+instance IndexMut<Tensor<'a>, [Slice.Pos], 'a> {
+    fn index_mut coords value self =
+        let slot = dense_pos_offset (ref self.shape) coords
+        Array.write slot value (ref mut self.data[0 ..< self.data.length])
+}
+
 // ---------------------------------------------------------------------------
 // NC05: Shape manipulation, concatenation/splitting, masking & fancy indexing
 // ---------------------------------------------------------------------------
@@ -2209,7 +2383,7 @@ fn resolve_infer_shape spec total =
         let mut ok = true
         for i in 0i64 ..= (spec.length - 1) do
             let d = spec[i]
-            if d == (-1) then
+            if d == (- 1) then
                 if infer_pos >= 0 then ok = false
                 else infer_pos = i
             elif d < 0 then ok = false
@@ -2475,7 +2649,7 @@ fn flip view =
         let dim = view.shape[d]
         if dim > 1 then
             new_offset = new_offset + (dim - 1) * view.strides[d]
-            Array.write d (-view.strides[d]) (ref mut new_strides)
+            Array.write d (- view.strides[d]) (ref mut new_strides)
     View { data: view.data, offset: new_offset, shape: Array.copy (ref view.shape), strides: new_strides }
 
 /// Reverses axis 1 (left-right flip); traps if `rank < 2`.
@@ -2523,7 +2697,7 @@ fn rot90 k view =
         // fliplr then swapaxes 0 1
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
-            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+            Array.write 1 (- new_strides[1]) (ref mut new_strides)
         else ()
         let s0 = new_shape[0]
         let s1 = new_shape[1]
@@ -2536,11 +2710,11 @@ fn rot90 k view =
     | 2 ->
         if new_shape[0] > 1 then
             new_offset = new_offset + (new_shape[0] - 1) * new_strides[0]
-            Array.write 0 (-new_strides[0]) (ref mut new_strides)
+            Array.write 0 (- new_strides[0]) (ref mut new_strides)
         else ()
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
-            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+            Array.write 1 (- new_strides[1]) (ref mut new_strides)
         else ()
     | 3 ->
         // swapaxes 0 1 then fliplr
@@ -2554,7 +2728,7 @@ fn rot90 k view =
         Array.write 1 st0 (ref mut new_strides)
         if new_shape[1] > 1 then
             new_offset = new_offset + (new_shape[1] - 1) * new_strides[1]
-            Array.write 1 (-new_strides[1]) (ref mut new_strides)
+            Array.write 1 (- new_strides[1]) (ref mut new_strides)
         else ()
     | _ -> ()
     View { data: view.data, offset: new_offset, shape: new_shape, strides: new_strides }
@@ -4653,6 +4827,155 @@ fn rem_in_place rhs target = map2_in_place (\x y -> x % y) rhs target
 
 private def rem_in_place_or_trap { r } :: (Rem<'a>, Copy<'a>) => ref View<'a> -> ref mut Mut<'a> { r } -> unit
 fn rem_in_place_or_trap rhs target = map2_in_place_or_trap (\x y -> x % y) rhs target
+
+private def rec map_scalar_in_place_axis { r } :: Copy<'a> => own ('a -> 'a -> 'a) -> own 'a -> ref mut Mut<'a> { r } -> own i64 -> own i64 -> unit
+fn rec map_scalar_in_place_axis f scalar target axis dst_off =
+    let rank = target.shape.length
+    let dim = target.shape[axis]
+    let d_stride = target.strides[axis]
+    if axis == rank - 1 then
+        for step in 0i64 ..< dim do
+            let d_slot = dst_off + step * d_stride
+            let cur = target.data[d_slot]
+            let val = f cur scalar
+            Array.write d_slot val target.data
+    else
+        for step in 0i64 ..< dim do
+            map_scalar_in_place_axis f scalar target (axis + 1) (dst_off + step * d_stride)
+
+private def map_scalar_in_place_kernel { r } :: Copy<'a> => own ('a -> 'a -> 'a) -> own 'a -> ref mut Mut<'a> { r } -> unit
+fn map_scalar_in_place_kernel f scalar target =
+    let total = volume (ref target.shape)
+    if total > 0 then
+        if is_contiguous_mut target then
+            let doff = target.offset
+            let ds = ref mut target.data[doff ..< doff + total]
+            for i in 0i64 ..< total do
+                let val = f ds[i] scalar
+                Array.write i val ds
+        elif target.shape.length == 0 then
+            let doff = target.offset
+            let val = f target.data[doff] scalar
+            Array.write doff val target.data
+        else
+            let doff = target.offset
+            map_scalar_in_place_axis f scalar target 0 doff
+
+/// Accumulates `target_i = target_i + scalar` in place without allocating.
+///
+/// ```tsuzuri run=[11,%2012]
+/// let mut buf = [1, 2]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// Tensor.add_scalar_in_place 10 (ref mut dst)
+/// $"{buf}"
+/// ```
+def add_scalar_in_place { r } :: (Add<'a>, Copy<'a>) => own 'a -> ref mut Mut<'a> { r } -> unit
+fn add_scalar_in_place scalar target = map_scalar_in_place_kernel (\x s -> x + s) scalar target
+
+/// Accumulates `target_i = target_i - scalar` in place without allocating.
+///
+/// ```tsuzuri run=[9,%2019]
+/// let mut buf = [10, 20]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// Tensor.sub_scalar_in_place 1 (ref mut dst)
+/// $"{buf}"
+/// ```
+def sub_scalar_in_place { r } :: (Sub<'a>, Copy<'a>) => own 'a -> ref mut Mut<'a> { r } -> unit
+fn sub_scalar_in_place scalar target = map_scalar_in_place_kernel (\x s -> x - s) scalar target
+
+/// Accumulates `target_i = target_i * scalar` in place without allocating.
+///
+/// ```tsuzuri run=[3,%206]
+/// let mut buf = [1, 2]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// Tensor.mul_scalar_in_place 3 (ref mut dst)
+/// $"{buf}"
+/// ```
+def mul_scalar_in_place { r } :: (Mul<'a>, Copy<'a>) => own 'a -> ref mut Mut<'a> { r } -> unit
+fn mul_scalar_in_place scalar target = map_scalar_in_place_kernel (\x s -> x * s) scalar target
+
+/// Accumulates `target_i = target_i / scalar` in place without allocating.
+///
+/// ```tsuzuri run=[5,%2010]
+/// let mut buf = [10, 20]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// Tensor.div_scalar_in_place 2 (ref mut dst)
+/// $"{buf}"
+/// ```
+def div_scalar_in_place { r } :: (Div<'a>, Copy<'a>) => own 'a -> ref mut Mut<'a> { r } -> unit
+fn div_scalar_in_place scalar target = map_scalar_in_place_kernel (\x s -> x / s) scalar target
+
+/// Accumulates `target_i = target_i % scalar` in place without allocating.
+///
+/// ```tsuzuri run=[1,%202]
+/// let mut buf = [7, 8]
+/// let mut dst = Tensor.borrow_mut [2] (ref mut buf)
+/// Tensor.rem_scalar_in_place 3 (ref mut dst)
+/// $"{buf}"
+/// ```
+def rem_scalar_in_place { r } :: (Rem<'a>, Copy<'a>) => own 'a -> ref mut Mut<'a> { r } -> unit
+fn rem_scalar_in_place scalar target = map_scalar_in_place_kernel (\x s -> x % s) scalar target
+
+private def tensor_scalar_in_place :: Copy<'a> => own ('a -> 'a -> 'a) -> own 'a -> ref mut Tensor<'a> -> unit
+fn tensor_scalar_in_place f scalar target =
+    let n = target.data.length
+    if n > 0 then
+        let ds = ref mut target.data[0 ..< n]
+        for i in 0i64 ..< n do
+            let val = f ds[i] scalar
+            Array.write i val ds
+
+private def tensor_tensor_in_place :: Copy<'a> => own ('a -> 'a -> 'a) -> ref Tensor<'a> -> ref mut Tensor<'a> -> unit
+fn tensor_tensor_in_place f rhs target =
+    if same_shape (ref rhs.shape) (ref target.shape) then
+        let n = target.data.length
+        if n > 0 then
+            let rs = ref rhs.data[0 ..< n]
+            let ds = ref mut target.data[0 ..< n]
+            for i in 0i64 ..< n do
+                let val = f ds[i] rs[i]
+                Array.write i val ds
+    else
+        assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
+        let t_shape = Array.copy (ref target.shape)
+        let t_strides = dense_strides (ref t_shape)
+        let mut dst = Mut { data: ref mut target.data[0 ..< target.data.length], offset: 0, shape: t_shape, strides: t_strides }
+        let rv = view rhs
+        map2_in_place_kernel f (ref rv) (ref mut dst)
+
+private def tensor_view_in_place :: Copy<'a> => own ('a -> 'a -> 'a) -> ref View<'a> -> ref mut Tensor<'a> -> unit
+fn tensor_view_in_place f rhs target =
+    if same_shape (ref rhs.shape) (ref target.shape) && is_contiguous rhs then
+        let n = target.data.length
+        if n > 0 then
+            let ro = rhs.offset
+            let rs = ref rhs.data[ro ..< ro + n]
+            let ds = ref mut target.data[0 ..< n]
+            for i in 0i64 ..< n do
+                let val = f ds[i] rs[i]
+                Array.write i val ds
+    else
+        assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
+        let t_shape = Array.copy (ref target.shape)
+        let t_strides = dense_strides (ref t_shape)
+        let mut dst = Mut { data: ref mut target.data[0 ..< target.data.length], offset: 0, shape: t_shape, strides: t_strides }
+        map2_in_place_kernel f rhs (ref mut dst)
+
+private def mut_tensor_in_place { r } :: Copy<'a> => own ('a -> 'a -> 'a) -> ref Tensor<'a> -> ref mut Mut<'a> { r } -> unit
+fn mut_tensor_in_place f rhs target =
+    if same_shape (ref rhs.shape) (ref target.shape) && is_contiguous_mut target then
+        let n = rhs.data.length
+        if n > 0 then
+            let doff = target.offset
+            let rs = ref rhs.data[0 ..< n]
+            let ds = ref mut target.data[doff ..< doff + n]
+            for i in 0i64 ..< n do
+                let val = f ds[i] rs[i]
+                Array.write i val ds
+    else
+        assert (can_broadcast_to (ref rhs.shape) (ref target.shape))
+        let rv = view rhs
+        map2_in_place_kernel f (ref rv) target
 
 // Unary mathematical, Complex, & special-value ufuncs (plus `*_into` zero-alloc variants)
 private def abs_elem :: (Numeric<'a>, Sub<'a>, Ord<'a>, Copy<'a>) => own 'a -> 'a
@@ -7111,7 +7434,7 @@ private def check_monotonic_edges :: Float<'a> => ref ['a] -> unit
 fn check_monotonic_edges edges =
     assert (edges.length >= 2)
     for i in 0i64 ..< edges.length do
-        assert (!(Math.is_nan edges[i]))
+        assert (! (Math.is_nan edges[i]))
         if i > 0 then assert (edges[i - 1] <= edges[i])
 
 /// Computes a 1-D histogram with `bins` (`>= 1`) uniform bins over `[min, max]`, returning `(counts, edges)`.
@@ -8064,5 +8387,124 @@ instance (Neg<'a>, Copy<'a>) => Neg<View<'a>, Tensor<'a>> {
 }
 // /generated:tensor-operators
 
+// NC20: Compound-assignment instances (`AddAssign`..`RemAssign`, 30 instances)
 
+instance (Add<'a>, Copy<'a>) => AddAssign<Tensor<'a>, Tensor<'a>> {
+    fn add_assign rhs target = tensor_tensor_in_place (\x y -> x + y) rhs target
+}
 
+instance (Add<'a>, Copy<'a>) => AddAssign<Tensor<'a>, View<'a>> {
+    fn add_assign rhs target = tensor_view_in_place (\x y -> x + y) rhs target
+}
+
+instance (Add<'a>, Copy<'a>) => AddAssign<Tensor<'a>, 'a> {
+    fn add_assign rhs target = tensor_scalar_in_place (\x y -> x + y) (deref rhs) target
+}
+
+instance (Add<'a>, Copy<'a>) => AddAssign<Mut<'a>, Tensor<'a>> {
+    fn add_assign rhs target = mut_tensor_in_place (\x y -> x + y) rhs target
+}
+
+instance (Add<'a>, Copy<'a>) => AddAssign<Mut<'a>, View<'a>> {
+    fn add_assign rhs target = add_in_place_or_trap rhs target
+}
+
+instance (Add<'a>, Copy<'a>) => AddAssign<Mut<'a>, 'a> {
+    fn add_assign rhs target = add_scalar_in_place (deref rhs) target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Tensor<'a>, Tensor<'a>> {
+    fn sub_assign rhs target = tensor_tensor_in_place (\x y -> x - y) rhs target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Tensor<'a>, View<'a>> {
+    fn sub_assign rhs target = tensor_view_in_place (\x y -> x - y) rhs target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Tensor<'a>, 'a> {
+    fn sub_assign rhs target = tensor_scalar_in_place (\x y -> x - y) (deref rhs) target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Mut<'a>, Tensor<'a>> {
+    fn sub_assign rhs target = mut_tensor_in_place (\x y -> x - y) rhs target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Mut<'a>, View<'a>> {
+    fn sub_assign rhs target = sub_in_place_or_trap rhs target
+}
+
+instance (Sub<'a>, Copy<'a>) => SubAssign<Mut<'a>, 'a> {
+    fn sub_assign rhs target = sub_scalar_in_place (deref rhs) target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Tensor<'a>, Tensor<'a>> {
+    fn mul_assign rhs target = tensor_tensor_in_place (\x y -> x * y) rhs target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Tensor<'a>, View<'a>> {
+    fn mul_assign rhs target = tensor_view_in_place (\x y -> x * y) rhs target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Tensor<'a>, 'a> {
+    fn mul_assign rhs target = tensor_scalar_in_place (\x y -> x * y) (deref rhs) target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Mut<'a>, Tensor<'a>> {
+    fn mul_assign rhs target = mut_tensor_in_place (\x y -> x * y) rhs target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Mut<'a>, View<'a>> {
+    fn mul_assign rhs target = mul_in_place_or_trap rhs target
+}
+
+instance (Mul<'a>, Copy<'a>) => MulAssign<Mut<'a>, 'a> {
+    fn mul_assign rhs target = mul_scalar_in_place (deref rhs) target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Tensor<'a>, Tensor<'a>> {
+    fn div_assign rhs target = tensor_tensor_in_place (\x y -> x / y) rhs target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Tensor<'a>, View<'a>> {
+    fn div_assign rhs target = tensor_view_in_place (\x y -> x / y) rhs target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Tensor<'a>, 'a> {
+    fn div_assign rhs target = tensor_scalar_in_place (\x y -> x / y) (deref rhs) target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Mut<'a>, Tensor<'a>> {
+    fn div_assign rhs target = mut_tensor_in_place (\x y -> x / y) rhs target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Mut<'a>, View<'a>> {
+    fn div_assign rhs target = div_in_place_or_trap rhs target
+}
+
+instance (Div<'a>, Copy<'a>) => DivAssign<Mut<'a>, 'a> {
+    fn div_assign rhs target = div_scalar_in_place (deref rhs) target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Tensor<'a>, Tensor<'a>> {
+    fn rem_assign rhs target = tensor_tensor_in_place (\x y -> x % y) rhs target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Tensor<'a>, View<'a>> {
+    fn rem_assign rhs target = tensor_view_in_place (\x y -> x % y) rhs target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Tensor<'a>, 'a> {
+    fn rem_assign rhs target = tensor_scalar_in_place (\x y -> x % y) (deref rhs) target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Mut<'a>, Tensor<'a>> {
+    fn rem_assign rhs target = mut_tensor_in_place (\x y -> x % y) rhs target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Mut<'a>, View<'a>> {
+    fn rem_assign rhs target = rem_in_place_or_trap rhs target
+}
+
+instance (Rem<'a>, Copy<'a>) => RemAssign<Mut<'a>, 'a> {
+    fn rem_assign rhs target = rem_scalar_in_place (deref rhs) target
+}

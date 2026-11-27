@@ -38,6 +38,7 @@ int main(void) {
     hdr.hwnd_from = 1000;
     hdr.id_from = 250;
     hdr.code = 42;
+    assert(tz_inspect_nmhdr(0) == -1);
     assert(tz_inspect_nmhdr((int64_t)(intptr_t)&hdr) == 1292);
 
     HostMinMaxInfo mmi;

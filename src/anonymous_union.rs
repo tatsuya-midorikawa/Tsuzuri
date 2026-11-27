@@ -531,6 +531,7 @@ fn passes_expected_down(expression: &Expr) -> bool {
     matches!(
         expression.kind,
         ExprKind::If { .. }
+            | ExprKind::IfLet(..)
             | ExprKind::Match { .. }
             | ExprKind::Block { .. }
             | ExprKind::ComputationBoundary(_)
@@ -588,6 +589,9 @@ impl Checker<'_> {
                     else_branch,
                     ..
                 } => pending.extend([&**then_branch, &**else_branch]),
+                ExprKind::IfLet(if_let) => {
+                    pending.extend([&if_let.then_branch, &if_let.else_branch]);
+                }
                 ExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
                 ExprKind::Select(arms) => pending.extend(arms.iter().map(|arm| &arm.body)),
                 ExprKind::Block { result, .. }

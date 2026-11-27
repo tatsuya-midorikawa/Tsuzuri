@@ -7,7 +7,7 @@
 | 規模 | M（`abi::parameter`・`result` の拡張、`wrapper` の入出力変換、`bindings_native.rs` の 3 言語対応、WASM の `abi_native_only` 検査、テストと文書） |
 | 依存 | W15, NS01 |
 | 後続 | –（弱い後続: [M11](M11-swift-bindings.md)。`Maybe` を Swift の Optional に写す） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（[W15](_completed/W15-abi-nullable-handles.md) D3 の解除と公開 ABI の拡張。決定事項 D1 が要承認、D2〜D5 は既定案） |
 | 手本にする既存実装 | [W15](_completed/W15-abi-nullable-handles.md) の `abi::nullable`・`c_view` とコールバック引数のデコード、`src/llvm_abi.rs` の `wrapper`・`try_wrappers`・`try_prototype`、`src/bindings_native.rs` の `Shape` と C#・Python・C++ の入出力コード生成 |

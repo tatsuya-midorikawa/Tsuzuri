@@ -81,6 +81,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Env", SingleArgument),
     ("ErrGroup", Exempt(BUILTIN_HANDLE)),
     ("Exception", SingleArgument),
+    ("ExternAddr", subject(&["ExternAddr"])),
     ("File", Exempt(HANDLE)),
     ("Format", subject(&["string"])),
     (

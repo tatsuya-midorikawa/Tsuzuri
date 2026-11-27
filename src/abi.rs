@@ -217,7 +217,11 @@ pub fn scalar_record(ty: &Type, types: &TypeContext<'_>) -> bool {
         }
         // A Drop record carries a hidden live flag and owns a resource, not plain data.
         // A `@c_layout` record uses exact C layout and cannot sit inside an unmarked normalized record (W21).
-        if types.records[*id].user_drop || types.records[*id].c_layout.is_some() {
+        // `ExternAddr` is an opaque verified non-zero address wrapper, not a plain C struct (NS07).
+        if types.records[*id].user_drop
+            || types.records[*id].c_layout.is_some()
+            || extern_addr(ty, types)
+        {
             return false;
         }
         let names: BTreeSet<_> = types.records[*id]
@@ -436,6 +440,11 @@ pub fn view_record(ty: &Type, types: &TypeContext<'_>, view_name: &str) -> Resul
     let Type::Record(id, _) = ty else {
         return Err(format!("extern view '{view_name}' must copy a record type"));
     };
+    if extern_addr(ty, types) {
+        return Err(format!(
+            "extern view '{view_name}' copies the record 'ExternAddr', which is an opaque address rather than a C struct"
+        ));
+    }
     if any_zstring(ty, types) {
         let short = types.records[*id]
             .name
@@ -478,6 +487,14 @@ pub fn parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     abi_scalar(ty)
         || host_record_bidirectional(ty, types)
         || matches!(ty, Type::Reference(inner, false) if Buffer::of(inner).is_some() || host_record_bidirectional(inner, types))
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::Handle(_) | Nullable::BorrowedHandle(_))
+        )
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::BorrowedRecord(inner)) if host_record_bidirectional(inner, types)
+        )
 }
 
 pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -486,6 +503,7 @@ pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
         || *ty == Type::Unit
         || Buffer::of(ty).is_some()
         || host_record_bidirectional(ty, types)
+        || matches!(nullable(ty, types), Some(Nullable::Handle(_)))
 }
 
 /// Whether `ty` is an `extern type` handle.
@@ -537,6 +555,17 @@ pub fn zutf8string(ty: &Type, types: &TypeContext<'_>) -> bool {
 /// Whether `ty` is either `ZString` or `ZUtf8String`.
 pub fn any_zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
     zstring(ty, types) || zutf8string(ty, types)
+}
+
+/// NS07: whether `ty` is the standard `ExternAddr` non-zero address opaque record.
+pub fn extern_addr(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(
+        ty,
+        Type::Record(id, args)
+            if args.is_empty()
+                && types.records[*id].origin == crate::check::ModuleOrigin::Std
+                && types.records[*id].name == "ExternAddr.ExternAddr"
+    )
 }
 
 /// M01: whether `ty` holds an Objective-C type anywhere: an object (an `extern class` or
@@ -692,7 +721,7 @@ pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> 
         Type::Handle(_, crate::syntax::HandleKind::Copy) => true,
         // M01: an Objective-C object is read with a retain, so the value owns a reference.
         Type::Handle(_, kind) if kind.objc() => true,
-        Type::Record(..) => view_record(ty, types, name).is_ok(),
+        Type::Record(..) => !extern_addr(ty, types) && view_record(ty, types, name).is_ok(),
         _ => matches!(
             nullable(ty, types),
             Some(Nullable::Handle(Type::Handle(_, kind)))
@@ -701,9 +730,9 @@ pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> 
     }
 }
 
-/// M06: whether `ty` is allowed as the result `H` of `extern "sym" address def f :: unit -> H`.
-pub fn data_symbol_address_type(ty: &Type) -> bool {
-    matches!(ty, Type::Handle(_, crate::syntax::HandleKind::Copy))
+/// M06 / NS07: whether `ty` is allowed as the result `H` of `extern "sym" address def f :: unit -> H`.
+pub fn data_symbol_address_type(ty: &Type, types: &TypeContext<'_>) -> bool {
+    matches!(ty, Type::Handle(_, crate::syntax::HandleKind::Copy)) || extern_addr(ty, types)
 }
 
 /// W15 / W20 / M06: a `std::Maybe<P>` whose `None` passes or returns as a C null pointer on native targets.
@@ -865,6 +894,20 @@ pub fn has_invalid_extern_maybe(
         || ref_to_maybe(result)
 }
 
+/// Whether an `export def` signature uses `std::Maybe` in an unsupported ABI position or payload (NS02).
+pub fn has_invalid_export_maybe(
+    parameters: &[Type],
+    result_ty: &Type,
+    types: &TypeContext<'_>,
+) -> bool {
+    let ref_to_maybe = |ty: &Type| matches!(ty, Type::Reference(inner, _) if std_maybe_payload(inner, types).is_some());
+    parameters.iter().any(|param| {
+        (std_maybe_payload(param, types).is_some() && !parameter(param, types))
+            || ref_to_maybe(param)
+    }) || (std_maybe_payload(result_ty, types).is_some() && !result(result_ty, types))
+        || ref_to_maybe(result_ty)
+}
+
 /// Whether an `extern` signature uses any native-only `Maybe` ABI form (W15).
 pub fn uses_nullable_abi(parameters: &[Type], result: &Type, types: &TypeContext<'_>) -> bool {
     parameters.iter().any(|param| match param {
@@ -908,7 +951,7 @@ pub enum RecordPassing {
 /// stay pointers. A callback takes no record at all ([`callback`]).
 pub fn extern_record_passing(ty: &Type, types: &TypeContext<'_>) -> Option<RecordPassing> {
     match ty {
-        Type::Record(..) if any_zstring(ty, types) => None,
+        Type::Record(..) if any_zstring(ty, types) || extern_addr(ty, types) => None,
         Type::Record(..) if c_layout_record(ty, types) => Some(RecordPassing::ByValue),
         Type::Record(..) => Some(RecordPassing::Pointer),
         Type::Reference(inner, _) if matches!(inner.as_ref(), Type::Record(..)) => {

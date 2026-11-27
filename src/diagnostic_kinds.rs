@@ -132,6 +132,7 @@ diagnostic_kinds! {
         (InvalidWasmSize, "invalid_wasm_size", "E0002"),
         (InvalidWindowsSetting, "invalid_windows_setting", "E0002"),
         (LambdaWithoutParameters, "lambda_without_parameters", "E0002"),
+        (LastErrorArguments, "last_error_arguments", "E0002"),
         (LengthParameterType, "length_parameter_type", "E0002"),
         (LetFunctionNeedsLambda, "let_function_needs_lambda", "E0002"),
         (LetRecNeedsLambda, "let_rec_needs_lambda", "E0002"),
@@ -150,6 +151,7 @@ diagnostic_kinds! {
         (MisplacedCpuAttribute, "misplaced_cpu_attribute", "E0002"),
         (MisplacedDocComment, "misplaced_doc_comment", "E0002"),
         (MisplacedJsonAttribute, "misplaced_json_attribute", "E0002"),
+        (MisplacedLastErrorAttribute, "misplaced_last_error_attribute", "E0002"),
         (MisplacedLinkAttribute, "misplaced_link_attribute", "E0002"),
         (MisplacedNamespaceDeclaration, "misplaced_namespace_declaration", "E0002"),
         (MisplacedRegionList, "misplaced_region_list", "E0002"),
@@ -269,6 +271,7 @@ diagnostic_kinds! {
         (CaptureSyncPrimitiveInFunctionValue, "capture_sync_primitive_in_function_value", "E1005"),
         (CaptureUnsendableInFunctionValue, "capture_unsendable_in_function_value", "E1005"),
         (CollectionElementExclusiveBorrow, "collection_element_exclusive_borrow", "E1005"),
+        (CompoundAssignUnsupportedTarget, "compound_assign_unsupported_target", "E1005"),
         (CpuFunctionWideVectorBoundary, "cpu_function_wide_vector_boundary", "E1005"),
         (DerefNonReference, "deref_non_reference", "E1005"),
         (ExclusiveSliceWholeArrayParameter, "exclusive_slice_whole_array_parameter", "E1005"),
@@ -352,6 +355,9 @@ diagnostic_kinds! {
         (InvalidExternSymbol, "invalid_extern_symbol", "E1008"),
         (InvalidObjcClassName, "invalid_objc_class_name", "E1008"),
         (InvalidWasmImportModule, "invalid_wasm_import_module", "E1008"),
+        (LastErrorHelperConflict, "last_error_helper_conflict", "E1008"),
+        (LastErrorRepeated, "last_error_repeated", "E1008"),
+        (LastErrorResultShape, "last_error_result_shape", "E1008"),
         (LinkInvalidName, "link_invalid_name", "E1008"),
         (LinkNeedsSymbol, "link_needs_symbol", "E1008"),
         (LinkRepeated, "link_repeated", "E1008"),
@@ -767,6 +773,7 @@ diagnostic_kinds! {
         // E1037
         (TrustedDuplicateProperty, "trusted_duplicate_property", "E1037"),
         (TrustedNoTrapWeak, "trusted_no_trap_weak", "E1037"),
+        (TrustedPureLastError, "trusted_pure_last_error", "E1037"),
         (TrustedRepeated, "trusted_repeated", "E1037"),
         (TrustedTypeProperty, "trusted_type_property", "E1037"),
         (TrustedUnknownProperty, "trusted_unknown_property", "E1037"),
@@ -1031,6 +1038,8 @@ diagnostic_kinds! {
         (ContractTestSkipped, "contract_test_skipped", "W1009"),
         // W1010
         (UntrustedExtern, "untrusted_extern", "W1010"),
+        // W1011
+        (UncheckedUnwrap, "unchecked_unwrap", "W1011"),
         // W1012
         (RefutableBindingPatternWarning, "refutable_binding_pattern_warning", "W1012"),
         // W1013

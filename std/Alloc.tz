@@ -39,7 +39,7 @@ fn since start =
 ///     match Alloc.measure (\() -> new [i64](10, \i -> i)) with
 ///     | (used, values) -> Test.is_true (used.allocs == 1 && used.bytes == 80 && values.length == 10)
 /// ```
-def measure :: (unit -> 'a) -> Stats * 'a
+def measure :: own (unit -> 'a) -> Stats * 'a
 fn measure run =
     let start = snapshot ()
     let result = run ()

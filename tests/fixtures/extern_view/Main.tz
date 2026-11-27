@@ -26,43 +26,52 @@ record PackedView {
 }
 
 @trusted
-extern view def read_nmhdr :: i64 -> NmHdr
+extern view def read_nmhdr :: ExternAddr -> NmHdr
 @trusted
-extern view def read_mmi :: i64 -> MinMaxInfo
+extern view def read_mmi :: ExternAddr -> MinMaxInfo
 @trusted
-extern view def write_mmi :: i64 -> ref MinMaxInfo -> unit
+extern view def write_mmi :: ExternAddr -> ref MinMaxInfo -> unit
 @trusted
-extern view def read_packed :: i64 -> PackedView
+extern view def read_packed :: ExternAddr -> PackedView
 @trusted
-extern view def write_packed :: i64 -> ref PackedView -> unit
+extern view def write_packed :: ExternAddr -> ref PackedView -> unit
 
 export def inspect_nmhdr :: i64 -> i64 = \addr ->
-    let h = read_nmhdr addr
-    h.hwnd_from + (h.id_from as i64) + (h.code as i64)
+    match ExternAddr.of_i64 addr with
+    | Maybe.None -> -1
+    | Maybe.Some ea ->
+        let h = read_nmhdr ea
+        h.hwnd_from + (h.id_from as i64) + (h.code as i64)
 
 export def update_mmi :: i64 -> i32 = \addr ->
-    let cur = read_mmi addr
-    let updated = MinMaxInfo {
-        reserved: cur.reserved,
-        max_size: Point { x: cur.max_size.x + 100i32, y: cur.max_size.y + 200i32 },
-        max_position: cur.max_position,
-        min_track_size: Point { x: 320i32, y: 240i32 },
-        max_track_size: cur.max_track_size
-    }
-    write_mmi addr (ref updated)
-    updated.max_size.x + updated.min_track_size.y
+    match ExternAddr.of_i64 addr with
+    | Maybe.None -> -1i32
+    | Maybe.Some ea ->
+        let cur = read_mmi ea
+        let updated = MinMaxInfo {
+            reserved: cur.reserved,
+            max_size: Point { x: cur.max_size.x + 100i32, y: cur.max_size.y + 200i32 },
+            max_position: cur.max_position,
+            min_track_size: Point { x: 320i32, y: 240i32 },
+            max_track_size: cur.max_track_size
+        }
+        write_mmi ea (ref updated)
+        updated.max_size.x + updated.min_track_size.y
 
 export def round_trip_packed :: i64 -> i64 = \addr ->
-    let cur = read_packed addr
-    let opt_present = match cur.opt_handle with
-        | Maybe.Some _ -> 1
-        | Maybe.None -> 0
-    let next = PackedView {
-        tag: cur.tag + 1i8,
-        count: cur.count + 10i16u,
-        handle: cur.handle,
-        opt_handle: Maybe.Some cur.handle,
-        vals: [cur.vals[2], cur.vals[1], cur.vals[0]]
-    }
-    write_packed addr (ref next)
-    (cur.tag as i64) + (cur.count as i64) + opt_present + (cur.vals[0] as i64) + (cur.vals[2] as i64)
+    match ExternAddr.of_i64 addr with
+    | Maybe.None -> -1
+    | Maybe.Some ea ->
+        let cur = read_packed ea
+        let opt_present = match cur.opt_handle with
+            | Maybe.Some _ -> 1
+            | Maybe.None -> 0
+        let next = PackedView {
+            tag: cur.tag + 1i8,
+            count: cur.count + 10i16u,
+            handle: cur.handle,
+            opt_handle: Maybe.Some cur.handle,
+            vals: [cur.vals[2], cur.vals[1], cur.vals[0]]
+        }
+        write_packed ea (ref next)
+        (cur.tag as i64) + (cur.count as i64) + opt_present + (cur.vals[0] as i64) + (cur.vals[2] as i64)

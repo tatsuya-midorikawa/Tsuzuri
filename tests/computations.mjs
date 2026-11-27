@@ -219,6 +219,35 @@ int main(int argc, char **argv) {
     console.log(`Computations -O${optimization}: ${cases.length} native/WASM results, ${traps.length} traps, deterministic output, owned memory reclaimed`);
   }
 
+  // W31: top-level control statements before the first `let!` / `do!` in direct-style entry code.
+  const entryDir = join(temporary, "entry-before-bind");
+  mkdirSync(entryDir);
+  const entryMain = join(entryDir, "Main.tz");
+  const entryChecks = [
+    ["let mut n = 0\nwhile n < 3 do\n    n = n + 1\ndo! IO.writeln $\"n={n}\"\nn\n", "n=3\n3\n"],
+    ["for k in [1, 2] do\n    do! IO.writeln $\"k={k}\"\ndo! IO.writeln \"done\"\n0\n", "k=1\nk=2\ndone\n0\n"],
+    ["let mut n = 0\nif n == 0 then\n    n = 4\ndo! IO.writeln $\"n={n}\"\nn\n", "n=4\n4\n"],
+  ];
+  for (const [source, expectedStdout] of entryChecks) {
+    writeFileSync(entryMain, source);
+    for (const optimization of [0, 3]) {
+      const ran = cli(["run", entryDir, `-O${optimization}`]);
+      assert.equal(ran.stdout.replace(/\r\n/g, "\n"), expectedStdout);
+    }
+  }
+  writeFileSync(entryMain, entryChecks[0][0]);
+  const entryIrA = join(temporary, "entry-w31-a.ll");
+  const entryIrB = join(temporary, "entry-w31-b.ll");
+  cli(["build", entryDir, "--target", "wasm32", "--emit", "llvm", "-O3", "-o", entryIrA]);
+  cli(["build", entryDir, "--target", "wasm32", "--emit", "llvm", "-O3", "-o", entryIrB]);
+  assert.deepEqual(readFileSync(entryIrA), readFileSync(entryIrB));
+  writeFileSync(entryMain, `export def keep :: i64\nfn keep = 0\n\n${entryChecks[0][0]}`);
+  const entryWasmA = join(temporary, "entry-w31-a.wasm");
+  const entryWasmB = join(temporary, "entry-w31-b.wasm");
+  cli(["build", entryDir, "--target", "wasm32", "-O3", "-o", entryWasmA]);
+  cli(["build", entryDir, "--target", "wasm32", "-O3", "-o", entryWasmB]);
+  assert.deepEqual(readFileSync(entryWasmA), readFileSync(entryWasmB));
+
   const invalid = join(temporary, "invalid");
   mkdirSync(invalid);
   const main = join(invalid, "Main.tz");

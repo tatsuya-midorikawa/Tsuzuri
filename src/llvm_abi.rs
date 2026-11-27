@@ -8,7 +8,8 @@ pub(super) fn extended(function: &CheckedFunction) -> bool {
             .parameters
             .iter()
             .any(|ty| !abi_scalar(ty))
-            || out_result(&function.signature.result))
+            || out_result(&function.signature.result)
+            || matches!(function.signature.result, Type::Union(..)))
 }
 
 /// NS01: native exports taking non-`Maybe` `H` or `ref H` validate non-null entry pointers.
@@ -25,16 +26,30 @@ fn host_function(function: &CheckedFunction) -> bool {
         || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if !import.lowers_inline())
 }
 
+fn function_c_result(function: &CheckedFunction) -> &Type {
+    if let TypedExprKind::HostCall(import, _) = &function.body.kind {
+        import.c_result(&function.signature.result)
+    } else {
+        &function.signature.result
+    }
+}
+
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     let types = module.types();
     module.functions.iter().any(|function| {
-        extended(function)
+        (function.exported
+            && (function
+                .signature
+                .parameters
+                .iter()
+                .any(|ty| !crate::abi::extern_scalar(ty, &types))
+                || out_result(&function.signature.result)))
             || (matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if !import.lowers_inline())
                 && (function.signature.parameters.iter().any(|ty| {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
                         && !matches!(ty, Type::Function(..) | Type::FnPtr(_))
-                }) || out_result(&function.signature.result)))
+                }) || out_result(function_c_result(function))))
     })
 }
 
@@ -94,7 +109,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
             .signature
             .parameters
             .iter()
-            .chain([&function.signature.result])
+            .chain([function_c_result(function)])
         {
             visit(ty, module, &types, &mut names, &mut seen_records);
         }
@@ -154,6 +169,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
         };
         if let Type::Record(id, arguments) = ty
             && !crate::abi::any_zstring(ty, &module.types())
+            && !crate::abi::extern_addr(ty, &module.types())
         {
             // The convention variants of a record are one type (A29).
             let ty = &codegen_identity(ty);
@@ -177,7 +193,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
             .signature
             .parameters
             .iter()
-            .chain([&function.signature.result])
+            .chain([function_c_result(function)])
         {
             visit(ty, module, &mut seen, &mut result);
         }
@@ -564,7 +580,7 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
                 == Some(crate::abi::RecordPassing::ByValue)
     };
     let mut parameters = Vec::new();
-    let result = &function.signature.result;
+    let result = function_c_result(function);
     if let Some(buffer) = Buffer::of(result) {
         parameters.push(format!("tsuzuri_{}_buffer *out", buffer.name()));
     } else if matches!(result, Type::Record(..)) && !by_value(result) {
@@ -745,11 +761,11 @@ pub(super) fn try_wrappers(ir: &str, module: &CheckedModule) -> String {
 
 /// The C prototype of `tsuzuri_try_<name>`: the trap record, then the result slot, then the arguments.
 pub(super) fn try_prototype(function: &CheckedFunction, module: &CheckedModule) -> String {
-    let result = &function.signature.result;
+    let viewed = crate::abi::c_view(&function.signature.result, &module.types());
     let parameters = c_parameters(function, module);
     let mut list = vec!["tsuzuri_trap_info *trap".to_owned()];
-    if !out_result(result) && *result != Type::Unit {
-        list.push(format!("{} *result", c_type(result)));
+    if !out_result(&viewed) && *viewed != Type::Unit {
+        list.push(format!("{} *result", c_type(&viewed)));
     }
     if parameters != "void" {
         list.push(parameters);
@@ -1028,14 +1044,18 @@ pub(super) fn wrapper(
         emitter.instruction("ret void");
     } else if *result == Type::Unit {
         emitter.instruction("ret void");
+    } else if crate::abi::nullable(result, &module.types()).is_some() {
+        let c_ptr = emitter.nullable_to_c(result, &value);
+        emitter.instruction(format!("ret ptr {c_ptr}"));
     } else {
         let value = emitter.encode_host_scalar(result, &value);
         emitter.instruction(format!("ret {} {value}", abi_type(result)));
     }
-    let result = if out_result(result) {
+    let viewed_result = crate::abi::c_view(result, &module.types());
+    let result = if out_result(&viewed_result) {
         "void".to_owned()
     } else {
-        abi_type(result)
+        abi_type(&viewed_result)
     };
     let name = match kind {
         WrapperKind::Export => format!("tz_{}", function.name),
@@ -1303,11 +1323,30 @@ impl FunctionEmitter<'_, '_> {
                     "phi {llvm} [ {none_val}, %{from_none} ], [ {some_val}, %{from_some} ]"
                 ))
             }
-            crate::abi::Nullable::BorrowedRecord(_)
-            | crate::abi::Nullable::BorrowedZString(_)
+            crate::abi::Nullable::BorrowedRecord(record) => {
+                let (size, align) = record_layout(record, self.module);
+                let nonnull = self.value(format!("icmp ne ptr {pointer}, null"));
+                let from_none = self.block.clone();
+                let read_block = self.label();
+                let done_block = self.label();
+                self.branch(&nonnull, &read_block, &done_block);
+
+                self.begin(&read_block);
+                self.host_pointer(pointer, &size.to_string(), align, false);
+                let loaded = self.read_host_record(record, pointer);
+                let slot = self.spill(record, &loaded);
+                let from_some = self.block.clone();
+                self.jump(&done_block);
+
+                self.begin(&done_block);
+                self.value(format!(
+                    "phi ptr [ null, %{from_none} ], [ {slot}, %{from_some} ]"
+                ))
+            }
+            crate::abi::Nullable::BorrowedZString(_)
             | crate::abi::Nullable::BorrowedZUtf8String(_) => {
                 unreachable!(
-                    "Maybe<ref R>, Maybe<ref ZString>, and Maybe<ref ZUtf8String> are only extern input parameters"
+                    "Maybe<ref ZString> and Maybe<ref ZUtf8String> are only extern input parameters"
                 )
             }
         }

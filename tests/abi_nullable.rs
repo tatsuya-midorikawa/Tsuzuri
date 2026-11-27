@@ -77,7 +77,7 @@ fn other_maybe_payloads_keep_their_errors() {
         );
     }
 
-    // A user union of the same shape keeps UnsupportedExternSignature.
+    // A user union of the same shape keeps UnsupportedExternSignature / UnsupportedExportSignature.
     let user_opt = analyze(
         "extern type H\nunion Opt<'a> = None | Some of 'a\nextern \"f\" def bad :: Opt<H> -> i32\n1",
     )
@@ -87,12 +87,12 @@ fn other_maybe_payloads_keep_their_errors() {
         ("E1008", Some("unsupported_extern_signature"))
     );
 
-    // export def keeps UnsupportedExportSignature.
-    let export_err =
-        analyze("extern type H\nexport def bad :: Maybe<H> -> i32\nfn bad _m = 0i32\n1")
-            .unwrap_err();
+    let export_user_opt = analyze(
+        "extern type H\nunion Opt<'a> = None | Some of 'a\nexport def bad :: Opt<H> -> i32\nfn bad _m = 0i32\n1",
+    )
+    .unwrap_err();
     assert_eq!(
-        (export_err.code, export_err.kind),
+        (export_user_opt.code, export_user_opt.kind),
         ("E1008", Some("unsupported_export_signature"))
     );
 }
@@ -302,4 +302,230 @@ fn keep _ =
         wasm_ir.contains("%\"tz.union.Maybe.Maybe[extern.Main.H]\" = type { i8, ptr }"),
         "{wasm_ir}"
     );
+}
+
+#[test]
+fn export_nullable_positions_are_accepted() {
+    let handles_only = analyze(
+        "extern type Item
+extern type copy Token
+export def pass_item :: own Maybe<Item> -> Maybe<Item>
+fn pass_item m = m
+export def check_borrowed :: own Maybe<ref Item> -> own Maybe<Token> -> i32
+fn check_borrowed a b =
+    let s1 = match a with | Some _ -> 10i32 | None -> 0i32
+    let s2 = match b with | Some _ -> 5i32 | None -> 0i32
+    s1 + s2
+",
+    )
+    .unwrap();
+    let native_ir = ir(&handles_only, false);
+    assert!(
+        !native_ir.contains("tsuzuri_alloc"),
+        "handle-only nullable exports must not emit tsuzuri_alloc:\n{native_ir}"
+    );
+    let header = llvm::header(&handles_only);
+    assert!(
+        !header.contains("tsuzuri_alloc"),
+        "handle-only nullable header must not declare tsuzuri_alloc:\n{header}"
+    );
+    assert!(
+        header.contains("tz_handle_4Main_4Item tz_pass_item(tz_handle_4Main_4Item arg0);"),
+        "{header}"
+    );
+    assert!(
+        header.contains(
+            "int32_t tz_check_borrowed(tz_handle_4Main_4Item arg0, tz_handle_4Main_5Token arg1);"
+        ),
+        "{header}"
+    );
+
+    let with_record = analyze(
+        "extern type Item
+record Filter { min_x: i32, max_x: i32 }
+extern \"ns02_make_item\" def make_item :: i32 -> Item
+export def filter_sum :: own Maybe<ref Filter> -> i32
+fn filter_sum mf =
+    match mf with
+    | Some f -> f.min_x + f.max_x
+    | None -> -1i32
+export def find_item :: own Maybe<ref Filter> -> Maybe<Item>
+fn find_item mf =
+    match mf with
+    | Some f -> if f.min_x <= f.max_x then Some (make_item f.min_x) else None
+    | None -> None
+",
+    )
+    .unwrap();
+    let rec_ir = ir(&with_record, false);
+    assert!(
+        rec_ir.contains("%tz_record_4Main_6Filter = type"),
+        "{rec_ir}"
+    );
+    assert!(rec_ir.contains("phi ptr [ null, %"), "{rec_ir}");
+    let rec_header = llvm::header(&with_record);
+    assert!(
+        rec_header.contains("int32_t tz_filter_sum(const tz_record_4Main_6Filter *arg0);"),
+        "{rec_header}"
+    );
+    assert!(
+        rec_header
+            .contains("tz_handle_4Main_4Item tz_find_item(const tz_record_4Main_6Filter *arg0);"),
+        "{rec_header}"
+    );
+}
+
+#[test]
+fn export_other_maybe_payloads_fail_with_abi_nullable_payload() {
+    let prelude = "extern type H\nrecord Rect { x: i32 }\n";
+    for bad in [
+        "export def bad :: own Maybe<i64> -> i32\nfn bad _ = 0i32",
+        "export def bad :: own Maybe<Rect> -> i32\nfn bad _ = 0i32",
+        "export def bad :: own Maybe<string> -> i32\nfn bad _ = 0i32",
+        "export def bad :: own Maybe<ref [i64]> -> i32\nfn bad _ = 0i32",
+        "export def bad :: own Maybe<Maybe<H>> -> i32\nfn bad _ = 0i32",
+        "export def bad :: ref Maybe<H> -> i32\nfn bad _ = 0i32",
+        "export def bad :: i32 -> Maybe<Rect>\nfn bad _ = None",
+        "export def bad :: i32 -> Maybe<ref Rect>\nfn bad _ = None",
+        "export def bad :: i32 -> Maybe<ref H>\nfn bad _ = None",
+        "export def bad :: i32 -> Maybe<i64>\nfn bad _ = None",
+        "export def bad :: i32 -> Maybe<string>\nfn bad _ = None",
+    ] {
+        let error = analyze(&format!("{prelude}{bad}\n")).unwrap_err();
+        assert_eq!(
+            (error.code, error.kind),
+            ("E1008", Some("abi_nullable_payload")),
+            "{bad}: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn wasm_and_bindings_js_reject_nullable_exports() {
+    for src in [
+        "extern type H\nexport def f :: own Maybe<H> -> i32\nfn f _ = 0i32\n",
+        "extern type H\nexport def f :: own Maybe<ref H> -> i32\nfn f _ = 0i32\n",
+        "record R { x: i32 }\nexport def f :: own Maybe<ref R> -> i32\nfn f _ = 0i32\n",
+        "extern type H\nexport def f :: i32 -> Maybe<H>\nfn f _ = None\n",
+    ] {
+        let module = analyze(src).unwrap();
+        let wasm_err = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap_err();
+        assert_eq!(
+            (wasm_err.code, wasm_err.kind),
+            ("E1008", Some("abi_native_only")),
+            "wasm emit should reject:\n{src}"
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "tz-ns02-js-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tz_path = dir.join("Main.tz");
+        let js_out = dir.join("out.mjs");
+        std::fs::write(&tz_path, src).unwrap();
+        let project = tsuzuri::driver::Project::load(&tz_path).unwrap();
+        let options = tsuzuri::driver::BuildOptions {
+            emit: tsuzuri::driver::Emit::BindingsJs,
+            target: tsuzuri::driver::Target::Wasm32,
+            ..tsuzuri::driver::BuildOptions::default()
+        };
+        let js_err = tsuzuri::driver::build(&module, &project, &js_out, options).unwrap_err();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            (js_err.code, js_err.kind),
+            ("E1008", Some("abi_native_only")),
+            "bindings-js should reject:\n{src}"
+        );
+    }
+}
+
+#[test]
+fn try_wrapper_and_native_bindings_handle_nullable_exports() {
+    use tsuzuri::trap::TrapSource;
+
+    let source = "extern type Item
+record Filter { min_x: i32, max_x: i32 }
+export def inspect_all :: own Maybe<Item> -> own Maybe<ref Item> -> own Maybe<ref Filter> -> Maybe<Item>
+fn inspect_all owned borrowed filt =
+    let ok = match filt with
+        | Some f ->
+            let _ = 100i32 / f.max_x
+            f.min_x >= 0i32
+        | None -> true
+    if !ok then None
+    else
+        match borrowed with
+        | Some _ -> owned
+        | None -> owned
+";
+    let module = analyze(source).unwrap();
+    let trap_sources = [TrapSource {
+        path: "Main.tz",
+        text: source,
+    }];
+    let options = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        wasm_simd128: false,
+        debug_output: false,
+        runtime_objects: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+    let try_ir = llvm::emit_trap_return(&module, options, &trap_sources, None, false)
+        .unwrap()
+        .ir;
+    assert!(
+        try_ir.contains("define i32 @tsuzuri_try_inspect_all(ptr %trap, ptr %result, ptr %arg0, ptr %arg1, ptr %arg2)"),
+        "{try_ir}"
+    );
+    let try_header = llvm::header_with(&module, true);
+    assert!(
+        try_header.contains(
+            "int32_t tsuzuri_try_inspect_all(tsuzuri_trap_info *trap, tz_handle_4Main_4Item *result, tz_handle_4Main_4Item arg0, tz_handle_4Main_4Item arg1, const tz_record_4Main_6Filter *arg2);"
+        ),
+        "{try_header}"
+    );
+
+    for trap_mode in [false, true] {
+        let cs = tsuzuri::bindings::csharp(&module, "demo", trap_mode);
+        assert!(
+            cs.contains("public static tz_handle_4Main_4Item? inspect_all(tz_handle_4Main_4Item? arg0, tz_handle_4Main_4Item? arg1, in tz_record_4Main_6Filter? arg2)"),
+            "{cs}"
+        );
+        assert!(cs.contains("if (arg0 is { Value: 0 })"), "{cs}");
+        assert!(
+            cs.contains("return value == 0 ? null : new tz_handle_4Main_4Item(value);"),
+            "{cs}"
+        );
+
+        let py = tsuzuri::bindings::python(&module, "demo", trap_mode);
+        assert!(py.contains("if arg0 is not None:"), "{py}");
+        assert!(
+            py.contains("record2 = None if arg2 is None else _to_tz_record_4Main_6Filter(arg2,"),
+            "{py}"
+        );
+        assert!(py.contains("return None if "), "{py}");
+
+        let cpp = tsuzuri::bindings::cpp(&module, "demo", trap_mode);
+        assert!(cpp.contains("#include <optional>\n"), "{cpp}");
+        assert!(
+            cpp.contains("inline std::optional<tz_handle_4Main_4Item> inspect_all(std::optional<tz_handle_4Main_4Item> arg0, std::optional<tz_handle_4Main_4Item> arg1, const std::optional<tz_record_4Main_6Filter> &arg2)"),
+            "{cpp}"
+        );
+        assert!(
+            cpp.contains("if (arg0.has_value() && *arg0 == nullptr) throw std::invalid_argument("),
+            "{cpp}"
+        );
+    }
+
+    // Non-Maybe modules do not gain `#include <optional>` in C++ bindings.
+    let plain = analyze("export def add :: i32 -> i32 -> i32\nfn add a b = a + b\n").unwrap();
+    let plain_cpp = tsuzuri::bindings::cpp(&plain, "plain", false);
+    assert!(!plain_cpp.contains("<optional>"), "{plain_cpp}");
 }

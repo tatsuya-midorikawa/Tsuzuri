@@ -1,0 +1,66 @@
+record Tagged { label: string, count: i64 }
+
+const def const_if_let :: own i64 -> i64 = \n ->
+    let wrapped = if n >= 0 then Some (n + 3) else None
+    if let Some v = wrapped when v > 5 then v * 2 else -1
+
+const CONST_HITS: i64 = const_if_let 4 + const_if_let 1
+
+export def greet_len :: own i64 -> i64
+fn greet_len mode =
+    let input = if mode == 0 then None elif mode == 1 then Some "" else Some ("wo" + "rld")
+    let out =
+        if let Some text = input when text.length > 0 then
+            $"Hello, {text}!"
+        else
+            "Hello!"
+    out.length
+
+export def mixed_elif :: own i64 -> i64
+fn mixed_elif k =
+    let m = if k == 1 then Some 7 elif k == 2 then Some (- 4) else None
+    let r: Result<string, i64> = if k == 3 then Ok ("ab" + "cde") else Error 9
+    if k == 0 then
+        100
+    elif let Some n = m when n > 0 then
+        n * 10
+    elif let Some n = m then
+        n - 50
+    elif let Ok s = r then
+        s.length
+    elif let Error code = r then
+        -code
+    else
+        0
+
+export def omitted_else_owned :: own i64 -> i64
+fn omitted_else_owned n =
+    let mut total = 0
+    for i in 0 ..< n do
+        let item = if i % 2 == 0 then Some (Tagged { label: $"k-{i}", count: i }) else None
+        if let Some t = item when t.count >= 2 then
+            total = total + t.label.length + t.count
+    total
+
+export def anon_and_computations :: own i64 -> i64
+fn anon_and_computations k =
+    let u: (i64 | string) = if k > 0 then $"v-{k}" else 42
+    let base = if let :? string as s = u then s.length * 10 else if let :? i64 as n = u then n else 0
+    let m =
+        Maybe {
+            if let Some x = (if k > 0 then Some k else None) when x > 1 then
+                let! y = Some (x + 5)
+                return y
+            else
+                return 0
+        }
+    let _io =
+        IO {
+            if let Some x = (if k > 0 then Some k else None) then
+                do! IO.pure ()
+            return x_or_zero k
+        }
+    base + Maybe.default_value (- 9) m + CONST_HITS
+
+def x_or_zero :: own i64 -> i64
+fn x_or_zero k = if k > 0 then k else 0
