@@ -38,12 +38,15 @@ int32_t cl_mutate_font(tz_record_4Main_9SmallFont *f) {
     return 1;
 }
 
-void cl_make_dlg(tz_record_4Main_7DlgMini *out, uint32_t style, uint16_t cdit, int16_t x, int16_t y) {
-    memset(out, 0x55, sizeof(*out));
-    out->style = style;
-    out->cdit = cdit;
-    out->x = x;
-    out->y = y;
+/* W36: a `@c_layout` record result without `ref` is the C struct by value. */
+tz_record_4Main_7DlgMini cl_make_dlg(uint32_t style, uint16_t cdit, int16_t x, int16_t y) {
+    tz_record_4Main_7DlgMini out;
+    memset(&out, 0x55, sizeof(out));
+    out.style = style;
+    out.cdit = cdit;
+    out.x = x;
+    out.y = y;
+    return out;
 }
 
 int64_t cl_check_packed(const tz_record_4Main_11PackedOuter *p) {

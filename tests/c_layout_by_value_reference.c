@@ -129,6 +129,9 @@ long long bv_gpr_spill(long long a, long long b, long long c, long long d, long 
                        BvRect r, int z);
 /* Windows x64: the fifth and later arguments are on the stack. */
 int bv_stack_structs(BvPoint a, BvPoint b, BvPoint c, BvPoint d, BvPoint e, BvRect f, BvPointF g);
+/* Small structs after every integer register is used: each is on the stack. */
+int bv_small_on_stack(long long a, long long b, long long c, long long d, long long e, long long f, long long g, long long h,
+                      BvPoint p, BvRgb q, BvS1 r, BvC1 s, int z);
 
 #ifndef TSUZURI_BY_VALUE_HOST
 /* Naming every function makes Clang print its `declare`. */
@@ -159,7 +162,7 @@ BvAny const bv_reference[] = {
     (BvAny)bv_scribble_l3, (BvAny)bv_scribble_small,
     (BvAny)bv_five_then_rect, (BvAny)bv_seven_doubles_then_p2d, (BvAny)bv_six_then_small,
     (BvAny)bv_sse_exhausted, (BvAny)bv_sret_counts, (BvAny)bv_many, (BvAny)bv_hfa_spill,
-    (BvAny)bv_gpr_spill, (BvAny)bv_stack_structs,
+    (BvAny)bv_gpr_spill, (BvAny)bv_stack_structs, (BvAny)bv_small_on_stack,
 };
 #endif
 

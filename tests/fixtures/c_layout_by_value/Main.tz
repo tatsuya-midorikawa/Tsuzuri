@@ -1,0 +1,492 @@
+// W36: `@c_layout` records passed and returned by value. Each record matches the C struct of the
+// same name (with the prefix `Bv`) in tests/c_layout_by_value_reference.c, and each extern matches
+// the C prototype of its link name. The host (tests/c_layout_by_value_host.c) checks every field it
+// receives and returns values that the checks below compare field by field.
+
+extern type copy Tag
+
+@c_layout
+record Point { x: i32, y: i32 }
+@c_layout
+record PointF { x: f32, y: f32 }
+@c_layout
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+@c_layout
+record Rgb { r: i8u, g: i8u, b: i8u }
+@c_layout
+record P2D { x: f64, y: f64 }
+@c_layout
+record Vec3 { x: f32, y: f32, z: f32 }
+@c_layout
+record F1 { f: f32 }
+@c_layout
+record D1 { d: f64 }
+@c_layout
+record S1 { s: i16 }
+@c_layout
+record C1 { c: i8 }
+@c_layout
+record DI { d: f64, i: i64 }
+@c_layout
+record DF { d: f64, f: f32 }
+@c_layout
+record B5 { b: [i8u; 5] }
+@c_layout
+record B7 { b: [i8u; 7] }
+@c_layout
+record B9 { b: [i8u; 9] }
+@c_layout
+record S3 { a: i16u, b: i16u, c: i16u }
+@c_layout(pack = 1)
+record Packed5 { tag: i8u, value: i32 }
+@c_layout(pack = 1)
+record PackedF2 { a: f32, b: f32 }
+@c_layout
+record Quad { v: [f32; 4] }
+@c_layout(pack = 2)
+record QuadP2 { a: [f32; 3], b: f32 }
+@c_layout
+record Nested3 { p: PointF, z: f32 }
+@c_layout
+record F5 { a: f32, b: f32, c: f32, d: f32, e: f32 }
+@c_layout
+record L3 { a: i64, b: i64, c: i64 }
+@c_layout
+record HX { h: Tag, x: i32 }
+@c_layout
+record H1 { h: Tag }
+@c_layout
+record H2 { h: Tag, g: Maybe<Tag> }
+@c_layout
+record RectD { x: f64, y: f64, w: f64, h: f64 }
+@c_layout
+record D3 { a: f64, b: f64, c: f64 }
+@c_layout
+record NsRange { location: i64u, length: i64u }
+@c_layout
+record CD { c: i8, d: f64 }
+@c_layout
+record IC { a: i32, b: i8 }
+@c_layout
+record LI { a: i64, b: i32 }
+@c_layout
+record I3 { a: i32, b: i32, c: i32 }
+@c_layout
+record FI { f: f32, i: i32 }
+@c_layout
+record FFD { a: f32, b: f32, c: f64 }
+@c_layout
+record DFF { a: f64, b: f32, c: f32 }
+@c_layout
+record FFFI { a: f32, b: f32, c: f32, d: i32 }
+@c_layout
+record CS { a: i8, b: i16 }
+@c_layout
+record Frame { origin: Point, size: Point }
+@c_layout
+record Line { head: PointF, tail: PointF }
+
+@trusted
+extern "bv_make_tag" def make_tag :: i64 -> Tag
+@trusted
+extern "bv_tag_value" def tag_value :: Tag -> i64
+
+@trusted
+extern "bv_take_point" def take_point :: Point -> i32
+@trusted
+extern "bv_ret_point" def ret_point :: i32 -> Point
+@trusted
+extern "bv_take_pointf" def take_pointf :: PointF -> i32
+@trusted
+extern "bv_ret_pointf" def ret_pointf :: i32 -> PointF
+@trusted
+extern "bv_take_rect" def take_rect :: Rect -> i32
+@trusted
+extern "bv_ret_rect" def ret_rect :: i32 -> Rect
+@trusted
+extern "bv_take_rgb" def take_rgb :: Rgb -> i32
+@trusted
+extern "bv_ret_rgb" def ret_rgb :: i32 -> Rgb
+@trusted
+extern "bv_take_p2d" def take_p2d :: P2D -> i32
+@trusted
+extern "bv_ret_p2d" def ret_p2d :: i32 -> P2D
+@trusted
+extern "bv_take_vec3" def take_vec3 :: Vec3 -> i32
+@trusted
+extern "bv_ret_vec3" def ret_vec3 :: i32 -> Vec3
+@trusted
+extern "bv_take_f1" def take_f1 :: F1 -> i32
+@trusted
+extern "bv_ret_f1" def ret_f1 :: i32 -> F1
+@trusted
+extern "bv_take_d1" def take_d1 :: D1 -> i32
+@trusted
+extern "bv_ret_d1" def ret_d1 :: i32 -> D1
+@trusted
+extern "bv_take_s1" def take_s1 :: S1 -> i32
+@trusted
+extern "bv_ret_s1" def ret_s1 :: i32 -> S1
+@trusted
+extern "bv_take_c1" def take_c1 :: C1 -> i32
+@trusted
+extern "bv_ret_c1" def ret_c1 :: i32 -> C1
+@trusted
+extern "bv_take_di" def take_di :: DI -> i32
+@trusted
+extern "bv_ret_di" def ret_di :: i32 -> DI
+@trusted
+extern "bv_take_df" def take_df :: DF -> i32
+@trusted
+extern "bv_ret_df" def ret_df :: i32 -> DF
+@trusted
+extern "bv_take_b5" def take_b5 :: B5 -> i32
+@trusted
+extern "bv_ret_b5" def ret_b5 :: i32 -> B5
+@trusted
+extern "bv_take_b7" def take_b7 :: B7 -> i32
+@trusted
+extern "bv_ret_b7" def ret_b7 :: i32 -> B7
+@trusted
+extern "bv_take_b9" def take_b9 :: B9 -> i32
+@trusted
+extern "bv_ret_b9" def ret_b9 :: i32 -> B9
+@trusted
+extern "bv_take_s3" def take_s3 :: S3 -> i32
+@trusted
+extern "bv_ret_s3" def ret_s3 :: i32 -> S3
+@trusted
+extern "bv_take_packed5" def take_packed5 :: Packed5 -> i32
+@trusted
+extern "bv_ret_packed5" def ret_packed5 :: i32 -> Packed5
+@trusted
+extern "bv_take_packedf2" def take_packedf2 :: PackedF2 -> i32
+@trusted
+extern "bv_ret_packedf2" def ret_packedf2 :: i32 -> PackedF2
+@trusted
+extern "bv_take_quad" def take_quad :: Quad -> i32
+@trusted
+extern "bv_ret_quad" def ret_quad :: i32 -> Quad
+@trusted
+extern "bv_take_quadp2" def take_quadp2 :: QuadP2 -> i32
+@trusted
+extern "bv_ret_quadp2" def ret_quadp2 :: i32 -> QuadP2
+@trusted
+extern "bv_take_nested3" def take_nested3 :: Nested3 -> i32
+@trusted
+extern "bv_ret_nested3" def ret_nested3 :: i32 -> Nested3
+@trusted
+extern "bv_take_f5" def take_f5 :: F5 -> i32
+@trusted
+extern "bv_ret_f5" def ret_f5 :: i32 -> F5
+@trusted
+extern "bv_take_l3" def take_l3 :: L3 -> i32
+@trusted
+extern "bv_ret_l3" def ret_l3 :: i32 -> L3
+@trusted
+extern "bv_take_hx" def take_hx :: HX -> i32
+@trusted
+extern "bv_ret_hx" def ret_hx :: i32 -> HX
+@trusted
+extern "bv_take_h1" def take_h1 :: H1 -> i32
+@trusted
+extern "bv_ret_h1" def ret_h1 :: i32 -> H1
+@trusted
+extern "bv_take_h2" def take_h2 :: H2 -> i32
+@trusted
+extern "bv_ret_h2" def ret_h2 :: i32 -> H2
+@trusted
+extern "bv_take_rectd" def take_rectd :: RectD -> i32
+@trusted
+extern "bv_ret_rectd" def ret_rectd :: i32 -> RectD
+@trusted
+extern "bv_take_d3" def take_d3 :: D3 -> i32
+@trusted
+extern "bv_ret_d3" def ret_d3 :: i32 -> D3
+@trusted
+extern "bv_take_range" def take_range :: NsRange -> i32
+@trusted
+extern "bv_ret_range" def ret_range :: i32 -> NsRange
+@trusted
+extern "bv_take_cd" def take_cd :: CD -> i32
+@trusted
+extern "bv_ret_cd" def ret_cd :: i32 -> CD
+@trusted
+extern "bv_take_ic" def take_ic :: IC -> i32
+@trusted
+extern "bv_ret_ic" def ret_ic :: i32 -> IC
+@trusted
+extern "bv_take_li" def take_li :: LI -> i32
+@trusted
+extern "bv_ret_li" def ret_li :: i32 -> LI
+@trusted
+extern "bv_take_i3" def take_i3 :: I3 -> i32
+@trusted
+extern "bv_ret_i3" def ret_i3 :: i32 -> I3
+@trusted
+extern "bv_take_fi" def take_fi :: FI -> i32
+@trusted
+extern "bv_ret_fi" def ret_fi :: i32 -> FI
+@trusted
+extern "bv_take_ffd" def take_ffd :: FFD -> i32
+@trusted
+extern "bv_ret_ffd" def ret_ffd :: i32 -> FFD
+@trusted
+extern "bv_take_dff" def take_dff :: DFF -> i32
+@trusted
+extern "bv_ret_dff" def ret_dff :: i32 -> DFF
+@trusted
+extern "bv_take_fffi" def take_fffi :: FFFI -> i32
+@trusted
+extern "bv_ret_fffi" def ret_fffi :: i32 -> FFFI
+@trusted
+extern "bv_take_cs" def take_cs :: CS -> i32
+@trusted
+extern "bv_ret_cs" def ret_cs :: i32 -> CS
+@trusted
+extern "bv_take_box" def take_frame :: Frame -> i32
+@trusted
+extern "bv_ret_box" def ret_frame :: i32 -> Frame
+@trusted
+extern "bv_take_line" def take_line :: Line -> i32
+@trusted
+extern "bv_ret_line" def ret_line :: i32 -> Line
+
+@trusted
+extern "bv_echo_pointf" def echo_pointf :: PointF -> PointF
+@trusted
+extern "bv_echo_p2d" def echo_p2d :: P2D -> P2D
+@trusted
+extern "bv_scale_rectd" def scale_rectd :: RectD -> f64 -> RectD
+@trusted
+extern "bv_rotate_l3" def rotate_l3 :: L3 -> L3
+@trusted
+extern "bv_offset_rect" def offset_rect :: Rect -> Point -> Rect
+@trusted
+extern "bv_check_bits_pointf" def check_bits_pointf :: PointF -> i32
+@trusted
+extern "bv_check_bits_p2d" def check_bits_p2d :: P2D -> i32
+@trusted
+extern "bv_scribble_l3" def scribble_l3 :: L3 -> L3 -> i32
+@trusted
+extern "bv_scribble_small" def scribble_small :: Point -> Rgb -> Rect -> i32
+
+@trusted
+extern "bv_five_then_rect" def five_then_rect :: i64 -> i64 -> i64 -> i64 -> i64 -> Rect -> i64 -> i32
+@trusted
+extern "bv_seven_doubles_then_p2d" def seven_doubles_then_p2d :: f64 -> f64 -> f64 -> f64 -> f64 -> f64 -> f64 -> P2D -> f64 -> i32
+@trusted
+extern "bv_six_then_small" def six_then_small :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Point -> Packed5 -> PointF -> i32
+@trusted
+extern "bv_sse_exhausted" def sse_exhausted :: f64 -> f64 -> f64 -> f64 -> f64 -> f64 -> f64 -> PointF -> PointF -> f64 -> Point -> i32
+@trusted
+extern "bv_sret_counts" def sret_counts :: i64 -> i64 -> i64 -> i64 -> Rect -> L3
+@trusted
+extern "bv_many" def many :: i32 -> Point -> f64 -> PointF -> Rect -> i64 -> Vec3 -> Rgb -> P2D -> i64
+@trusted
+extern "bv_hfa_spill" def hfa_spill :: RectD -> RectD -> RectD -> P2D -> f64 -> f64
+@trusted
+extern "bv_gpr_spill" def gpr_spill :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Rect -> i32 -> i64
+@trusted
+extern "bv_stack_structs" def stack_structs :: Point -> Point -> Point -> Point -> Point -> Rect -> PointF -> i32
+@trusted
+extern "bv_small_on_stack" def small_on_stack :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Point -> Rgb -> S1 -> C1 -> i32 -> i32
+
+// The first failed check keeps its number; 0 means that every check passed.
+def check :: i64 -> i64 -> bool -> i64 = \failed id passed ->
+    if failed != 0 then failed elif passed then 0 else id
+
+// Arguments: the host asserts every field and answers with the number of the function.
+export def run_takes :: i64
+fn run_takes =
+    let tag_a = make_tag 0x1122334455667788
+    let tag_b = make_tag (-81985529216486896)
+    let mut e = 0
+    e = check e 1 (take_point (Point { x: -5i32, y: 7i32 }) == 1i32)
+    e = check e 2 (take_pointf (PointF { x: 1.5f32, y: -2.25f32 }) == 2i32)
+    e = check e 3 (take_rect (Rect { left: -1i32, top: 2i32, right: 2147483647i32, bottom: -2147483647i32 - 1i32 }) == 3i32)
+    e = check e 4 (take_rgb (Rgb { r: 255i8u, g: 0i8u, b: 128i8u }) == 4i32)
+    e = check e 5 (take_p2d (P2D { x: 0.1, y: -1e300 }) == 5i32)
+    e = check e 6 (take_vec3 (Vec3 { x: 1.0f32, y: 2.0f32, z: 3.5f32 }) == 6i32)
+    e = check e 7 (take_f1 (F1 { f: -7.75f32 }) == 7i32)
+    e = check e 8 (take_d1 (D1 { d: 6.02214076e23 }) == 8i32)
+    e = check e 9 (take_s1 (S1 { s: -32768i16 }) == 9i32)
+    e = check e 10 (take_c1 (C1 { c: -128i8 }) == 10i32)
+    e = check e 11 (take_di (DI { d: 2.5, i: -9223372036854775807 - 1 }) == 11i32)
+    e = check e 12 (take_df (DF { d: -0.5, f: 4.25f32 }) == 12i32)
+    e = check e 13 (take_b5 (B5 { b: [1i8u, 2i8u, 3i8u, 4i8u, 255i8u] }) == 13i32)
+    e = check e 14 (take_b7 (B7 { b: [10i8u, 20i8u, 30i8u, 40i8u, 50i8u, 60i8u, 70i8u] }) == 14i32)
+    e = check e 15 (take_b9 (B9 { b: [200i8u, 201i8u, 202i8u, 203i8u, 204i8u, 205i8u, 206i8u, 207i8u, 208i8u] }) == 15i32)
+    e = check e 16 (take_s3 (S3 { a: 65535i16u, b: 0i16u, c: 32768i16u }) == 16i32)
+    e = check e 17 (take_packed5 (Packed5 { tag: 200i8u, value: -123456789i32 }) == 17i32)
+    e = check e 18 (take_packedf2 (PackedF2 { a: 0.5f32, b: -0.25f32 }) == 18i32)
+    e = check e 19 (take_quad (Quad { v: [1.0f32, -2.0f32, 3.0f32, -4.0f32] }) == 19i32)
+    e = check e 20 (take_quadp2 (QuadP2 { a: [5.0f32, 6.0f32, 7.0f32], b: 8.5f32 }) == 20i32)
+    e = check e 21 (take_nested3 (Nested3 { p: PointF { x: 9.0f32, y: 10.0f32 }, z: 11.5f32 }) == 21i32)
+    e = check e 22 (take_f5 (F5 { a: 1.0f32, b: 2.0f32, c: 3.0f32, d: 4.0f32, e: 5.5f32 }) == 22i32)
+    e = check e 23 (take_l3 (L3 { a: 1, b: -2, c: 9223372036854775807 }) == 23i32)
+    e = check e 24 (take_hx (HX { h: tag_a, x: -9i32 }) == 24i32)
+    e = check e 25 (take_h1 (H1 { h: tag_b }) == 25i32)
+    e = check e 26 (take_h2 (H2 { h: tag_a, g: Maybe.None }) == 26i32)
+    e = check e 27 (take_rectd (RectD { x: 10.5, y: -20.25, w: 640.0, h: 480.0 }) == 27i32)
+    e = check e 28 (take_d3 (D3 { a: 1.25, b: 2.5, c: -3.75 }) == 28i32)
+    e = check e 29 (take_range (NsRange { location: 18446744073709551615i64u, length: 42i64u }) == 29i32)
+    e = check e 30 (take_cd (CD { c: -1i8, d: 1024.5 }) == 30i32)
+    e = check e 31 (take_ic (IC { a: 123456789i32, b: -77i8 }) == 31i32)
+    e = check e 32 (take_li (LI { a: -5000000000, b: 77i32 }) == 32i32)
+    e = check e 33 (take_i3 (I3 { a: 11i32, b: -22i32, c: 33i32 }) == 33i32)
+    e = check e 34 (take_fi (FI { f: 2.5f32, i: -3i32 }) == 34i32)
+    e = check e 35 (take_ffd (FFD { a: 1.5f32, b: 2.5f32, c: 3.5 }) == 35i32)
+    e = check e 36 (take_dff (DFF { a: -1.5, b: -2.5f32, c: -3.5f32 }) == 36i32)
+    e = check e 37 (take_fffi (FFFI { a: 0.25f32, b: 0.5f32, c: 0.75f32, d: 1000000i32 }) == 37i32)
+    e = check e 38 (take_cs (CS { a: 127i8, b: -300i16 }) == 38i32)
+    e = check e 39 (take_frame (Frame { origin: Point { x: 1i32, y: 2i32 }, size: Point { x: 30i32, y: 40i32 } }) == 39i32)
+    e = check e 40 (take_line (Line { head: PointF { x: 0.5f32, y: 1.5f32 }, tail: PointF { x: 2.5f32, y: 3.5f32 } }) == 40i32)
+    e
+
+// Results: every field follows from the seed (see the `bv_ret_*` functions of the host).
+export def run_results :: i64
+fn run_results =
+    let mut e = 0
+    let point = ret_point 7i32
+    e = check e 1 (point.x == 7i32 && point.y == -8i32)
+    let pointf = ret_pointf 3i32
+    e = check e 2 (pointf.x == 3.5f32 && pointf.y == -3.0f32)
+    let rect = ret_rect 100i32
+    e = check e 3 (rect.left == 100i32 && rect.top == 101i32 && rect.right == 102i32 && rect.bottom == -100i32)
+    let rgb = ret_rgb 201i32
+    e = check e 4 (rgb.r == 201i8u && rgb.g == 255i8u && rgb.b == 128i8u)
+    let p2d = ret_p2d 2i32
+    e = check e 5 (p2d.x == 2.125 && p2d.y == -2e10)
+    let vec3 = ret_vec3 5i32
+    e = check e 6 (vec3.x == 5.0f32 && vec3.y == 10.0f32 && vec3.z == 15.0f32)
+    let f1 = ret_f1 4i32
+    e = check e 7 (f1.f == 3.5f32)
+    let d1 = ret_d1 9i32
+    e = check e 8 (d1.d == 2.25)
+    let s1 = ret_s1 32768i32
+    e = check e 9 (s1.s == -32768i16)
+    let c1 = ret_c1 128i32
+    e = check e 10 (c1.c == -128i8)
+    let di = ret_di 3i32
+    e = check e 11 (di.d == 3.5 && di.i == 3000000000000)
+    let df = ret_df 6i32
+    e = check e 12 (df.d == -6.0 && df.f == 6.25f32)
+    let b5 = ret_b5 251i32
+    e = check e 13 (b5.b[0] == 251i8u && b5.b[1] == 252i8u && b5.b[2] == 253i8u && b5.b[3] == 254i8u && b5.b[4] == 255i8u)
+    let b7 = ret_b7 50i32
+    e = check e 14 (b7.b[0] == 100i8u && b7.b[3] == 103i8u && b7.b[6] == 106i8u)
+    let b9 = ret_b9 10i32
+    e = check e 15 (b9.b[0] == 240i8u && b9.b[4] == 236i8u && b9.b[7] == 233i8u && b9.b[8] == 232i8u)
+    let s3 = ret_s3 65i32
+    e = check e 16 (s3.a == 65i16u && s3.b == 65535i16u && s3.c == 65000i16u)
+    let packed5 = ret_packed5 55i32
+    e = check e 17 (packed5.tag == 155i8u && packed5.value == -55000165i32)
+    let packedf2 = ret_packedf2 3i32
+    e = check e 18 (packedf2.a == 1.5f32 && packedf2.b == -0.75f32)
+    let quad = ret_quad 10i32
+    e = check e 19 (quad.v[0] == 10.0f32 && quad.v[1] == 11.0f32 && quad.v[2] == 12.0f32 && quad.v[3] == 13.0f32)
+    let quadp2 = ret_quadp2 4i32
+    e = check e 20 (quadp2.a[0] == 4.0f32 && quadp2.a[1] == -4.0f32 && quadp2.a[2] == 8.0f32 && quadp2.b == 4.5f32)
+    let nested3 = ret_nested3 6i32
+    e = check e 21 (nested3.p.x == 6.0f32 && nested3.p.y == 7.0f32 && nested3.z == 8.5f32)
+    let f5 = ret_f5 20i32
+    e = check e 22 (f5.a == 20.0f32 && f5.b == 21.0f32 && f5.c == 22.0f32 && f5.d == 23.0f32 && f5.e == 24.5f32)
+    let l3 = ret_l3 3i32
+    e = check e 23 (l3.a == 3 && l3.b == -12000000000 && l3.c == 4)
+    let hx = ret_hx 5i32
+    e = check e 24 (tag_value hx.h == 0x1122334455667788 + 5 && hx.x == -5i32)
+    let h1 = ret_h1 6i32
+    e = check e 25 (tag_value h1.h == -81985529216486896 - 6)
+    let h2_none = ret_h2 0i32
+    let none_ok = match h2_none.g with
+        | Maybe.Some _ -> false
+        | Maybe.None -> true
+    let h2_some = ret_h2 77i32
+    let some_ok = match h2_some.g with
+        | Maybe.Some tag -> tag_value tag == 77
+        | Maybe.None -> false
+    e = check e 26 (none_ok && some_ok && tag_value h2_some.h == 0x1122334455667788)
+    let rectd = ret_rectd 8i32
+    e = check e 27 (rectd.x == 8.0 && rectd.y == 8.5 && rectd.w == 800.0 && rectd.h == -8.0)
+    let d3 = ret_d3 1i32
+    e = check e 28 (d3.a == 1.25 && d3.b == 1.5 && d3.c == 1.75)
+    let range = ret_range 5i32
+    e = check e 29 (range.location == 18446744073709551610i64u && range.length == 15i64u)
+    let cd = ret_cd 100i32
+    e = check e 30 (cd.c == -100i8 && cd.d == 150.0)
+    let ic = ret_ic 12i32
+    e = check e 31 (ic.a == 12000i32 && ic.b == -12i8)
+    let li = ret_li 2i32
+    e = check e 32 (li.a == -14000000000 && li.b == 2i32)
+    let i3 = ret_i3 7i32
+    e = check e 33 (i3.a == 7i32 && i3.b == -14i32 && i3.c == 21i32)
+    let fi = ret_fi 9i32
+    e = check e 34 (fi.f == 9.75f32 && fi.i == -9i32)
+    let ffd = ret_ffd 2i32
+    e = check e 35 (ffd.a == 2.0f32 && ffd.b == 2.5f32 && ffd.c == 2.25)
+    let dff = ret_dff 3i32
+    e = check e 36 (dff.a == 2.5 && dff.b == 3.0f32 && dff.c == -3.0f32)
+    let fffi = ret_fffi 5i32
+    e = check e 37 (fffi.a == 5.0f32 && fffi.b == 10.0f32 && fffi.c == 20.0f32 && fffi.d == -45i32)
+    let cs = ret_cs 100i32
+    e = check e 38 (cs.a == 100i8 && cs.b == -10000i16)
+    let frame = ret_frame 3i32
+    e = check e 39 (frame.origin.x == 3i32 && frame.origin.y == 4i32 && frame.size.x == 30i32 && frame.size.y == 60i32)
+    let line = ret_line 2i32
+    e = check e 40 (line.head.x == 2.0f32 && line.head.y == 2.5f32 && line.tail.x == -2.0f32 && line.tail.y == 16.0f32)
+    e
+
+// An argument and a result in one call, the bits of a NaN and of -0.0, and copies in memory that
+// the callee overwrites.
+export def run_round_trips :: i64
+fn run_round_trips =
+    let mut e = 0
+    let swapped = echo_pointf (PointF { x: 2.0f32, y: 3.0f32 })
+    e = check e 1 (swapped.x == 3.0f32 && swapped.y == 2.0f32)
+    let bits = echo_pointf (PointF { x: 1.0f32, y: 1.0f32 })
+    e = check e 2 (bits.x != bits.x && bits.y == 0.0f32 && 1.0f32 / bits.y < 0.0f32)
+    e = check e 3 (check_bits_pointf bits == 1i32)
+    let swapped64 = echo_p2d (P2D { x: 2.0, y: 3.0 })
+    e = check e 4 (swapped64.x == 3.0 && swapped64.y == 2.0)
+    let bits64 = echo_p2d (P2D { x: 1.0, y: 1.0 })
+    e = check e 5 (bits64.x != bits64.x && bits64.y == 0.0 && 1.0 / bits64.y < 0.0)
+    e = check e 6 (check_bits_p2d bits64 == 1i32)
+    e = check e 7 (check_bits_p2d (P2D { x: 1.0, y: 2.0 }) == 0i32)
+    let rect = RectD { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }
+    let scaled = scale_rectd rect 2.5
+    e = check e 8 (scaled.x == 2.5 && scaled.y == 5.0 && scaled.w == 7.5 && scaled.h == 10.0)
+    e = check e 9 (rect.x == 1.0 && rect.y == 2.0 && rect.w == 3.0 && rect.h == 4.0)
+    let triple = L3 { a: 10, b: 20, c: 30 }
+    let rotated = rotate_l3 triple
+    e = check e 10 (rotated.a == 20 && rotated.b == 30 && rotated.c == 10)
+    e = check e 11 (triple.a == 10 && triple.b == 20 && triple.c == 30)
+    let moved = offset_rect (Rect { left: 1i32, top: 2i32, right: 3i32, bottom: 4i32 }) (Point { x: 10i32, y: -10i32 })
+    e = check e 12 (moved.left == 11i32 && moved.top == -8i32 && moved.right == 13i32 && moved.bottom == -6i32)
+    let shared = L3 { a: 100, b: 200, c: 300 }
+    e = check e 13 (scribble_l3 shared shared == 41i32)
+    e = check e 14 (shared.a == 100 && shared.b == 200 && shared.c == 300)
+    let point = Point { x: 3i32, y: 4i32 }
+    let rgb = Rgb { r: 9i8u, g: 8i8u, b: 7i8u }
+    let small = Rect { left: 1i32, top: 2i32, right: 3i32, bottom: 4i32 }
+    e = check e 15 (scribble_small point rgb small == 42i32)
+    e = check e 16 (point.x == 3i32 && point.y == 4i32 && rgb.r == 9i8u && rgb.b == 7i8u && small.left == 1i32 && small.bottom == 4i32)
+    e
+
+// Calls where the registers run out and arguments go to the stack.
+export def run_counting :: i64
+fn run_counting =
+    let mut e = 0
+    let rect = Rect { left: 10i32, top: 20i32, right: 30i32, bottom: 40i32 }
+    e = check e 1 (five_then_rect 1 2 3 4 5 rect 6 == 43i32)
+    e = check e 2 (seven_doubles_then_p2d 1.0 2.0 3.0 4.0 5.0 6.0 7.0 (P2D { x: 0.5, y: -0.5 }) 8.0 == 44i32)
+    e = check e 3 (six_then_small 1 2 3 4 5 6 (Point { x: 7i32, y: 8i32 }) (Packed5 { tag: 9i8u, value: 10i32 }) (PointF { x: 11.0f32, y: 12.0f32 }) == 45i32)
+    e = check e 4 (sse_exhausted 1.0 2.0 3.0 4.0 5.0 6.0 7.0 (PointF { x: 1.5f32, y: 2.5f32 }) (PointF { x: 3.5f32, y: 4.5f32 }) 8.0 (Point { x: -1i32, y: -2i32 }) == 46i32)
+    let counted = sret_counts 1 2 3 4 (Rect { left: 100i32, top: 200i32, right: 30i32, bottom: 40i32 })
+    e = check e 5 (counted.a == 101 && counted.b == 202 && counted.c == 1207)
+    e = check e 6 (many 1i32 (Point { x: 2i32, y: 3i32 }) 4.5 (PointF { x: 5.5f32, y: 6.5f32 }) (Rect { left: 7i32, top: 8i32, right: 9i32, bottom: 10i32 }) 11 (Vec3 { x: 12.5f32, y: 13.5f32, z: 14.5f32 }) (Rgb { r: 15i8u, g: 16i8u, b: 17i8u }) (P2D { x: 18.5, y: 19.5 }) == 4700000000)
+    e = check e 7 (hfa_spill (RectD { x: 1.0, y: 2.0, w: 3.0, h: 4.0 }) (RectD { x: 5.0, y: 6.0, w: 7.0, h: 8.0 }) (RectD { x: 9.0, y: 10.0, w: 11.0, h: 12.0 }) (P2D { x: 13.0, y: 14.0 }) 15.0 == 48.5)
+    e = check e 8 (gpr_spill 1 2 3 4 5 6 7 (Rect { left: 8i32, top: 9i32, right: 10i32, bottom: 11i32 }) 12i32 == 49)
+    e = check e 9 (stack_structs (Point { x: 1i32, y: 2i32 }) (Point { x: 3i32, y: 4i32 }) (Point { x: 5i32, y: 6i32 }) (Point { x: 7i32, y: 8i32 }) (Point { x: 9i32, y: 10i32 }) (Rect { left: 11i32, top: 12i32, right: 13i32, bottom: 14i32 }) (PointF { x: 15.5f32, y: 16.5f32 }) == 50i32)
+    e = check e 10 (small_on_stack 1 2 3 4 5 6 7 8 (Point { x: 9i32, y: -10i32 }) (Rgb { r: 11i8u, g: 12i8u, b: 255i8u }) (S1 { s: -13i16 }) (C1 { c: -14i8 }) 15i32 == 51i32)
+    e
