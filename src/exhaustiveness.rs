@@ -296,11 +296,21 @@ impl Checker<'_> {
                     }
                 }
                 if !useful && coverage.origin.binding_place_name().is_none() {
-                    warnings.push(Diagnostic::of(
-                        DiagnosticKind::UnreachableMatchArm,
-                        "unreachable match arm; previous patterns already cover this arm",
-                        arm.span,
-                    ));
+                    let diagnostic = if coverage.origin == MatchOrigin::IfLet {
+                        Diagnostic::of(
+                            DiagnosticKind::UnreachableMatchArm,
+                            "irrefutable 'if let' pattern; the 'else' branch is unreachable",
+                            arm.span,
+                        )
+                        .with_help("bind the pattern directly with 'let <pattern> = ...'")
+                    } else {
+                        Diagnostic::of(
+                            DiagnosticKind::UnreachableMatchArm,
+                            "unreachable match arm; previous patterns already cover this arm",
+                            arm.span,
+                        )
+                    };
+                    warnings.push(diagnostic);
                 }
                 if !arm.guarded {
                     for pattern in search.normalize(&arm.pattern, Mode::Row)? {

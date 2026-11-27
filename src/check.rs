@@ -11828,6 +11828,9 @@ fn tail_spans(expression: &Expr) -> Vec<Span> {
                 else_branch,
                 ..
             } => pending.extend([&**then_branch, &**else_branch]),
+            ExprKind::IfLet(if_let) => {
+                pending.extend([&if_let.then_branch, &if_let.else_branch]);
+            }
             ExprKind::Match { arms, .. } => pending.extend(arms.iter().map(|arm| &arm.body)),
             _ => {}
         }
@@ -14311,9 +14314,10 @@ impl<'a> Checker<'a> {
                 self.normal_loop_depth = outer;
                 result
             }
-            ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
-                self.control_expression(expression, expected, soft)
-            }
+            ExprKind::While { .. }
+            | ExprKind::For { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::IfLet(..) => self.control_expression(expression, expected, soft),
             ExprKind::Binary(..) => self.binary_expression_with_soft(expression, expected, soft),
             ExprKind::Lambda(..)
             | ExprKind::Routine(_)
@@ -15612,9 +15616,10 @@ impl<'a> Checker<'a> {
                     expression.span,
                 ));
             }
-            ExprKind::While { .. } | ExprKind::For { .. } | ExprKind::Match { .. } => {
-                unreachable!("control expressions use their own checker")
-            }
+            ExprKind::While { .. }
+            | ExprKind::For { .. }
+            | ExprKind::Match { .. }
+            | ExprKind::IfLet(..) => unreachable!("control expressions use their own checker"),
             ExprKind::Name(name) => self.name(name)?,
             ExprKind::TypeFunction(variable, name) => self.type_function(variable, name)?,
             ExprKind::QualifiedFunction(name) => self.qualified_function(name)?,
@@ -16316,6 +16321,7 @@ impl<'a> Checker<'a> {
             // A branch gives a value or a reference, so the argument is checked by itself first: a
             // value is borrowed as a temporary, and a reference is reborrowed as a place's is.
             ExprKind::If { .. }
+            | ExprKind::IfLet(..)
             | ExprKind::Match { .. }
             | ExprKind::Try(_)
             | ExprKind::Block { .. }
@@ -19202,6 +19208,7 @@ impl<'a> Checker<'a> {
         if matches!(
             expr.kind,
             ExprKind::If { .. }
+                | ExprKind::IfLet(..)
                 | ExprKind::Match { .. }
                 | ExprKind::Try(_)
                 | ExprKind::Block { .. }

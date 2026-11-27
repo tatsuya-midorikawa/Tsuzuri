@@ -961,6 +961,21 @@ impl Canonical {
                 .body_owners
                 .insert(else_branch.span.start, expression.span.start);
         }
+        if let ExprKind::IfLet(if_let) = &expression.kind {
+            self.hints
+                .heads
+                .insert(expression.span.start, if_let.pattern.span.start);
+            self.hints.else_owners.insert(
+                if_let.then_branch.span.end,
+                (if_let.else_branch.span.start, expression.span.start),
+            );
+            self.hints
+                .body_owners
+                .insert(if_let.then_branch.span.start, expression.span.start);
+            self.hints
+                .body_owners
+                .insert(if_let.else_branch.span.start, expression.span.start);
+        }
         if let ExprKind::Match { value, arms, .. } = &expression.kind {
             self.hints
                 .heads
@@ -1122,6 +1137,15 @@ impl Canonical {
                 self.expression(condition);
                 self.expression(then_branch);
                 self.expression(else_branch);
+            }
+            IfLet(if_let) => {
+                self.pattern(&mut if_let.pattern);
+                self.expression(&mut if_let.value);
+                if let Some(guard) = &mut if_let.guard {
+                    self.expression(guard);
+                }
+                self.expression(&mut if_let.then_branch);
+                self.expression(&mut if_let.else_branch);
             }
             Range {
                 start,
@@ -1292,6 +1316,20 @@ impl Canonical {
                     .else_owners
                     .insert(yes.span.end, (no.span.start, statement.span.start));
             }
+            if let ComputationStatementKind::IfLet(if_let) = &statement.kind
+                && let Some(no) = &if_let.else_branch
+            {
+                self.hints
+                    .heads
+                    .insert(statement.span.start, if_let.pattern.span.start);
+                self.hints
+                    .ends
+                    .insert(statement.span.start, statement.span.end);
+                self.hints.else_owners.insert(
+                    if_let.then_branch.span.end,
+                    (no.span.start, statement.span.start),
+                );
+            }
         }
         block.span = Span::default();
         block.depth = 0;
@@ -1321,6 +1359,17 @@ impl Canonical {
                     self.expression(condition);
                     self.computation(yes);
                     if let Some(no) = no {
+                        self.computation(no);
+                    }
+                }
+                IfLet(if_let) => {
+                    self.pattern(&mut if_let.pattern);
+                    self.expression(&mut if_let.value);
+                    if let Some(guard) = &mut if_let.guard {
+                        self.expression(guard);
+                    }
+                    self.computation(&mut if_let.then_branch);
+                    if let Some(no) = &mut if_let.else_branch {
                         self.computation(no);
                     }
                 }

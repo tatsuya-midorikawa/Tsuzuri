@@ -254,6 +254,15 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
             then_branch,
             else_branch,
         } => vec![condition, then_branch, else_branch],
+        ExprKind::IfLet(if_let) => {
+            expand_pattern(&mut if_let.pattern, names, module)?;
+            pattern_depth = if_let.pattern.depth;
+            let mut values = vec![&mut if_let.value];
+            values.extend(if_let.guard.iter_mut());
+            values.push(&mut if_let.then_branch);
+            values.push(&mut if_let.else_branch);
+            values
+        }
         ExprKind::While { condition, body } => vec![condition, body],
         ExprKind::For {
             pattern,
@@ -439,6 +448,17 @@ fn expand_block(
                     expand_block(no, names, module)?;
                 }
                 condition
+            }
+            ComputationStatementKind::IfLet(if_let) => {
+                expand_pattern(&mut if_let.pattern, names, module)?;
+                if let Some(guard) = &mut if_let.guard {
+                    expand(guard, names, module)?;
+                }
+                expand_block(&mut if_let.then_branch, names, module)?;
+                if let Some(no) = &mut if_let.else_branch {
+                    expand_block(no, names, module)?;
+                }
+                &mut if_let.value
             }
             ComputationStatementKind::For(pattern, source, body) => {
                 expand_pattern(pattern, names, module)?;
@@ -666,6 +686,47 @@ impl Lowering<'_> {
                             condition: Box::new(condition.clone()),
                             then_branch: Box::new(yes),
                             else_branch: Box::new(no),
+                        },
+                        span,
+                        depth,
+                    )?
+                }
+                ComputationStatementKind::IfLet(if_let) => {
+                    let yes = self.nested_block(&if_let.then_branch)?;
+                    let (no, fallback_span) = match &if_let.else_branch {
+                        Some(no) => (self.nested_block(no)?, no.span),
+                        None => (self.call("Zero", Vec::new(), span)?, if_let.pattern.span),
+                    };
+                    let depth = if_let
+                        .pattern
+                        .depth
+                        .max(if_let.value.depth)
+                        .max(if_let.guard.as_ref().map_or(0, |guard| guard.depth))
+                        .max(yes.depth)
+                        .max(no.depth)
+                        + 1;
+                    make(
+                        ExprKind::Match {
+                            value: Box::new(if_let.value.clone()),
+                            arms: vec![
+                                MatchArm {
+                                    pattern: (*if_let.pattern).clone(),
+                                    guard: if_let.guard.clone(),
+                                    body: yes,
+                                    span: if_let.pattern.span.through(if_let.then_branch.span),
+                                },
+                                MatchArm {
+                                    pattern: Pattern {
+                                        kind: PatternKind::Wildcard,
+                                        span: fallback_span,
+                                        depth: 1,
+                                    },
+                                    guard: None,
+                                    body: no,
+                                    span: fallback_span,
+                                },
+                            ],
+                            origin: MatchOrigin::IfLet,
                         },
                         span,
                         depth,
@@ -1141,6 +1202,34 @@ fn direct_control(statement: &ComputationStatement) -> Result<Option<Expr>, Diag
                 depth,
             )?))
         }
+        ComputationStatementKind::IfLet(if_let) => {
+            let then_branch = direct_computation(&if_let.then_branch)?;
+            let has_else = if_let.else_branch.is_some();
+            let else_branch = match &if_let.else_branch {
+                Some(no) => direct_computation(no)?,
+                None => make(ExprKind::Unit, span, 1)?,
+            };
+            let depth = if_let
+                .pattern
+                .depth
+                .max(if_let.value.depth)
+                .max(if_let.guard.as_ref().map_or(0, |guard| guard.depth))
+                .max(then_branch.depth)
+                .max(else_branch.depth)
+                + 1;
+            Ok(Some(make(
+                ExprKind::IfLet(Box::new(IfLetExpr {
+                    pattern: (*if_let.pattern).clone(),
+                    value: if_let.value.clone(),
+                    guard: if_let.guard.clone(),
+                    then_branch,
+                    else_branch,
+                    has_else,
+                })),
+                span,
+                depth,
+            )?))
+        }
         ComputationStatementKind::For(pattern, source, body) => Ok(Some(make(
             ExprKind::For {
                 pattern: pattern.clone(),
@@ -1233,6 +1322,7 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
             ComputationStatementKind::Operation(_, _) => return Err(unsupported(span, "yield")),
             ComputationStatementKind::LetAnd(_) => return Err(unsupported(span, "and!")),
             ComputationStatementKind::If(..)
+            | ComputationStatementKind::IfLet(..)
             | ComputationStatementKind::For(..)
             | ComputationStatementKind::While(..) => direct_control(statement)?.unwrap(),
             ComputationStatementKind::Match(value, arms) => {
@@ -1551,6 +1641,7 @@ impl Checker<'_> {
                     matches!(
                         statement.kind,
                         ComputationStatementKind::If(..)
+                            | ComputationStatementKind::IfLet(..)
                             | ComputationStatementKind::For(..)
                             | ComputationStatementKind::While(..)
                     )

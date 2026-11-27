@@ -4461,6 +4461,9 @@ impl Parser<'_> {
     fn computation_if(&mut self) -> Result<ComputationStatement, Diagnostic> {
         self.enter()?;
         let start = self.take().span;
+        if self.eat(&TokenKind::Let) {
+            return self.computation_if_let(start);
+        }
         let condition = self.expression(0, false)?;
         let keyword = self.eat(&TokenKind::Then);
         let yes = if keyword {
@@ -4468,34 +4471,72 @@ impl Parser<'_> {
         } else {
             self.computation_block()?
         };
+        let no = self.computation_else(keyword, start)?;
+        self.nesting -= 1;
+        Ok(ComputationStatement {
+            span: start.through(self.tokens[self.position - 1].span),
+            kind: ComputationStatementKind::If(condition, yes, no),
+        })
+    }
+
+    fn computation_if_let(&mut self, start: Span) -> Result<ComputationStatement, Diagnostic> {
+        let pattern = Box::new(self.pattern(0)?);
+        self.expect(&TokenKind::Equal, "'=' after the 'if let' pattern")?;
+        let value = self.expression(0, false)?;
+        let guard = if self.eat(&TokenKind::When) {
+            Some(self.expression(0, false)?)
+        } else {
+            None
+        };
+        let keyword = self.eat(&TokenKind::Then);
+        let then_branch = if keyword {
+            self.computation_body()?
+        } else {
+            self.computation_block()?
+        };
+        let else_branch = self.computation_else(keyword, start)?;
+        self.nesting -= 1;
+        Ok(ComputationStatement {
+            span: start.through(self.tokens[self.position - 1].span),
+            kind: ComputationStatementKind::IfLet(Box::new(ComputationIfLet {
+                pattern,
+                value,
+                guard,
+                then_branch,
+                else_branch,
+            })),
+        })
+    }
+
+    fn computation_else(
+        &mut self,
+        keyword: bool,
+        start: Span,
+    ) -> Result<Option<ComputationBlock>, Diagnostic> {
         let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
             && (!keyword
                 || !self.newline_before_current()
                 || self.column(self.current().span) >= self.column(start));
-        let no = if has_else {
-            self.eat(&TokenKind::Else);
-            Some(if self.at(&TokenKind::If) || self.at(&TokenKind::Elif) {
+        if !has_else {
+            return Ok(None);
+        }
+        self.eat(&TokenKind::Else);
+        Ok(Some(
+            if self.at(&TokenKind::Elif)
+                || (self.at(&TokenKind::If) && !self.newline_before_current())
+            {
                 let statement = self.computation_if()?;
                 ComputationBlock {
                     span: statement.span,
                     depth: statement.depth() + 1,
                     statements: vec![statement],
                 }
+            } else if keyword {
+                self.computation_body()?
             } else {
-                if keyword {
-                    self.computation_body()?
-                } else {
-                    self.computation_block()?
-                }
-            })
-        } else {
-            None
-        };
-        self.nesting -= 1;
-        Ok(ComputationStatement {
-            span: start.through(self.tokens[self.position - 1].span),
-            kind: ComputationStatementKind::If(condition, yes, no),
-        })
+                self.computation_block()?
+            },
+        ))
     }
 
     fn expression(&mut self, minimum: u8, allow_record: bool) -> Result<Expr, Diagnostic> {
@@ -5976,6 +6017,9 @@ impl Parser<'_> {
 
     fn conditional(&mut self) -> Result<Expr, Diagnostic> {
         let start = self.take().span;
+        if self.eat(&TokenKind::Let) {
+            return self.conditional_let(start);
+        }
         let condition = Box::new(self.expression(0, false)?);
         let keyword = self.eat(&TokenKind::Then);
         let then_branch = Box::new(self.conditional_body(keyword)?);
@@ -5997,6 +6041,45 @@ impl Parser<'_> {
         )
     }
 
+    fn conditional_let(&mut self, start: Span) -> Result<Expr, Diagnostic> {
+        let pattern = self.pattern(0)?;
+        self.expect(&TokenKind::Equal, "'=' after the 'if let' pattern")?;
+        let value = self.expression(0, false)?;
+        let guard = if self.eat(&TokenKind::When) {
+            Some(self.expression(0, false)?)
+        } else {
+            None
+        };
+        let keyword = self.eat(&TokenKind::Then);
+        let then_branch = self.conditional_body(keyword)?;
+        let else_opt = self.conditional_else_opt(keyword, start)?;
+        let has_else = else_opt.is_some();
+        let else_branch = match else_opt {
+            Some(branch) => branch,
+            None => self.make(ExprKind::Unit, then_branch.span, 1)?,
+        };
+        let span = start.through(else_branch.span);
+        let depth = pattern
+            .depth
+            .max(value.depth)
+            .max(guard.as_ref().map_or(0, |guard| guard.depth))
+            .max(then_branch.depth)
+            .max(else_branch.depth)
+            + 1;
+        self.make(
+            ExprKind::IfLet(Box::new(IfLetExpr {
+                pattern,
+                value,
+                guard,
+                then_branch,
+                else_branch,
+                has_else,
+            })),
+            span,
+            depth,
+        )
+    }
+
     fn conditional_body(&mut self, keyword: bool) -> Result<Expr, Diagnostic> {
         if keyword {
             self.body_expression()
@@ -6011,12 +6094,23 @@ impl Parser<'_> {
         start: Span,
         then_span: Span,
     ) -> Result<Expr, Diagnostic> {
+        match self.conditional_else_opt(keyword, start)? {
+            Some(branch) => Ok(branch),
+            None => self.make(ExprKind::Unit, then_span, 1),
+        }
+    }
+
+    fn conditional_else_opt(
+        &mut self,
+        keyword: bool,
+        start: Span,
+    ) -> Result<Option<Expr>, Diagnostic> {
         let has_else = (self.at(&TokenKind::Else) || self.at(&TokenKind::Elif))
             && (!keyword
                 || !self.newline_before_current()
                 || self.column(self.current().span) >= self.column(start));
         if !has_else {
-            return self.make(ExprKind::Unit, then_span, 1);
+            return Ok(None);
         }
         if self.at(&TokenKind::Else) {
             self.take();
@@ -6026,9 +6120,9 @@ impl Parser<'_> {
             self.enter()?;
             let branch = self.conditional()?;
             self.nesting -= 1;
-            Ok(branch)
+            Ok(Some(branch))
         } else {
-            self.conditional_body(keyword)
+            self.conditional_body(keyword).map(Some)
         }
     }
 }

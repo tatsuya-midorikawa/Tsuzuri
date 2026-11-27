@@ -2810,6 +2810,8 @@ if enabled then { counter = counter + 1; }
 キーワード `elif` と `else if` は完全に等価です。従来の C スタイルの波括弧構文 `if condition { a } else { b }` もそのまま受理されます。
 なお、条件式の位置にレコードリテラルを記述する場合は、構文の曖昧性を防ぐため丸括弧で囲んでください。
 
+また、既存の予約語を用いた条件付きパターン束縛 `if let <pattern> = <expr> [when <guard>] then <then_expr> [elif ... | else <else_expr>]`（および波括弧形式 `if let <pattern> = <expr> { ... } else { ... }`）が全 edition で使用できます。`elif let` や `else if let` は通常の `if <cond>`・`elif <cond>` と自由に連鎖でき、`else` 省略時は `unit`（コンピュテーション式の文の位置ではビルダーの `Zero ()`）となります。評価順序・型検査・所有権移動・借用ビュー束縛・`when` ガード・`const def` での評価・生成 IR は 2 アームの `match <expr> with | <pattern> [when <guard>] -> <then_expr> | _ -> <else_expr>` と完全に同一であり、反駁不可能なパターンを指定した場合は到達不能アーム警告 `W1003` が報告されます。
+
 ### for / while
 
 <!-- rule: CTL-004 --> <!-- rule: CTL-005 --> <!-- rule: CTL-006 --> <!-- rule: CTL-007 --> <!-- rule: CTL-008 --> <!-- rule: CTL-009 --> <!-- rule: CTL-011 --> <!-- rule: CTL-012 --> <!-- rule: CTL-027 --> <!-- rule: CTL-028 --> <!-- rule: CTL-031 --> <!-- rule: CTL-032 --> <!-- rule: EVL-013 --> <!-- rule: EVL-014 --> <!-- rule: OWN-015 --> <!-- rule: OWN-022 --> <!-- rule: STD-010 -->

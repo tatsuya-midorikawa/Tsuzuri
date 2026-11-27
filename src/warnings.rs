@@ -697,6 +697,15 @@ impl TypeReferences<'_> {
                 self.expression(then_branch);
                 self.expression(else_branch);
             }
+            IfLet(if_let) => {
+                self.pattern(&if_let.pattern);
+                self.expression(&if_let.value);
+                if let Some(guard) = &if_let.guard {
+                    self.expression(guard);
+                }
+                self.expression(&if_let.then_branch);
+                self.expression(&if_let.else_branch);
+            }
             Range {
                 start,
                 step,
@@ -837,6 +846,17 @@ impl TypeReferences<'_> {
                     self.expression(condition);
                     self.computation(yes);
                     if let Some(no) = no {
+                        self.computation(no);
+                    }
+                }
+                IfLet(if_let) => {
+                    self.pattern(&if_let.pattern);
+                    self.expression(&if_let.value);
+                    if let Some(guard) = &if_let.guard {
+                        self.expression(guard);
+                    }
+                    self.computation(&if_let.then_branch);
+                    if let Some(no) = &if_let.else_branch {
                         self.computation(no);
                     }
                 }

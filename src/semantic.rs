@@ -1327,6 +1327,7 @@ fn type_tests<'e>(expression: &'e Expr, found: &mut Vec<&'e TypeExpr>) {
             }
         }
         ExprKind::For { pattern, .. } => pattern_type_tests(pattern, found),
+        ExprKind::IfLet(if_let) => pattern_type_tests(&if_let.pattern, found),
         ExprKind::Computation(_, block) => computation_type_tests(block, found),
         _ => {}
     }
@@ -1345,6 +1346,13 @@ fn computation_type_tests<'e>(block: &'e ComputationBlock, found: &mut Vec<&'e T
             If(_, then_block, else_block) => {
                 computation_type_tests(then_block, found);
                 if let Some(block) = else_block {
+                    computation_type_tests(block, found);
+                }
+            }
+            IfLet(if_let) => {
+                pattern_type_tests(&if_let.pattern, found);
+                computation_type_tests(&if_let.then_branch, found);
+                if let Some(block) = &if_let.else_branch {
                     computation_type_tests(block, found);
                 }
             }

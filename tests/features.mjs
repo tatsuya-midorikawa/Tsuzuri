@@ -3120,6 +3120,26 @@ const suites = {
       ["scalar_refs", [], 41n],
     ],
   },
+  // NS06: `if let` and `elif let` conditional pattern bindings across owned values, anonymous unions,
+  // computation expressions, and `const def`.
+  if_let: {
+    cases: [
+      ["greet_len", [0n], 6n],
+      ["greet_len", [1n], 6n],
+      ["greet_len", [2n], 13n],
+      ["mixed_elif", [0n], 100n],
+      ["mixed_elif", [1n], 70n],
+      ["mixed_elif", [2n], -54n],
+      ["mixed_elif", [3n], 5n],
+      ["mixed_elif", [4n], -9n],
+      ["omitted_else_owned", [0n], 0n],
+      ["omitted_else_owned", [2n], 0n],
+      ["omitted_else_owned", [6n], (3n + 2n) + (3n + 4n)],
+      ["anon_and_computations", [0n], 42n + 0n + 13n],
+      ["anon_and_computations", [1n], 30n + 0n + 13n],
+      ["anon_and_computations", [3n], 30n + 8n + 13n],
+    ],
+  },
   // NC17 / NC18: edition 2028 inclusive range family, `^k`, and 1D Tensor slices against BigInt reference.
   range_reference: {
     cases: rangeReferenceCases,

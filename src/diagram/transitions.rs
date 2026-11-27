@@ -95,6 +95,10 @@ fn find_matches<'a>(body: &'a Expr, name: &str, found: &mut Vec<&'a [crate::synt
             find_matches(then_branch, name, found);
             find_matches(else_branch, name, found);
         }
+        ExprKind::IfLet(if_let) => {
+            find_matches(&if_let.then_branch, name, found);
+            find_matches(&if_let.else_branch, name, found);
+        }
         ExprKind::Checked(inner) => find_matches(inner, name, found),
         _ => {}
     }
@@ -168,6 +172,10 @@ fn ends(body: &Expr, cases: &[&str], out: &mut BTreeSet<String>) {
         } => {
             ends(then_branch, cases, out);
             ends(else_branch, cases, out);
+        }
+        ExprKind::IfLet(if_let) => {
+            ends(&if_let.then_branch, cases, out);
+            ends(&if_let.else_branch, cases, out);
         }
         ExprKind::Block { result, .. } => ends(result, cases, out),
         ExprKind::Match { arms, .. } => {
