@@ -113,7 +113,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 暗黙の fast-math・再結合、GPU・SIMD での黙った精度変更 | 数値の意味を変える。緩い演算は名前で区別した別 API にする（F09、C11） |
 | `unsafe` ブロック・生ポインター型 | 安全性の目標と矛盾する。低水準の処理はホストに置き、E12 の不透明ハンドルと、2026-11-22 の [D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) に基づく型付きの `extern view`（[W24](_completed/W24-extern-view.md)、完了）・`extern interface`（W25）に限って許可する。2026-11-26 の [D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) で、同じ原則の下で Objective-C のための型付きの `extern class` などを足すことを決めた（`extern class`・`extern category`・`ObjC` と型付きのメッセージ送信は M01・M02 で実装済み（2026-11-27）。M03〜M05・M10・M23 は計画中）。生ポインター型と `unsafe` は引き続き入れない |
 | 利用者が境界検査を無効にするオプション・unchecked API | 安全性を下げる。検査のコストは F12 の証明と計測で減らす |
-| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う。[D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の `extern class`（[M01](M01-objc-class-types.md)、実装済み）は、ホストの Objective-C のクラスの階層を型の検査に写すだけで、Tsuzuri の型に継承は入れない（基底への暗黙の変換はなく、`ObjC.upcast` を書く） |
+| .NET／JVM ランタイム互換、クラス継承、型プロバイダー | 言語の対象外（[対応状況（旧版）](https://github.com/tatsuya-midorikawa/Tsuzuri/blob/c82c13e1e3dd1f02f78694aa1d26d39b3f793504/_docs/feature-status.md)）。.NET からの利用は E13 のバインディングで行う。[D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の `extern class`（[M01](_completed/M01-objc-class-types.md)、実装済み）は、ホストの Objective-C のクラスの階層を型の検査に写すだけで、Tsuzuri の型に継承は入れない（基底への暗黙の変換はなく、`ObjC.upcast` を書く） |
 | GUI・Web フレームワークの同梱 | ホストの責務。E13 の生成 glue で既存のフレームワークと接続する |
 
 ## 一覧
@@ -370,7 +370,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W33 | [Windows のコマンドラインの分割を CRT（`CommandLineToArgvW`）の規則にそろえる](W33-windows-command-line-splitting.md) | P2 | M | – | todo |
 | W34 | [Windows の sysmon の待ちがミリ秒に切り上がり、TZ08 の 20 µs の刻みが成り立たない](W34-windows-sysmon-timer-resolution.md) | P2 | M | – | todo |
 | W35 | [Windows の `--trap-mode return`（`trap.c` の移植と `.pdata`）](W35-windows-trap-mode-return.md) | P2 | L | W07 | todo |
-| W36 | [C レイアウトの record の値渡し（引数と結果。Windows x64・Arm64 から）](W36-c-layout-by-value.md) | P2 | L | W21 | todo |
+| W36 | [C レイアウトの record の値渡し（引数と結果。Windows x64・Arm64 から）](_completed/W36-c-layout-by-value.md) | P2 | L | W21 | done（Phase 1–2: Windows x64・Arm64、System V x86-64、AAPCS64。`ref` のない `@c_layout` record は C の値渡し・値返し（S1 は A。互換を破る変更として `docs/stability.md` に記録）。全 target の `declare` を Clang と突き合わせ） |
 | W37 | [同梱の `tsuzuri-clang` が `-O0` の C に UBSan の実行時の参照を入れ、別のリンカーで使えない object になる](W37-bundled-clang-ubsan-objects.md) | P3 | S | – | todo |
 | W38 | [トップレベルの `do`（`!` なし）を含むコードで、最後の式に場違いな `E1003` が出る](W38-top-level-plain-do-misplaced-e1003.md) | P3 | S | – | todo |
 | W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | todo |
@@ -423,8 +423,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
-| M01 | [Objective-C のクラスの型と所有（`extern class`・`ObjC.Object`・`ObjC.Sel`、retain/release を所有に下げる、nil は `Maybe`）](M01-objc-class-types.md) | P1 | L | (M22), (M20) | done（`extern class`・`ObjC.Object`／`Class`／`Sel`・`retain`／`upcast`／`upcast_owned`／`downcast`／`sel`、drop で release、`@returns_*`、`@weak` のクラス、データシンボルの物体、監査の行、`-lobjc`） |
-| M02 | [型付きのメッセージ送信（`extern class` のメンバー、`objc_msgSend` を宣言どおりの C の型で呼ぶ、`BOOL`・`f32`・`f64`・構造体の結果、カテゴリー、定数の NSString）](M02-objc-typed-message-send.md) | P1 | XL | M01, (W36) | done（Phase 1–2: メンバー・`extern category`・`Self`・族の所有・`BOOL`／小さい整数／`f32`／`f64` の幅・`ObjC.literal`・`@c_layout` の値渡しと値返し。`call` の型は clang の参照と一致） |
+| M01 | [Objective-C のクラスの型と所有（`extern class`・`ObjC.Object`・`ObjC.Sel`、retain/release を所有に下げる、nil は `Maybe`）](_completed/M01-objc-class-types.md) | P1 | L | (M22), (M20) | done（`extern class`・`ObjC.Object`／`Class`／`Sel`・`retain`／`upcast`／`upcast_owned`／`downcast`／`sel`、drop で release、`@returns_*`、`@weak` のクラス、データシンボルの物体、監査の行、`-lobjc`） |
+| M02 | [型付きのメッセージ送信（`extern class` のメンバー、`objc_msgSend` を宣言どおりの C の型で呼ぶ、`BOOL`・`f32`・`f64`・構造体の結果、カテゴリー、定数の NSString）](_completed/M02-objc-typed-message-send.md) | P1 | XL | M01, (W36) | done（Phase 1–2: メンバー・`extern category`・`Self`・族の所有・`BOOL`／小さい整数／`f32`／`f64` の幅・`ObjC.literal`・`@c_layout` の値渡しと値返し。`call` の型は clang の参照と一致） |
 | M03 | [Objective-C のクラスを Tsuzuri で定義する（`extern class export`・オーバーライド・プロトコル・`Super` への送信・`Anchor` の状態・構造体を受け返す IMP）](M03-objc-classes-defined-in-tsuzuri.md) | P2 | XL | M02, (W36), (M09) | todo |
 | M04 | [Block（`^{}`）を作る・受け取る（`ObjC.Block<F>`）](M04-objc-blocks.md) | P2 | L | M01, (M02), (M03), (M09) | todo |
 | M05 | [Objective-C の例外の境界（`Result<R, ObjC.Exception>` と宣言した呼び出しの地点だけで受ける。D-10 の狭い解釈。D-67 の分岐 2 で承認）](M05-objc-exception-boundary.md) | P2 | M | M02 | todo |

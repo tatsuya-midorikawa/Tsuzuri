@@ -486,7 +486,7 @@ record SaveOptions { title: Maybe<string>, message: Maybe<string>, directory: Ma
 ## 前提とする他チケットのインターフェース
 
 - [M07](M07-apple-sdk-bindgen-and-package.md)（Phase 2）: 公式の `apple` パッケージ（`namespace = "Apple"`、framework ごとのモジュール、核の一覧 `api.txt`、macOS のランナーの CI、`git diff --exit-code` の生成の検査）。生成器の `--api` の書式（D10）、名前の規則（D2）、スレッドの性質の写し方（D3）、availability の `@weak`（D5）、生成物の `@trusted`（D6）。
-- [M01](M01-objc-class-types.md)・[M02](M02-objc-typed-message-send.md)（M07 を通して）: `extern class` の所有（+1 の値、drop で `objc_release`、`ref C` の +0、`Maybe<C>` の nil）、`ObjC.downcast`、メンバーの送信と buffer の引数（ポインターと長さの 2 つ。M02 の D10）、`ObjC.literal`。
+- [M01](_completed/M01-objc-class-types.md)・[M02](_completed/M02-objc-typed-message-send.md)（M07 を通して）: `extern class` の所有（+1 の値、drop で `objc_release`、`ref C` の +0、`Maybe<C>` の nil）、`ObjC.downcast`、メンバーの送信と buffer の引数（ポインターと長さの 2 つ。M02 の D10）、`ObjC.literal`。
 - [M06](_completed/M06-extern-data-symbols-and-zutf8string.md)（M07 を通して）: Phase 1 の `view def` で `NSPasteboardTypeString` を読む。
 - [M20](_completed/M20-macos-framework-link-inputs.md)（M07 を通して）: Phase 2 の `@link(framework = "...")`（git のパッケージから AppKit・Foundation・UniformTypeIdentifiers・UserNotifications をリンクする）。
 - [M09](M09-main-thread-dispatch-and-handles.md)（弱い）: Phase 1 の `MainThread.is_current`（スレッドの検査）と `MainThread.post`（Phase 2 の完了の結果）。Phase 2 の `extern class main`（M07 がパネルに付ける）。

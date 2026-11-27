@@ -5,13 +5,13 @@
 | ID | M03 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M02](M02-objc-typed-message-send.md), ([W36](W36-c-layout-by-value.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（Phase 2 は W36 の Phase 2。`main` のクラスは M09 の Phase 2） |
+| 依存 | [M02](_completed/M02-objc-typed-message-send.md), ([W36](_completed/W36-c-layout-by-value.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（Phase 2 は W36 の Phase 2。`main` のクラスは M09 の Phase 2） |
 | 後続 | –（弱い後続: [M04](M04-objc-blocks.md), [M07](M07-apple-sdk-bindgen-and-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（実行時のクラス定義・delegate・オーバーライドは、class_addMethod に FnPtr の IMP を渡す生アドレスの書き方。構造体を返す IMP は _objc_msgForward と forwardInvocation: の回避策。super は ObjcSuper record と上位形）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 4（(a)。W36 を Phase 2 まで実装することを人間が求めた）は承認済み（2026-11-26）。要承認: D-55（`extern class` の後の予約語 `export`、`with` によるプロトコルの列、メンバーの先頭の文脈キーワード `override`・`optional`、`extern protocol` の文脈キーワード `protocol`、クラス名の後の `Super`（`Name.Super.m`。D7）、`ObjC.set_state`）。決定事項 D1〜D4 と D11（Phase 2）が要承認。Phase 2 は W36 の停止条件 S1 の選択（未決）も待つ |
 | 改善する劣位 | Objective-C・Swift 比: AppKit の delegate・target-action・`NSView` のサブクラス（`drawRect:`・`intrinsicContentSize`・`NSTextInputClient`）を、`i64` の id と `objc_allocateClassPair`・`class_addMethod` に `FnPtr` を渡す手書きの登録でしか書けない。IMP は id も構造体も返せず、構造体を返すメソッドは `_objc_msgForward` と `forwardInvocation:` の回避策が要り、super は `@c_layout` の record と上位形の `objc_msgSendSuper` が要る。型の誤りは型検査で捕まらず、実行時の SIGSEGV になる |
-| 手本にする既存実装 | [W26](W26-com-objects-in-tsuzuri.md)（実装の関数の型 `ref I -> i64 -> P… -> R`、状態は `Anchor` の鍵、`Anchor.Error` の扱い。M03 は `I.Methods` の値の表の代わりに、宣言の中で `= impl` を静的に結ぶ）。`src/llvm_abi.rs` の `wrapper`（`WrapperKind::Callback`、`@tz.callback.<name>`、W12 の `@tz.main.done` の検査）と `src/abi.rs` の `callback`。`src/llvm.rs` の `with_blocking_externs`。`src/parser.rs` の `Parser::extern_declaration`。[M02](M02-objc-typed-message-send.md) のメンバーの構文と送信の下げ方。clang の参照（`-fno-objc-msgsend-selector-stubs` の `objc_msgSendSuper2` と `OBJC_METH_VAR_TYPE_` の型の符号） |
+| 手本にする既存実装 | [W26](W26-com-objects-in-tsuzuri.md)（実装の関数の型 `ref I -> i64 -> P… -> R`、状態は `Anchor` の鍵、`Anchor.Error` の扱い。M03 は `I.Methods` の値の表の代わりに、宣言の中で `= impl` を静的に結ぶ）。`src/llvm_abi.rs` の `wrapper`（`WrapperKind::Callback`、`@tz.callback.<name>`、W12 の `@tz.main.done` の検査）と `src/abi.rs` の `callback`。`src/llvm.rs` の `with_blocking_externs`。`src/parser.rs` の `Parser::extern_declaration`。[M02](_completed/M02-objc-typed-message-send.md) のメンバーの構文と送信の下げ方。clang の参照（`-fno-objc-msgsend-selector-stubs` の `objc_msgSendSuper2` と `OBJC_METH_VAR_TYPE_` の型の符号） |
 | 主な影響ファイル | `src/syntax.rs`・`src/parser.rs`・`src/syntax_codec.rs`・`src/frontend_cache.rs`（`FRONTEND_FORMAT`）・`src/formatter.rs`・`src/docgen.rs`・`src/api_diff.rs`・`src/semantic.rs`・`src/kg_capture.rs`・`src/find.rs`・`src/repl.rs`・`src/doctest.rs`・`src/guide_std.rs`・`src/stdlib.rs`（`grep -rln extern_types src` の全件）、`src/check.rs`・`src/abi.rs`・`src/objc_encoding.rs`（新規。M04 と共有）・`src/llvm.rs`・`src/llvm_abi.rs`・`src/llvm_imports.rs`・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/capabilities.rs`・`src/pinned_rules.rs`・`src/diagnostic_kinds.rs`、`tests/objc_export_classes.rs`（新規）・`tests/objc_export_classes.mjs`（新規）・`tests/objc_export_classes_host.m`（新規）・`tests/fixtures/objc_export_classes/Main.tz`（新規）、`_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）・`_tsuzuri/language-reference/compiler/native-interop.md`・`_tsuzuri/language-reference/values-and-functions/keywords.md`・`docs/language.md`・`docs/architecture.md` |
 
 ## 実装者向け早見
@@ -76,15 +76,15 @@ AppKit のアプリは、Cocoa のクラスを継承したクラス（`NSView` �
 - super への送信は、`@c_layout record ObjcSuper` と上位形の `objc_msgSendSuper` の手書きが要る。
 - オブジェクトごとの状態の置き場（ivar か associated object）も、鍵の読み出しも手書き。
 
-このチケットは、[M01](M01-objc-class-types.md)・[M02](M02-objc-typed-message-send.md) の型付きのクラスの上に、クラスを定義する側を足す。D-67 の X′ の範囲（`extern` の宣言として書き、`@trusted` と権限 `ffi` の監査の対象。生ポインター型と `unsafe` は入れない）を出ない。Tsuzuri の値の型に継承は入れない（README の「採用しない改善」の「クラス継承」を改めない。ホストのクラスの階層を写すだけ）。
+このチケットは、[M01](_completed/M01-objc-class-types.md)・[M02](_completed/M02-objc-typed-message-send.md) の型付きのクラスの上に、クラスを定義する側を足す。D-67 の X′ の範囲（`extern` の宣言として書き、`@trusted` と権限 `ffi` の監査の対象。生ポインター型と `unsafe` は入れない）を出ない。Tsuzuri の値の型に継承は入れない（README の「採用しない改善」の「クラス継承」を改めない。ホストのクラスの階層を写すだけ）。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- [M02](M02-objc-typed-message-send.md) の Phase 1 が done（M01 も含む）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
+- [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（M01 も含む）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - D-67 の分岐 1 は X′ で承認済み（2026-11-26）。決定事項の D1〜D3 と D-55 の登録（D4）が承認済みであること。**承認が記録されるまで、該当する Phase に着手しない。**
-- **人間が求めない限り Phase 1 だけを実装する。** D-67 の分岐 4 は (a) で承認済み（2026-11-26）。人間が求めたのは W36 を Phase 2 まで実装することで、M03 の Phase 2 そのものではない。Phase 2 は、決定事項 D11 の承認と W36 の停止条件 S1 の選択（未決）が記録され、[W36](W36-c-layout-by-value.md) の Phase 2（AAPCS64 と呼ばれる側の `by_value_from_abi`・`by_value_to_abi`）が done で、人間が求めたときだけ。分岐 4 の (b)（HFA だけを先に扱い、M02 の Phase 2 の HFA の分類を使う）は選ばれなかった。
+- **人間が求めない限り Phase 1 だけを実装する。** D-67 の分岐 4 は (a) で承認済み（2026-11-26）。人間が求めたのは W36 を Phase 2 まで実装することで、M03 の Phase 2 そのものではない。Phase 2 は、決定事項 D11 の承認と W36 の停止条件 S1 の選択（未決）が記録され、[W36](_completed/W36-c-layout-by-value.md) の Phase 2（AAPCS64 と呼ばれる側の `by_value_from_abi`・`by_value_to_abi`）が done で、人間が求めたときだけ。分岐 4 の (b)（HFA だけを先に扱い、M02 の Phase 2 の HFA の分類を使う）は選ばれなかった。
 - `main` のクラス（`extern class export main`）の段は [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 が done のときだけ。なければ `main` の修飾子は足さず、export のクラスは `local` と `sync` だけ。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）と `check --json`、コールバックを使う fixture（`tests/fixtures/ffi_extensions`）と M01・M02 の fixture の IR を `target/scratch/m03/before/` に保存する。
 - macOS（arm64）の機械と Xcode の Command Line Tools（clang・SDK）。node のテストの段は macOS だけで走る。
@@ -623,13 +623,13 @@ entry:
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](M01-objc-class-types.md): `extern class` の表（基底・実行時名・性質）、`ObjC.Object`・`ObjC.Sel`・`ObjC.Class`、classref・selref の生成、`ObjC.upcast`・`ObjC.upcast_owned`・`ObjC.downcast`、`objc_release` の drop、ObjC のモジュールのフラグと `-lobjc`、kind `abi_apple_only`・`objc_class_base_not_class`・`objc_class_limit`・`misplaced_returns_retained_attribute`・`objc_target_not_class`。
-- [M02](M02-objc-typed-message-send.md): メンバーの構文（セレクター・`Self`・`class`）と `ObjcMember`・`ObjcMemberInfo`（`= impl` は M03 が足す）、`objc::{method_family, valid_selector, selector_arity}`、`abi::{objc_parameter, objc_result, objc_signature}`（IMP の型の検査に使う）、`Self` の置き換え、送信の引数の下げ方（`Name.Super.m` は呼び先だけが違う）と `objc_msgSend` の `declare` の共有、クラスの受け手のフック（export のクラスは `@tz.objc.class.<名前>`）、kind `objc_selector_arity`・`duplicate_objc_member`・`objc_method_not_called`・`extern_class_member_syntax`。Phase 2 の HFA の分類（分岐 4 の (b)。(b) は選ばれなかったので使わない）。
+- [M01](_completed/M01-objc-class-types.md): `extern class` の表（基底・実行時名・性質）、`ObjC.Object`・`ObjC.Sel`・`ObjC.Class`、classref・selref の生成、`ObjC.upcast`・`ObjC.upcast_owned`・`ObjC.downcast`、`objc_release` の drop、ObjC のモジュールのフラグと `-lobjc`、kind `abi_apple_only`・`objc_class_base_not_class`・`objc_class_limit`・`misplaced_returns_retained_attribute`・`objc_target_not_class`。
+- [M02](_completed/M02-objc-typed-message-send.md): メンバーの構文（セレクター・`Self`・`class`）と `ObjcMember`・`ObjcMemberInfo`（`= impl` は M03 が足す）、`objc::{method_family, valid_selector, selector_arity}`、`abi::{objc_parameter, objc_result, objc_signature}`（IMP の型の検査に使う）、`Self` の置き換え、送信の引数の下げ方（`Name.Super.m` は呼び先だけが違う）と `objc_msgSend` の `declare` の共有、クラスの受け手のフック（export のクラスは `@tz.objc.class.<名前>`）、kind `objc_selector_arity`・`duplicate_objc_member`・`objc_method_not_called`・`extern_class_member_syntax`。Phase 2 の HFA の分類（分岐 4 の (b)。(b) は選ばれなかったので使わない）。
 - [W12](_completed/W12-static-callback-lifetime.md)・[W22](_completed/W22-fnptr-values.md): `llvm_abi::wrapper`、`WrapperKind::Callback`、`@tz.main.done`、`with_blocking_externs`、静的コールバックの関数の規則。
 - [W23](_completed/W23-anchor-state.md): `Anchor.create`・`token`・`read`・`update`、`Anchor.Error`、鍵 0 の `Stale`。
 - [W19](_completed/W19-thread-bound-handles.md): `local` の性質、固定された文脈、`pinned_rules::builtin_position`。
 - [M09](M09-main-thread-dispatch-and-handles.md)（Phase 2）: `main` の文脈キーワード、効果 `main_thread`、`pthread_main_np` の検査とその報告の文。
-- [W36](W36-c-layout-by-value.md)（Phase 2）: `llvm_byvalue::{ByValue, classify}`（AAPCS64）、`FunctionEmitter::{by_value_slot, by_value_from_abi, by_value_to_abi}`、kind `abi_record_by_value_target`。
+- [W36](_completed/W36-c-layout-by-value.md)（Phase 2）: `llvm_byvalue::{ByValue, classify}`（AAPCS64）、`FunctionEmitter::{by_value_slot, by_value_from_abi, by_value_to_abi}`、kind `abi_record_by_value_target`。
 - [W26](W26-com-objects-in-tsuzuri.md)（あれば）: 仕様 4 のコールバックの `ref mut T` の変換。
 - [M04](M04-objc-blocks.md)（Phase 2）: `ObjC.Block<F>` の引数の受け取り（+0 の `ref ObjC.Block<F>`）。
 

@@ -6,20 +6,20 @@
 | 優先度 | P2 |
 | 規模 | L（Phase 1・2。Phase 2（System V x86-64 と AAPCS64）は、D-67 の分岐 4 で人間が求めた（2026-11-26）。Phase 1・2 とも実装済み（2026-11-27）。停止条件 S1 は選択肢 A（互換を破る変更として実装し、`docs/stability.md` に記録）に決まった（2026-11-27、リポジトリの所有者の委任による）） |
 | 依存 | W21 |
-| 後続 | W25（弱い後続: [M02](M02-objc-typed-message-send.md)・[M03](M03-objc-classes-defined-in-tsuzuri.md) の Phase 2（D-67 の分岐 4）, [M07](M07-apple-sdk-bindgen-and-package.md), [M18](M18-intel-mac-and-universal2.md)） |
+| 後続 | W25（弱い後続: [M02](M02-objc-typed-message-send.md)・[M03](../M03-objc-classes-defined-in-tsuzuri.md) の Phase 2（D-67 の分岐 4）, [M07](../M07-apple-sdk-bindgen-and-package.md), [M18](../M18-intel-mac-and-universal2.md)） |
 | 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 承認済み（2026-11-27）。リポジトリの所有者が未決の判断を実装担当に委ねた（「判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）。記録: D1 は承認、停止条件 S1 は選択肢 A（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷していたので、値渡しへの変更は互換を破る ABI の変更。`docs/stability.md` の「既知の例外」に記録）、D2（W21 での綴りの予約）は S1 が A に決まったので不要、Phase 2 は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 4 の (a) で人間が求めた（2026-11-26）。D3〜D9 は既定案のまま |
+| 承認 | 承認済み（2026-11-27）。リポジトリの所有者が未決の判断を実装担当に委ねた（「判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）。記録: D1 は承認、停止条件 S1 は選択肢 A（W21 が `ref` の無い `@c_layout` record をポインターで渡して出荷していたので、値渡しへの変更は互換を破る ABI の変更。`docs/stability.md` の「既知の例外」に記録）、D2（W21 での綴りの予約）は S1 が A に決まったので不要、Phase 2 は [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 4 の (a) で人間が求めた（2026-11-26）。D3〜D9 は既定案のまま |
 | 改善する劣位 | C/C++・Rust（`#[repr(C)]`）・C#（P/Invoke）比: C の関数が構造体を値で取る・返す API（Win32 の `WindowFromPoint`・`PtInRect` の `POINT`、Direct2D の `D2D1_POINT_2F`、raylib の `Vector2`）を宣言できない。今の書き方（`ref` のない record）は診断なしにポインターを渡す |
-| 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`・`host_result_slot`・`read_host_result`（record の一時領域）、[W21](_completed/W21-c-layout-records.md) の `llvm_abi::record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`@c_layout` の配置を 1 か所で求める）、`src/target.rs` の `current_platform`（IR の生成中の target）、`clang -S -emit-llvm`（独立した参照。GUIDE-LITE §2 規則 10） |
+| 手本にする既存実装 | `src/llvm_imports.rs` の `FunctionEmitter::host_call`・`host_result_slot`・`read_host_result`（record の一時領域）、[W21](W21-c-layout-records.md) の `llvm_abi::record_layout`・`c_layout_fields`・`read_host_record`・`write_host_record`（`@c_layout` の配置を 1 か所で求める）、`src/target.rs` の `current_platform`（IR の生成中の target）、`clang -S -emit-llvm`（独立した参照。GUIDE-LITE §2 規則 10） |
 | 主な影響ファイル | `src/abi.rs`, `src/check.rs`, `src/llvm_imports.rs`, `src/llvm_byvalue.rs`（新規）, `src/llvm_abi.rs`, `src/llvm.rs`, `src/diagnostic_kinds.rs`, `src/explain/codes/E1008.md`, `tests/c_layout_by_value.rs`（新規）, `tests/c_layout_by_value.mjs`（新規）, `tests/c_layout_by_value_host.c`（新規）, `tests/fixtures/c_layout_by_value/Main.tz`（新規）, `tests/windows.mjs`, `.github/workflows/windows.yml`, `docs/language.md`, `docs/architecture.md`, 言語リファレンスの 4 ページ |
 
 ## 実装者向け早見
 
-- 範囲: [W21](_completed/W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。D-67 の分岐 3 で方針を改めないと決めたので、入れない（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
+- 範囲: [W21](W21-c-layout-records.md) の `@c_layout` record を、`ref` なしで `extern def` の引数に書くと C の値渡し、結果に書くと C の値返しにする。Phase 1 は Windows x64（MSVC・MinGW）と Windows Arm64（MSVC・MinGW）、Phase 2 は System V x86-64（Linux・Intel の macOS）と AAPCS64（Linux・macOS）。Intel の macOS は、今は target がない（`x86_64-apple-darwin` は `E2000`）。D-67 の分岐 3 で方針を改めないと決めたので、入れない（2026-11-26。[M18](../M18-intel-mac-and-universal2.md) は blocked）。Phase の外の native の target は `E1008`（kind 案 `abi_record_by_value_target`）、WASM は `E1008`（`abi_native_only`）。印のない record、`ref R`・`ref mut R`、`export def`、コールバックは今のまま。
 - 最初に読む: 「現状」の再現（`PtInRect`）→ 仕様 2 の分類 → 「現状」の参照表 → W21 の仕様 3・4 と D4・D8。
 - 最初に書くテスト: `tests/c_layout_by_value.rs` の `windows_x64_passes_by_size` と `windows_arm64_passes_hfa_in_float_registers`（`build --emit llvm --target <triple>` の `declare` の行を、参照表から手で書いた期待と比べる）→ `tests/c_layout_by_value.mjs` の C のホスト。
-- 触ってはいけない: `@c_layout` の無い record の ABI（[E05](_completed/E05-host-abi-buffers.md)）、`ref R`（`const T *`）と `ref mut R`（`T *`）、`export def` の IR とヘッダー、WASM の出力、値渡しを使わないプログラムの IR・ヘッダー・診断（1 byte も変えない）。
+- 触ってはいけない: `@c_layout` の無い record の ABI（[E05](E05-host-abi-buffers.md)）、`ref R`（`const T *`）と `ref mut R`（`T *`）、`export def` の IR とヘッダー、WASM の出力、値渡しを使わないプログラムの IR・ヘッダー・診断（1 byte も変えない）。
 - 完了の見分け方: 次のプログラムを `tsuzuri build <dir> -l user32 -o pt.exe` で作ると（`-l user32` が無いと `PtInRect` が未解決の `E2002`）、Windows x64 と Arm64（CI）で終了コード 1 を返し、IR に `declare i32 @PtInRect(ptr, i64)` がある（今は印のない record で同じことを書くと 0 を返す。「現状」）。
 
 ```tsuzuri
@@ -38,9 +38,9 @@ def main :: unit -> i32 = \() ->
 
 ## 目的
 
-C の関数は構造体を値で取り、値で返せる。Win32 にも `WindowFromPoint(POINT)`・`MonitorFromPoint(POINT, DWORD)`・`PtInRect(const RECT *, POINT)` があり、Direct2D の `ID2D1RenderTarget::DrawLine` は `D2D1_POINT_2F` を値で取る。どのチケットもこれを担当していない: [E05](_completed/E05-host-abi-buffers.md) は「C の by-value struct ABI classification に依存しない」と決めて record をポインターでだけ渡し、[W21](_completed/W21-c-layout-records.md) D4 もそれを保ち、値渡しを対象外にして「`i64` に詰める」回避策を挙げた。その回避策は Windows Arm64 と System V で浮動小数点の構造体を誤る（`D2D1_POINT_2F` は Arm64 では浮動小数点レジスター 2 つ）。しかも今の書き方は、`ref` を付けない record を診断なしにポインターで渡し、C の側は黙って誤った値を読む。
+C の関数は構造体を値で取り、値で返せる。Win32 にも `WindowFromPoint(POINT)`・`MonitorFromPoint(POINT, DWORD)`・`PtInRect(const RECT *, POINT)` があり、Direct2D の `ID2D1RenderTarget::DrawLine` は `D2D1_POINT_2F` を値で取る。どのチケットもこれを担当していない: [E05](E05-host-abi-buffers.md) は「C の by-value struct ABI classification に依存しない」と決めて record をポインターでだけ渡し、[W21](W21-c-layout-records.md) D4 もそれを保ち、値渡しを対象外にして「`i64` に詰める」回避策を挙げた。その回避策は Windows Arm64 と System V で浮動小数点の構造体を誤る（`D2D1_POINT_2F` は Arm64 では浮動小数点レジスター 2 つ）。しかも今の書き方は、`ref` を付けない record を診断なしにポインターで渡し、C の側は黙って誤った値を読む。
 
-LLVM IR は構造体の値渡しを C の ABI に下げない。Clang はフロントエンドで target ごとに構造体を整数・浮動小数点の値やポインターに変えてから IR を出す（参照表）。このチケットは、C の配置が明示された `@c_layout` record（W21）に限って、同じ分類をコンパイラが target ごとに行う。[W25](W25-extern-interface-com.md) の D10 が Phase 3 で引き受けていた値渡しの引数はこのチケットに移る（[GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)）。
+LLVM IR は構造体の値渡しを C の ABI に下げない。Clang はフロントエンドで target ごとに構造体を整数・浮動小数点の値やポインターに変えてから IR を出す（参照表）。このチケットは、C の配置が明示された `@c_layout` record（W21）に限って、同じ分類をコンパイラが target ごとに行う。[W25](../W25-extern-interface-com.md) の D10 が Phase 3 で引き受けていた値渡しの引数はこのチケットに移る（[GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)）。
 
 ## 着手条件と停止条件
 
@@ -49,7 +49,7 @@ LLVM IR は構造体の値渡しを C の ABI に下げない。Clang はフロ�
 - W21 の Phase 1 が done（`grep -n "fn c_layout_fields" src/llvm_abi.rs`、`grep -n "c_layout" src/check.rs`）。
 - W21 が、`ref` の無い `@c_layout` record を `extern def` の引数と結果でどう受けて出荷したかを確かめる（`grep -rn "c_layout_by_value_pending" src/` と、W21 のテストの `positions`）。D2 のとおり `E1008` で綴りを空けていれば進める。W21 の仕様 4 の表のとおり `const T *` と先頭の out 引数で受けていれば S1。
 - D1・D2 が承認されている。承認前は手順 1（参照表を作るだけ）まで。
-- [W14](_completed/W14-extern-multiple-declarations.md) が done なら、その `abi::c_signature` に値渡しの形を足す（手順 4）。
+- [W14](W14-extern-multiple-declarations.md) が done なら、その `abi::c_signature` に値渡しの形を足す（手順 4）。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1`（native、`--target x86_64-pc-windows-msvc`・`aarch64-pc-windows-msvc`・`x86_64-unknown-linux-gnu`・`aarch64-apple-darwin`・`wasm32`）と、`export` か `extern` を持つものの `--emit header` を `target/scratch/w36/base/` に保存する。
 
 ### 停止条件
@@ -95,7 +95,7 @@ Git Bash で `T=/c/Users/tmidorikawa/.vscode/extensions/tmidorikawa.tsuzuri-0.1.
 
 ### 値渡しの Win32 の API（Windows SDK 10.0.26100）
 
-`um/WinUser.h`: `WindowFromPoint(POINT)`（9672 行）、`WindowFromPhysicalPoint(POINT)`（9679）、`ChildWindowFromPoint(HWND, POINT)`（9686）、`PtInRect(CONST RECT *, POINT)`（9932）、`DragDetect(HWND, POINT)`（8259）、`MenuItemFromPoint(HWND, HMENU, POINT)`（8163）、`MonitorFromPoint(POINT, DWORD)`（13717）。`um/d2d1.h`: `DrawLine(D2D1_POINT_2F, D2D1_POINT_2F, ID2D1Brush *, FLOAT, ID2D1StrokeStyle *)`（2523。COM のメソッド、W25）。`um/oleidl.h`: `IDropTarget::DragEnter(IDataObject *, DWORD, POINTL, DWORD *)`（3717。Tsuzuri が実装する側、[W26](W26-com-objects-in-tsuzuri.md)）。
+`um/WinUser.h`: `WindowFromPoint(POINT)`（9672 行）、`WindowFromPhysicalPoint(POINT)`（9679）、`ChildWindowFromPoint(HWND, POINT)`（9686）、`PtInRect(CONST RECT *, POINT)`（9932）、`DragDetect(HWND, POINT)`（8259）、`MenuItemFromPoint(HWND, HMENU, POINT)`（8163）、`MonitorFromPoint(POINT, DWORD)`（13717）。`um/d2d1.h`: `DrawLine(D2D1_POINT_2F, D2D1_POINT_2F, ID2D1Brush *, FLOAT, ID2D1StrokeStyle *)`（2523。COM のメソッド、W25）。`um/oleidl.h`: `IDropTarget::DragEnter(IDataObject *, DWORD, POINTL, DWORD *)`（3717。Tsuzuri が実装する側、[W26](../W26-com-objects-in-tsuzuri.md)）。
 
 ### 参照表: Clang が下げた形
 
@@ -133,7 +133,7 @@ Git Bash で `T=/c/Users/tmidorikawa/.vscode/extensions/tmidorikawa.tsuzuri-0.1.
 ## 変えてはいけない意味
 
 - `@c_layout` の無い record の受け渡し（E05: `const T *` と先頭の out 引数）、そのヘッダーと JS の糊。
-- `ref R`（`const T *`）、`ref mut R`（[W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md)、`T *`）、`Maybe<ref R>`（[W15](_completed/W15-abi-nullable-handles.md)）。
+- `ref R`（`const T *`）、`ref mut R`（[W13](W13-extern-ref-mut-and-mutable-buffers.md)、`T *`）、`Maybe<ref R>`（[W15](W15-abi-nullable-handles.md)）。
 - `export def` の `@c_layout` record の引数と結果（W21: `const T *` と先頭の out 引数）。コールバックの型の規則（record を取らない）。
 - 引数の評価順（左から右）。トラップの意味。WASM の出力。
 
@@ -143,7 +143,7 @@ Git Bash で `T=/c/Users/tmidorikawa/.vscode/extensions/tmidorikawa.tsuzuri-0.1.
 
 - `extern def` の引数の `@c_layout` record `R`（`ref` なし）は、C の `T` の値渡しになる。結果の `@c_layout` record `R` は、C の `T` の値返しになる。ほかの位置と型は「変えてはいけない意味」のとおり。
 - W21 の Phase 2 の field（`FnPtr`・`ref ZString`）を持つ record は、W21 の仕様 4 の規則に従う: 値渡しの引数は入力なので可、値返しの結果は W21 の kind（`fnptr_from_host`・`c_layout_input_only`）で `E1008`。
-- [W25](W25-extern-interface-com.md) の `extern interface` のメソッドの引数は、`host_call` を共有するので同じ規則になる。メソッドの record の結果は W25 の規則（MSVC の C++ のメンバー関数の規則）で、このチケットの対象外。
+- [W25](../W25-extern-interface-com.md) の `extern interface` のメソッドの引数は、`host_call` を共有するので同じ規則になる。メソッドの record の結果は W25 の規則（MSVC の C++ のメンバー関数の規則）で、このチケットの対象外。
 - 可変長引数の extern は無いので扱わない（Windows Arm64 は可変長の引数で HFA を使わない）。
 
 ### 2. Phase 1 の分類（Windows）
@@ -161,7 +161,7 @@ record の大きさ `s` と整列は W21 の `record_layout`、葉（入れ子�
 ### 3. Phase 2 の分類（System V x86-64、AAPCS64）
 
 - AAPCS64（Linux、macOS）: Windows Arm64 と同じ形で、Linux だけ HFA の引数の配列に `alignstack(8)` を付ける（宣言と呼び出しの地点の両方）。macOS は付けない。
-- System V x86-64（Linux、Intel の macOS。Intel の macOS は今は target がなく、D-67 の分岐 3 で入れないと決めた（2026-11-26。[M18](M18-intel-mac-and-universal2.md) は blocked））: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
+- System V x86-64（Linux、Intel の macOS。Intel の macOS は今は target がなく、D-67 の分岐 3 で入れないと決めた（2026-11-26。[M18](../M18-intel-mac-and-universal2.md) は blocked））: `s > 16` か、整列していない field（オフセットが自然な整列の倍数でない。`pack` で起きる）があればメモリー（引数は `ptr byval(%tz_record_…) align 8`、結果は `sret`）。ほかは 8 バイトごとに INTEGER か SSE に分け（両方なら INTEGER）、SSE の 8 バイトは `double`・`float`・`<2 x float>`、INTEGER は `i64`（最後の 8 バイトが足りなければ `i{8×残り}`。Clang はちょうどポインター 1 つの 8 バイトを `ptr` にするが、同じレジスターなので `i64` で出す）。引数は 1 つか 2 つの IR の引数に開き、結果は 1 つの値か `{ a, b }`。呼び出し全体で左から整数レジスター 6 個（`sret` が 1 個使う）と SSE 8 個を数え、構造体の全部が入らなければその構造体だけメモリーに回す（参照表の 2 関数）。
 - 規則の正は参照の Clang の出力で、表にない形を足すときも手順 1 の参照表に行を足してから実装する。
 
 ### 4. target と診断
@@ -228,8 +228,8 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
 
 ## 前提とする他チケットのインターフェース
 
-- [W21](_completed/W21-c-layout-records.md): `CheckedRecord.c_layout`、`abi::c_layout_record`・`abi::host_record`、`llvm_abi::record_layout`・`c_layout_fields`、`@c_layout` の `read_host_record`・`write_host_record`（packed struct の境界の型、葉の整列）、Phase 2 の field の位置の規則と kind、`abi_native_only` の共有の口。D2 の予約（`c_layout_by_value_pending`。W21 の改訂の提案）。
-- [W14](_completed/W14-extern-multiple-declarations.md)（done なら）: `abi::CType`・`AbiClass`・`c_signature`。
+- [W21](W21-c-layout-records.md): `CheckedRecord.c_layout`、`abi::c_layout_record`・`abi::host_record`、`llvm_abi::record_layout`・`c_layout_fields`、`@c_layout` の `read_host_record`・`write_host_record`（packed struct の境界の型、葉の整列）、Phase 2 の field の位置の規則と kind、`abi_native_only` の共有の口。D2 の予約（`c_layout_by_value_pending`。W21 の改訂の提案）。
+- [W14](W14-extern-multiple-declarations.md)（done なら）: `abi::CType`・`AbiClass`・`c_signature`。
 
 ## 他チケットへ提供するインターフェース
 
@@ -241,10 +241,10 @@ pub(crate) fn classify_call(parameters: &[Position], result: Option<&CLayoutLeav
   - `ByValue::argument_types(&self, layout: &CLayoutLeaves, platform: Platform) -> Vec<String>`（属性付きの IR の型）、`ByValue::result_type(&self) -> String`（`Memory` は `void`）、`ByValue::sret_parameter(layout: &CLayoutLeaves) -> String`（`ptr sret([N x i8])`）、`ByValue::storage(&self, layout: &CLayoutLeaves) -> usize`。
   - `FunctionEmitter::by_value_slot(&mut self, layout: &CLayoutLeaves, class: &ByValue) -> String`、`by_value_to_abi(&mut self, class: &ByValue, result: bool, slot: &str, layout: &CLayoutLeaves) -> Vec<(String, String)>`（`(属性付きの型, 値)`。`result` が偽なら呼び出しの引数、真なら呼ばれる側が返す 1 つの値）、`by_value_from_abi(&mut self, class: &ByValue, values: &[(String, String)], slot: &str)`（`(型, 値)` を一時領域へ置く。`Memory` は何もしない）。一時領域への読み書きは W21 の `write_host_record`・`read_host_record`。
   - `abi::RecordPassing`・`abi::extern_record_passing`、`abi::CType::ByValue(形)`（W14）、kind `abi_record_by_value_target`、検査 `byvalue::validate(module, reachable, wasm)`。
-- [W25](W25-extern-interface-com.md) Phase 3: メソッドの値渡しの引数（`D2D1_POINT_2F`）は `host_call` の共有でそのまま使える。W25 の仕様 9 と D10 の値渡しの部分は、このチケットへの参照に置き換えてあり、W25 Phase 3 の着手条件にこのチケットが入っている。
-- [W26](W26-com-objects-in-tsuzuri.md) Phase 3: `IDropTarget::DragEnter` の `POINTL`（呼ばれる側）は、コールバックの wrapper で `classify` と `by_value_from_abi`（引数）・`by_value_to_abi`（結果）を使う。呼ばれる側の wrapper の変更は W26 の範囲。
-- [W27](W27-win32-package-from-winmd.md): win32metadata のポインターでない構造体の引数・結果を `ref` の無い `@c_layout` record に写す。
-- [W14](_completed/W14-extern-multiple-declarations.md): 上の分類。
+- [W25](../W25-extern-interface-com.md) Phase 3: メソッドの値渡しの引数（`D2D1_POINT_2F`）は `host_call` の共有でそのまま使える。W25 の仕様 9 と D10 の値渡しの部分は、このチケットへの参照に置き換えてあり、W25 Phase 3 の着手条件にこのチケットが入っている。
+- [W26](../W26-com-objects-in-tsuzuri.md) Phase 3: `IDropTarget::DragEnter` の `POINTL`（呼ばれる側）は、コールバックの wrapper で `classify` と `by_value_from_abi`（引数）・`by_value_to_abi`（結果）を使う。呼ばれる側の wrapper の変更は W26 の範囲。
+- [W27](../W27-win32-package-from-winmd.md): win32metadata のポインターでない構造体の引数・結果を `ref` の無い `@c_layout` record に写す。
+- [W14](W14-extern-multiple-declarations.md): 上の分類。
 
 ## 実装手順
 
