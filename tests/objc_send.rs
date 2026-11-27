@@ -11,8 +11,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use tsuzuri::api_diff;
 use tsuzuri::check::{CheckedModule, TypedExprKind};
 use tsuzuri::diagnostic::{Diagnostic, DiagnosticKind};
+use tsuzuri::driver::Project;
 use tsuzuri::parser::parse;
 use tsuzuri::syntax::SourceKind;
 use tsuzuri::target::{Platform, PlatformScope, Triple};
@@ -1008,5 +1010,109 @@ def main :: unit -> i32 = \\() ->
     );
     assert!(!warnings.contains("'Unused'"), "{warnings}");
     assert!(!warnings.contains("'Extras'"), "{warnings}");
+    fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn the_api_of_a_class_is_its_header_and_members() {
+    let api_of = |label: &str, source: &str| {
+        let root = temp_project(label, &[("Cocoa.tz", source)]);
+        let project = Project::load_for_api(&root).unwrap();
+        let api = api_diff::api(&project).unwrap();
+        fs::remove_dir_all(root).ok();
+        api
+    };
+    let base = "\
+extern class NSObject : ObjC.Object {
+    class alloc :: unit -> Self
+    hash :: unit -> i64u
+}
+
+extern category Extras : NSObject {
+    \"isProxy\" is_proxy :: unit -> bool
+}
+
+@returns_retained
+extern \"make\" def make :: unit -> NSObject
+";
+    let old = api_of("api-old", base);
+    // A new member only adds a method to call.
+    let added = api_of(
+        "api-added",
+        &base.replace(
+            "    hash :: unit -> i64u\n",
+            "    hash :: unit -> i64u\n    \"superclass\" superclass :: unit -> ObjC.Class\n",
+        ),
+    );
+    let report = api_diff::compare(&old, &added);
+    assert_eq!(report.breaking(), 0, "{report:?}");
+    assert_eq!(report.changes.len(), 1, "{report:?}");
+    // A removed member, another selector or type, another base, `sync`, another runtime name,
+    // a category's member, and the ownership of an extern function's result break callers.
+    for (label, from, to) in [
+        ("removed", "    hash :: unit -> i64u\n", ""),
+        ("selector", "    hash :: unit", "    \"hashValue\" hash :: unit"),
+        ("type", "hash :: unit -> i64u", "hash :: unit -> i64"),
+        ("class-method", "    hash :: unit", "    class hash :: unit"),
+        ("sync", "extern class NSObject", "extern class sync NSObject"),
+        (
+            "runtime-name",
+            "extern class NSObject",
+            "extern \"NSProxy\" class NSObject",
+        ),
+        ("category", "    \"isProxy\" is_proxy :: unit -> bool\n", ""),
+        ("ownership", "@returns_retained\n", ""),
+    ] {
+        assert!(base.contains(from), "{label}");
+        let changed = api_of(&format!("api-{label}"), &base.replace(from, to));
+        let report = api_diff::compare(&old, &changed);
+        assert!(report.breaking() >= 1, "{label}: {report:?}");
+    }
+    let report = api_diff::compare(&old, &api_of("api-same", base));
+    assert!(report.changes.is_empty(), "{report:?}");
+}
+
+#[test]
+fn documents_a_class_with_its_members() {
+    let root = temp_project(
+        "doc",
+        &[(
+            "Cocoa.tz",
+            "\
+/// The root class.
+extern class NSObject : ObjC.Object {
+    /// Allocates an instance.
+    class alloc :: unit -> Self
+    \"isProxy\" is_proxy :: unit -> bool
+}
+
+/// More of NSObject.
+extern category Extras : NSObject {
+    hash :: unit -> i64u
+}
+",
+        )],
+    );
+    let out = root.join("out");
+    let output = Command::new(bin())
+        .arg("doc")
+        .arg(&root)
+        .arg("-o")
+        .arg(&out)
+        .env("TSUZURI_CACHE_DIR", "")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let page = fs::read_to_string(out.join("Cocoa.md")).unwrap();
+    assert!(page.contains("extern class NSObject : ObjC.Object {"), "{page}");
+    assert!(page.contains("    class alloc :: unit -> Self"), "{page}");
+    assert!(page.contains("    \"isProxy\" is_proxy :: unit -> bool"), "{page}");
+    assert!(page.contains("extern category Extras : NSObject {"), "{page}");
+    assert!(page.contains("The root class."), "{page}");
+    assert!(page.contains("More of NSObject."), "{page}");
     fs::remove_dir_all(root).ok();
 }

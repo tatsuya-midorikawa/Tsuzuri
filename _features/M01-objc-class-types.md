@@ -7,9 +7,9 @@
 | 規模 | L（Phase に分けない 1 PR。構文と符号化、型の性質と継承の木、所有と drop、`extern def` の位置、組み込みのモジュール `ObjC`、classref・selref・モジュールのフラグ、`-lobjc`、診断・テスト・文書） |
 | 依存 | ([M22](_completed/M22-attribute-after-bodyless-extern-def.md)), ([M20](_completed/M20-macos-framework-link-inputs.md))（M22 が後なら `@returns_retained` を `signature` の先読みに足す。M20 は同梱の zig で `-lobjc` を探す段だけ） |
 | 後続 | [M02](M02-objc-typed-message-send.md), [M04](M04-objc-blocks.md), [M07](M07-apple-sdk-bindgen-and-package.md), [M10](M10-objc-autorelease-pools.md), [M23](M23-objc-out-parameters-and-weak-references.md)（弱い後続: [M06](_completed/M06-extern-data-symbols-and-zutf8string.md), [M09](M09-main-thread-dispatch-and-handles.md), [M12](M12-gpu-presentation-to-window.md), [M17](_completed/M17-macos-min-version-and-weak-import.md)） |
-| 状態 | todo |
+| 状態 | done（2026-11-27。`extern class`・`ObjC`・所有・`@returns_*`・`@weak` のクラス・データシンボルの物体・監査・`-lobjc`。「実装と検証（2026-11-27）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（ObjC を型安全に連携する仕組みがない。id と SEL は型のない i64 で、誤りは実行時の SIGSEGV か abort になる）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′。README の「採用しない改善」の「クラス継承」の行への注記を含む。ホストのクラスの階層を型に写すだけで、Tsuzuri の型に継承は入れない。決定事項 D8）は承認済み（2026-11-26）。要承認: D-55 の登録（予約語 `class` の `extern` の後の新しい位置、`extern class` の後の文脈キーワード `sync`、組み込みのモジュール `ObjC`（`RESERVED_MODULES` が現在の値 + 1）、属性 `@returns_retained`・`@returns_not_retained`。D3・D9）と、`E1008` の kind `abi_apple_only`（D10）。決定事項 D1（既定のスレッドの性質）・D3（属性の名前）が要承認。ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′。README の「採用しない改善」の「クラス継承」の行への注記を含む。ホストのクラスの階層を型に写すだけで、Tsuzuri の型に継承は入れない。決定事項 D8）は承認済み（2026-11-26）。要承認: D-55 の登録（予約語 `class` の `extern` の後の新しい位置、`extern class` の後の文脈キーワード `sync`、組み込みのモジュール `ObjC`（`RESERVED_MODULES` が現在の値 + 1）、属性 `@returns_retained`・`@returns_not_retained`。D3・D9）と、`E1008` の kind `abi_apple_only`（D10）。決定事項 D1（既定のスレッドの性質）・D3（属性の名前）が要承認。ほかは既定案。**D1・D3・D9・D10 は 2026-11-27 に承認済み（D-67 の委任で決定）**: 利用者の依頼「実装を進めるうえで何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」に基づき、どれもチケットの推奨の案で決めた（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「委任による決定（2026-11-27）」） |
 | 改善する劣位 | Swift・Objective-C（clang の ARC）比: AppKit・Foundation の物体を型で区別できない。id・SEL・Class は型のない `i64` で、綴りの誤りは `unrecognized selector` の abort（134）、取り違えは SIGSEGV（139）になる。retain と release は手で数え、`Drop` の record で包むしかない |
 | 手本にする既存実装 | `src/parser.rs` の `Parser::extern_declaration`（W18 の `copy`・`local`、W24 の `view` の分岐）と `attributes`。`src/check.rs` の `extern type` の登録と `Type::Handle` の性質の述語、W19 の `thread_bound` の門、`Builtin::RcGet`（引数を借りる結果）。`src/polymorph.rs` の `validate_instance`（制約 `AtomicValue` の型引数を kind `atomic_element_type`（`E1005`）で拒む）。`src/llvm_imports.rs` の `FunctionEmitter::host_call`、`src/llvm.rs` の `drop_value`・`validate_wasm_externs`、`src/llvm_debug.rs` の `with_codeview`、`src/driver.rs` の `-lws2_32`。章立ては [W25](W25-extern-interface-com.md) の仕様 1・2・5〜7。独立した参照は clang の `-fobjc-arc -S -emit-llvm`（GUIDE-LITE §2 規則 10） |
 | 主な影響ファイル | `src/{syntax,parser,syntax_codec,frontend_cache,formatter,docgen,api_diff,semantic,kg_capture,find,repl,doctest,guide_std,stdlib,check,polymorph,abi,pinned_rules,effects,pure_rules,capabilities,llvm,llvm_imports,llvm_debug,llvm_escape,driver,test_runner,diagnostic_kinds}.rs`, `src/kg/ids.rs`, `src/kg/effects.rs`, `src/llvm_objc.rs`（新規）, `src/explain/codes/E1008.md`, `tests/objc_classes.rs`（新規）, `tests/objc_classes.mjs`（新規）, `tests/objc_classes_host.m`（新規）, `tests/fixtures/objc_classes/Main.tz`（新規）, `.github/workflows/targets.yml`, `docs/language.md`, `docs/architecture.md`, `docs/stability.md`, `_tsuzuri/language-reference/compiler/objective-c.md`（新規）, `_tsuzuri/language-reference/index.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/values-and-functions/attributes.md`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/compiler/webassembly.md`, `_tsuzuri/language-reference/organizing-tsuzuri/modules.md`, `_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md`, `_tsuzuri/language-reference/languages/strategy.md`, `_features/README.md` |
@@ -517,19 +517,56 @@ extern class sync NSNumber : NSObject
 
 | ID | 決定 | 採らない案 | 理由 | 状態 |
 | --- | --- | --- | --- | --- |
-| D1 | 既定のスレッドの性質は W19 の `local`。`sync` は Send・Sync（`NS_SWIFT_SENDABLE` のクラス向け。M07 が写す）。明示の `local` は書かない。`main` は M09 の Phase 2 | 既定を Send（`extern type` と同じ）か `sync` にする。`local` の明示を求める | AppKit の物体を tzroutine へ送る誤りを型で止める最も保守的な既定。前 2 つは非スレッド安全な物体を別のスレッドで release させる。明示は綴りを 2 つにする | 要承認（承認前は着手しない） |
+| D1 | 既定のスレッドの性質は W19 の `local`。`sync` は Send・Sync（`NS_SWIFT_SENDABLE` のクラス向け。M07 が写す）。明示の `local` は書かない。`main` は M09 の Phase 2 | 既定を Send（`extern type` と同じ）か `sync` にする。`local` の明示を求める | AppKit の物体を tzroutine へ送る誤りを型で止める最も保守的な既定。前 2 つは非スレッド安全な物体を別のスレッドで release させる。明示は綴りを 2 つにする | 承認済み（D-67 の委任で決定、2026-11-27） |
 | D2 | `HandleKind` に `ObjcLocal`・`ObjcSync` を足し、クラスの情報は脇の表に置く。述語で 28 か所を書き換える | `Type` に variant を足す。`Local` を再利用して脇の表だけで区別する | 前者は `Type` の大きさとすべての `match` を変える（S1）。後者は `sync`（所有・Send・Sync・drop）を表せない | 既定案（実装者はこの案に従う） |
-| D3 | 属性の名前は `@returns_retained`・`@returns_not_retained`。M01 は `extern def` の前、M02 がメンバーの前 | `@ns_returns_retained`、`@owned`、結果の包み `Retained<C>` | `ns` は Foundation の接頭辞で CF の注釈と食い違う。`@owned` は `own` の規約と紛らわしい。包みは型の登録が要り署名が長い | 要承認（承認前は着手しない） |
+| D3 | 属性の名前は `@returns_retained`・`@returns_not_retained`。M01 は `extern def` の前、M02 がメンバーの前 | `@ns_returns_retained`、`@owned`、結果の包み `Retained<C>` | `ns` は Foundation の接頭辞で CF の注釈と食い違う。`@owned` は `own` の規約と紛らわしい。包みは型の登録が要り署名が長い | 承認済み（D-67 の委任で決定、2026-11-27） |
 | D4 | retain と release は素の `objc_retain`・`objc_release` の呼び出し（+0 の結果の受け取りは D6） | `llvm.objc.*` の intrinsic の呼び出しと ObjCARC のパス | clang は ARC のパスを `-fobjc-arc` のときだけ足し、`.ll` の compile では走らない。意味をパスに頼らず IR を決定的に保つ | 既定案（実装者はこの案に従う） |
 | D5 | `downcast` は `objc_opt_isKindOfClass` | `isKindOfClass:` を送る | clang 21 が 12.0 の target で出す形で、型付きの送信（M02）を要らない | 既定案（実装者はこの案に従う） |
 | D6 | +0 の結果は、呼び出しに `[ "clang.arc.attachedcall"(ptr @llvm.objc.retainAutoreleasedReturnValue) ]` を付けて受ける（clang 21 と同じ形）。`llvm.objc.*` の名前はこの被演算子の `declare` 1 行だけで、呼び出さず、ObjCARC のパスも要らない。W14 の正準形で結果が `i64` に下がる呼び出しだけは、直後に素の `objc_retainAutoreleasedReturnValue` を呼ぶ | 素の `objc_retainAutoreleasedReturnValue` だけ。印の inline assembly（`mov fp, fp`）と素の呼び出し。`objc_retain` | 「現状」8 で、素の呼び出しは Apple clang 21・Homebrew clang 21.1.8 の `-O0`・`-O3` のどれでもハンドシェイクが効かず、+0 の物体がすべてプールに入った。印は結果を後で使うと spill で隣でなくなった。bundle はどの場合も効き、TZ08 の包みの中でも `call` と隣のまま残る。LLVM の検証器は `i64` の結果の bundle を拒む。`objc_retain` もプールに入る。性能の主張はしない（プールに残るかどうかだけを確かめた） | 既定案（実装者はこの案に従う） |
 | D7 | classref・selref・フラグは clang 21 と同じ形（`@llvm.compiler.used` を含む） | `@llvm.compiler.used` を使わず PB07 を保つ。実行時に `objc_getClass`・`sel_registerName` を呼ぶ | 前者は参照から外れ、classref の読み出しの畳み込みを防げるか確かめていない。後者は使うたびに費用がかかり、クラスの欠落がリンクで分からない | 既定案（実装者はこの案に従う） |
 | D8 | 言語の範囲は D-67 の分岐 1 の X′。README:116 の「クラス継承」に注記を置く（分岐 1）。README:116 と strategy.md:202 の文言は出荷の PR で改める（言語リファレンスは今のコンパイラがすることだけを書く。D-67 の「文言の改訂の時期」） | Y′（ObjC を入れない）、Z′（W14 の例外の属性だけ）。どちらも M01 を閉じる案で、分岐 1 で選ばれなかった | M02〜M05・M07・M10 の土台。D-63 は広げず別の決定にする | 承認済み（2026-11-26。D-67 の分岐 1） |
-| D9 | D-55 に `class` の新しい位置・文脈キーワード `sync`・組み込みのモジュール `ObjC`（`ObjC.tz` は `E1011`）を登録する | 新しい予約語、モジュール名 `ObjectiveC` | 予約語を足さない方針。`ObjectiveC` は長く、共通の綴りと食い違う | 要承認（承認前は着手しない） |
-| D10 | `E1008` の kind `abi_apple_only` を登録して共有する（D-67 の共通の規則で、最初に出荷したチケットが登録する。M01 より先に [M17](_completed/M17-macos-min-version-and-weak-import.md) が出荷していれば、その登録を使う） | `E2002` の `platform_unsupported_api`、`E2000` | 到達した使用を生成の段で拒む点で `abi_native_only` と同じ種類。前者は driver の OS の API の判定、後者は CLI と target の誤り | 要承認（承認前は着手しない） |
+| D9 | D-55 に `class` の新しい位置・文脈キーワード `sync`・組み込みのモジュール `ObjC`（`ObjC.tz` は `E1011`）を登録する | 新しい予約語、モジュール名 `ObjectiveC` | 予約語を足さない方針。`ObjectiveC` は長く、共通の綴りと食い違う | 承認済み（D-67 の委任で決定、2026-11-27） |
+| D10 | `E1008` の kind `abi_apple_only` を登録して共有する（D-67 の共通の規則で、最初に出荷したチケットが登録する。M01 より先に [M17](_completed/M17-macos-min-version-and-weak-import.md) が出荷していれば、その登録を使う） | `E2002` の `platform_unsupported_api`、`E2000` | 到達した使用を生成の段で拒む点で `abi_native_only` と同じ種類。前者は driver の OS の API の判定、後者は CLI と target の誤り | 承認済み（D-67 の委任で決定、2026-11-27） |
 | D11 | ObjC のフラグを持つ IR のリンクに driver が `-lobjc` を足す（5 か所） | 利用者が `-l objc` を書く。W17 の `@link` を待つ | 前者はすべての ObjC のプログラムが未定義の symbol で失敗する（`-lws2_32` の前例）。W17 は todo で、入れば寄せられる | 既定案（実装者はこの案に従う） |
 | D12 | 新しいコードは割り当てず仕様 7 の kind を足す。本体の `{` は `extern_class_syntax` で拒む | 本体だけの kind を作り M02 で消す | kind は消さない（`docs/stability.md:18`）。`extern_class_syntax` は M02 の後も基底の欠落などに残る | 既定案（実装者はこの案に従う） |
 | D13 | 物体を置ける位置は仕様 3 の表だけ。`ObjC.Class`・`ObjC.Sel` は静的コールバックの引数にも置ける | 所有する `C` を「消費」として許す。コールバックの引数に物体を許す | C の API はほとんど引数を消費せず、init の族は M02 が扱う。IMP の所有の規則（M03）なしに +0 の借用を保持させる | 既定案（実装者はこの案に従う） |
 | D14 | `sync` の基底を持つクラスは `sync` でなければならない | 派生を `local` にしてよい。`sync` を暗黙に受け継ぐ | 前者は `upcast` で `local` の物体を別のスレッドへ送れる。後者は宣言から読めない（GUIDE §1 規則 2） | 既定案（実装者はこの案に従う） |
 | D15 | `ObjC.*` は直接の呼び出しだけ | 関数値として許す | 型引数ごとに包みが要り、既定のクラスでは `pinned_function_value` がほとんどを拒む。例が出てから緩める | 既定案（実装者はこの案に従う） |
 | D16 | wasm と Apple でない native は、到達した使用だけを生成の段で拒む | 宣言の時点で拒む | 型検査は target を知らず、macOS のモジュールを含むプロジェクトを wasm や Linux で検査できなくなる（W25 の D11 と同じ） | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-27）
+
+Phase のないチケットなので、手順 1〜10 のすべてを 1 つのブランチ（`feat/m01-m02-w36-objc-and-by-value`。M02・W36 と同じ PR）で実装した。
+
+### 実装したもの
+
+- **構文**: `ExternClassDecl`（`Program.extern_classes`）と所有の属性の脇のリスト `Program.returns_retained`（`OwnershipAttribute`）。`extern ["実行時名"] class [sync] Name : Base`、`@returns_retained`・`@returns_not_retained`、`@weak`（M17 のクラスの段）。`FRONTEND_FORMAT` は 33 から 34。`tsuzuri fmt`（`:` の両側に空白）、`doc`、`api-diff`（見出し・実行時名・`sync`・基底・`@weak`・`@returns_retained` の変更は互換なし）、KG（`handle` の節点）、索引、REPL、doctest に足した。
+- **型**: `HandleKind::ObjcLocal`・`ObjcSync` と述語（`copy`・`owned`・`thread_bound`・`objc`・`syncable`）。`needs_drop` は `objc()` だけ真。`resolve_objc_classes` が基底・循環・深さ 32・`sync` の規則・実行時名を検査して `objc::ObjcClasses`（`CheckedModule::objc`）に写す。`ObjC.Object`・`ObjC.Class`・`ObjC.Sel` は名前表の最後に登録した組み込みのハンドル。`thread_bound` は `sync` でないクラスの宣言か `ObjC.Object` の解決でも真。
+- **組み込み**: `ObjC.retain`・`upcast`・`upcast_owned`・`downcast`・`sel`（`Builtin::ALL` は 378 から 384。M02 の `ObjC.literal` を含む）。型引数・祖先・セレクターの検査は `validate_objc_builtins`。
+- **ABI**: `abi::objc_extern_misuse`・`reaches_objc`・`objc_object_result`。`export def`・`@c_layout` の field・`FnPtr.of`・データシンボルの位置の検査。M06 のデータシンボルは物体（`C`・`Maybe<C>`）を retain して読む。
+- **生成**（`src/llvm_objc.rs`）: classref・methname・selref・`@llvm.compiler.used`・6 つのモジュールフラグ（`-g` の行に併合）、`objc_release` の drop、`objc_retain`、`objc_opt_isKindOfClass`、+0 の結果の `clang.arc.attachedcall`（W14 で `i64` に下がる結果だけ素の `objc_retainAutoreleasedReturnValue`）、`declare` の 1 行の規則、`@weak` のクラスの検査、`validate_objc_target`。
+- **driver**: `objc_link_libraries`・`add_objc_libraries`（W17 の system library に `objc` を足す）。同梱のツールチェーンでは M20 の SDK の探索を libobjc にも使う（`prepare_link_extras`）。
+- **効果・権限・監査**: `ObjC.retain`・`ObjC.downcast` と物体の drop は効果 `extern`（`objc-release`）。`tsuzuri audit` はクラスごとに行を出し、`W1010` は `@trusted` のないクラスの使用に出る。
+
+### 検証
+
+- `cargo test --locked --test objc_classes`: 17 件が通過（受理・拒否の各 kind・性質・clang の参照と同じ形の IR・重複する `declare`・`-g`・TZ08 の包み・target・`@weak`・データシンボル）。期待の IR は clang の参照（「現状」6・8）から手で書いた。
+- `node tests/objc_classes.mjs target/debug/tsuzuri`（arm64 macOS 27.2、Apple clang 21）: 32 検査が通過。`-O0`・`-O3` の 11 case と `nil_trap`、目的ファイルの `__objc_classrefs`・`__objc_selrefs`・`__objc_imageinfo`、`--allocator counting`、同梱のツールチェーン（zig・lld）でのリンクと実行。期待はホスト（`tests/objc_classes_host.m`）の dealloc の数から書いた。`handshake` は pool の pop の前に 0 になった。
+- 早見のプログラムは `-O0`・`-O3` で `42 0` を出す。`-l objc` は要らない。
+- T1・T2 の結果は PR の説明にまとめた（M02・W36 と同じ実行）。
+
+### チケットから外れた判断
+
+- **E2E のプログラムの置き場**: `tests/fixtures/objc_classes/` でなく `tests/objc/classes/` に置いた。`tests/fixtures/` のディレクトリは、リポジトリ全体のテスト（`llvm::split` の `splits_the_programs_of_the_repository`、`tests/llvm_handoff.rs`、`tests/lto.rs`）がホストの target でビルドするので、Apple の target でしか到達できないプログラムを置くと、ほかのホストで `abi_apple_only` になる。
+- **`ObjC.*` の下げ方**: `retain`・`upcast`・`upcast_owned`・`downcast` は、ほかの組み込みと同じく `$builtin` の包みを通る（`upcast` は `-O0` で包みの呼び出しが残る。意味は同じ）。`ObjC.sel` はコンパイル時の文字列を呼び出し地点で読むので、`FnPtr.of` と同じく包みにしない。
+- **基底の `ObjC.Class`・`ObjC.Sel` と一般の型**: 組み込みの 3 つの型は `Names::handles` に登録した（型の式の解決で先に引くだけでは、公開 API の検査や別名の展開など `named_type` を通る経路で未知の型になった）。
+- **`@weak` のクラス**（M17 が後のチケットに残した段）と **データシンボルの物体**（M06 が残した段）を、このチケットで実装した。
+- **PB07**: `@llvm.compiler.used` で `-O0` の分割が外れるのは、Objective-C を使うプログラムに限られることを確かめた（`tests/objc/` のプログラムは分割器のテストの対象外に置いた）。時間の閾値は置いていない。
+
+### 更新した文書
+
+`docs/language.md`（「Objective-C のクラスとメッセージ送信」、予約モジュール名、診断の表）、`docs/architecture.md`（「Objective-C の連携（M01・M02）」）、`docs/stability.md`、`README.md`、`src/explain/codes/E1008.md`。Tsuzuri-Reference: `docs/compiler/objective-c.md`（新規）、`docs/index.md`、`docs/compiler/native-interop.md`・`platforms.md`・`webassembly.md`・`diagnostics.md`、`docs/expressions/contracts-and-attributes.md`、`docs/modules/namespaces-and-modules.md`、`docs/stdlib/conventions.md`。
+
+### 変更したファイル
+
+`src/{syntax,parser,syntax_codec,frontend_cache,formatter,docgen,api_diff,semantic,kg_capture,find,repl,doctest,guide_std,stdlib,check,polymorph,closures,abi,pinned_rules,effects,pure_rules,capabilities,llvm,llvm_imports,driver,test_runner,diagnostic_kinds,lib}.rs`、`src/kg/effects.rs`、`src/objc.rs`（新規）、`src/llvm_objc.rs`（新規）、`src/explain/codes/E1008.md`、`tests/objc_classes.rs`・`tests/objc_classes.mjs`・`tests/objc_classes_host.m`・`tests/objc/classes/Main.tz`（新規）、`.github/workflows/targets.yml`、上の文書。

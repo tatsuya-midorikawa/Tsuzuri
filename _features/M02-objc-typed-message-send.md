@@ -7,9 +7,9 @@
 | 規模 | XL（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | [M01](M01-objc-class-types.md), ([W36](W36-c-layout-by-value.md))（Phase 2 は W36 の Phase 2 と、W36 の停止条件 S1 の選択と、決定事項 D14 の承認が要る。D-67 の分岐 4 は承認済み） |
 | 後続 | [M03](M03-objc-classes-defined-in-tsuzuri.md), [M05](M05-objc-exception-boundary.md), [M07](M07-apple-sdk-bindgen-and-package.md), [M23](M23-objc-out-parameters-and-weak-references.md)（弱い後続: [M04](M04-objc-blocks.md), [M10](M10-objc-autorelease-pools.md), [M12](M12-gpu-presentation-to-window.md), [M18](M18-intel-mac-and-universal2.md)） |
-| 状態 | todo |
+| 状態 | done（2026-11-27。Phase 1・2: メンバー・カテゴリー・`Self`・族・`ObjC.literal`・`@c_layout` の値渡しと値返し。「実装と検証（2026-11-27）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（objc_msgSend を上位形と 0 埋めで呼ぶしかない。f64・構造体の結果は method_invoke か NSInvocation。NSRect は f64 4 個に分解。BOOL の幅の誤り）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 4（(a)。W36 を Phase 2 まで実装することを人間が求めた）は承認済み（2026-11-26）。要承認: D-55（`extern category` の文脈キーワード `category`、メンバーの先頭の予約語 `class`、型の文脈キーワード `Self`、`ObjC.literal`）。決定事項 D1〜D4 が要承認（Phase 2 は D14 も要承認。W36 の停止条件 S1 の選択も未決）、ほかは既定案 |
+| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 4（(a)。W36 を Phase 2 まで実装することを人間が求めた）は承認済み（2026-11-26）。要承認: D-55（`extern category` の文脈キーワード `category`、メンバーの先頭の予約語 `class`、型の文脈キーワード `Self`、`ObjC.literal`）。決定事項 D1〜D4 が要承認（Phase 2 は D14 も要承認。W36 の停止条件 S1 の選択も未決）、ほかは既定案。**D1〜D4・D14 と Phase 2 の実装は 2026-11-27 に承認済み（D-67 の委任で決定）**: 利用者の依頼「実装完了までに複数フェーズある場合には、すべてのフェーズを完了させること」「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」に基づき、どれもチケットの推奨の案で決めた。W36 の S1 は A（`ref` のない `@c_layout` record を値渡しにする互換を破る変更）で、メンバーの値渡しも同じ綴り（[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「委任による決定（2026-11-27）」） |
 | 改善する劣位 | Objective-C・Swift・Rust（objc2 クレート）比: Cocoa のメソッドを宣言どおりの型で呼べない。今は `objc_msgSend` を 1 つの上位形にそろえて空きを 0 で埋め、f64 と構造体の結果を `method_invoke`・`NSInvocation` で受け、NSRect を f64 4 個に分け、BOOL の結果を下位 8 bit に切る（E12 D13、[W14](_completed/W14-extern-multiple-declarations.md) の同一形の規則） |
 | 手本にする既存実装 | 構文: `src/parser.rs` の `Parser::extern_declaration`（4807 行〜）と `instance` の本体。呼び出しの形: [W25](W25-extern-interface-com.md) の仕様 3（`I.m :: ref I -> …`、`com_method_not_called`、`host_call` の共有）。引数の下げ方: `src/llvm_imports.rs` の `FunctionEmitter::host_call`（65 行〜）。宣言の 1 行: `src/llvm_imports.rs:339-373`。literal の引数: `src/check.rs` の `validate_zstring_literals`（10619 行）。ブロッキング: `src/llvm.rs` の `extern_symbols`（1801 行）・`with_blocking_externs`（1840 行）。clang の参照との突き合わせ: [W36](W36-c-layout-by-value.md) の D4 |
 | 主な影響ファイル | `src/syntax.rs`・`src/parser.rs`・`src/syntax_codec.rs`・`src/frontend_cache.rs`・`src/formatter.rs` ほか `grep -rln extern_types src` の全件、`src/check.rs`・`src/abi.rs`・`src/objc.rs`（新規）・`src/llvm.rs`・`src/llvm_imports.rs`・`src/llvm_objc.rs`（M01 が作る。無ければ新規）・`src/effects.rs`・`src/pure_rules.rs`・`src/kg/effects.rs`・`src/capabilities.rs`・`src/pinned_rules.rs`・`src/diagnostic_kinds.rs`・`src/explain/codes/E1008.md`、`tests/objc_send.rs`（新規）・`tests/objc_send.mjs`（新規）・`tests/objc_send_host.m`（新規）・`tests/objc_send_reference.m`（新規）・`tests/fixtures/objc_send/Main.tz`（新規）・`tests/fixtures/objc_send_appkit/Main.tz`（新規）、`_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）・`_tsuzuri/language-reference/compiler/native-interop.md`・`_tsuzuri/language-reference/values-and-functions/attributes.md`・`_tsuzuri/language-reference/compiler/diagnostics.md`・`_tsuzuri/language-reference/built-in-types-and-modules/argument-order.md`・`docs/language.md`・`docs/architecture.md`・`README.md` |
@@ -602,10 +602,10 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | メンバーの構文は `[doc] [attrs] ["class"] [selector] name :: Type`（改行か `;`）。セレクターは引数のないメンバーでだけ省略できる。メンバーは `C.m :: ref C -> …` で、名前は W25 の D3 と同じく `C.m`・`Module.C.m` で解決する | 正確なセレクターを文字列で持ち、Tsuzuri の名前を別に付ける。W25 と同じ形。採らない案: 名前からセレクターを作る規則（逆写像が一意でなく `URLForResource:` の大文字が崩れる）、Swift の引数ラベル（新しい構文）、`@selector("…")` 属性（長く、D-53 の登録も要る）、メンバーごとの `extern "objc_msgSend"` と W14 の除外（分岐 1 で選ばれなかった Z′。受け手と所有の型の保護がない） | 要承認（承認前は手順 2 に着手しない） |
-| D2 | クラスメソッドの印はメンバーの先頭の予約語 `class`（Swift の `class func`） | 新しい語が要らない。採らない案: `static`（新しい文脈キーワード）、ObjC の `+`・`-`（行頭の記号が単項の演算子と紛れる）、`class { … }` の入れ子 | 要承認（承認前は手順 2 に着手しない） |
-| D3 | `Self` はメンバーの結果の `Self`・`Maybe<Self>` だけに書ける文脈キーワードで、呼び出しに使った型名に置き換える。メンバーの中のほかの位置は `E0002`、メンバーの外は今のまま | instancetype（clang と同じ）。メンバーの外を変えないので、使わないプログラムの診断は変わらない。採らない案: クラス名の明示（派生で呼ぶと基底が返る）、型引数（`E1015` と多相の機構が要る） | 要承認（承認前は手順 2 に着手しない） |
-| D4 | カテゴリーは `@trusted extern category Name : Class { … }` の名前空間で、ほかのモジュールの型を開き直さない | モジュールが型を持つ規則と `api-diff` を保つ。採らない案: 2 つ目の `extern class` 宣言にメンバーを足す（同じ型の宣言の衝突）、`NSString.m` と型名で呼ぶ（型を開き直す）、`extension`（新しい語） | 要承認（承認前は手順 2 に着手しない） |
+| D1 | メンバーの構文は `[doc] [attrs] ["class"] [selector] name :: Type`（改行か `;`）。セレクターは引数のないメンバーでだけ省略できる。メンバーは `C.m :: ref C -> …` で、名前は W25 の D3 と同じく `C.m`・`Module.C.m` で解決する | 正確なセレクターを文字列で持ち、Tsuzuri の名前を別に付ける。W25 と同じ形。採らない案: 名前からセレクターを作る規則（逆写像が一意でなく `URLForResource:` の大文字が崩れる）、Swift の引数ラベル（新しい構文）、`@selector("…")` 属性（長く、D-53 の登録も要る）、メンバーごとの `extern "objc_msgSend"` と W14 の除外（分岐 1 で選ばれなかった Z′。受け手と所有の型の保護がない） | 承認済み（D-67 の委任で決定、2026-11-27） |
+| D2 | クラスメソッドの印はメンバーの先頭の予約語 `class`（Swift の `class func`） | 新しい語が要らない。採らない案: `static`（新しい文脈キーワード）、ObjC の `+`・`-`（行頭の記号が単項の演算子と紛れる）、`class { … }` の入れ子 | 承認済み（D-67 の委任で決定、2026-11-27） |
+| D3 | `Self` はメンバーの結果の `Self`・`Maybe<Self>` だけに書ける文脈キーワードで、呼び出しに使った型名に置き換える。メンバーの中のほかの位置は `E0002`、メンバーの外は今のまま | instancetype（clang と同じ）。メンバーの外を変えないので、使わないプログラムの診断は変わらない。採らない案: クラス名の明示（派生で呼ぶと基底が返る）、型引数（`E1015` と多相の機構が要る） | 承認済み（D-67 の委任で決定、2026-11-27） |
+| D4 | カテゴリーは `@trusted extern category Name : Class { … }` の名前空間で、ほかのモジュールの型を開き直さない | モジュールが型を持つ規則と `api-diff` を保つ。採らない案: 2 つ目の `extern class` 宣言にメンバーを足す（同じ型の宣言の衝突）、`NSString.m` と型名で呼ぶ（型を開き直す）、`extension`（新しい語） | 承認済み（D-67 の委任で決定、2026-11-27） |
 | D5 | selref と直接の `objc_msgSend` を使い、スタブ `objc_msgSend$<sel>` は採らない | スタブはリンカーの合成が要り、同梱の zig と lld で使えるか分からない。意味は同じ（大きさの最適化） | 既定案（実装者はこの案に従う） |
 | D6 | 速い経路（`objc_alloc`・`objc_alloc_init`・`objc_opt_new`、`mov fp, fp` の印、`nonlazybind`）は Phase 1 で使わず、同じ意味のものを測ってから個別に入れる。+0 の結果の受け取り方は M01 の D6 に従い、送信にも `clang.arc.attachedcall` の bundle を付ける（`extern def` の結果と送信の結果で受け取り方を分けない） | 性能の主張は測定の後（AGENTS.md）。`mov fp, fp` の印は clang の -O0 と同じだが、結果を後で使うと spill で送信の隣でなくなる（M01 の「現状」8）。bundle は M01 の D6 が `extern def` の +0 の結果に決めた形で、物体が pool に残るかどうかという意味の側の理由で選ぶ（性能の主張ではない）。同じ問いを 2 つのチケットで別に決めない（AGENTS.md の「同じ意味の形が別の経路を選ばない」）。採らない案: clang の -O1 と同じ速い経路を最初から全部使う（測定のない性能の主張になる）。送信だけ素の `objc_retainAutoreleasedReturnValue` にする（`extern def` の結果と pool の振る舞いが分かれる） | 既定案（実装者はこの案に従う） |
 | D7 | ObjC の位置の C の型は仕様 5 の表。`extern def` は変えない | `objc/message.h` は正確な型を求め、clang も同じ型で呼ぶ。採らない案: `extern def` の `i32` の正規化の流用（スタックの配置と `BOOL *` の幅が違う） | 既定案（実装者はこの案に従う） |
@@ -615,8 +615,47 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 | D11 | `objc_msgSend` の `declare` は 1 行で、利用者の `declare` があれば使い回す（仕様 6） | LLVM は型の違う 2 つ目の `declare` を拒む（D-67 の共通の規則）。採らない案: `objc_msgSend` を予約された symbol にする（今日の手書きの宣言が壊れる）、送信ごとに別名の `declare` を出す（リンク名が C の symbol でなくなる） | 既定案（実装者はこの案に従う） |
 | D12 | 送信をブロッキングの包みで囲む（仕様 8） | モーダルな送信の間に P を手放す（`extern def` と同じ）。採らない案: 囲まない（`runModal` の間ほかの tzroutine が止まる）、retain と release も囲む（費用だけが増える） | 既定案（実装者はこの案に従う） |
 | D13 | `ObjC.literal` は clang の CFSTR と同じ構造体に下げ、結果の型は期待型の `NSString` とその基底の連鎖のクラスか `ObjC.Object`。引数は補間のない literal だけ | 確保も呼び出しもない。定数は変更できないので `NSMutableString` などの派生として型付けしない。採らない案: 実行時の `CFStringCreateWithCharacters`（評価ごとの確保と release）、`__CFStringMakeConstantString`（予約された `__`） | 既定案（実装者はこの案に従う） |
-| D14 | Phase 2 は W36 の Phase 2 の `classify` をメンバーに使い、M02 は分類を持たない。分岐 4 の (b)（HFA だけを先に扱って後で置き換える）と、どちらも選ばれない場合（Phase 2 に着手しない）は、分岐 4 が (a) に決まったので当たらない。W36 の S1 で別の綴りが選ばれたらメンバーも合わせる | 分類は 1 か所（W36 の D4）。NSRect・NSPoint・NSSize は HFA で、AppKit の大半は (b) でも書ける。採らない案: M02 だけの AAPCS64 の分類（重複）、f64 に分けた書き方（数の検査と型の保護を失う） | 要承認（D-67 の分岐 4 は (a) で承認済み（2026-11-26）。この決定と W36 の S1 の選択の前は Phase 2 に着手しない） |
+| D14 | Phase 2 は W36 の Phase 2 の `classify` をメンバーに使い、M02 は分類を持たない。分岐 4 の (b)（HFA だけを先に扱って後で置き換える）と、どちらも選ばれない場合（Phase 2 に着手しない）は、分岐 4 が (a) に決まったので当たらない。W36 の S1 で別の綴りが選ばれたらメンバーも合わせる | 分類は 1 か所（W36 の D4）。NSRect・NSPoint・NSSize は HFA で、AppKit の大半は (b) でも書ける。採らない案: M02 だけの AAPCS64 の分類（重複）、f64 に分けた書き方（数の検査と型の保護を失う） | 承認済み（D-67 の委任で決定、2026-11-27。W36 の S1 は A） |
 | D15 | target の誤りは `build` で出す（仕様 8） | 同じプロジェクトを wasm と Linux でも検査できる（W25 の D11）。既定の WASM は import なし（D-18）。採らない案: `check` で宣言を拒む（型検査は target を知らず、macOS のモジュールを含むプロジェクトをほかの target で検査できない） | 既定案（実装者はこの案に従う） |
 | D16 | メンバーの受け手を先に置く形は D-59 の対象の外と文書に書く | 利用者が宣言する `extern` で std の関数ではない（W25 と同じ）。`ObjC.literal` は 1 引数。採らない案: 受け手を最後に置く（`[recv sel:a]` と宣言の順が食い違い、W25 の `I.m` とも揃わない） | 既定案（実装者はこの案に従う） |
 | D17 | メンバーは直接の完全な呼び出しだけ | `Self`・classref・init の受け手が地点の型で決まり、関数本体と関数値の ABI を作らない（W25 の D6）。採らない案: メンバーごとに関数本体を生成して関数値を許す（派生の名前ごとに本体が要る） | 既定案（実装者はこの案に従う） |
 | D18 | 新しい診断コードは割り当てず、仕様 9 の kind を足す。`abi_record_by_value_target` は W36 と、`abi_apple_only` は M01 と共有する | D-51、E12 D12 の前例。セレクターの形は M01 の `objc_invalid_selector`（`E1008`）を共有する（kind は 1 つのコードにしか属さない）。採らない案: 新しいコード、メンバーのセレクターだけの `E0002` の kind（同じ誤りに 2 つの kind） | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-27）
+
+Phase 1 と Phase 2 を、M01・W36 と同じブランチ（`feat/m01-m02-w36-objc-and-by-value`）・同じ PR で実装した。W36 の Phase 2（AAPCS64）を先に取り込んでから Phase 2 を入れたので、Phase 1 だけの状態（構造体の値が `abi_record_by_value_target` になる状態）は出荷していない。
+
+### 実装したもの
+
+- **構文**: `ExternClassDecl` の本体（`body`・`members: Vec<ObjcMember>`）、`ExternCategoryDecl`（`Program.extern_categories`）、メンバーの前の `@returns_*`、先頭の `class`、文字列のセレクター、結果の `Self`・`Maybe<Self>`（ほかの位置は `objc_self_position`）。メンバーは 1 つの宣言に 4,096 まで。
+- **型検査**: `objc::ObjcClasses` がメンバーとカテゴリーを持ち、連鎖の中の同じ名前を `duplicate_objc_member` にする。`validate_objc_member` がセレクターの形と長さ、`:` の数（`abi::objc_c_arguments`。buffer は 2 つ）、メッセージで運べる型（`abi::objc_member_types`）、所有の属性を検査する。族は `objc::method_family`（clang の規則。単体テストあり）。`ObjC.literal` は `validate_objc_literals`（引数）と `validate_objc_builtins`（期待型）。
+- **送信の表現**: メンバー `m` をクラス `C` で呼ぶ対ごとに、本体が `HostCall` で `HostImport::objc`（`objc::ObjcSend`）を持つ関数を宣言する（`declare_objc_sends`）。`HostImport::lowers_inline` が真なので、呼び出し地点で `FunctionEmitter::host_call` が下げる。`Checker::namespace_value` が `C.m`・`Module.C.m`・`Cat.m` を引く。
+- **生成**: `host_call` の中の差分だけ（受け手の後へのセレクターの差し込み、クラスメソッドの classref、`bool` と 8・16 bit の整数の幅、`ref mut bool` の 1 バイトの一時領域、`declare` を出さない）。`objc_msgSend` の `declare` は可変長の 1 行で、利用者の `declare` があれば使い回す。+0 の結果には M01 の D6 の bundle。init の族は受け手を消費する（所有する `C` の引数。送信の後に release しない）。`ObjC.literal` は clang の CFString と同じ構造体（ASCII は flags 1992、ほかは UTF-16 で flags 2000。同じ文字列は 1 つ）。
+- **Phase 2**: メンバーの `@c_layout` record の値は、W36 の `byvalue::classify`・`classify_call`・`by_value_slot`・`by_value_to_abi`・`by_value_from_abi` を `host_call` 経由でそのまま使う（M02 は分類を持たない。D14）。受け手とセレクターは、分類の前に引数の列へ入れるので、レジスターの数に数えられる。
+- **ブロッキング・効果・監査**: tzroutine を起動する native のプログラムでは `extern_symbols` が `objc_msgSend` を含み、送信が `tsuzuri_tz_blocking_enter`・`_exit` で包まれる。送信は効果 `extern` と権限 `ffi`。`tsuzuri audit` はクラスの行の `used` に送信を数え、カテゴリーごとに 1 行を出す。
+
+### 検証
+
+- `cargo test --locked --test objc_send`: 15 件が通過（構文と整形、拒否の各 kind、`:` の数、族、受け手と名前と型、`Module.C.m`、`call` の型、構造体、利用者の `declare` との併用、`ObjC.literal`、target、包み、監査と `W1010`、`api-diff`、`doc`）。`src/objc.rs` の単体テスト 3 件（セレクター・族・実行時名）。
+- `node tests/objc_send.mjs target/debug/tsuzuri`（arm64 macOS 27.2、Apple clang 21）: 90 検査が通過。
+  - **clang の参照との突き合わせ（S4）**: `tests/objc_send_reference.m` を `xcrun clang -target arm64-apple-macosx12.0 -fobjc-arc -fno-objc-msgsend-selector-stubs -fno-objc-convert-messages-to-runtime-calls -O0 -S -emit-llvm` で下げた 41 個の `objc_msgSend` の `call` の型（結果と各引数。`zeroext`・`signext`・`sret` を含む）が、同じ順に同じ送信をする `reference_calls` の `call` の型とすべて一致した。構造体は葉の列に平らにして比べる。
+  - **実行**: `-O0`・`-O3`、Apple の ld と同梱のツールチェーン（zig・lld）、`--allocator counting`。族と所有（ホストの生きている物体の数）、nil を返す init、`BOOL`・8/16/32 bit の境界の値、スタックに回る引数（整数 10 個）、buffer、`ref mut i64`・`ref mut bool`、物体と `Maybe<ref C>`、静的コールバック、クラスの物体、`ObjC.Sel` の引数、派生の名前と動的な分配、カテゴリー、構造体の結果 6 種と引数 8 種（d0〜d7 が尽きる HFA、整数のレジスターが尽きる `[2 x i64]`、48 バイトの `sret` と複写へのポインター）、tzroutine の中の送信。期待はホストの算術を JavaScript で書いた値。
+  - **Foundation・AppKit**: 早見のプログラム（`2.5 2.5 true 5 true`）、`ObjC.literal` の ASCII・空・日本語、`NSWindow` の `initWithContentRect:styleMask:backing:defer:`・`setTitle:`・`title`・`frame`・`contentRectForFrameRect:`・`isVisible`・`close`（ウィンドウは表示しない。ポリシーは Prohibited、defer、run loop は回さない）。
+- **測定（手順 8。閾値は置かない）**: arm64 macOS 27.2、`-O3`、同じホストの `-value`（`long` を返すだけのメソッド）を 5,000 万回送るループ。tzroutine を起動しないプログラム（包みなし）は user 0.10〜0.11 秒（1 送信あたり約 2 ns）、起動するプログラム（包みあり）は user 0.35 秒（約 7 ns）。包みは 1 送信あたり約 5 ns だった（3 回ずつ、同じ機械で同時にほかのビルドが走っている状態）。D6 の候補の速い経路は、`[[P alloc] init]` と解放を 2,000 万回くり返す C の比較で、`objc_alloc_init` が user 0.61〜0.63 秒、素の 2 つの送信が 0.66〜0.67 秒（1 個あたり約 2 ns の差）で、確保が支配的だった。速い経路は入れていない（D6 のまま）。
+
+### チケットから外れた判断
+
+- **`TypedExprKind::ObjcSend` を足さなかった**（設計の「型付き IR」）。送信は「呼び出し地点で下がる extern 関数」（`HostImport::objc`）で表した。所有権（受け手の借用、init の受け手のムーブ）・効果・`pinned`・権限・直接の呼び出しの検査（`validate_callbacks`）・W36 の分類が、extern 関数の既存の経路をそのまま通る（停止条件 S2 の「`host_call` を複製しない」を、式の種類ごと満たす）。`call` を出す所は `host_call` の 1 か所で、M05 はそこを `invoke` に替えられる。`ObjcMemberInfo` は解決済みの型でなく宣言（`syntax::ObjcMember`）を持ち、`Self` は対の関数を宣言するときに置き換える。
+- **継承したメンバーの関数は使うものだけ宣言する**。クラスが自分で宣言するメンバーの関数はいつも宣言し（宣言の検査を担う）、派生のクラスで継承したメンバーを呼ぶ対は、どこかの式が `C.m` と綴ったものだけを宣言する（宣言の数がクラスの数 × 継承したメンバーの数にならない）。
+- **E2E のプログラムの置き場**は `tests/objc/send/`・`tests/objc/foundation/`（M01 と同じ理由）。AppKit の段は `tests/objc/foundation/Main.tz` に入れ、`order_front_regardless` と `set_alpha_value` は使わずウィンドウを表示しない形にした（CI のランナーでも窓を出さない）。
+- **clang の参照**は `-O1` でなく `-O0` で下げ、`-fno-objc-convert-messages-to-runtime-calls` を足した（`alloc` を素の送信のまま比べるため。`-O1` は結果を使わない送信を消す）。Rust のテストでなく `tests/objc_send.mjs` が突き合わせる（clang と SDK が要るため）。
+- **E2E の case** はチケットの表と同じ内容を別の分け方にした（`families`・`inits`・`scalars`・`many`・`buffers`・`objects`・`classes`・`struct_results`・`struct_arguments`・`routine`・`reference`）。`wrong_selector`（abort）と `--backend fast` の case は足していない（どちらも今の挙動のまま）。
+- **Phase 1 の `abi_record_by_value_target`**: Phase 2 まで実装したので、メンバーの `@c_layout` の値は Apple の target で値渡しになり、この kind をメンバーが出すことはない（W36 の `byvalue::validate` は Apple でない target を先に `abi_apple_only` が止める）。
+
+### 更新した文書
+
+M01 と同じ（`docs/language.md` の同じ節、`docs/architecture.md`、`README.md` の「変更の種類別」、Tsuzuri-Reference の `docs/compiler/objective-c.md` ほか）。
+
+### 変更したファイル
+
+`src/{syntax,parser,syntax_codec,formatter,docgen,api_diff,check,abi,objc,closures,capabilities,llvm,llvm_imports,llvm_objc,diagnostic_kinds}.rs`、`tests/objc_send.rs`・`tests/objc_send.mjs`・`tests/objc_send_host.m`・`tests/objc_send_reference.m`・`tests/objc/send/Main.tz`・`tests/objc/foundation/Main.tz`（新規）、`.github/workflows/targets.yml`、文書。
