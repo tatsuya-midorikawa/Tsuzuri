@@ -177,3 +177,37 @@ export def break_traps_without_jump :: unit
 fn break_traps_without_jump =
     let value = break_skips_trap false
     ()
+
+export def direct_break :: own i64 -> i64
+fn direct_break limit =
+    let! start = IO.pure 0
+    let mut n = start
+    while true do
+        n = n + 1
+        if n >= limit then break
+    n
+
+export def direct_continue_owned :: own i64 -> i64
+fn direct_continue_owned count =
+    let! base = IO.pure 0
+    let mut total = base
+    for i in 0 ..< count do
+        let text = $"item-{i}"
+        if i % 3 == 0 then continue
+        if i == 10 then break
+        total = total + text.length
+    total
+
+export def direct_nested :: i64
+fn direct_nested =
+    let! seed = IO.pure 1
+    let mut total = 0
+    for i in 1 ..= 3 do
+        let mut j = 0
+        while true do
+            j = j + 1
+            if j > i then break
+            do! IO.pure ()
+            total = total + seed * 10
+        total = total + 1
+    total

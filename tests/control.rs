@@ -64,6 +64,47 @@ fn break_continue_type_contexts() {
 }
 
 #[test]
+fn break_continue_in_bodies_that_run_io_directly() {
+    let identity = "def Bind :: 'a -> ('a -> 'b) -> 'b\nfn Bind value next = next value\ndef Return :: 'a -> 'a\nfn Return value = value\n";
+    let main_repro = "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == 5 then break\n    do! IO.writeln $\"n={n}\"\n    n as i32\n";
+    accepts(main_repro);
+    let with_builder = analyze_modules(&[("Identity.tc", identity), ("Main.tz", main_repro)])
+        .unwrap_or_else(|error| panic!("{}: {}", error.code, error.message));
+    let ir = llvm::emit(&with_builder, llvm::Entry::Console).unwrap();
+    assert!(!ir.contains("@tz.fn.Identity.Bind"), "{ir}");
+
+    for source in [
+        "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    let mut sum = 0\n    while n < 10 do\n        n = n + 1\n        if n % 2 == 0 then continue\n        sum = sum + n\n    do! IO.writeln $\"sum={sum}\"\n    sum as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut sum = 0\n    for i in 1 ..= 10 do\n        if i > 4 then break\n        sum = sum + i\n    do! IO.writeln $\"sum={sum}\"\n    sum as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut sum = 0\n    for i in [1, 2, 3, 4, 5] do\n        if i == 2 then continue\n        if i == 5 then break\n        sum = sum + i\n    do! IO.writeln $\"sum={sum}\"\n    sum as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        do! IO.writeln \"tick\"\n        if n == 2 then break\n    n as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while n < 5 do\n        n = n + 1\n        if n == 4 then\n            do! IO.writeln \"stop\"\n            break\n        else\n            continue\n    n as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        match n with\n        | 5 -> break\n        | _ -> ()\n    do! IO.writeln \"done\"\n    n as i32\n",
+        "def main :: unit -> i32 = \\() ->\n    let! limit = IO.pure 7\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == limit then break\n    n as i32\n",
+        "def run :: unit -> unit = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        if n == 3 then break\n    do! IO.writeln \"ok\"\nrun ()\n",
+        "def run :: unit -> i64 = \\() ->\n    let mut n = 0\n    while true do\n        n = n + 1\n        do! IO.writeln \"step\"\n        if n == 3 then break\n    n\nrun ()\n",
+        "tzroutine {\n    let mut n = 0\n    while true do\n        n = n + 1\n        do! IO.writeln \"bg\"\n        if n == 2 then break\n}\n0\n",
+        "do! IO.writeln \"start\"\nlet mut n = 0\nwhile true do\n    n = n + 1\n    if n == 3 then break\nn\n",
+        "def main :: unit -> i32 = \\() ->\n    let mut total = 0\n    for i in 1 ..= 3 do\n        do! IO.writeln \"outer\"\n        let mut j = 0\n        while true do\n            j = j + 1\n            do! IO.writeln \"inner\"\n            if j == i then break\n        total = total + j\n    total as i32\n",
+    ] {
+        analyze(source)
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+    }
+
+    for source in [
+        "def run :: unit -> IO<unit> = \\() ->\n    do! IO.pure ()\n    while true do\n        do! IO.writeln \"x\"\n        break\nrun ()\n",
+        "def main :: unit -> i32 = \\() ->\n    do! IO {\n        while true do\n            do! IO.writeln \"x\"\n            break\n    }\n    0\n",
+        "def pick :: unit -> Maybe<i64> = \\() ->\n    let! _seed = Some 0\n    while true do\n        let! _x = Some 1\n        break\n    return 0\npick ()\n",
+        "def main :: unit -> i32 = \\() ->\n    while true do\n        tzroutine {\n            do! IO.writeln \"x\"\n            break\n        }\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    while true do\n        let f = \\() -> break\n        f ()\n    do! IO.writeln \"x\"\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    while true do\n        let _r = try { break; 0 } with | _ -> 1 finally ()\n        ()\n    do! IO.writeln \"x\"\n    0\n",
+        "def main :: unit -> i32 = \\() ->\n    do! IO.writeln \"x\"\n    break\n    0\n",
+    ] {
+        rejects(source, "E1023");
+    }
+}
+
+#[test]
 fn break_continue_ir_shapes() {
     for source in [
         "while true do break",

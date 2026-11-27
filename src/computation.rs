@@ -1274,7 +1274,13 @@ pub(super) fn check_implicit(
     let checked = if let Some(builder) = builder.text.strip_prefix("$implicit.body.") {
         checker.implicit_sequence(builder, body, expected)
     } else {
-        let outer_loop = std::mem::take(&mut checker.normal_loop_depth);
+        let forced = builder.text.strip_prefix("$implicit.root.");
+        // A built computation is a boundary: its statements end up in the builder's closures.
+        let outer_loop = if checker.runs_directly(forced, expected) {
+            checker.normal_loop_depth
+        } else {
+            std::mem::take(&mut checker.normal_loop_depth)
+        };
         let outer = checker
             .scopes
             .iter()
@@ -1282,12 +1288,7 @@ pub(super) fn check_implicit(
             .map(|local| (local.id, local.clone()))
             .collect();
         checker.scopes.push(BTreeMap::new());
-        let result = checker.implicit_root(
-            builder.text.strip_prefix("$implicit.root."),
-            body,
-            expected,
-            &outer,
-        );
+        let result = checker.implicit_root(forced, body, expected, &outer);
         checker.scopes.pop();
         checker.normal_loop_depth = outer_loop;
         result
@@ -1297,6 +1298,13 @@ pub(super) fn check_implicit(
 }
 
 impl Checker<'_> {
+    /// Whether an implicit computation runs its IO binds where it is written (`direct_root`): `forced`
+    /// is the builder name after `$implicit.root.`. Such a body is ordinary code of the enclosing
+    /// function, so a loop around it stays the target of its `break` and `continue` (W02).
+    fn runs_directly(&self, forced: Option<&str>, expected: Option<&Type>) -> bool {
+        forced == Some("$direct") || (forced.is_none() && self.direct_context(expected))
+    }
+
     /// A body whose known result type no computation builder produces (such as the
     /// `i32` of `def main :: unit -> i32`) runs its IO binds directly instead of building one.
     fn direct_context(&self, expected: Option<&Type>) -> bool {
@@ -1481,7 +1489,7 @@ impl Checker<'_> {
         expected: Option<&Type>,
         outer: &BTreeMap<usize, Local>,
     ) -> Result<TypedExpr, Diagnostic> {
-        if forced == Some("$direct") || (forced.is_none() && self.direct_context(expected)) {
+        if self.runs_directly(forced, expected) {
             return self.direct_root(Vec::new(), body, expected);
         }
         let entry = forced == Some("$entry");

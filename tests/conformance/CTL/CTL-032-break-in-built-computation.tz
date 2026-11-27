@@ -1,0 +1,10 @@
+def run :: unit -> IO<unit> = \() ->
+    do! IO.pure ()
+    while true do
+        do! IO.writeln "x"
+        break
+
+run ()
+
+// rule: CTL-032
+// expect: check-error E1023 line=5

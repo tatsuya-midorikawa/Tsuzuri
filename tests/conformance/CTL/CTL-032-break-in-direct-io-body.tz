@@ -1,0 +1,10 @@
+def main :: unit -> i32 = \() ->
+    let mut n = 0
+    while true do
+        n = n + 1
+        if n == 5 then break
+    do! IO.writeln $"n={n}"
+    0
+
+// rule: CTL-032
+// expect: stdout "n=5\n"
