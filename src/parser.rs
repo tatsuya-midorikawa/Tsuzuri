@@ -5822,6 +5822,7 @@ impl Parser<'_> {
             let modifier_kind = |word: &str| match word {
                 "copy" => Some(HandleKind::Copy),
                 "local" => Some(HandleKind::Local),
+                "main" => Some(HandleKind::Main),
                 _ => None,
             };
             let first = self.ident()?;
@@ -5834,9 +5835,15 @@ impl Parser<'_> {
                     && !self.newline_before_current()
                     && matches!(self.current().kind, TokenKind::Ident(_))
                 {
+                    // The text of W19 stays for the two modifiers that it knew.
+                    let message = if first.text == "main" || second.text == "main" {
+                        "an extern type takes at most one of 'copy', 'local' and 'main'; remove one"
+                    } else {
+                        "an extern type takes at most one of 'copy' and 'local'; remove one"
+                    };
                     return Err(Diagnostic::of(
                         DiagnosticKind::ExternTypeModifierConflict,
-                        "an extern type takes at most one of 'copy' and 'local'; remove one",
+                        message,
                         second.span,
                     ));
                 }
@@ -6024,15 +6031,34 @@ impl Parser<'_> {
         let first = self.ident()?;
         let modifier_follows =
             !self.newline_before_current() && matches!(self.current().kind, TokenKind::Ident(_));
-        let (sync, name) = match first.text.as_str() {
-            "sync" if modifier_follows => (Some(first.span), self.ident()?),
+        let (sync, main, name) = match first.text.as_str() {
+            "sync" | "main" if modifier_follows => {
+                let second = self.ident()?;
+                // `sync` and `main` exclude each other: a value is shared by every thread or
+                // bound to the main thread (M09).
+                if matches!(second.text.as_str(), "sync" | "main" | "local" | "copy")
+                    && !self.newline_before_current()
+                    && matches!(self.current().kind, TokenKind::Ident(_))
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExternTypeModifierConflict,
+                        "an extern class takes at most one of 'sync' and 'main', and no 'local' or 'copy'; remove one",
+                        second.span,
+                    ));
+                }
+                if first.text == "sync" {
+                    (Some(first.span), None, second)
+                } else {
+                    (None, Some(first.span), second)
+                }
+            }
             "local" | "copy" if modifier_follows => {
                 return Err(syntax(
-                    "an extern class takes no 'local' or 'copy': its values are bound to their thread unless the class is declared 'sync'",
+                    "an extern class takes no 'local' or 'copy': its values are bound to their thread unless the class is declared 'sync', or to the main thread when it is declared 'main'",
                     first.span,
                 ));
             }
-            _ => (None, first),
+            _ => (None, None, first),
         };
         if self.at(&TokenKind::Less) || self.at(&TokenKind::Equal) {
             return Err(syntax(
@@ -6077,6 +6103,7 @@ impl Parser<'_> {
             visibility,
             runtime_name,
             sync,
+            main,
             name,
             base,
             body,

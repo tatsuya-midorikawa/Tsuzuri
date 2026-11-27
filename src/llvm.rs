@@ -663,6 +663,8 @@ pub use objc::uses_objc;
 mod io;
 #[path = "llvm_list.rs"]
 mod list;
+#[path = "llvm_mainthread.rs"]
+mod mainthread;
 #[path = "llvm_math.rs"]
 mod math;
 #[path = "llvm_overflow.rs"]
@@ -1803,6 +1805,10 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
     output
 }
 
+/// The call-site attribute of a message that the main thread sends (M09 D15):
+/// `with_blocking_externs` does not make the call a blocking call.
+pub(crate) const MAIN_THREAD_CALL: &str = " \"tz-main-thread\"";
+
 /// Whether native extern calls must bracket with `tsuzuri_tz_blocking_enter`/`_exit` (TZ08, W16).
 fn blocking_externs(module: &CheckedModule, wasm: bool) -> bool {
     !wasm && (spawns(module) || scheduler_parallel(module))
@@ -1921,7 +1927,11 @@ pub(crate) fn with_blocking_externs(
                     output.push_str(line);
                     continue;
                 }
-                Some(callee) if bracket_depth == 0 && symbols.contains(callee) => {
+                Some(callee)
+                    if bracket_depth == 0
+                        && symbols.contains(callee)
+                        && !body.contains(MAIN_THREAD_CALL) =>
+                {
                     calls = true;
                     output.push_str("  call void @tsuzuri_tz_blocking_enter()\n");
                     output.push_str(line);
@@ -2169,6 +2179,7 @@ fn emit_program_in(
         overflow: crate::overflow::active().map(overflow_emit::Report::new),
         user_drops: std::rc::Rc::new(identity_drops(module, &emitted)),
         guard_callbacks_after_main: !wasm && entry == Entry::Console,
+        main_thread: std::rc::Rc::new(crate::check::main_thread_functions(module)),
         ..Globals::default()
     };
     if let Some((sources, optimized)) = instrumentation.debug {
@@ -2344,6 +2355,32 @@ entry:\n\
         );
         needs_trap_write = true;
     }
+    // M09: the entries that a host or a runner calls on a thread of its choice check that thread
+    // before a body that needs the main thread: the callbacks and the exports above, and here a
+    // library's `tsuzuri_main`, the tests and the benches. An executable's `main` is on it.
+    let main_thread_entry = module
+        .entry
+        .is_some_and(|id| globals.main_thread.contains(&id))
+        && entry == Entry::Library
+        && (main_entry(module) || io_entry(module));
+    let main_thread_runs: BTreeSet<usize> = match (entry, tests) {
+        (Entry::BenchRunner, Some(selected)) => selected
+            .iter()
+            .map(|index| module.benches[*index].function)
+            .filter(|id| globals.main_thread.contains(id))
+            .collect(),
+        (Entry::TestRunner, Some(selected)) => selected
+            .iter()
+            .map(|index| module.tests[*index].function)
+            .filter(|id| globals.main_thread.contains(id))
+            .collect(),
+        _ => BTreeSet::new(),
+    };
+    if globals.main_thread_checked || main_thread_entry || !main_thread_runs.is_empty() {
+        output.push_str(&mainthread::entry_check_definition());
+        intrinsics.insert(mainthread::MAIN_THREAD_IS_CURRENT.into());
+        needs_trap_write = true;
+    }
     if needs_trap_write && !instrumentation.traps {
         output.push_str(traps::TRAP_WRITE);
         intrinsics.insert("declare i64 @write(i32, ptr, i64)".into());
@@ -2389,6 +2426,19 @@ entry:\n\
             entry,
         ));
     }
+    // M09: the boundary of `main`, of a test and of a bench sample drops the functions that are
+    // still posted when its body returns. A library keeps them for its host's main thread (D10).
+    let main_thread_boundary = mainthread::posts(&intrinsics)
+        && matches!(
+            entry,
+            Entry::Console | Entry::TestRunner | Entry::BenchRunner
+        );
+    if main_thread_boundary {
+        intrinsics.insert(mainthread::MAIN_THREAD_BOUNDARY_DONE.into());
+        if entry == Entry::BenchRunner {
+            intrinsics.insert(mainthread::MAIN_THREAD_BOUNDARY_OPEN.into());
+        }
+    }
     for intrinsic in intrinsics {
         let _ = writeln!(output, "{intrinsic}");
     }
@@ -2401,6 +2451,21 @@ entry:\n\
         let _ = writeln!(output, "@{sym} = {linkage} global [0 x i8]");
     }
     if let Some(io_wrapper) = io_wrapper {
+        // The `@main` of an IO entry only calls `tsuzuri_main`, whose returns are the boundary's.
+        let io_wrapper = if main_thread_boundary {
+            mainthread::before_returns(&io_wrapper, mainthread::MAIN_THREAD_BOUNDARY_DONE_CALL)
+        } else {
+            io_wrapper
+        };
+        let io_wrapper = if main_thread_entry {
+            io_wrapper.replacen(
+                "entry:\n",
+                &format!("entry:\n{}", mainthread::MAIN_THREAD_CHECK_CALL),
+                1,
+            )
+        } else {
+            io_wrapper
+        };
         output.push_str(&debug::wrapper(
             io_wrapper,
             module,
@@ -2411,7 +2476,7 @@ entry:\n\
     }
     if entry == Entry::Library && main_entry(module) {
         output.push_str(&debug::wrapper(
-            library_def_main(module, wasm),
+            library_def_main(module, wasm, main_thread_entry),
             module,
             &module.functions[module.entry.unwrap()],
             "@tsuzuri_main",
@@ -2420,7 +2485,13 @@ entry:\n\
     }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
-            console_main(module, uses_args, spawns(module), mark_main_done),
+            console_main(
+                module,
+                uses_args,
+                spawns(module),
+                mark_main_done,
+                main_thread_boundary,
+            ),
             module,
             &module.functions[module.entry.unwrap()],
             "@main",
@@ -2447,16 +2518,32 @@ entry:\n\
                  ret void\n}\n",
             );
         }
-        output.push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n  switch i32 %index, label %bad [\n");
+        output
+            .push_str("define i64 @tsuzuri_bench_sample(i32 %index, i64 %iterations) {\nentry:\n");
+        if main_thread_boundary {
+            // A sample is a boundary of its own: the end of the one before must not drop its posts.
+            output.push_str(mainthread::MAIN_THREAD_BOUNDARY_OPEN_CALL);
+        }
+        output.push_str("  switch i32 %index, label %bad [\n");
         for index in 0..selected.len() {
             let _ = writeln!(output, "    i32 {index}, label %bench{index}");
         }
         output.push_str("  ]\nbad:\n  ret i64 -1\n");
         for (index, selected) in selected.iter().enumerate() {
             let function = &module.functions[module.benches[*selected].function];
+            let posted = if main_thread_boundary {
+                mainthread::MAIN_THREAD_BOUNDARY_DONE_CALL
+            } else {
+                ""
+            };
+            let check = if main_thread_runs.contains(&module.benches[*selected].function) {
+                mainthread::MAIN_THREAD_CHECK_CALL
+            } else {
+                ""
+            };
             let _ = writeln!(
                 output,
-                "bench{index}:\n  %result{index} = call i64 @tz.fn.{}(i64 %iterations)\n  ret i64 %result{index}",
+                "bench{index}:\n{check}  %result{index} = call i64 @tz.fn.{}(i64 %iterations)\n{posted}  ret i64 %result{index}",
                 function.qualified_name()
             );
         }
@@ -2476,9 +2563,19 @@ entry:\n\
         runner.push_str("  ]\nbad:\n  ret i32 2\n");
         for (index, selected) in selected.iter().enumerate() {
             let function = &module.functions[module.tests[*selected].function];
+            let posted = if main_thread_boundary {
+                mainthread::MAIN_THREAD_BOUNDARY_DONE_CALL
+            } else {
+                ""
+            };
+            let check = if main_thread_runs.contains(&module.tests[*selected].function) {
+                mainthread::MAIN_THREAD_CHECK_CALL
+            } else {
+                ""
+            };
             let _ = writeln!(
                 runner,
-                "test{index}:\n  %result{index} = call i8 @tz.fn.{}()\n  ret i32 0",
+                "test{index}:\n{check}  %result{index} = call i8 @tz.fn.{}()\n{posted}  ret i32 0",
                 function.qualified_name()
             );
         }
@@ -3081,6 +3178,10 @@ struct Globals {
     objc: objc::ObjcGlobals,
     /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
     guard_callbacks_after_main: bool,
+    /// M09: the functions with the effect `main_thread`, whose wrappers check the calling thread.
+    main_thread: std::rc::Rc<BTreeSet<usize>>,
+    /// M09: a wrapper calls `@tz.main_thread.check`, so the program defines it.
+    main_thread_checked: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
     coverage: Option<crate::coverage::CoveragePlan>,
     /// The property-test seed of `tsuzuri test --seed` (G18 Phase 3).
@@ -3148,6 +3249,8 @@ impl Default for Globals {
             weak_checked_symbols: BTreeSet::new(),
             objc: objc::ObjcGlobals::default(),
             guard_callbacks_after_main: false,
+            main_thread: std::rc::Rc::default(),
+            main_thread_checked: false,
             coverage: None,
             seed: None,
             #[cfg(debug_assertions)]
@@ -5174,6 +5277,22 @@ pub fn uses_tzroutine(module: &CheckedModule) -> bool {
     module.functions.iter().enumerate().any(|(id, function)| {
         (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
             && expression_uses_tzroutine(&function.body)
+    })
+}
+
+/// M09: whether the program reaches a `MainThread` builtin.
+pub fn uses_main_thread(module: &CheckedModule) -> bool {
+    fn mentions(expression: &TypedExpr) -> bool {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin.is_main_thread()
+        ) || expression.children().into_iter().any(mentions)
+    }
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && mentions(&function.body)
     })
 }
 
@@ -7277,8 +7396,10 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 _,
                 HandleKind::Owned
                 | HandleKind::Local
+                | HandleKind::Main
                 | HandleKind::ObjcLocal
-                | HandleKind::ObjcSync,
+                | HandleKind::ObjcSync
+                | HandleKind::ObjcMain,
             ) => {
                 unreachable!("extern handles cannot be cloned")
             }
@@ -9055,6 +9176,7 @@ fn emit_builtin(
         }
         builtin
             if builtin.is_routine()
+                || builtin.is_main_thread()
                 || builtin.is_channel()
                 || builtin.is_timer()
                 || builtin.is_wait()
@@ -9210,6 +9332,8 @@ fn emit_typed_builtin(
         emitter.value("xor i1 %arg0, 1")
     } else if instance.builtin.is_routine() {
         emitter.routine_builtin(instance.builtin, ty)
+    } else if instance.builtin.is_main_thread() {
+        emitter.main_thread_builtin(instance.builtin, ty)
     } else if instance.builtin.is_channel() {
         emitter.go_channel_builtin(instance, ty)
     } else if instance.builtin.is_timer() {
@@ -10407,6 +10531,7 @@ fn console_def_main(
     uses_args: bool,
     spawns: bool,
     mark_main_done: bool,
+    main_thread_boundary: bool,
 ) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut body = String::new();
@@ -10438,9 +10563,16 @@ fn console_def_main(
     } else {
         ""
     };
+    // M09: the functions that are still posted are dropped once `main` has returned, before the
+    // wait for the tzroutines, which then waits for what their drops spawn.
+    let posted = if main_thread_boundary {
+        mainthread::MAIN_THREAD_BOUNDARY_DONE_CALL
+    } else {
+        ""
+    };
     let _ = write!(
         output,
-        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{leave}{done}  ret i32 %code\n}}\n",
+        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{posted}{leave}{done}  ret i32 %code\n}}\n",
         main.qualified_name()
     );
     if spawns {
@@ -10459,10 +10591,13 @@ const TZROUTINE_SCOPE_DECLARATIONS: &str =
 /// The `tsuzuri_main` that a host calls to run a `def main` from a library or a WASM
 /// module. A WASI module reads its arguments in `src/runtime/arguments.c`, which replaces the
 /// weak empty `tsuzuri_arguments` here; other hosts pass none.
-fn library_def_main(module: &CheckedModule, wasm: bool) -> String {
+fn library_def_main(module: &CheckedModule, wasm: bool, main_thread_check: bool) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut output = String::new();
     let mut body = String::new();
+    if main_thread_check {
+        body.push_str(mainthread::MAIN_THREAD_CHECK_CALL);
+    }
     let argument = if main_arguments(module) {
         let empty = "  %data = call ptr @tz.alloc(i64 1)\n  %empty = insertvalue %tz.array zeroinitializer, ptr %data, 0\n";
         if wasm {
@@ -10494,6 +10629,7 @@ fn console_main(
     uses_args: bool,
     spawns: bool,
     mark_main_done: bool,
+    main_thread_boundary: bool,
 ) -> String {
     let done = if mark_main_done {
         "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
@@ -10501,7 +10637,13 @@ fn console_main(
         ""
     };
     if main_entry(module) {
-        return console_def_main(module, uses_args, spawns, mark_main_done);
+        return console_def_main(
+            module,
+            uses_args,
+            spawns,
+            mark_main_done,
+            main_thread_boundary,
+        );
     }
     if io_entry(module) {
         if uses_args {
@@ -10537,6 +10679,9 @@ fn console_main(
         llvm_type(ty, module),
         main.qualified_name()
     );
+    if main_thread_boundary {
+        output.push_str(mainthread::MAIN_THREAD_BOUNDARY_DONE_CALL);
+    }
     if spawns {
         output.push_str(TZROUTINE_SCOPE_LEAVE);
     }

@@ -207,6 +207,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | ContextAfterFunc => Some(Task),
         // TZ08: the function runs on the calling tzroutine's own thread.
         RoutineWithLockedThread => Some(Task),
+        // M09: the main thread runs the function later; which thread this is, is not a pure fact.
+        MainThreadPost | MainThreadAfter | MainThreadIsCurrent => Some(Task),
         TimeSleep | TimeAfter | TimeTick | TimerCreate | TimerReset | TickerCreate
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some(Clock),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
@@ -1597,7 +1599,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            173
+            176
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
         assert!(!builtin_impure(Builtin::ZUtf8StringLiteral));

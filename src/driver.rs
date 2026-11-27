@@ -1858,6 +1858,30 @@ pub(crate) fn arguments_runtime_source_for(platform: Platform) -> String {
     }
 }
 
+/// The main-thread runtime of `MainThread` (M09), which only an Apple target has.
+pub(crate) const MAIN_THREAD_RUNTIME: &str = include_str!("runtime/mainthread-darwin.c");
+/// Why a native target that is not Apple's cannot build a program that uses `MainThread`.
+const MAIN_THREAD_NATIVE_MESSAGE: &str =
+    "MainThread is available only on macOS targets; build for aarch64-apple-darwin or on a Mac";
+/// Why WebAssembly cannot build a program that uses `MainThread`.
+const MAIN_THREAD_WASM_MESSAGE: &str =
+    "MainThread is not available on WebAssembly; build for a macOS target";
+
+/// The same two for a program whose only use of the runtime is the check of the calling thread at
+/// an entry whose body uses a main-thread extern type (M09 Phase 2).
+const MAIN_HANDLE_NATIVE_MESSAGE: &str = "an export, a callback, a test or a library entry that uses a main-thread extern type checks that the main thread calls it, which only macOS targets support; build for aarch64-apple-darwin or on a Mac, or keep the code that uses the type in 'main'";
+const MAIN_HANDLE_WASM_MESSAGE: &str = "an export, a callback, a test or a library entry that uses a main-thread extern type checks that the main thread calls it, which WebAssembly does not support; build for a macOS target, or keep the code that uses the type in 'main'";
+
+/// Why the IR `text`, which names the main-thread runtime, does not build for another native
+/// target and for WebAssembly: it posts with `MainThread`, or it only checks its entries.
+pub(crate) fn main_thread_messages(text: &str) -> (&'static str, &'static str) {
+    if text.contains("@tz.main_thread.check(") && !text.contains("@tsuzuri_mainthread_post(") {
+        (MAIN_HANDLE_NATIVE_MESSAGE, MAIN_HANDLE_WASM_MESSAGE)
+    } else {
+        (MAIN_THREAD_NATIVE_MESSAGE, MAIN_THREAD_WASM_MESSAGE)
+    }
+}
+
 /// The tzroutine runtime (TZ01) with its Win32 half inlined for a Windows target: Clang cannot
 /// resolve quoted includes next to verbatim (`\\?\`) source paths, and canonical temporary paths are
 /// verbatim. A Windows target needs it on any host: the temporary directory has no
@@ -4371,6 +4395,13 @@ fn build_complete(
         }
         links.check_readable()?;
     }
+    // M09: the main thread runs a posted function long after the call that posted it returned.
+    if options.trap_return && llvm::uses_main_thread(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with MainThread: a posted function runs outside the call that posted it",
+        ));
+    }
     // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
     if options.trap_return && llvm::spawns(module) {
         return Err(driver_error_of(
@@ -4784,6 +4815,8 @@ fn build_complete(
     let os_runtime = runtime_symbols.prefix("tsuzuri_os_");
     // The sockets of the standard Net module are src/runtime/net.c (E09).
     let net_runtime = runtime_symbols.prefix("tsuzuri_net_");
+    // `MainThread` queues on the main dispatch queue in src/runtime/mainthread-darwin.c (M09).
+    let main_thread_runtime = runtime_symbols.prefix("tsuzuri_mainthread_");
     // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c, and `Gpu.Vulkan` and
     // `Gpu.Auto` add the Vulkan backend of src/runtime/gpu-vulkan.c to it (F09 Phases 2 and 3).
     let gpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_gpu_");
@@ -4815,6 +4848,10 @@ fn build_complete(
             text.as_str()
         };
         if let Some((_, feature)) = [
+            (
+                "@tsuzuri_mainthread_",
+                "MainThread or the entry check of a main-thread extern type",
+            ),
             ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
             ("@tsuzuri_tz_anchor_", "Anchor"),
             ("@tsuzuri_tz_", "tzroutine"),
@@ -4867,7 +4904,11 @@ fn build_complete(
         || trap_runtime
         || gpu_runtime
         || (options.target == Target::Native
-            && (io_runtime || os_runtime || net_runtime || arguments_runtime));
+            && (io_runtime
+                || os_runtime
+                || net_runtime
+                || arguments_runtime
+                || main_thread_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     // A tzroutine's stack is smaller than a thread's, so a program with tzroutines reports its
@@ -4896,6 +4937,24 @@ fn build_complete(
     let debug_import = options.target.is_wasm() && runtime_symbols.contains("tsuzuri_debug_write");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
+    // M09: only an Apple target has the main dispatch queue. These come before the checks of the
+    // tzroutine runtime, which a program that posts from a tzroutine would meet first.
+    if main_thread_runtime && options.target.is_wasm() {
+        return Err(driver_error_of(
+            DiagnosticKind::WasmMainThreadUnsupported,
+            main_thread_messages(&text).1,
+        ));
+    }
+    if main_thread_runtime
+        && !platform.mach_o()
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
+    {
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            main_thread_messages(&text).0,
+        ));
+    }
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
     // On wasm32 it suspends through JSPI (TZ09).
     if (tzroutine_symbols || tzroutine_runtime)
@@ -5418,6 +5477,11 @@ fn build_complete(
                 source.push('\n');
                 source.push_str(&tzroutine_runtime_source_for(platform));
             }
+            // M09: after everything else, and only when used, for the same reason.
+            if main_thread_runtime {
+                source.push('\n');
+                source.push_str(MAIN_THREAD_RUNTIME);
+            }
             fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write C runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
@@ -5430,7 +5494,11 @@ fn build_complete(
                 .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (tzroutine_runtime || trap_runtime || net_runtime || gpu_runtime)
+            if (tzroutine_runtime
+                || trap_runtime
+                || net_runtime
+                || gpu_runtime
+                || main_thread_runtime)
                 && !platform.windows()
             {
                 runtime.arg("-pthread");

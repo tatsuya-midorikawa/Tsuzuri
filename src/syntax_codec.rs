@@ -282,8 +282,10 @@ unit_enum!(HandleKind {
     Owned,
     Copy,
     Local,
+    Main,
     ObjcLocal,
-    ObjcSync
+    ObjcSync,
+    ObjcMain
 });
 unit_enum!(DataAccess { Read, Address });
 unit_enum!(LinkKind { Library, Framework });
@@ -1334,6 +1336,7 @@ impl Wire for ExternClassDecl {
             visibility,
             runtime_name,
             sync,
+            main,
             name,
             base,
             body,
@@ -1345,6 +1348,7 @@ impl Wire for ExternClassDecl {
         visibility.put(out)?;
         runtime_name.put(out)?;
         sync.put(out)?;
+        main.put(out)?;
         name.put(out)?;
         base.put(out)?;
         body.put(out)?;
@@ -1359,6 +1363,7 @@ impl Wire for ExternClassDecl {
             visibility: Visibility::get(input)?,
             runtime_name: Option::get(input)?,
             sync: Option::get(input)?,
+            main: Option::get(input)?,
             name: Ident::get(input)?,
             base: TypeExpr::get(input)?,
             body: bool::get(input)?,
@@ -3165,7 +3170,7 @@ mod tests {
         seen.extend(round_trips("tzroutine {\n    ()\n}\n", 0).unwrap());
         seen.extend(
             round_trips(
-                "extern type H\nextern type copy Hc\nextern type local Hl\n",
+                "extern type H\nextern type copy Hc\nextern type local Hl\nextern type main Hm\nextern class main Window : ObjC.Object\n",
                 0,
             )
             .unwrap(),
@@ -3307,9 +3312,10 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
-            // `ObjcLocal` and `ObjcSync` (tags 3 and 4) are the kinds of the checker's handle types;
-            // an `extern class` declaration writes `sync` as a span, not a `HandleKind` (M01).
-            ("HandleKind", 3),
+            // `ObjcLocal`, `ObjcSync` and `ObjcMain` (tags 4 to 6) are the kinds of the checker's
+            // handle types; an `extern class` declaration writes `sync` and `main` as spans, not a
+            // `HandleKind` (M01, M09).
+            ("HandleKind", 4),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),

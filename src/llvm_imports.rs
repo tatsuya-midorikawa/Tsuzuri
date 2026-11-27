@@ -827,8 +827,16 @@ impl FunctionEmitter<'_, '_> {
         } else {
             ""
         };
+        // M09 D15: a message to a `main` class is sent on the main thread, which holds no P: the
+        // pass that makes extern calls blocking calls leaves the call as it is.
+        let main_thread =
+            if self.globals.blocking_externs && send.is_some_and(|send| send.main_thread) {
+                MAIN_THREAD_CALL
+            } else {
+                ""
+            };
         let call = format!(
-            "call {output} @{}({}){bundle}",
+            "call {output} @{}({}){main_thread}{bundle}",
             import.native_symbol,
             values.join(", ")
         );

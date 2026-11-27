@@ -652,6 +652,18 @@ fn tzroutine_platform(platform: Platform) -> Result<(), Diagnostic> {
     }
 }
 
+/// M09: `MainThread` needs the main dispatch queue, which only an Apple target has.
+fn main_thread_platform(platform: Platform, text: &str) -> Result<(), Diagnostic> {
+    if platform.mach_o() {
+        Ok(())
+    } else {
+        Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            crate::driver::main_thread_messages(text).0,
+        ))
+    }
+}
+
 /// The C sources of a native test runner for its IR `text`: the entry and the runtimes that the
 /// IR declares. A test may build IO actions without running them; their primitives still need
 /// the runtime.
@@ -673,6 +685,14 @@ fn native_runtime_sources(
         sources.push((
             "tzroutine.c",
             crate::driver::tzroutine_runtime_source_for(platform),
+        ));
+    }
+    // M09: the main dispatch queue of an Apple target.
+    if text.contains("@tsuzuri_mainthread_") {
+        main_thread_platform(platform, text)?;
+        sources.push((
+            "mainthread.c",
+            crate::driver::MAIN_THREAD_RUNTIME.to_owned(),
         ));
     }
     if text.contains("declare i64 @tsuzuri_os_") {
@@ -831,6 +851,13 @@ fn build_runner(
     // The tzroutines of WebAssembly suspend through JSPI (TZ09), which only the JavaScript glue of a
     // `tsuzuri build --wasm-feature jspi` drives; this runner calls the tests without it (D6). A test
     // program that only uses a `Channel` links the channels built for one thread (TZ03, `TZR_SINGLE`).
+    // M09: WebAssembly has no main dispatch queue.
+    if text.contains("@tsuzuri_mainthread_") {
+        return Err(driver_error_of(
+            DiagnosticKind::WasmMainThreadUnsupported,
+            crate::driver::main_thread_messages(&text).1,
+        ));
+    }
     let tzroutine_single = text.contains("@tsuzuri_tz_");
     if tzroutine_single && llvm::spawns(module) {
         return Err(driver_error_of(
@@ -1030,6 +1057,11 @@ fn compile_native_runner(
     if tzroutine_runtime {
         tzroutine_platform(platform)?;
     }
+    // M09: a test or a bench that posts to the main thread, which is the runner's own thread.
+    let main_thread_runtime = text.contains("@tsuzuri_mainthread_");
+    if main_thread_runtime {
+        main_thread_platform(platform, &text)?;
+    }
     // A test may build IO actions without running them; their primitives still need the runtime.
     let os_runtime = text.contains("declare i64 @tsuzuri_os_");
     let net_runtime = llvm::uses_net(&text);
@@ -1125,7 +1157,15 @@ fn compile_native_runner(
         .map_err(|error| io_error("write tzroutine runtime", &runtime, error))?;
         clang.arg(&runtime);
     }
-    if (net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime) && !platform.windows() {
+    if main_thread_runtime {
+        let runtime = directory.join("mainthread.c");
+        fs::write(&runtime, crate::driver::MAIN_THREAD_RUNTIME)
+            .map_err(|error| io_error("write main-thread runtime", &runtime, error))?;
+        clang.arg(&runtime);
+    }
+    if (net_runtime || gpu_runtime || trap_runtime || tzroutine_runtime || main_thread_runtime)
+        && !platform.windows()
+    {
         clang.arg("-pthread");
     }
     // gpu.c loads a WebGPU library with dlopen, which older glibc keeps in libdl.

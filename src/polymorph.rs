@@ -9021,6 +9021,7 @@ pub(super) fn specialize(
         dyn_layouts,
         uses_dyn: module.uses_dyn,
         thread_bound: module.thread_bound,
+        main_bound: module.main_bound,
         gpu: module.gpu,
         statics: module.statics,
         effects: None,

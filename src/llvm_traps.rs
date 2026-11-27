@@ -169,6 +169,7 @@ fn runtime_kind(function: &str) -> TrapKind {
     } else if function.contains("builtin.assert")
         || function.starts_with("@tz.mutex.")
         || function.starts_with("@tz.waitgroup.")
+        || function == "@tz.main_thread.check"
     {
         TrapKind::Assert
     } else if function.contains("builtin.unreachable") {
