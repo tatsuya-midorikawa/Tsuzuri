@@ -195,12 +195,11 @@ fn records(module: &CheckedModule) -> BTreeMap<String, Type> {
     }
     let mut records = BTreeMap::new();
     for function in signatures(module) {
-        for ty in function
-            .signature
-            .parameters
-            .iter()
-            .chain([&function.signature.result])
-        {
+        let sig_result = match &function.body.kind {
+            TypedExprKind::HostCall(import, _) => import.c_result(&function.signature.result),
+            _ => &function.signature.result,
+        };
+        for ty in function.signature.parameters.iter().chain([sig_result]) {
             visit(ty, module, &mut records);
         }
     }
@@ -243,12 +242,11 @@ fn handles(module: &CheckedModule) -> BTreeSet<String> {
     let mut handles = BTreeSet::new();
     let mut seen = BTreeSet::new();
     for function in signatures(module) {
-        for ty in function
-            .signature
-            .parameters
-            .iter()
-            .chain([&function.signature.result])
-        {
+        let sig_result = match &function.body.kind {
+            TypedExprKind::HostCall(import, _) => import.c_result(&function.signature.result),
+            _ => &function.signature.result,
+        };
+        for ty in function.signature.parameters.iter().chain([sig_result]) {
             visit(ty, &types, &mut handles, &mut seen);
         }
     }

@@ -3004,13 +3004,14 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
+        let viewed_result = crate::abi::c_view(&function.signature.result, &module.types());
         let _ = writeln!(
             output,
             "{} tz_{}({parameters});",
-            if crate::abi::out_result(&function.signature.result) {
+            if crate::abi::out_result(&viewed_result) {
                 "void".into()
             } else {
-                c_type(&function.signature.result)
+                c_type(&viewed_result)
             },
             function.name
         );
@@ -4384,6 +4385,19 @@ pub(crate) fn validate_wasm_externs(
                     ));
                 }
             }
+        }
+        if function.exported
+            && crate::abi::uses_nullable_abi(
+                &function.signature.parameters,
+                &function.signature.result,
+                &types,
+            )
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'Maybe' at the C ABI passes None as a null pointer, which only native targets support; build for a native target",
+                function.span,
+            ));
         }
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;

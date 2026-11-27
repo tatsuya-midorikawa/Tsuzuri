@@ -9813,9 +9813,10 @@ fn check_modules_collect(
                             function.name.span,
                         ));
                     }
-                    let rec = match ty {
+                    let viewed = crate::abi::c_view(ty, &types);
+                    let rec = match viewed.as_ref() {
                         Type::Reference(inner, _) => inner.as_ref(),
-                        _ => ty,
+                        other => other,
                     };
                     if crate::abi::c_layout_has_zstring_field(rec, &types) {
                         let rname = rec.display(&types);
@@ -9828,6 +9829,15 @@ fn check_modules_collect(
                         ));
                     }
                 }
+            }
+            if function.exported
+                && crate::abi::has_invalid_export_maybe(public_parameters, public_result, &types)
+            {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::AbiNullablePayload,
+                    "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as a parameter, 'ref' to a scalar record); None passes a null pointer",
+                    function.name.span,
+                ));
             }
             if function.exported
                 && (public_parameters

@@ -160,17 +160,33 @@ enum Shape {
     Unit,
     /// An `extern type` handle, by value or shared borrow: the pointer itself.
     Handle(String),
+    /// `Maybe<H>` or `Maybe<ref H>`: a nullable handle pointer (`None` <-> null).
+    NullableHandle(String),
     /// A borrowed input buffer: pointer and length.
     Slice(Buffer),
     /// An owned result buffer, written to the leading `out` descriptor.
     Owned(Buffer),
     /// A scalar record, by value or shared borrow: a pointer to the normalized C struct.
     Record(String),
+    /// `Maybe<ref R>`: a nullable pointer to the normalized C struct (`None` <-> null).
+    NullableRecord(String),
 }
 
 fn shape(ty: &Type, module: &CheckedModule) -> Shape {
     if let Some(scalar) = Scalar::of(ty) {
         return Shape::Scalar(scalar);
+    }
+    if let Some(nullable) = crate::abi::nullable(ty, &module.types()) {
+        return match nullable {
+            crate::abi::Nullable::Handle(Type::Handle(name, _))
+            | crate::abi::Nullable::BorrowedHandle(Type::Handle(name, _)) => {
+                Shape::NullableHandle(handle_c_name(name))
+            }
+            crate::abi::Nullable::BorrowedRecord(record) => {
+                Shape::NullableRecord(record_name(record, module))
+            }
+            _ => unreachable!("export nullable ABI type checked"),
+        };
     }
     match ty {
         Type::Unit => Shape::Unit,
@@ -680,6 +696,7 @@ fn csharp_export(
     let mut native = Vec::new();
     let mut arguments = Vec::new();
     let mut guards = Vec::new();
+    let mut locals = Vec::new();
     let mut pins = Vec::new();
     let out = match &result {
         Shape::Owned(_) => Some("Descriptor".to_owned()),
@@ -706,6 +723,14 @@ fn csharp_export(
                 ));
                 arguments.push(format!("{argument}.Value"));
             }
+            Shape::NullableHandle(handle) => {
+                public.push(format!("{handle}? {argument}"));
+                native.push(format!("nint {argument}"));
+                guards.push(format!(
+                    "if ({argument} is {{ Value: 0 }})\n        {{\n            throw new ArgumentException(\"argument {index} of '{name}' cannot wrap a null handle; pass null for None\", nameof({argument}));\n        }}"
+                ));
+                arguments.push(format!("{argument}?.Value ?? 0"));
+            }
             Shape::Slice(buffer) => {
                 let element = csharp_element(buffer);
                 public.push(format!("ReadOnlySpan<{element}> {argument}"));
@@ -726,16 +751,25 @@ fn csharp_export(
                 pins.push(format!("fixed ({record}* pointer{index} = &{argument})"));
                 arguments.push(format!("pointer{index}"));
             }
+            Shape::NullableRecord(record) => {
+                public.push(format!("in {record}? {argument}"));
+                native.push(format!("{record}* {argument}"));
+                locals.push(format!(
+                    "{record} record{index} = {argument}.GetValueOrDefault();"
+                ));
+                arguments.push(format!("{argument}.HasValue ? &record{index} : null"));
+            }
             Shape::Unit | Shape::Owned(_) => unreachable!("export parameters are checked"),
         }
     }
     let (public_result, native_result) = match &result {
         Shape::Scalar(scalar) => (scalar.csharp().to_owned(), scalar.csharp_abi().to_owned()),
         Shape::Handle(handle) => (handle.clone(), "nint".to_owned()),
+        Shape::NullableHandle(handle) => (format!("{handle}?"), "nint".to_owned()),
         Shape::Unit => ("void".to_owned(), "void".to_owned()),
         Shape::Owned(buffer) => (csharp_owned(*buffer).to_owned(), "void".to_owned()),
         Shape::Record(record) => (record.clone(), "void".to_owned()),
-        Shape::Slice(_) => unreachable!("export results are checked"),
+        Shape::Slice(_) | Shape::NullableRecord(_) => unreachable!("export results are checked"),
     };
     // The C call: the out slot leads, and `--trap-mode return` puts the trap and result slots first.
     let mut call_arguments = Vec::new();
@@ -780,7 +814,7 @@ fn csharp_export(
     for guard in &guards {
         let _ = writeln!(output, "        {guard}");
     }
-    let mut body = Vec::new();
+    let mut body = locals;
     if trap_return {
         body.push("TrapInfo trap;".to_owned());
     }
@@ -817,7 +851,10 @@ fn csharp_export(
         Shape::Handle(handle) => format!(
             "if (value == 0)\n        {{\n            throw new InvalidOperationException(\"result of '{name}' is a null handle\");\n        }}\n        return new {handle}(value);"
         ),
-        Shape::Slice(_) => unreachable!("export results are checked"),
+        Shape::NullableHandle(handle) => {
+            format!("return value == 0 ? null : new {handle}(value);")
+        }
+        Shape::Slice(_) | Shape::NullableRecord(_) => unreachable!("export results are checked"),
     };
     for line in &body {
         let _ = writeln!(output, "        {line}");
@@ -1025,8 +1062,10 @@ def _find(path):
 fn python_ctype(shape: &Shape) -> String {
     match shape {
         Shape::Scalar(scalar) => scalar.ctypes().to_owned(),
-        Shape::Handle(_) => "_ctypes.c_void_p".to_owned(),
-        Shape::Record(record) => format!("_ctypes.POINTER(_{record})"),
+        Shape::Handle(_) | Shape::NullableHandle(_) => "_ctypes.c_void_p".to_owned(),
+        Shape::Record(record) | Shape::NullableRecord(record) => {
+            format!("_ctypes.POINTER(_{record})")
+        }
         Shape::Unit => "None".to_owned(),
         Shape::Slice(_) | Shape::Owned(_) => unreachable!("buffers have two C values"),
     }
@@ -1393,6 +1432,15 @@ fn python_export(
                 ));
                 arguments.push(format!("{argument}.value"));
             }
+            Shape::NullableHandle(handle) => {
+                argtypes.push("_ctypes.c_void_p".to_owned());
+                prepare.push(format!(
+                    "if {argument} is not None:\n            if not isinstance({argument}, {handle}):\n                raise TypeError(f\"argument {index} of '{name}' must be a {handle} or None\")\n            if type({argument}.value) is not int or not 1 <= {argument}.value <= _POINTER_MAX:\n                raise ValueError(f\"argument {index} of '{name}' cannot be a null handle\")"
+                ));
+                arguments.push(format!(
+                    "(None if {argument} is None else {argument}.value)"
+                ));
+            }
             Shape::Slice(buffer) => {
                 let (ctype, convert) = match buffer {
                     Buffer::I64 => (
@@ -1428,6 +1476,15 @@ fn python_export(
                 prepare.push(format!("record{index} = _to_{record}({argument}, {at})"));
                 arguments.push(format!("_ctypes.byref(record{index})"));
             }
+            Shape::NullableRecord(record) => {
+                argtypes.push(format!("_ctypes.POINTER(_{record})"));
+                prepare.push(format!(
+                    "record{index} = None if {argument} is None else _to_{record}({argument}, {at})"
+                ));
+                arguments.push(format!(
+                    "(None if record{index} is None else _ctypes.byref(record{index}))"
+                ));
+            }
             Shape::Unit | Shape::Owned(_) => unreachable!("export parameters are checked"),
         }
     }
@@ -1435,7 +1492,7 @@ fn python_export(
         "_ctypes.c_int32".to_owned()
     } else {
         match &result {
-            Shape::Scalar(_) | Shape::Handle(_) => python_ctype(&result),
+            Shape::Scalar(_) | Shape::Handle(_) | Shape::NullableHandle(_) => python_ctype(&result),
             _ => "None".to_owned(),
         }
     };
@@ -1468,11 +1525,19 @@ fn python_export(
         Shape::Handle(handle) => format!(
             "if {raw} is None or {raw} == 0:\n            raise RuntimeError(\"result of '{name}' is a null handle\")\n        return {handle}({raw})"
         ),
-        Shape::Slice(_) => unreachable!("export results are checked"),
+        Shape::NullableHandle(handle) => {
+            format!("return None if {raw} is None or {raw} == 0 else {handle}({raw})")
+        }
+        Shape::Slice(_) | Shape::NullableRecord(_) => {
+            unreachable!("export results are checked")
+        }
     };
     let invoke = if trap_return {
         format!("_check({call}, trap)")
-    } else if matches!(result, Shape::Scalar(_) | Shape::Handle(_)) {
+    } else if matches!(
+        result,
+        Shape::Scalar(_) | Shape::Handle(_) | Shape::NullableHandle(_)
+    ) {
         format!("raw = {call}")
     } else {
         call
@@ -1704,12 +1769,30 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     let owned = exports(module)
         .iter()
         .any(|function| Buffer::of(&function.signature.result).is_some());
+    let optional = exports(module).iter().any(|function| {
+        function
+            .signature
+            .parameters
+            .iter()
+            .chain([&function.signature.result])
+            .any(|ty| {
+                matches!(
+                    shape(ty, module),
+                    Shape::NullableHandle(_) | Shape::NullableRecord(_)
+                )
+            })
+    });
     let mut output = banner("//");
     let _ = write!(
         output,
-        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\nnamespace tsuzuri::{namespace} {{\n\n",
+        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n{}#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\nnamespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
+        } else {
+            ""
+        },
+        if optional {
+            "#include <optional>\n"
         } else {
             ""
         }
@@ -1787,6 +1870,13 @@ fn cpp_export(
                 parameters.push(format!("{handle} {argument}"));
                 arguments.push(argument);
             }
+            Shape::NullableHandle(handle) => {
+                guards.push(format!(
+                    "if ({argument}.has_value() && *{argument} == nullptr) throw std::invalid_argument(\"argument {index} of '{name}' cannot wrap a null handle; pass std::nullopt for None\");"
+                ));
+                parameters.push(format!("std::optional<{handle}> {argument}"));
+                arguments.push(format!("{argument}.value_or(nullptr)"));
+            }
             Shape::Slice(buffer) => {
                 let (parameter, pointer) = match buffer {
                     Buffer::I64 => (
@@ -1823,12 +1913,17 @@ fn cpp_export(
                 parameters.push(format!("const {record} &{argument}"));
                 arguments.push(format!("&{argument}"));
             }
+            Shape::NullableRecord(record) => {
+                parameters.push(format!("const std::optional<{record}> &{argument}"));
+                arguments.push(format!("{argument}.has_value() ? &*{argument} : nullptr"));
+            }
             Shape::Unit | Shape::Owned(_) => unreachable!("export parameters are checked"),
         }
     }
     let (returned, c_result, slot) = match &result {
         Shape::Scalar(scalar) => (scalar.cpp().to_owned(), c_scalar(*scalar), None),
         Shape::Handle(handle) => (handle.clone(), handle.clone(), None),
+        Shape::NullableHandle(handle) => (format!("std::optional<{handle}>"), handle.clone(), None),
         Shape::Unit => ("void".to_owned(), "void".to_owned(), None),
         Shape::Owned(buffer) => {
             let (owner, descriptor) = match buffer {
@@ -1848,7 +1943,9 @@ fn cpp_export(
             )
         }
         Shape::Record(record) => (record.clone(), "void".to_owned(), Some(record.clone())),
-        Shape::Slice(_) => unreachable!("export results are checked"),
+        Shape::Slice(_) | Shape::NullableRecord(_) => {
+            unreachable!("export results are checked")
+        }
     };
     let _ = writeln!(
         output,
@@ -1884,7 +1981,7 @@ fn cpp_export(
     } else if slot.is_some() || c_result == "void" {
         let _ = writeln!(output, "    {call};");
         String::new()
-    } else if matches!(result, Shape::Handle(_)) {
+    } else if matches!(result, Shape::Handle(_) | Shape::NullableHandle(_)) {
         let _ = writeln!(output, "    {c_result} value = {call};");
         "value".to_owned()
     } else {
@@ -1909,7 +2006,12 @@ fn cpp_export(
             Some(format!("static_cast<{}>({value})", scalar.cpp()))
         }
         Shape::Scalar(_) | Shape::Handle(_) => Some(value),
-        Shape::Slice(_) => unreachable!("export results are checked"),
+        Shape::NullableHandle(handle) => Some(format!(
+            "{value} == nullptr ? std::optional<{handle}>{{}} : std::optional<{handle}>{{{value}}}"
+        )),
+        Shape::Slice(_) | Shape::NullableRecord(_) => {
+            unreachable!("export results are checked")
+        }
     };
     if let Some(returned_value) = returned_value {
         let _ = writeln!(output, "    return {returned_value};");

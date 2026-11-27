@@ -478,6 +478,14 @@ pub fn parameter(ty: &Type, types: &TypeContext<'_>) -> bool {
     abi_scalar(ty)
         || host_record_bidirectional(ty, types)
         || matches!(ty, Type::Reference(inner, false) if Buffer::of(inner).is_some() || host_record_bidirectional(inner, types))
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::Handle(_) | Nullable::BorrowedHandle(_))
+        )
+        || matches!(
+            nullable(ty, types),
+            Some(Nullable::BorrowedRecord(inner)) if host_record_bidirectional(inner, types)
+        )
 }
 
 pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
@@ -486,6 +494,7 @@ pub fn result(ty: &Type, types: &TypeContext<'_>) -> bool {
         || *ty == Type::Unit
         || Buffer::of(ty).is_some()
         || host_record_bidirectional(ty, types)
+        || matches!(nullable(ty, types), Some(Nullable::Handle(_)))
 }
 
 /// Whether `ty` is an `extern type` handle.
@@ -717,6 +726,20 @@ pub fn has_invalid_extern_maybe(
     bad_param
         || (std_maybe_payload(result, types).is_some() && !extern_result(result, types))
         || ref_to_maybe(result)
+}
+
+/// Whether an `export def` signature uses `std::Maybe` in an unsupported ABI position or payload (NS02).
+pub fn has_invalid_export_maybe(
+    parameters: &[Type],
+    result_ty: &Type,
+    types: &TypeContext<'_>,
+) -> bool {
+    let ref_to_maybe = |ty: &Type| matches!(ty, Type::Reference(inner, _) if std_maybe_payload(inner, types).is_some());
+    parameters.iter().any(|param| {
+        (std_maybe_payload(param, types).is_some() && !parameter(param, types))
+            || ref_to_maybe(param)
+    }) || (std_maybe_payload(result_ty, types).is_some() && !result(result_ty, types))
+        || ref_to_maybe(result_ty)
 }
 
 /// Whether an `extern` signature uses any native-only `Maybe` ABI form (W15).
