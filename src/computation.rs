@@ -1115,6 +1115,61 @@ pub(super) fn direct_entry(expression: &mut Expr) {
     }
 }
 
+/// The ordinary expression for a `while`, `for` or `if` statement of a body that runs its IO binds
+/// directly: its bodies run directly too (`$implicit.root.$direct`). `None` for other statements.
+fn direct_control(statement: &ComputationStatement) -> Result<Option<Expr>, Diagnostic> {
+    let span = statement.span;
+    match &statement.kind {
+        ComputationStatementKind::If(condition, yes, no) => {
+            let then_branch = direct_computation(yes)?;
+            let else_branch = match no {
+                Some(no) => direct_computation(no)?,
+                None => make(ExprKind::Unit, span, 1)?,
+            };
+            let depth = condition
+                .depth
+                .max(then_branch.depth)
+                .max(else_branch.depth)
+                + 1;
+            Ok(Some(make(
+                ExprKind::If {
+                    condition: Box::new(condition.clone()),
+                    then_branch: Box::new(then_branch),
+                    else_branch: Box::new(else_branch),
+                },
+                span,
+                depth,
+            )?))
+        }
+        ComputationStatementKind::For(pattern, source, body) => Ok(Some(make(
+            ExprKind::For {
+                pattern: pattern.clone(),
+                source: Box::new(source.clone()),
+                body: Box::new(direct_computation(body)?),
+            },
+            span,
+            statement.depth() + 2,
+        )?)),
+        ComputationStatementKind::While(condition, body) => Ok(Some(make(
+            ExprKind::While {
+                condition: Box::new(condition.clone()),
+                body: Box::new(direct_computation(body)?),
+            },
+            span,
+            statement.depth() + 2,
+        )?)),
+        _ => Ok(None),
+    }
+}
+
+fn cannot_infer_builder(span: Span) -> Diagnostic {
+    Diagnostic::of(
+        DiagnosticKind::CannotInferBuilder,
+        "cannot infer the computation builder; add a result type annotation or use Builder { ... }",
+        span,
+    )
+}
+
 /// The ordinary block for a body that runs IO where it is written: `let! x = io`
 /// is `let x = IO.run io`, `do! io` runs `io` for its unit, and `return x` is `x`.
 fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
@@ -1177,27 +1232,9 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
             ComputationStatementKind::Operation("ReturnFrom", value) => run(value)?,
             ComputationStatementKind::Operation(_, _) => return Err(unsupported(span, "yield")),
             ComputationStatementKind::LetAnd(_) => return Err(unsupported(span, "and!")),
-            ComputationStatementKind::If(condition, yes, no) => {
-                let then_branch = direct_computation(yes)?;
-                let else_branch = match no {
-                    Some(no) => direct_computation(no)?,
-                    None => make(ExprKind::Unit, span, 1)?,
-                };
-                let depth = condition
-                    .depth
-                    .max(then_branch.depth)
-                    .max(else_branch.depth)
-                    + 1;
-                make(
-                    ExprKind::If {
-                        condition: Box::new(condition.clone()),
-                        then_branch: Box::new(then_branch),
-                        else_branch: Box::new(else_branch),
-                    },
-                    span,
-                    depth,
-                )?
-            }
+            ComputationStatementKind::If(..)
+            | ComputationStatementKind::For(..)
+            | ComputationStatementKind::While(..) => direct_control(statement)?.unwrap(),
             ComputationStatementKind::Match(value, arms) => {
                 let value = run(value)?;
                 let arms = arms
@@ -1222,23 +1259,6 @@ fn direct_block(body: &ComputationBlock) -> Result<Expr, Diagnostic> {
                     depth,
                 )?
             }
-            ComputationStatementKind::For(pattern, source, body) => make(
-                ExprKind::For {
-                    pattern: pattern.clone(),
-                    source: Box::new(source.clone()),
-                    body: Box::new(direct_computation(body)?),
-                },
-                span,
-                statement.depth() + 2,
-            )?,
-            ComputationStatementKind::While(condition, body) => make(
-                ExprKind::While {
-                    condition: Box::new(condition.clone()),
-                    body: Box::new(direct_computation(body)?),
-                },
-                span,
-                statement.depth() + 2,
-            )?,
         };
         if index + 1 < count {
             bindings.push(Binding {
@@ -1444,11 +1464,18 @@ impl Checker<'_> {
         &mut self,
         body: &ComputationBlock,
         prefix: &mut Vec<(Local, TypedExpr)>,
+        direct_controls: bool,
     ) -> Result<usize, Diagnostic> {
         let mut count = 0;
         while let Some(statement) = body.statements.get(count) {
+            if direct_controls && count + 1 >= body.statements.len() {
+                break;
+            }
             let group = recursive_group(&body.statements[count..]);
             if !group.is_empty() {
+                if direct_controls && count + group.len() >= body.statements.len() {
+                    break;
+                }
                 prefix.extend(self.let_rec_group(&group)?);
                 count += group.len();
                 continue;
@@ -1465,6 +1492,18 @@ impl Checker<'_> {
                     recursion: Recursion::None,
                     annotation: Some(annotation("unit", statement.span)),
                     value: value.clone(),
+                },
+                _ if direct_controls => match direct_control(statement)? {
+                    Some(value) => Binding {
+                        name: ident("_", statement.span),
+                        pattern: None,
+                        mutable: false,
+                        using: false,
+                        recursion: Recursion::None,
+                        annotation: Some(annotation("unit", statement.span)),
+                        value,
+                    },
+                    None => break,
                 },
                 _ => break,
             };
@@ -1500,9 +1539,26 @@ impl Checker<'_> {
         });
         let mut prefix = Vec::new();
         let mut remaining = body.clone();
+        let mut assumed_direct = false;
         if builder.is_none() {
-            let count = self.implicit_prefix(body, &mut prefix)?;
+            let count = self.implicit_prefix(body, &mut prefix, false)?;
             remaining.statements.drain(..count);
+            // W31: top-level code that ends in an expression runs directly when its builder is IO,
+            // so the `while`, `for` and `if` statements before its first bind are checked as that
+            // code runs them.
+            assumed_direct = entry
+                && remaining.statements.first().is_some_and(|statement| {
+                    matches!(
+                        statement.kind,
+                        ComputationStatementKind::If(..)
+                            | ComputationStatementKind::For(..)
+                            | ComputationStatementKind::While(..)
+                    )
+                });
+            if assumed_direct {
+                let count = self.implicit_prefix(&remaining, &mut prefix, true)?;
+                remaining.statements.drain(..count);
+            }
             if let Some(statement) = remaining.statements.first_mut() {
                 let source = match &mut statement.kind {
                     ComputationStatementKind::Let(binding, true) => Some(&mut binding.value),
@@ -1523,6 +1579,9 @@ impl Checker<'_> {
                     prefix.push((local, value));
                 }
             }
+            if assumed_direct && builder.is_none() {
+                return self.direct_root(prefix, &remaining, expected);
+            }
         }
         let Some(builder) = builder else {
             let result = match remaining.statements.as_slice() {
@@ -1533,18 +1592,15 @@ impl Checker<'_> {
                         ..
                     },
                 ] => self.expression(value, expected)?,
-                _ => {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::CannotInferBuilder,
-                        "cannot infer the computation builder; add a result type annotation or use Builder { ... }",
-                        body.span,
-                    ));
-                }
+                _ => return Err(cannot_infer_builder(body.span)),
             };
             return Ok(typed_block(prefix, result, body.span));
         };
         if entry && builder == "IO" {
             return self.direct_root(prefix, &remaining, expected);
+        }
+        if assumed_direct {
+            return Err(cannot_infer_builder(body.span));
         }
         let names = self.names;
         let methods = &names.builders[&builder];

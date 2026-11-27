@@ -1055,3 +1055,61 @@ fn deterministic_computation_mutations_do_not_panic() {
         }
     });
 }
+
+#[test]
+fn entry_statements_before_the_first_bind_run_directly() {
+    for source in [
+        "let mut n = 0\nwhile n < 3 do\n    n = n + 1\ndo! IO.writeln $\"n={n}\"\nn\n",
+        "let mut n = 0\nfor i in 1 ..= 3 do\n    n = n + i\ndo! IO.writeln $\"n={n}\"\nn\n",
+        "let mut n = 0\nif n == 0 then\n    n = 4\ndo! IO.writeln $\"n={n}\"\nn\n",
+        "let mut n = 0\nif n == 0 then n = 4\ndo! IO.writeln $\"n={n}\"\nn\n",
+        "let mut n = 0\nwhile n < 3 do\n    n = n + 1\nlet label = $\"n={n}\"\ndo! IO.writeln label\nn\n",
+        "let rec step = \\k -> if k <= 0 then 0 else 1 + step (k - 1)\nlet mut n = 0\nwhile n < 2 do\n    n = n + step 1\ndo! IO.writeln $\"n={n}\"\nn\n",
+        "for k in [1, 2] do\n    do! IO.writeln $\"k={k}\"\ndo! IO.writeln \"done\"\n0\n",
+        "let mut n = 0\nwhile n < 3 do\n    n = n + 1\ndo Debug.print \"x\"\nn\n",
+        "let mut n = 0\nwhile n < 3 do\n    n = n + 1\nlet! base = IO.pure 10\nn + base\n",
+        "let mut n = 0\nfor _ in 1 ..= 2 do\n    let mut j = 0\n    while j < 2 do\n        j = j + 1\n        n = n + 1\ndo! IO.writeln $\"n={n}\"\nn\n",
+        // Combined W02 + W31: `break` inside top-level `while` before the first `do!`.
+        "let mut n = 0\nwhile true do\n    n = n + 1\n    if n == 3 then break\ndo! IO.writeln $\"n={n}\"\nn\n",
+    ] {
+        let module = analyze_modules(&sources(source))
+            .unwrap_or_else(|error| panic!("{source}\n{}: {}", error.code, error.message));
+        let console_ir = llvm::emit(&module, llvm::Entry::Console).unwrap();
+        assert_eq!(
+            console_ir,
+            llvm::emit(&module, llvm::Entry::Console).unwrap()
+        );
+        let wasm_ir = llvm::emit_target(&module, llvm::Entry::Library, true).unwrap();
+        assert_eq!(
+            wasm_ir,
+            llvm::emit_target(&module, llvm::Entry::Library, true).unwrap()
+        );
+    }
+    tsuzuri::analyze_with_edition(
+        "for k in [1, 2] do\n    do! IO.writeln $\"k={k}\"\ndo! IO.writeln \"done\"\n0\n",
+        tsuzuri::syntax::Edition::E2027,
+    )
+    .unwrap();
+
+    let maybe_after = "let mut n = 0\nwhile n < 3 do\n    n = n + 1\nlet! x = Maybe.Some n\nx\n";
+    let error = rejects(maybe_after, "E1018");
+    assert_eq!(error.kind, Some("cannot_infer_builder"));
+    assert_eq!(error.span.start, 0);
+
+    let ends_in_do = "let mut n = 0\nwhile n < 3 do\n    n = n + 1\ndo! IO.writeln $\"n={n}\"\n";
+    let error = rejects(ends_in_do, "E1018");
+    assert_eq!(error.kind, Some("cannot_infer_builder"));
+    assert_eq!(error.span.start, 0);
+
+    let lambda_body = "def main :: unit -> i32 = \\() ->\n    let f = \\() ->\n        let mut n = 0\n        while n < 3 do\n            n = n + 1\n        do! IO.writeln $\"n={n}\"\n        n\n    let _ = f\n    0\n";
+    let error = rejects(lambda_body, "E1018");
+    assert_eq!(error.kind, Some("cannot_infer_builder"));
+    assert_eq!(error.span.start, lambda_body.find("let mut n = 0").unwrap());
+
+    let nested_non_io = "let mut n = 0\nwhile n < 3 do\n    let! v = Maybe.Some 1\n    n = n + v\ndo! IO.writeln $\"n={n}\"\nn\n";
+    let error = rejects(nested_non_io, "E1003");
+    assert_eq!(
+        error.span.start,
+        nested_non_io.find("Maybe.Some 1").unwrap()
+    );
+}
