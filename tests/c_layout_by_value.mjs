@@ -138,7 +138,7 @@ try {
       continue;
     }
     const expected = declarations(readFileSync(referenceIr, "utf8"));
-    assert.ok(expected.size >= 99, `${target}: the reference has ${expected.size} functions`);
+    assert.ok(expected.size >= 100, `${target}: the reference has ${expected.size} functions`);
     const ir = join(root, `fixture-${target}.ll`);
     run(compiler, ["build", fixture, "--no-cache", "--emit", "llvm", "--target", target, "-o", ir]);
     const text = readFileSync(ir, "utf8");

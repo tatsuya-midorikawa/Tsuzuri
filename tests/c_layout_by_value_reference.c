@@ -129,6 +129,10 @@ long long bv_gpr_spill(long long a, long long b, long long c, long long d, long 
                        BvRect r, int z);
 /* Windows x64: the fifth and later arguments are on the stack. */
 int bv_stack_structs(BvPoint a, BvPoint b, BvPoint c, BvPoint d, BvPoint e, BvRect f, BvPointF g);
+/* Float HFAs after every floating-point register is used: on the stack, where macOS packs a
+   `float` and a `float` struct to 4 bytes and the other AAPCS64 targets to 8. */
+int bv_float_stack(float a, float b, float c, float d, float e, float f, float g, float h,
+                   float i, BvPointF p, float j, BvVec3 v, BvF1 w);
 /* Small structs after every integer register is used: each is on the stack. */
 int bv_small_on_stack(long long a, long long b, long long c, long long d, long long e, long long f, long long g, long long h,
                       BvPoint p, BvRgb q, BvS1 r, BvC1 s, int z);
@@ -163,6 +167,7 @@ BvAny const bv_reference[] = {
     (BvAny)bv_five_then_rect, (BvAny)bv_seven_doubles_then_p2d, (BvAny)bv_six_then_small,
     (BvAny)bv_sse_exhausted, (BvAny)bv_sret_counts, (BvAny)bv_many, (BvAny)bv_hfa_spill,
     (BvAny)bv_gpr_spill, (BvAny)bv_stack_structs, (BvAny)bv_small_on_stack,
+    (BvAny)bv_float_stack,
 };
 #endif
 

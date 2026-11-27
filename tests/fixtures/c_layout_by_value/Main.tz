@@ -290,6 +290,8 @@ extern "bv_gpr_spill" def gpr_spill :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 ->
 @trusted
 extern "bv_stack_structs" def stack_structs :: Point -> Point -> Point -> Point -> Point -> Rect -> PointF -> i32
 @trusted
+extern "bv_float_stack" def float_stack :: f32 -> f32 -> f32 -> f32 -> f32 -> f32 -> f32 -> f32 -> f32 -> PointF -> f32 -> Vec3 -> F1 -> i32
+@trusted
 extern "bv_small_on_stack" def small_on_stack :: i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> i64 -> Point -> Rgb -> S1 -> C1 -> i32 -> i32
 
 // The first failed check keeps its number; 0 means that every check passed.
@@ -489,4 +491,5 @@ fn run_counting =
     e = check e 8 (gpr_spill 1 2 3 4 5 6 7 (Rect { left: 8i32, top: 9i32, right: 10i32, bottom: 11i32 }) 12i32 == 49)
     e = check e 9 (stack_structs (Point { x: 1i32, y: 2i32 }) (Point { x: 3i32, y: 4i32 }) (Point { x: 5i32, y: 6i32 }) (Point { x: 7i32, y: 8i32 }) (Point { x: 9i32, y: 10i32 }) (Rect { left: 11i32, top: 12i32, right: 13i32, bottom: 14i32 }) (PointF { x: 15.5f32, y: 16.5f32 }) == 50i32)
     e = check e 10 (small_on_stack 1 2 3 4 5 6 7 8 (Point { x: 9i32, y: -10i32 }) (Rgb { r: 11i8u, g: 12i8u, b: 255i8u }) (S1 { s: -13i16 }) (C1 { c: -14i8 }) 15i32 == 51i32)
+    e = check e 11 (float_stack 1.0f32 2.0f32 3.0f32 4.0f32 5.0f32 6.0f32 7.0f32 8.0f32 9.5f32 (PointF { x: 10.5f32, y: 11.5f32 }) 12.5f32 (Vec3 { x: 13.5f32, y: 14.5f32, z: 15.5f32 }) (F1 { f: 16.5f32 }) == 52i32)
     e

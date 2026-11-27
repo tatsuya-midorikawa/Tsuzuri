@@ -231,6 +231,13 @@ int bv_small_on_stack(long long a, long long b, long long c, long long d, long l
     assert(p.x == 9 && p.y == -10 && q.r == 11 && q.g == 12 && q.b == 255 && r.s == -13 && s.c == -14 && z == 15);
     return 51;
 }
+int bv_float_stack(float a, float b, float c, float d, float e, float f, float g, float h,
+                   float i, BvPointF p, float j, BvVec3 v, BvF1 w) {
+    assert(a == 1.0f && b == 2.0f && c == 3.0f && d == 4.0f && e == 5.0f && f == 6.0f && g == 7.0f && h == 8.0f);
+    assert(i == 9.5f && p.x == 10.5f && p.y == 11.5f && j == 12.5f);
+    assert(v.x == 13.5f && v.y == 14.5f && v.z == 15.5f && w.f == 16.5f);
+    return 52;
+}
 
 int main(void) {
     int64_t failed = tz_run_takes();
