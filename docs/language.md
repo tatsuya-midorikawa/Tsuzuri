@@ -454,15 +454,44 @@ def reveal :: i64 -> i64 = \n -> (token n).value
 
 `extern def now :: unit -> i64` のように記述することで、関数本体を持たない同期的な外部ホスト関数を宣言できます。`.tz` および `.tc` 内に配置可能であり、モジュール内限定の `private extern def` とすることも可能です。
 同名の通常 `def`／`fn` との重複は `E1001`、`export` との併用や不正な C ABI 型の使用は `E1008`、多相型（型引数を含む型）の指定は `E1015` エラーとなります。型クラス制約、名前付き region、可変参照（`ref mut`）、List などを引数や戻り値に指定することはできず、関数型の引数は後述するコールバック関数に限定されます。
-引数として許容される型は、スカラー型、`unit`、extern ハンドル型（値または共有借用）、ネイティブ環境での `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`H` は extern ハンドル、`R` はスカラーレコード。`None` は C の `NULL`）、ネイティブ環境での NUL 終端文字列参照 `ref ZString`・`Maybe<ref ZString>`・`ref ZUtf8String`・`Maybe<ref ZUtf8String>`、共有バッファ／文字列（`ref [T]`、`string`、`utf8string`）、スカラーレコード型および `@c_layout` レコード型（値または共有借用）、ならびにコールバック関数と `FnPtr<F>` です。戻り値として許容される型は、スカラー型、`unit`、ハンドル型、ネイティブ環境での `Maybe<H>`（`NULL` は `None`）および `Maybe<ZUtf8String>`（`const char *` を写して UTF-8 検査を行い、不正な UTF-8 は `Encoding` トラップ）、所有権付きバッファ／文字列、および双方向スカラー／`@c_layout` レコード型です（それ以外の `std::Maybe` の形は `E1008` の `abi_nullable_payload`、WebAssembly で到達した場合は `E1008` の `abi_native_only` となります）。
+引数として許容される型は、スカラー型、`unit`、extern ハンドル型（値または共有借用）、ネイティブ環境での `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>`（`H` は extern ハンドル、`R` はスカラーレコード。`None` は C の `NULL`）、ネイティブ環境での NUL 終端文字列参照 `ref ZString`・`Maybe<ref ZString>`・`ref ZUtf8String`・`Maybe<ref ZUtf8String>`、共有バッファ／文字列（`ref [T]`、`string`、`utf8string`）、スカラーレコード型および `@c_layout` レコード型（値または共有借用。`ref` なしの `@c_layout` レコードは C の値渡しで、ネイティブ環境だけ）、ならびにコールバック関数と `FnPtr<F>` です。戻り値として許容される型は、スカラー型、`unit`、ハンドル型、ネイティブ環境での `Maybe<H>`（`NULL` は `None`）および `Maybe<ZUtf8String>`（`const char *` を写して UTF-8 検査を行い、不正な UTF-8 は `Encoding` トラップ）、所有権付きバッファ／文字列、および双方向スカラー／`@c_layout` レコード型です（それ以外の `std::Maybe` の形は `E1008` の `abi_nullable_payload`、WebAssembly で到達した場合は `E1008` の `abi_native_only` となります）。
 `unit` 引数は C 言語の ABI からは省略され、`unit` 戻り値は C の `void` となります。`bool` および狭幅整数は 32-bit 幅へと正規化されて受け渡されます。
+
+`@c_layout` レコード `R` を `ref` なしで `extern def` の引数に書くと C の構造体の値渡し（C の `T`）、結果に書くと C の値返しになります（W36）。`ref R` は `const T *`、`ref mut R` は `T *` のままです。`@c_layout` の付かないレコードは、`ref` の有無によらず、正規化した一時構造体へのポインター（結果は先頭の out 引数）のままです。`export def` とコールバックは、`@c_layout` のレコードもポインターで受け渡します。
+
+```tsuzuri
+@c_layout
+record Rect { left: i32, top: i32, right: i32, bottom: i32 }
+@c_layout
+record Point { x: i32, y: i32 }
+
+// BOOL PtInRect(const RECT *lprc, POINT pt);
+@trusted
+extern "PtInRect" def pt_in_rect :: ref Rect -> Point -> i32
+```
+
+LLVM IR は構造体の値渡しを C の ABI に下げないので、コンパイラがターゲットごとに C コンパイラと同じ分類をします。分類は Clang の出力と一致します（各ターゲットのすべての `declare` を Clang と突き合わせるテストがあります）。
+
+| ターゲット | 引数 | 結果 |
+|---|---|---|
+| Windows x64（MSVC・MinGW） | 大きさが 1・2・4・8 バイトなら整数レジスター 1 つ（`{ f32, f32 }` も整数レジスター）。ほかは複写へのポインター | 同じ大きさなら整数レジスター。ほかは先頭の隠れた引数（`sret`） |
+| AArch64（Windows・Linux・macOS） | 同じ浮動小数点型のフィールド 1〜4 個からなる構造体（HFA）は浮動小数点レジスター。ほかは 8 バイト以下なら整数レジスター 1 つ、16 バイト以下なら 2 つ、それより大きければ複写へのポインター | HFA は浮動小数点レジスター。ほかは 16 バイト以下なら整数レジスター、大きければ `x8` で渡す領域（`sret`） |
+| System V x86-64（Linux） | 16 バイト以下で、すべてのフィールドが自然な整列の位置にある構造体は、8 バイトごとに整数レジスターか SSE レジスター。ほか（`pack` でフィールドが整列から外れたものを含む）はスタック上の複写。レジスターが足りない構造体は全体がスタックに回り、後ろのスカラーは残りのレジスターを使う | 同じ分類で `rax`・`rdx`・`xmm0`・`xmm1`。ほかは先頭の隠れた引数（`sret`） |
+
+- 引数は左から右へ評価し、値渡しのレコードは評価の直後に呼び出しごとの一時領域へ写します。メモリーで渡す引数は呼び出しごと・引数ごとの新しい複写なので、呼び出し先が書き換えても Tsuzuri の値は変わりません。
+- `FnPtr` や `ref ZString` のフィールドを持つ `@c_layout` レコードは入力専用です。値渡しの引数にはできますが、結果にすると `E1008`（`fnptr_from_host`・`c_layout_input_only`）です。
+- WebAssembly で到達した値渡しは `E1008`（`abi_native_only`）です（`ref R` は WebAssembly でも使えます）。`check` と LSP はターゲットを知らないので受け付け、誤りは `build` で出ます。x86-64 と AArch64 以外のホスト向けのビルドは `E1008`（`abi_record_by_value_target`）です。
+- リンク名のない `extern def` の C ヘッダーのプロトタイプは、値渡しを `tz_record_… f(tz_record_… arg0)` の形で出します（ターゲットに依りません）。
+- 同じシンボルを複数の宣言で書くとき、値渡しの位置には同じ C の形（フィールドの型の並びと `pack`）のレコードを書きます。ポインターや別の形のレコードとの組み合わせは `E1008`（`conflicting_extern_declaration`）です。
+- 宣言が C の側の構造体と一致することは、ほかの `extern` と同じく宣言を書く人の責任です（`@trusted`）。可変長引数の関数、`__vectorcall`、16 バイト以上の整列を持つ構造体は扱いません。`--backend fast` は、1・2・4・8 バイトの整数か `f32`・`f64` のスカラーに下がる形だけをコンパイルし、集成体・ベクトル・`sret`・`byval` などに下がる形は `E2002`（`--backend llvm` を使う）です。
+- 互換性: 以前の版は、`ref` のない `@c_layout` レコードも `const T *`（結果は先頭の out 引数）で受け渡していました。ポインターを取る C の関数の宣言は、引数を `ref R` に、out 引数を `ref mut R` に書き直します（[安定性と互換性の方針](stability.md)の「既知の例外」）。
 
 ネイティブ環境におけるシンボル名は `tsuzuri_host_<module>_<name>` となり、モジュール名に含まれるドットはアンダースコアへ変換されます（変換後のシンボル名が衝突した場合は `E1001`）。
 WASM 環境では、モジュール名が `tsuzuri`、関数名が `<Module>.<name>` としてインポートされます。到達可能性解析によって実際に呼び出される外部関数のみがインポートセクションに生成され、未使用の extern 宣言や extern を一切含まないプログラムに対して不要なインポートが追加されることはありません。
 生成される C ヘッダーには、ホスト側で実装すべき関数のプロトタイプ宣言が出力されます（明示的なリンクシンボル名を指定した extern を除く）。ネイティブビルドにおいては、`--emit object` で出力してホストの C コードと直接リンクするか、あるいはホスト側のオブジェクトファイルや静的ライブラリを `--link`、`-l`、`-L`（またはマニフェスト内 `[native]`）を通じて直接リンクします。未解決の外部シンボルが残存したまま実行ファイルを作成しようとした場合は、リンクエラー `E2002` となります。
 
 外部関数の呼び出しは副作用を持つ操作として扱われ、引数式は左から右へと順次評価されます。外部関数をファーストクラスの関数値として扱ったり部分適用したりすることは可能ですが、コンパイラが呼び出しを純粋計算と誤認してデッドコード削除することはありません。なお、コンパイル時定数（`const`）の初期化式の中から外部関数を呼び出すことはできません。
-ホスト環境は、共有借用として渡された入力データを変更したり、呼び出し完了後もポインタを不正に保持し続けたりしてはならず、同期呼び出しの実行中のみ安全に読み取ることができます。レコード型の受け渡しには、正規化された一時構造体が使用されます。
+ホスト環境は、共有借用として渡された入力データを変更したり、呼び出し完了後もポインタを不正に保持し続けたりしてはならず、同期呼び出しの実行中のみ安全に読み取ることができます。レコード型の受け渡しには、正規化された一時構造体が使用されます（`@c_layout` レコードは C の配置そのままの一時領域で、`ref` なしの `extern def` の引数と結果は上記の値渡しです）。
 `extern` の宣言（関数と `extern type`）の直前に `@trusted [性質...]` を書くと、人がその外部関数の ABI・所有権・寿命の契約を確かめた印になります（E15）。コンパイラは契約を確かめず、生成コードも変えません。同じ行の性質は `pure`・`no_alloc`・`no_copy`・`no_trap`・`terminates` で、`pure` は `pure def` と契約の条件の純粋性の検査で、`no_alloc`・`no_trap`・`terminates` は対応する効果の表明の検査で、その関数を `extern` の効果の源にしません（性質ごとに独立。性質のない印はどの検査も緩めない）。`FunctionOrigin.trusted` に性質のビットを持ちます。`extern` でない宣言への印・未知の性質・重複した性質・`extern type` の性質・印の重複は `E1037`（`trusted_wrong_target`・`trusted_unknown_property`・`trusted_duplicate_property`・`trusted_type_property`・`trusted_repeated`）です。印のない `extern` の関数を `extern` でない関数が参照すると、`--warn untrusted-extern` でルートのパッケージの宣言に、`tsuzuri audit` で全パッケージの宣言に警告 `W1010`（`untrusted_extern`）を出します。`tsuzuri bindgen` は印を付けず、生成物の 5 行目に確認を促す注意書きを置きます。
 所有buffer結果はout descriptorへ書き、`tsuzuri_alloc`で確保した独立領域の所有権をTsuzuriへ移します。借用入力・static領域を所有結果として返してはいけません。
 長さ・サイズ積・alignment・WASM範囲・UTF-8を受領時に検査しますが、nativeポインターの実確保元はホストの責任です。ホストはoutの全fieldを初期化します。
@@ -5231,7 +5260,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1005` | `array_slice_with_step`, `atomic_element_type`, `builtin_index_one_component`, `call_non_function`, `capture_exclusive_in_reusable_function`, `capture_rc_in_function_value`, `capture_sync_primitive_in_function_value`, `capture_unsendable_in_function_value`, `collection_element_exclusive_borrow`, `cpu_function_wide_vector_boundary`, `deref_non_reference`, `exclusive_slice_whole_array_parameter`, `fixed_array_init_annotation`, `fixed_slice_source`, `for_over_fixed_array`, `for_source_not_iterable`, `from_end_needs_length`, `function_constraint_unresolvable`, `function_constraint_unsatisfied`, `index_non_indexable`, `invalid_length_constant`, `misplaced_mut_convention`, `misplaced_own_convention`, `mut_parameter_needs_edition_2027`, `new_on_fixed_array`, `no_instance`, `no_instance_for_operator`, `no_wider_integer`, `range_as_value`, `rec_function_captures_generic`, `record_update_non_record`, `shared_container_exclusive_borrow`, `simd_lane_count_mismatch`, `simd_operation_vector_type`, `slice_non_array`, `slice_of_fixed_array`, `std_representation_mismatch`, `unsized_slice_type_position`, `use_requires_drop`, `zstring_literal_argument`, `zstring_literal_interior_nul`, `zutf8string_literal_argument`, `zutf8string_literal_interior_nul` |
 | `E1006` | `active_pattern_argument_count`, `active_recognizer_parameters`, `definition_parameter_count_mismatch`, `instance_method_parameter_count`, `owned_function_parameter_count`, `too_many_arguments_applied` |
 | `E1007` | `field_access_non_record`, `missing_record_fields`, `record_has_no_field`, `unknown_field` |
-| `E1008` | `abi_apple_only`, `abi_native_only`, `abi_nullable_payload`, `c_layout_bool_field`, `c_layout_drop`, `c_layout_empty`, `c_layout_field_type`, `c_layout_generic`, `c_layout_in_plain_record`, `c_layout_input_only`, `c_layout_nested_record`, `c_layout_owned_handle_field`, `conflicting_extern_declaration`, `count_not_buffer`, `count_position_out_of_range`, `count_repeated`, `data_symbol_signature`, `data_symbol_target`, `export_active_recognizer`, `export_on_extern_declaration`, `extern_callback_argument`, `extern_callback_call_form`, `extern_declaration_constraints`, `extern_view_call_form`, `extern_view_record`, `extern_view_signature`, `fnptr_argument`, `fnptr_call_form`, `fnptr_from_host`, `fnptr_signature`, `invalid_extern_symbol`, `invalid_wasm_import_module`, `link_invalid_name`, `link_needs_symbol`, `link_repeated`, `reserved_extern_symbol`, `unsupported_export_signature`, `unsupported_extern_signature`, `weak_data_symbol_result`, `weak_needs_symbol` |
+| `E1008` | `abi_apple_only`, `abi_native_only`, `abi_nullable_payload`, `abi_record_by_value_target`, `c_layout_bool_field`, `c_layout_drop`, `c_layout_empty`, `c_layout_field_type`, `c_layout_generic`, `c_layout_in_plain_record`, `c_layout_input_only`, `c_layout_nested_record`, `c_layout_owned_handle_field`, `conflicting_extern_declaration`, `count_not_buffer`, `count_position_out_of_range`, `count_repeated`, `data_symbol_signature`, `data_symbol_target`, `export_active_recognizer`, `export_on_extern_declaration`, `extern_callback_argument`, `extern_callback_call_form`, `extern_declaration_constraints`, `extern_view_call_form`, `extern_view_record`, `extern_view_signature`, `fnptr_argument`, `fnptr_call_form`, `fnptr_from_host`, `fnptr_signature`, `invalid_extern_symbol`, `invalid_wasm_import_module`, `link_invalid_name`, `link_needs_symbol`, `link_repeated`, `reserved_extern_symbol`, `unsupported_export_signature`, `unsupported_extern_signature`, `weak_data_symbol_result`, `weak_needs_symbol` |
 | `E1009` | `decimal_literal_out_of_range`, `float_literal_out_of_range`, `float_literal_type`, `integer_literal_out_of_range`, `integer_literal_type`, `invalid_bigint_digit`, `invalid_float_literal` |
 | `E1010` | `fixed_array_too_long`, `infinite_recursive_layout`, `layout_nesting_limit`, `recursive_union_without_base_case`, `value_layout_too_large` |
 | `E1011` | `ambiguous_package_root`, `conflicting_dependency_source`, `cyclic_package_dependency`, `dependency_kind_not_allowed`, `dependency_name_mismatch`, `dependency_path_not_relative`, `duplicate_dependency`, `duplicate_module`, `incompatible_dependency_versions`, `invalid_module_filename`, `invalid_module_name`, `invalid_package_name`, `invalid_package_namespace`, `invalid_publish_version`, `invalid_source_path`, `invalid_std_path`, `invalid_using_declaration`, `manifest_not_regular_file`, `module_namespace_collision`, `module_source_not_regular_file`, `publish_non_registry_dependency`, `reserved_package_namespace`, `reserved_std_namespace`, `source_filename_case_mismatch`, `source_outside_package_root`, `source_without_filename`, `symlink_not_followed` |

@@ -141,6 +141,8 @@ Array／List の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は 20
 
 - **macOS の既定の最低 OS 版（M17 / D-67 分岐 6）**: `[macos] min_version` も `MACOSX_DEPLOYMENT_TARGET` もないときの macOS 向けビルドの最低 OS 版（Mach-O `LC_BUILD_VERSION` の `minos`）は、名前付きの `--target aarch64-apple-darwin` と同じく `12.0` に固定します（以前は Apple clang の `--target native` でビルド機の OS 版になり、`--target aarch64-apple-darwin` や同梱の zig では `MACOSX_DEPLOYMENT_TARGET` が効きませんでした）。より新しい OS 版を対象にするときは `Tsuzuri.toml` の `[macos] min_version` または `MACOSX_DEPLOYMENT_TARGET` を使います。生成される LLVM IR は変わりません。
 
+- **`@c_layout` レコードの `extern def` での値渡し（W36）**: `ref` のない `@c_layout` レコードを `extern def` の引数・結果に書いたときの C の ABI が変わりました。以前は、引数を `const T *`、結果を先頭の out 引数（`T *out`。戻り値は `void`）で受け渡していました。今は C の構造体の値渡し・値返し（C の `T`）で、ターゲットの C の ABI のとおりにレジスターかメモリーで受け渡します。ソースはそのままコンパイルでき、診断は出ません。ポインターを取る C の関数をこの形で宣言していたプログラムは、引数を `ref R` に、out 引数を `ref mut R` の引数に書き直してください（書き直さないと、C の側は構造体の中身をポインターとして読みます）。`@c_layout` の付かないレコード、`ref R`・`ref mut R`、`export def`、コールバックは変わりません。WebAssembly では、この形は到達したときに `E1008`（`abi_native_only`）になります（以前はポインターで渡していました。`ref R` は引き続き使えます）。リンク名のない `extern def` の C ヘッダーのプロトタイプも、値渡しの形（`tz_record_… f(tz_record_… arg0)`）に変わります。
+
 edition ごとに std を複製することはしません。型と instance が edition の数だけ分かれ、パッケージの間で値を渡せなくなるからです。
 
 ## 公開 API の差分
