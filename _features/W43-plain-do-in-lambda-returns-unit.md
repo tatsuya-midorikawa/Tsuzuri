@@ -43,7 +43,7 @@ W38 はトップレベルのコードについて同じ食い違いを直す。�
 ### 着手条件
 
 - `node scripts/repo-kb.mjs brief W43`。「現状」の表を HEAD で繰り返し、同じ結果になることを確かめる。食い違えば、このチケットを直してから始める。
-- [W38](W38-top-level-plain-do-misplaced-e1003.md) が `main` に入っている（依存）。入っていなければ始めない。[W02](W02-break-in-do-function.md) と [W31](W31-top-level-loop-before-do.md) が入っているかも確かめ、入っていればその上に作る（「前提とする他チケットのインターフェース」）。
+- [W38](W38-top-level-plain-do-misplaced-e1003.md) が `main` に入っている（依存）。入っていなければ始めない。[W02](_completed/W02-break-in-do-function.md) と [W31](_completed/W31-top-level-loop-before-do.md) が入っているかも確かめ、入っていればその上に作る（「前提とする他チケットのインターフェース」）。
 
 ### 停止条件
 

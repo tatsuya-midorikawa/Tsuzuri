@@ -156,7 +156,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | A32 | [規約 `[Read]`・`[Mut]` の関数型が期待される位置へ、引数を `ref T`・`ref mut T` と注釈したラムダを直接書くと `E1003` になる（`if n > 0 then text_length else \(text: ref string) -> …`）](_completed/A32-annotated-reference-lambda-under-conventions.md) | P2 | S | A18 | done（規約 `[Read]`・`[Mut]` を持つ関数型（edition 2027 の既定の読み取りと `mut T`、2026 の `pure def` の読み取り）が期待される位置（`if`・`match` の枝、ジェネリックなレコード、`Vec.push` など）へ直接書いたラムダと、`def` の右辺のラムダは、引数のパターンの最上位が参照の型の注釈（`\(text: ref string)`、`\(counter: ref mut Counter)`、参照の型の別名、`(_: ref T)`、`((a, b): ref (A * B))`）なら、その引数を値 view にせず注釈のとおり参照として束縛する（`let` で束縛したラムダと同じ型と生成コード）。参照先の型が推論中の型・参照・型適用のとき（`def inspect :: 'a -> i64` の値と並べた `if` の `ref ?t`、要素型が先に `ref (ref T)` に決まった `Vec`）は従来どおり値 view と比べるので、今まで受理していたプログラムの型・診断・IR は変わらない（`tests/fixtures`・`examples` の IR は byte 単位で同じ）。注釈の無い引数・値の型の注釈・分解するパターンは従来どおり値 view。規約の無い値の引数への参照の注釈（`apply (\(text: ref string) -> …)`、外側のラムダの引数だけを `def` が受け取る `\(a: ref string) -> \(b: ref string) -> …` の内側）は `E1003` のまま） |
 | A33 | [格納と破棄の順序の検査に残る穴と保守的な制限を、記憶域の寿命と破棄の順序の 1 つのモデルで直す](_completed/A33-remaining-store-soundness-holes.md) | P0 | XL | A31 | done（`E::Interpolated` の `Format` 補間引数伝播、`ref r2 |> Rc.share` のブロック共有追跡、`keep_for_drop` の重複排除、および A34 との合同検証を実装） |
 | A34 | [`main` が受理する安全なプログラムを、A31 の格納と破棄の順序の検査が `E1013`・`E1014` で拒否する（フィールドや要素の `Rc.get` を束縛した変数、受け取った関数値を持つ値の破棄、書き込む部分の側の参照の変数、使い終えた共有の型の判定、`Rc.get (ref r)` の持ち主、参照の仮引数から作った共有、ループの中の置き換えの後の写し、セルへ書き込んだ複数 region のレコード）か、検査が収束せず `E1017` で打ち切る（参照の仮引数の先の借用をセルを所有する関数値へ渡すループ）](_completed/A34-store-check-safe-rejections.md) | P1 | L | A31 | done（9 項目すべて — `rcgetpart`・`fvdrop`・`refsrc`・`sharetype`・`rcgetowner`・`shareparam`・`replcopy`・`cellslots`・`loopplace` — の安全な形を受理しつつ対応する不安全な双子を引き続き拒否） |
-| A35 | [実際のプログラムの収束するループの借用の増え方が A31 のループの打ち切り（`LoanGrowth`）の上限に近づいたら、テストを失敗させる（収束したループの増え方の統計をテストだけに見せ、`tests/` のプログラム・`examples/`・std の例の最大を、増え方の連続の上限の 1/2 と比べる。`LOOP_GROWING_LARGE` の借用の数は 1/8 で数える）](A35-loop-growth-margin-check.md) | P2 | M | A31 | todo |
+| A35 | [実際のプログラムの収束するループの借用の増え方が A31 のループの打ち切り（`LoanGrowth`）の上限に近づいたら、テストを失敗させる（収束したループの増え方の統計をテストだけに見せ、`tests/` のプログラム・`examples/`・std の例の最大を、増え方の連続の上限の 1/2 と比べる。`LOOP_GROWING_LARGE` の借用の数は 1/8 で数える）](_completed/A35-loop-growth-margin-check.md) | P2 | M | A31 | done |
 | A36 | [edition 2027 で、ペイロードを持つジェネリックな複数ケースのアクティブパターンを誤って拒否する](_completed/A36-active-result-default-reads.md) | P2 | S | G44 | done（関数本体の引数の準備を `bind_function_parameters` にまとめ、複数ケースのアクティブパターンの結果の推論でも使う。`pure def` の形も直った。非 Copy の入力をそのままペイロードにするときは、関数本体と同じく `Copy` か `ref 'a` が要る） |
 | A37 | [`Index` が土台の場所を借りないため、一時値の土台の窓が解放後のメモリを読み、`Tensor.Mut` から取った窓が書き込み中も生きる不具合の修正](_completed/A37-index-base-place-borrow.md) | P0 | M | – | done（土台を借りる `Index` を場所の共有借用で下げ、一時値の土台は中身だけを返す `returns_contents` 以外 `E1013`。`Index`/`IndexMut`・1 引数算術クラスの orphan 規則 `E1016` `orphan_instance` と利用者位置での std 重なり報告を追加） |
 | A38 | [添字の評価順を組み込みの添字にそろえる（土台、キーの成分を左から右。`IndexMut` の `=` は右辺が先）](_completed/A38-index-evaluation-order.md) | P0 | M | A37 | done（全 `Index` の評価順を「土台 → キー左から右」に統一し、キー評価中は土台に共有ガード（競合は `E1014`）、`IndexMut` の `=` は右辺先行に統一） |
@@ -336,7 +336,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
 | W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](_completed/W01-callback-extern-temporary-string.md) | P1 | S | – | done（`FunctionEmitter::call` の先頭でコールバック `extern` を直接 `host_call` へ送り、`BorrowOperand` を一時領域へ借用して呼び出し後に解放） |
-| W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](W02-break-in-do-function.md) | P2 | S | – | todo |
+| W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](_completed/W02-break-in-do-function.md) | P2 | S | – | done |
 | W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
 | W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](_completed/W04-windows-trap-report-lost.md) | P1 | S | – | done（Windows の `--trap-info` と tzroutine ランタイムの報告を `GetStdHandle`・`WriteFile` で直接書き、標準エラーが無い・書けないときは `OutputDebugStringW` へ送る） |
 | W05 | [Windows の `--emit shared`（DLL）を実装する](W05-windows-shared-library.md) | P2 | L | – | todo |
@@ -350,7 +350,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](_completed/W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | done |
 | W14 | [同じ symbol の `extern` を、下げた C の ABI で照合して複数宣言できるようにする](_completed/W14-extern-multiple-declarations.md) | P1 | S | – | done |
 | W15 | [ABI での `Maybe<H>` と `Maybe<ref R>`（NULL、native だけ）](_completed/W15-abi-nullable-handles.md) | P1 | M | – | done |
-| W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](W16-last-error-attribute.md) | P2 | S | – | todo |
+| W16 | [`@last_error`（呼び出し直後の `GetLastError`／`errno`）](_completed/W16-last-error-attribute.md) | P2 | S | – | done |
 | W17 | [`extern` ごとのシステムライブラリ `@link` と `dllimport`](_completed/W17-link-attribute-dllimport.md) | P2 | M | – | done（`@link("name")` 属性・Windows `dllimport`・到達シンボルの `-l<name>` 自動収集・`tsuzuri audit` の `link` 表示） |
 | W18 | [`extern type copy`（所有しない識別子のハンドル）](_completed/W18-copy-extern-type.md) | P1 | M | – | done |
 | W19 | [スレッドに結び付くハンドル（`extern type local`）と、固定された文脈でだけ使える検査](_completed/W19-thread-bound-handles.md) | P1 | M | W18 | done |
@@ -365,7 +365,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W28 | [UI を固定した tzroutine（ファイバー）の上で動かすときのスタックと検証](W28-ui-on-fibers.md) | P2 | M | W06 | todo |
 | W29 | [コールバックの P の取り戻しの遅延を計測して短い経路を速くする](W29-callback-latency.md) | P2 | M | W12 | todo |
 | W30 | [Windows の実行ファイルのセキュリティの硬化（ASLR・NX・CET・CFG）](W30-windows-hardening.md) | P2 | M | W07（Phase 2: W25） | todo |
-| W31 | [トップレベルのコードで、最初の `let!`・`do!` より前にループがあると `E1018` になる](W31-top-level-loop-before-do.md) | P2 | S | – | todo |
+| W31 | [トップレベルのコードで、最初の `let!`・`do!` より前にループがあると `E1018` になる](_completed/W31-top-level-loop-before-do.md) | P2 | S | – | done |
 | W32 | [書き込みの失敗を黙って捨てる経路を塞ぐ（トップレベルの式の表示、`--overflow-report`）](W32-silent-write-failures.md) | P2 | S | W08 | todo |
 | W33 | [Windows のコマンドラインの分割を CRT（`CommandLineToArgvW`）の規則にそろえる](W33-windows-command-line-splitting.md) | P2 | M | – | todo |
 | W34 | [Windows の sysmon の待ちがミリ秒に切り上がり、TZ08 の 20 µs の刻みが成り立たない](W34-windows-sysmon-timer-resolution.md) | P2 | M | – | todo |
@@ -385,12 +385,12 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | ID | チケット | 優先 | 規模 | 依存 | 状態 |
 |---|---|---|---|---|---|
 | NS01 | [不透明ハンドル `extern type` の非 Null 不変条件と `Maybe<H>` の NULL niche](_completed/NS01-nonnull-extern-handles.md) | P1 | M | W15 | done |
-| NS02 | [`export def` とホストバインディング（C#・Python・C++）での `Maybe<H>`・`Maybe<ref R>`](NS02-export-and-bindings-nullable.md) | P2 | M | W15, NS01 | todo |
+| NS02 | [`export def` とホストバインディング（C#・Python・C++）での `Maybe<H>`・`Maybe<ref R>`](_completed/NS02-export-and-bindings-nullable.md) | P2 | M | W15, NS01 | done |
 | NS03 | [`tsuzuri bindgen` の Nullability 対応（`_Nullable`・`_Nonnull` と既定 `Maybe` 化）](_completed/NS03-bindgen-nullability.md) | P1 | M | W15, NS01 | done |
 | NS04 | [ラムダ式引数・`for...in` の反駁可能パターンの静的検査と、`let` の反駁不可能パターン分解](_completed/NS04-irrefutable-binding-patterns.md) | P1 | M | – | done（全 Phase。単一パターン束縛の反駁可能パターンを 2027 で `E1021`・2026 で `W1012` にし、不変 `let <pattern> [: Type] = <expr>` の反駁不可能分解を追加） |
-| NS05 | [強制アンラップ警告 `--warn unwrap`（`Maybe.get`・`Result.get`・`Result.get_error` の静的検出）](NS05-warn-unchecked-unwrap.md) | P2 | S | – | todo |
-| NS06 | [条件付きパターン束縛 `if let`（`elif let` 連鎖を含む安全な短絡取り出し）](NS06-if-let-conditional-binding.md) | P2 | M | (NS04) | todo |
-| NS07 | [非ゼロ外部アドレス型 `ExternAddr` と `extern view` の静的非 Null 化](NS07-extern-addr-nonnull-view.md) | P2 | S | W24 | todo |
+| NS05 | [強制アンラップ警告 `--warn unwrap`（`Maybe.get`・`Result.get`・`Result.get_error` の静的検出）](_completed/NS05-warn-unchecked-unwrap.md) | P2 | S | – | done |
+| NS06 | [条件付きパターン束縛 `if let`（`elif let` 連鎖を含む安全な短絡取り出し）](_completed/NS06-if-let-conditional-binding.md) | P2 | M | (NS04) | done |
+| NS07 | [非ゼロ外部アドレス型 `ExternAddr` と `extern view` の静的非 Null 化](_completed/NS07-extern-addr-nonnull-view.md) | P2 | S | W24 | done |
 | NS08 | [`Owned.call` の部分適用が `Capture` 検査をすり抜けて解放後読み出しになる不具合の修正](_completed/NS08-owned-call-partial-capture-check.md) | P0 | S | – | done（`Owned.call` の結果が関数型のとき、直接呼び出し・パイプライン・関数値・ジェネリック単相化のすべてで第 2 引数に `Capture` を要求し、`owned2` の二重解放・解放後読み出しを `E1005` で拒否） |
 
 ### NC. 数値計算基盤と NumPy 互換機能（案 C: ハイブリッド。D-65）
@@ -416,8 +416,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | NC17 | [edition 2028 と範囲の構文の一本化（終端を含む `..`、`..<`、`<..`、`<..<`、`^k`）](_completed/NC17-edition-2028-inclusive-range-family.md) | P1 | XL | – | done（Phase 1–3: `i64u` 範囲上限飽和除去・edition 2028 の範囲構文統一（終端込み `..`、`..<`、`<..`、`<..<`、F# 方式 `^k`、`W1013`/`W1014`、`tsuzuri fix --edition 2028`）と `std/` 移行） |
 | NC18 | [多次元の角括弧の添字 `t[i, a..b, ..]` と厳格なキー `Slice.Sel`](_completed/NC18-multi-axis-bracket-indexing.md) | P1 | L | A37, A38, NC16, NC17 | done（Phase 1–2: `MultiIndex` 構文、`Slice.Pos`/`Bound`/`Sel`（`Item`/`Span`/`Whole`/`Rest`/`AddAxis`）、`Tensor`/`Matrix`/`MatrixView` の多次元要素アクセスと厳格スライス窓、`^k` 要素読み書き） |
 | NC19 | [演算子の拡張インスタンス（`View` どうし・`Tensor` と `View`・スカラーとの演算子）](_completed/NC19-operator-extension-instances.md) | P1 | L | NC06, A37, (A40), (NC16), (NC18) | done（3 引数 `Add<L, R, O>`〜`Pow`・2 引数 `Neg<S, O>` ヘッダ、単一演算子表と被覆規則 `E1016`、リテラル型決定と柔らかいヒント、`std/Tensor.tz` の 43 生成インスタンス） |
-| NC20 | [複合代入 `+=`・`-=`・`*=`・`/=`・`%=` と書き込み窓 `ref mut t[…]`（組み込みの `AddAssign` 系と `IndexBorrowMut`）](NC20-compound-assignment-and-mutable-index-views.md) | P2 | L | A37, A38, A39, NC18, NC19, (A40) | todo |
-| NC21 | [`Complex` と実数のスカラーの演算子（演算子の拡張インスタンス 8 個）](NC21-complex-real-scalar-operators.md) | P2 | S | NC19 | todo |
+| NC20 | [複合代入 `+=`・`-=`・`*=`・`/=`・`%=` と書き込み窓 `ref mut t[…]`（組み込みの `AddAssign` 系と `IndexBorrowMut`）](_completed/NC20-compound-assignment-and-mutable-index-views.md) | P2 | L | A37, A38, A39, NC18, NC19, (A40) | done（Phase 1–3） |
+| NC21 | [`Complex` と実数のスカラーの演算子（演算子の拡張インスタンス 8 個）](_completed/NC21-complex-real-scalar-operators.md) | P2 | S | NC19 | done |
 
 ### M. Tsuzuri だけで macOS のデスクトップアプリを書く（D-67）
 
@@ -1068,12 +1068,12 @@ Tsuzuri を言語全体として完全な Null 安全にするための仕様調
 | --- | --- | --- | --- |
 | 修正 | [NS08](_completed/NS08-owned-call-partial-capture-check.md) | 2 引数以上の関数を包んだ `Owned.Function` への `Owned.call` 部分適用が `Capture` 検査をすり抜け、非 Copy 値の二重解放・解放後読み出しになる不具合（[A33](_completed/A33-remaining-store-soundness-holes.md) の `owned2`）を塞ぐ（done） | 不要 |
 | 機能 | [NS01](_completed/NS01-nonnull-extern-handles.md) | ネイティブと生成バインディングで不透明ハンドル `extern type`（`H`・`ref H`）を厳格に非 Null にし、非 `Maybe` 境界の `NULL` を `TrapKind::NullHandle` で止めて `Some(NULL)` を根絶する。ネイティブの `Maybe<H>` に `Niche::NullPointer`（1 ポインタ）を与える | D1・D2 |
-| 機能 | [NS02](NS02-export-and-bindings-nullable.md) | [W15](_completed/W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す | D1 |
+| 機能 | [NS02](_completed/NS02-export-and-bindings-nullable.md) | [W15](_completed/W15-abi-nullable-handles.md) D3 の対象外を解除し、ネイティブの `export def` と C#・Python・C++ 生成バインディングで `Maybe<H>`・`Maybe<ref H>`・`Maybe<ref R>` を型安全に受け渡す（done） | D1 |
 | 改善 | [NS03](_completed/NS03-bindgen-nullability.md) | `tsuzuri bindgen` が捨てていた `_Nullable`・`_Nonnull`・`nonnull` / `returns_nonnull` 属性を反映し、非 Null の根拠がない C ポインタを既定で `Maybe` に写す（`--nonnull` 注釈を追加） | D1・D2 |
 | 改善 | [NS04](_completed/NS04-irrefutable-binding-patterns.md) | ラムダ引数・`for...in`・計算式束縛の単一パターンに網羅性検査を適用し、反駁可能パターン（`\(Some x) -> x` など）を 2027 で `E1021`、2026 で `W1012` にする。Phase 2 で不変 `let` に反駁不可能パターン分解を許す（done） | D1〜D3 |
-| 機能 | [NS05](NS05-warn-unchecked-unwrap.md) | `--warn unwrap` でルートパッケージの `Maybe.get`・`Result.get`・`Result.get_error` に警告 `W1011`（`unchecked_unwrap`）を出し、`--deny-warnings` と併用して検査なしアンラップを禁止できるようにする | D1・D2 |
-| 機能 | [NS06](NS06-if-let-conditional-binding.md) | 新しい予約語を増やさず `if let <pattern> = <expr> [when <guard>] then ... [elif ... \| else ...]` を 2 アーム `match` の糖衣として導入し、単一ケースの安全な取り出しを簡潔にする | D1 |
-| 改善 | [NS07](NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](_completed/W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する | D1・D2 |
+| 機能 | [NS05](_completed/NS05-warn-unchecked-unwrap.md) | `--warn unwrap` でルートパッケージの `Maybe.get`・`Result.get`・`Result.get_error` に警告 `W1011`（`unchecked_unwrap`）を出し、`--deny-warnings` と併用して検査なしアンラップを禁止できるようにする（done） | D1・D2 |
+| 機能 | [NS06](_completed/NS06-if-let-conditional-binding.md) | 新しい予約語を増やさず `if let <pattern> = <expr> [when <guard>] then ... [elif ... \| else ...]` を 2 アーム `match` の糖衣として導入し、単一ケースの安全な取り出しを簡潔にする（done） | D1 |
+| 改善 | [NS07](_completed/NS07-extern-addr-nonnull-view.md) | opt-in の不透明値型 `ExternAddr`（`ExternAddr.of_i64 :: i64 -> Maybe<ExternAddr>`）を追加し、[W24](_completed/W24-extern-view.md) の `extern view` でアドレス `0`（NULL）の分岐確認を型レベルで強制する（done） | D1・D2 |
 
 ### 進め方
 
@@ -1190,8 +1190,8 @@ NumPy の `a[1:-1, 0]`・`a[1:] - a[:-1]`・`a += b` に当たる書き方を、
 | 言語 | [NC17](_completed/NC17-edition-2028-inclusive-range-family.md) | edition 2028 で範囲の構文を一本化する（終端を含む `..`、`..<`、`<..`、`<..<`、`^k`、角括弧の中の刻み、境界のモデル）。2026・2027 は `W1013` と `tsuzuri fix --edition 2028` で移行する。Phase 1 は `i64u` の終端と B3 の不具合の修正。添字の負の整数リテラルに `W1014`（kind `negative_literal_index`） | 承認済み（D-66a〜c）。未決だった 3 つの質問は決定（D-66 の委任。D8・D9・D13） |
 | 言語 | [NC18](_completed/NC18-multi-axis-bracket-indexing.md) | 添字の角括弧のカンマ区切りの成分 `t[i, j]`・`ref t[1..^1, ..]` と、範囲外を丸めない厳格なキー `Slice.Sel`（`Slice.Pos`・`Slice.Bound`）。整数の位置と式だけのキーは全 edition、範囲・`^k`・単独 `..` を含むキーは 2028 から | 方向は承認済み（D-66a・d）。評価順（D7）、2028 の受理の時期（D1・D8）、窓の整数の成分の `W1014`（D15）は決定（D-66 の委任）。ほかは既定案 |
 | 言語 | [NC19](_completed/NC19-operator-extension-instances.md) | 組み込みの算術クラスに限った 3 引数のインスタンス `Sub<L, R, O>`・`Neg<S, O>`（演算子の構文だけに効く）と 1 つの演算子表。`ref a[1..] - ref a[..^1]`・`2.0 * x + 1.0`・`t + v` を書けるようにする | D1（NC03 D2 の改訂）・D2（1 つの演算子表、orphan 規則は A37 と同じ）・D10 は承認済み（D-66 の委任）。D9 は (i) 却下、(ii) A40 に分けて承認、(iii) `Complex` は NC21 に分けて承認・`BigInt` は却下 |
-| 言語 | [NC20](NC20-compound-assignment-and-mutable-index-views.md) | 複合代入 `+=`・`-=`・`*=`・`/=`・`%=`（組み込み型は `p = p op e` と同じ IR）、組み込みクラス `AddAssign` 系による `Tensor` の確保なしの更新、書き込み窓 `ref mut t[…]`（組み込みクラス `IndexBorrowMut`） | Phase 1 は不要。D1〜D5 は承認済み（D-66 の委任。D2 の std だけの特権は A39 の一般の規則に置き換え）。D13・D14 は決定（D13 の (a) は PM10、(b) は A38。D14 は連鎖した書き込み窓） |
-| 言語 | [NC21](NC21-complex-real-scalar-operators.md) | `Complex` と実数のスカラーの 8 個の OEI（`c * 2.0`・`2.0 - c`・`c / s` など）。`BigInt` と整数の OEI は採らない | 承認済み（D-66 の委任） |
+| 言語 | [NC20](_completed/NC20-compound-assignment-and-mutable-index-views.md) | 複合代入 `+=`・`-=`・`*=`・`/=`・`%=`（組み込み型は `p = p op e` と同じ IR）、組み込みクラス `AddAssign` 系による `Tensor` の確保なしの更新、書き込み窓 `ref mut t[…]`（組み込みクラス `IndexBorrowMut`） | Phase 1 は不要。D1〜D5 は承認済み（D-66 の委任。D2 の std だけの特権は A39 の一般の規則に置き換え）。D13・D14 は決定（D13 の (a) は PM10、(b) は A38。D14 は連鎖した書き込み窓） |
+| 言語 | [NC21](_completed/NC21-complex-real-scalar-operators.md) | `Complex` と実数のスカラーの 8 個の OEI（`c * 2.0`・`2.0 - c`・`c / s` など）。`BigInt` と整数の OEI は採らない | 承認済み（D-66 の委任） |
 | 改訂 | [NC06](_completed/NC06-tensor-ufuncs-and-elementwise.md) | 演算子は同じ型どうしの `Tensor` だけを残し、NC19・NC20 が呼ぶ非公開のトラップ版カーネル（`*_or_trap`・`*_in_place_or_trap`）、両側のスカラー版、累積のインプレース版を足した。演算子インスタンスの段（手順 3）は A37 の手順 5 の後 | 不要（既存のまま） |
 | 性能 | [PM10](../_perfs/_completed/PM10-std-consume-copies.md) | 文書が「複製しない」と書く std の関数（`Tensor.update`・`Tensor.to_array`・`Matrix.set` など）の要素の複製の除去と、A17 の X1 の精密化（A39・NC20 が作る借用の根を含む） | 決定（D-66 の委任） |
 

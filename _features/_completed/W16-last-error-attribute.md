@@ -7,7 +7,7 @@
 | 規模 | S（属性の構文と符号化、検査 5 つ、`host_call` の数行と text pass の深さの数え方、テストと文書） |
 | 依存 | – |
 | 後続 | [W27](W27-win32-package-from-winmd.md)（win32metadata の `SetLastError` の写し先） |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（D-53）。決定事項 D1 が要承認、D2〜D8 は既定案 |
 | 手本にする既存実装 | `src/parser.rs` の `attributes`・`trusted_attribute`（宣言の前の属性の読み込み口、D-53）、`src/syntax.rs` の `TrustedAttribute` と `Program::trusted`（脇のリスト）、`src/check.rs` の `check_modules_collect` の `@trusted` の対応付け（名前と位置で extern を探す）、`src/llvm_imports.rs` の `host_call`、`src/llvm.rs` の `with_blocking_externs`、`src/runtime/tzroutine.c` の `tzr_exitsyscall`・`tsuzuri_tz_preempt_check`（`errno` と `GetLastError` の退避） |

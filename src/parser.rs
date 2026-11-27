@@ -6479,7 +6479,10 @@ mod tests {
                 assert!(debug.contains("Slice"));
                 assert!(!debug.contains("Borrow("));
                 // C08: the borrow's kind decides the slice's.
-                assert_eq!(debug.contains("mutable: true"), prefix.contains("mut"));
+                assert_eq!(
+                    debug.contains("mutable: Some(true)"),
+                    prefix.contains("mut")
+                );
             }
         }
         for source in [

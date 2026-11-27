@@ -7,7 +7,7 @@
 | 規模 | L（Phase 1: 組み込み型の複合代入、Phase 2: `AddAssign` 系と `Tensor` の in-place カーネル、Phase 3: `IndexBorrowMut`・書き込み窓・添字の対象への複合代入） |
 | 依存 | [A37](_completed/A37-index-base-place-borrow.md), [A38](_completed/A38-index-evaluation-order.md), [A39](_completed/A39-field-exclusive-borrow.md), [NC18](_completed/NC18-multi-axis-bracket-indexing.md), [NC19](_completed/NC19-operator-extension-instances.md)（Phase ごとの依存は「着手条件」。Phase 1 はどれにも依存しない: D8。Phase 2 は A39・NC19 とその依存の NC06、Phase 3 は A37・A38・A39・NC16・NC18）, ([A40](_completed/A40-reference-operands.md))（順序はどちらでもよい。後に入る方が合わせる: A40 の D4） |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20)。HEAD `858a949c` で確認） |
 | 承認 | Phase 1 は不要（字句 `+=` などの追加は D-66 で承認済み）。D1〜D4 は承認済み（D-66 の委任で決定、2026-11-25）: D1（`AddAssign` 系の組み込みクラスとメソッドの形）、D2（フィールドの排他借用。std だけの特権を採らず、一般の規則 [A39](_completed/A39-field-exclusive-borrow.md) に置き換えた）、D3（組み込みクラス `IndexBorrowMut`）、D4（`AddAssign` 系の orphan 規則。A37 の D4 と同じ 1 つの規則）。D5 は承認済み（D-66 の委任で決定、2026-11-25）。D13 は決定（D-66 の委任で決定、2026-11-25。(a) は [PM10](../_perfs/_completed/PM10-std-consume-copies.md)、(b) は A38）。D14 は決定（D-66 の委任で決定、2026-11-25。連鎖した書き込み窓は受理せず、`E1013` に help を付ける）。ほかは既定案 |
 | 手本にする既存実装 | `src/check.rs` 14895 行付近（`ExprKind::Assign` の型検査と、NC04 Phase 2 の `IndexMut` への脱糖）と 15003〜15017 行（2027 のフィールドと要素への射影の書き込み）、`src/ownership.rs` 7895 行付近の `exclusive_slice`（境界を評価する間だけ共有の守りを置き、その後に排他の loan を取る）、`src/polymorph.rs` 2494 行付近の `register_index_instance`（組み込み限定の多引数ヘッダ）、`src/polymorph.rs` 5262 行付近（型検査の後で決まった型を確かめる `ref_operand_inferred_late`）、`std/Tensor.tz` 803 行の `map_in_place` と 868 行の `narrow_mut` |

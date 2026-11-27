@@ -7,7 +7,7 @@
 | 規模 | M（`if let` / `elif let` の構文・AST・バイナリキャッシュ符号化・`tsuzuri fmt`・`match_value` への下げ・テストと文書） |
 | 依存 | (NS04) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（新しい制御構文の追加。予約語の追加はなし。決定事項 D1 が要承認、D2〜D6 は既定案） |
 | 手本にする既存実装 | `src/parser.rs` の `conditional`・`conditional_else`（4969〜5025 行）、`src/parse_control.rs` のパターンと `when` ガード解析、`src/control.rs` の `match_value`、`src/formatter.rs` の `ExprKind::If` 整形 |

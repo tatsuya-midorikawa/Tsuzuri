@@ -7,7 +7,7 @@
 | 規模 | S（`std/Complex.tz` に 8 個のインスタンスを足し、一覧のテストとテスト・文書を直す。コンパイラの変更はない） |
 | 依存 | [NC19](_completed/NC19-operator-extension-instances.md)（OEI の宣言の形、演算子表、解決 (a)〜(d)、`dispatch_positions` の OEI の位置を使う。NC19 は [A37](_completed/A37-index-base-place-borrow.md) の手順 5 の後に入るので、`std_instances_with_open_dispatch_positions_are_listed` もある）。土台の [NC01](_completed/NC01-complex-and-extended-math.md) の `std/Complex.tz` は完了済み |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-25（[GUIDE D-66](GUIDE.md#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) の委任による決定。NC19 の D9 (iii) を分けた。HEAD `858a949c` で確認） |
 | 承認 | 承認済み（D-66 の委任で決定、2026-11-25）: `Complex` と実数のスカラーの 8 個の OEI（D1）。8 個は振り分けの位置に裸の型変数 `'a` を持つ std のインスタンスで、NC19 の D2 が求める承認はこの決定で与えた。`BigInt` と整数の OEI は却下（D-66 の委任で決定、2026-11-25。D2）。ほかは既定案か決定 |
 | 手本にする既存実装 | `std/Complex.tz` 174〜175 行の `Complex.scale`（`s * c` と同じ式）、354〜416 行の同じ型どうしのインスタンス（文脈の書き方）、NC19 が `std/Tensor.tz` に置く `Tensor` とスカラーの OEI（宣言の形）、`tests/borrowed_arithmetic.rs` 197〜245 行（native と WASM の `-O0`・`-O3` を 1 つの Rust テストで実行する形）、`tests/math.mjs` 345〜505 行（NC01 の native と WASM のビット比較。NaN は NaN かどうかだけを比べる） |

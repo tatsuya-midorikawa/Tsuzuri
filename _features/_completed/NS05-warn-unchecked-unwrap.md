@@ -7,7 +7,7 @@
 | 規模 | S（`--warn unwrap` フラグ、`W1011` と `unchecked_unwrap` kind、呼び出し・関数値参照の走査、テストと文書） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（[GUIDE D-64](GUIDE.md#d-64-null-安全性の徹底ns01ns08)。Null 安全性の調査報告に対する改善チケット作成依頼から起票。HEAD `edc61676` で確認） |
 | 承認 | 要承認（CLI `--warn unwrap` と警告コード `W1011` の登録（D-55）。決定事項 D1・D2 が要承認、D3〜D5 は既定案） |
 | 手本にする既存実装 | `src/main.rs` の `WARNINGS`（3274 行: `implicit-copy`・`canonical`・`untrusted-extern`）、`src/capabilities.rs` の `untrusted_externs`（ルートパッケージ限定の警告生成）、[A15](_completed/A15-copy-cost-visibility.md) の `--warn implicit-copy`（`W1006`） |
