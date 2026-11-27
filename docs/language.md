@@ -5202,6 +5202,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1008` | 効果の属性が検査されない（インスタンスのないジェネリック関数）か、`const def` の実行時の本体だけを検査する |
 | `W1009` | 契約の行が何も確かめない（常に真・使わない結果の名前）か、`--contracts test` で性質テストを作れない |
 | `W1010` | `@trusted` のない `extern` の関数の使用（`--warn untrusted-extern` 指定時と `tsuzuri audit` だけ） |
+| `W1011` | ルートのパッケージの利用者コード（`test`・`bench` の本体を除く）における標準ライブラリの `Maybe.get`・`Result.get`・`Result.get_error` の使用（`--warn unwrap` 指定時のみ） |
 | `W1012` | edition 2026 におけるラムダ引数・`for...in`・計算式束縛の反駁可能パターン（edition 2027 以降では `E1021` エラー） |
 | `W1013` | editions 2026・2027 のルートのソースにおける終端ありの素の `..` のスライス（`legacy_bare_slice_range`、既定で有効、`..<` への `certain` 修正案）、およびマニフェストなしの最新 edition ソースの素の `..` のスライス（`bare_slice_range_meaning_changed`） |
 | `W1014` | スライスの境界・`^` のオフセット（`negative_literal_range_bound`）、または組み込みの 6 型の添字（`negative_literal_index`）に書かれた値が 0 でない負の整数リテラル（既定で有効） |
@@ -5290,6 +5291,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `W1008` | `effect_attribute_on_const_def`, `effect_attribute_unchecked_generic` |
 | `W1009` | `contract_always_true`, `contract_result_unused`, `contract_test_skipped` |
 | `W1010` | `untrusted_extern` |
+| `W1011` | `unchecked_unwrap` |
 | `W1012` | `refutable_binding_pattern_warning` |
 | `W1013` | `bare_slice_range_meaning_changed`, `legacy_bare_slice_range` |
 | `W1014` | `negative_literal_index`, `negative_literal_range_bound` |

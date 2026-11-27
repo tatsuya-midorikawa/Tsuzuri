@@ -7657,6 +7657,7 @@ pub(super) fn specialize(
         statics: module.statics,
         effects: None,
         noncanonical: module.noncanonical,
+        unchecked_unwraps: module.unchecked_unwraps,
         generic_declarations,
         extern_abis: module.extern_abis,
         link_libraries: module.link_libraries,

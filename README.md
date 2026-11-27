@@ -998,6 +998,7 @@ tsuzuri mcp [--root DIR] [--kg-dir DIR]
 | `--warn canonical` | edition 2026 のソースの、edition 2027 が拒否する表記（素の `..` の範囲、`86uy` のような短い接尾辞、`&x`・`*r`・`&T`、旧ラムダ `x -> e`）に `W1007` を出し、正準形への書き換えを修正案として示します。 |
 | `--edition 2026\|2027\|2028` | `Tsuzuri.toml` のないプロジェクトのソースを読む edition（既定は 2028。マニフェストがあると `E2000`）。`check`・`build`・`run`・`test`・`script` と `tsuzuri new` で使えます。 |
 | `--warn untrusted-extern` | ルートのパッケージで宣言して使っている、`@trusted` のない `extern` の関数に `W1010` を出します。 |
+| `--warn unwrap` | ルートのパッケージの利用者コード（`test`・`bench` の本体を除く）で標準ライブラリの `Maybe.get`・`Result.get`・`Result.get_error` を参照している箇所に `W1011` を出します。 |
 | `--report parallel` | `check` だけ。検査が通ったあと、`Parallel` に置き換えられる `Array` の呼び出しの提案と、`Parallel` の呼び出しのコールバックが純粋か（`parallel_safe`）を標準出力に出します（`--json` で JSON Lines。自動では書き換えません）。 |
 | `--trap-info` | 配布用ビルドにおいて、実行時トラップの正確なソース位置情報を保持します。macOS・Linux の実行ファイルは、`TSUZURI_TRAP_REPORT` があればトラップの呼び出しの連鎖も書きます。 |
 | `--overflow-report` | `build`・`run`（`test` は既定）で、範囲の証明で溢れないと示せない整数の `+ - * ** -x` に検査を足し、折り返した地点を報告します（native は標準エラー、WASM は `tsuzuri_overflow_count`・`tsuzuri_overflow_hit` と `<出力>.overflow.json`）。値は変わりません。診断用で、配布ビルドには使いません。 |

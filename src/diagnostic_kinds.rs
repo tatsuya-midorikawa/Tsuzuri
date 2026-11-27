@@ -1004,6 +1004,8 @@ diagnostic_kinds! {
         (ContractTestSkipped, "contract_test_skipped", "W1009"),
         // W1010
         (UntrustedExtern, "untrusted_extern", "W1010"),
+        // W1011
+        (UncheckedUnwrap, "unchecked_unwrap", "W1011"),
         // W1012
         (RefutableBindingPatternWarning, "refutable_binding_pattern_warning", "W1012"),
         // W1013

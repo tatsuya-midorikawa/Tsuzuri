@@ -118,6 +118,7 @@ pub struct Warnings {
     pub implicit_copy: bool,
     pub canonical: bool,
     pub untrusted_extern: bool,
+    pub unwrap: bool,
 }
 
 impl Options {
@@ -726,6 +727,9 @@ fn example_warnings(
     }
     if settings.untrusted_extern {
         warnings.extend(built.untrusted_extern_warnings(module)?);
+    }
+    if settings.unwrap {
+        warnings.extend(module.unwrap_warnings());
     }
     Ok(warnings)
 }

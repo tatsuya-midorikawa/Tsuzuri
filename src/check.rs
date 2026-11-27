@@ -5111,6 +5111,8 @@ pub struct CheckedModule {
     /// A22: the noncanonical spellings of the root package's own sources, by source and start;
     /// a symbolic borrow of a reference has no rewrite.
     pub noncanonical: Vec<crate::syntax::Noncanonical>,
+    /// NS05: unchecked `Maybe.get` / `Result.get` / `Result.get_error` sites in root-package user code.
+    pub(crate) unchecked_unwraps: Vec<(warnings::UnwrapTarget, Span)>,
     /// E15: the generic functions written in source code. Specialization replaces each with its
     /// instances and drops one that nothing calls, so `audit` counts the declarations from here.
     pub generic_declarations: Vec<GenericDeclaration>,
@@ -5176,6 +5178,11 @@ pub struct CheckedBench {
 }
 
 impl CheckedModule {
+    /// NS05: `W1011` (`unchecked_unwrap`) warnings for `--warn unwrap`.
+    pub fn unwrap_warnings(&self) -> Vec<Diagnostic> {
+        warnings::unwrap_warnings(&self.unchecked_unwraps)
+    }
+
     pub fn types(&self) -> TypeContext<'_> {
         TypeContext {
             records: &self.records,
@@ -10826,6 +10833,15 @@ fn check_modules_collect(
     if zutf8string_record_id.is_some() {
         validate_zutf8string_literals(&functions)?;
     }
+    let root_source_editions: BTreeMap<usize, crate::syntax::Edition> = modules
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| input.origin == ModuleOrigin::User && input.package.is_none())
+        .map(|(source, input)| (source, input.edition))
+        .collect();
+    let root_sources: BTreeSet<usize> = root_source_editions.keys().copied().collect();
+    let unchecked_unwraps =
+        warnings::collect_unchecked_unwraps(&functions, &root_sources, &names.constants, entry);
     let const_uses =
         constants::const_def_uses(&functions, &names.constants, &names.const_functions);
     let mut statics = constants::fold(
@@ -10856,12 +10872,6 @@ fn check_modules_collect(
         entry,
     ));
     let noncanonical = root_noncanonical(modules, &reference_borrows);
-    let root_source_editions: BTreeMap<usize, crate::syntax::Edition> = modules
-        .iter()
-        .enumerate()
-        .filter(|(_, input)| input.origin == ModuleOrigin::User && input.package.is_none())
-        .map(|(source, input)| (source, input.edition))
-        .collect();
     warnings.extend(crate::canonical::default_warnings(
         &noncanonical,
         |source| {
@@ -10902,6 +10912,7 @@ fn check_modules_collect(
         statics,
         effects: None,
         noncanonical,
+        unchecked_unwraps,
         generic_declarations: Vec::new(),
         extern_abis,
         link_libraries,
@@ -11677,6 +11688,7 @@ fn recovery_module(
         statics: BTreeMap::new(),
         effects: None,
         noncanonical: Vec::new(),
+        unchecked_unwraps: Vec::new(),
         generic_declarations: Vec::new(),
         extern_abis: BTreeMap::new(),
         link_libraries: BTreeMap::new(),
