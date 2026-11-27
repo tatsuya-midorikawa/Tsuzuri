@@ -15,6 +15,9 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target", "debug", "tsuzuri"));
 const fixture = join(root, "tests", "main_thread", "app");
+const handles = join(root, "tests", "main_thread", "handles");
+const host = join(root, "tests", "main_thread_host.c");
+const clang = process.env.TSUZURI_CLANG ?? "clang";
 const bundledClang =
   process.env.TSUZURI_BUNDLED_CLANG ?? join(root, "target", "toolchain", "bin", "tsuzuri-clang");
 
@@ -142,6 +145,39 @@ try {
   }
   must(compiler, ["bench", project, "--samples", "3"], { env, timeout: 120_000 });
   ran += 1;
+
+  // Phase 2: a callback whose body uses an `extern type main` handle checks its thread on entry.
+  // The C host calls the callbacks on the main thread and on a thread of its own.
+  // - `callback_on_main`: the body runs (one window while it does, none after).
+  // - `plain_callback_on_thread`: a callback without the effect has no check and runs on the
+  //   host's thread, which is not the main thread.
+  // - `callback_on_thread`: the check traps before the body runs: `calling` is the only line, and
+  //   the standard error names the reason.
+  const sdk = run("xcrun", ["--show-sdk-path"]);
+  const sysroot = sdk.status === 0 ? ["-isysroot", sdk.stdout.trim()] : [];
+  const hostObject = join(scratch, "host.o");
+  must(clang, ["-c", "-O2", "-pthread", "-mmacosx-version-min=12.0", ...sysroot, host, "-o", hostObject]);
+  for (const optimization of ["-O0", "-O3"]) {
+    const executable = join(scratch, `handles${optimization}`);
+    must(compiler, ["build", handles, optimization, "--link", hostObject, "-o", executable], { env });
+    const onMain = must(executable, ["callback_on_main"], { env, timeout: 15_000 });
+    assert.equal(onMain.stdout, "event 3: 1 window on main true\nleft 0\n", optimization);
+    assert.equal(onMain.stderr, "", optimization);
+    const plain = must(executable, ["plain_callback_on_thread"], { env, timeout: 15_000 });
+    assert.equal(plain.stdout, "tick 5 on main false\n", optimization);
+    const wrong = run(executable, ["callback_on_thread"], { env, timeout: 15_000 });
+    // The trap ends the process with SIGTRAP, which a shell reports as exit code 133.
+    assert.ok(
+      wrong.signal === "SIGTRAP" || wrong.status === 133,
+      `callback_on_thread at ${optimization}: status ${wrong.status}, signal ${wrong.signal}\n${wrong.stderr}`,
+    );
+    assert.equal(wrong.stdout, "calling\n", optimization);
+    assert.match(
+      wrong.stderr,
+      /Tsuzuri runtime: a callback that uses main-thread handles was called on another thread/,
+    );
+    ran += 3;
+  }
 
   // The counting allocator: the boxes of the functions that ran and of those that were dropped are
   // all freed, so the program's heap is balanced at the end of `main`.

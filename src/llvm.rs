@@ -2239,7 +2239,18 @@ fn emit_program_in(
                     &mut specializations,
                 )
             } else {
-                export_wrapper(function, module)
+                let wrapper = export_wrapper(function, module);
+                // M09: the host chooses the thread that calls an export.
+                if globals.main_thread.contains(&id) {
+                    globals.main_thread_checked = true;
+                    wrapper.replacen(
+                        "entry:\n",
+                        &format!("entry:\n{}", mainthread::MAIN_THREAD_CHECK_CALL),
+                        1,
+                    )
+                } else {
+                    wrapper
+                }
             };
             output.push_str(&debug::wrapper(
                 wrapper,
