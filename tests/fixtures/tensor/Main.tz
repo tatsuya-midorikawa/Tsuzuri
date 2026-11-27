@@ -544,4 +544,16 @@ fn nc06_op_mismatch_trap =
     let c = a + b
     (Tensor.as_array (ref c)).length
 
+// NC20: IndexBorrowMut writable windows & AddAssign in-place updates on Tensor and Mut.
+export def nc20_writable_windows :: i64
+fn nc20_writable_windows =
+    let mut t = Tensor.init [3, 4] (\i -> i * 7 + 1)
+    let mut w = ref mut t[[Slice.Sel.Span (Slice.Bound.Included (Slice.Pos.Front 1), Slice.Bound.Included (Slice.Pos.Front 2), 1), Slice.Sel.Span (Slice.Bound.Included (Slice.Pos.Front 1), Slice.Bound.Excluded (Slice.Pos.Front 4), 2)]]
+    w += 100
+    let mut sub = ref mut w[[Slice.Sel.Item (Slice.Pos.Front 0), Slice.Sel.Whole]]
+    Tensor.mul_scalar_in_place 2 (ref mut sub)
+    t[0, 2] += 50
+    digest (Tensor.view (ref t))
+
+
 

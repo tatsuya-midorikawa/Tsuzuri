@@ -169,6 +169,11 @@ pub enum TokenKind {
     Arrow,
     FatArrow,
     Equal,
+    PlusEqual,
+    MinusEqual,
+    StarEqual,
+    SlashEqual,
+    PercentEqual,
     Plus,
     Minus,
     Star,
@@ -1098,6 +1103,19 @@ pub enum BinaryOp {
     Pipe,
 }
 
+impl BinaryOp {
+    pub fn compound_symbol(self) -> &'static str {
+        match self {
+            Self::Add => "+=",
+            Self::Subtract => "-=",
+            Self::Multiply => "*=",
+            Self::Divide => "/=",
+            Self::Remainder => "%=",
+            _ => unreachable!("only + - * / % have compound assignment"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Expr {
     pub kind: ExprKind,
@@ -1128,6 +1146,11 @@ impl Expr {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | NewArray(_, left, right)
             | NewList(_, left, right) => {
                 left.visit_mut(visitor);
@@ -1309,6 +1332,11 @@ impl Expr {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | NewArray(_, left, right)
             | NewList(_, left, right) => {
                 left.visit(visitor);
@@ -1549,11 +1577,11 @@ pub enum ExprKind {
     NewLiteral(Box<Expr>),
     Field(Box<Expr>, Ident),
     Index(Box<Expr>, Box<Expr>),
-    /// `ref xs[a..b]`, or with `mutable` the exclusive `ref mut xs[a..b]` (C08 / NC17).
+    /// `ref xs[a..b]`, `ref mut xs[a..b]`, or an unborrowed window target `t[a..b] += u` (C08 / NC17 / NC20).
     Slice {
         value: Box<Expr>,
         range: Box<RangeKey>,
-        mutable: bool,
+        mutable: Option<bool>,
     },
     /// `base[c1, ..., cn]` with two or more components (NC18). `borrow` is `Some(false)` for
     /// `ref`, `Some(true)` for `ref mut`, as `Slice::mutable` is for one-component slices.
@@ -1567,6 +1595,13 @@ pub enum ExprKind {
     Borrow(Box<Expr>, bool, Notation),
     Dereference(Box<Expr>, Notation),
     Assign(Box<Expr>, Box<Expr>),
+    /// `target += value` (`+=`, `-=`, `*=`, `/=`, `%=`, NC20).
+    CompoundAssign {
+        op: BinaryOp,
+        op_span: Span,
+        target: Box<Expr>,
+        value: Box<Expr>,
+    },
     Cast(Box<Expr>, TypeExpr),
     /// `$"a{x}b"`: `texts` has one more element than `holes`.
     Interpolated(Box<Interpolation>),

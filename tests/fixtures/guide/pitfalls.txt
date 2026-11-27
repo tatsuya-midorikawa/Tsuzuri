@@ -6,10 +6,10 @@
 def first :: (i64 * i64) -> i64 = \pair -> pair.0
 
 def main :: unit -> i32 = \() -> 0
-## P02 x += 1 => E0002
+## P02 x **= 2 => E0002
 def main :: unit -> i32 = \() ->
     let mut x = 1
-    x += 1
+    x **= 2
     0
 ## P03 p.x = 1 => E1012 @2026
 record P { x: i64 }

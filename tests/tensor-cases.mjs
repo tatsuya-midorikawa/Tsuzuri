@@ -224,6 +224,20 @@ function nc16TupleReadsAndWrites() {
   return [8n, 120n, 110n, 13n + 60n + 11n + 35n, 18n, 170n].reduce(mix, 0n);
 }
 
+function nc20WritableWindows() {
+  // Base 3x4 with elements flat*7 + 1:
+  // w selects rows [1, 2] and cols [1, 3] (step 2): adds 100 to (1,1), (1,3), (2,1), (2,3).
+  // sub selects row 0 of w -> row 1, cols [1, 3]: multiplies (1,1) and (1,3) by 2.
+  // t[0, 2] += 50 adds 50 to (0, 2).
+  const grid = Array.from({ length: 12 }, (_, i) => BigInt(i * 7 + 1));
+  for (const r of [1, 2]) {
+    for (const c of [1, 3]) grid[r * 4 + c] += 100n;
+  }
+  for (const c of [1, 3]) grid[1 * 4 + c] *= 2n;
+  grid[0 * 4 + 2] += 50n;
+  return digest(window([3, 4], dense([3, 4]), 0, ([r, c]) => grid[r * 4 + c]));
+}
+
 export const cases = [
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [2, 2, 2], [1, 5, 1], [4, 3, 2], [2, 1, 6]].map((shape) => ["ops", shape.map(BigInt), ops(...shape)]),
   ...[[2, 3, 4], [1, 1, 1], [3, 1, 2], [4, 3, 2], [1, 5, 2]].map((shape) => ["maps", shape.map(BigInt), maps(...shape)]),
@@ -239,6 +253,7 @@ export const cases = [
   ["a37_chained_view_and_temp_read", [], a37ChainedViewAndTempRead()],
   ["nc16_tuple_reads_and_writes", [], nc16TupleReadsAndWrites()],
   ["nc06_ufuncs", [], 606n],
+  ["nc20_writable_windows", [], nc20WritableWindows()],
 ];
 
 // Run one per process with a kill timer: before the fix they never returned.

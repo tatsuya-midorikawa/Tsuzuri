@@ -2,6 +2,13 @@
 
 use crate::syntax::TokenKind;
 
+pub(crate) fn is_embedded_source(path: &str, text: &str) -> bool {
+    SOURCES.iter().any(|&(p, t)| {
+        p == path
+            && (t.len() == text.len() && (std::ptr::eq(t.as_ptr(), text.as_ptr()) || t == text))
+    })
+}
+
 /// Embedded std sources as `(virtual path, text)` in load order. Programs
 /// always see them after the user sources.
 pub const SOURCES: &[(&str, &str)] = &[
@@ -1089,6 +1096,16 @@ mod tests {
                 "std/Tensor.tz: Pow<Tensor<'a>, 'a, Tensor<'a>>",
                 "std/Tensor.tz: Pow<'a, View<'a>, Tensor<'a>>",
                 "std/Tensor.tz: Pow<View<'a>, 'a, Tensor<'a>>",
+                "std/Tensor.tz: AddAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: AddAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: SubAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: SubAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: MulAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: MulAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: DivAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: DivAssign<Mut<'a>, 'a>",
+                "std/Tensor.tz: RemAssign<Tensor<'a>, 'a>",
+                "std/Tensor.tz: RemAssign<Mut<'a>, 'a>",
                 "std/Complex.tz: Add<Complex<'a>, 'a, Complex<'a>>",
                 "std/Complex.tz: Add<'a, Complex<'a>, Complex<'a>>",
                 "std/Complex.tz: Sub<Complex<'a>, 'a, Complex<'a>>",

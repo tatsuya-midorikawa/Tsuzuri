@@ -675,6 +675,11 @@ impl TypeReferences<'_> {
             Binary(_, left, right)
             | Index(left, right)
             | Assign(left, right)
+            | CompoundAssign {
+                target: left,
+                value: right,
+                ..
+            }
             | While {
                 condition: left,
                 body: right,

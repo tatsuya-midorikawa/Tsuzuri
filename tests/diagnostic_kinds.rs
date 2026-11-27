@@ -142,7 +142,8 @@ fn baseline_root() -> &'static Path {
 
 /// (case, diagnostics) of `baseline.jsonl`, written by the compiler before G23. The case
 /// `question-mark` was rewritten by G25, which made `?` a typed hole: `c ? 1 : 2` is now a syntax
-/// error at `:`.
+/// error at `:`. The case `compound-assignment` was rewritten by NC20, which made `+=` valid
+/// compound assignment: `x **= 1` keeps the `expected_expression` error for unsupported `**=`.
 fn baseline() -> Vec<(String, Vec<serde_json::Value>)> {
     std::fs::read_to_string(baseline_root().join("baseline.jsonl"))
         .unwrap()

@@ -545,6 +545,11 @@ impl Layout {
                         matches!(
                             previous.kind,
                             TokenKind::Equal
+                                | TokenKind::PlusEqual
+                                | TokenKind::MinusEqual
+                                | TokenKind::StarEqual
+                                | TokenKind::SlashEqual
+                                | TokenKind::PercentEqual
                                 | TokenKind::Then
                                 | TokenKind::Do
                                 | TokenKind::Arrow
@@ -1004,7 +1009,10 @@ impl Canonical {
                 | ExprKind::Borrow(..)
                 | ExprKind::Dereference(..)
                 | ExprKind::FromEnd(_)
-                | ExprKind::Slice { .. }
+                | ExprKind::Slice {
+                    mutable: Some(_),
+                    ..
+                }
                 | ExprKind::MultiIndex {
                     borrow: Some(_),
                     ..
@@ -1126,6 +1134,16 @@ impl Canonical {
             } => {
                 self.expression(left);
                 self.expression(right);
+            }
+            CompoundAssign {
+                op_span,
+                target,
+                value,
+                ..
+            } => {
+                *op_span = Span::default();
+                self.expression(target);
+                self.expression(value);
             }
             Call(callee, arguments) => {
                 self.expression(callee);

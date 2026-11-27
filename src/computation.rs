@@ -244,6 +244,11 @@ pub(super) fn expand(expression: &mut Expr, names: &Names, module: &str) -> Resu
         ExprKind::Binary(_, left, right)
         | ExprKind::Index(left, right)
         | ExprKind::Assign(left, right)
+        | ExprKind::CompoundAssign {
+            target: left,
+            value: right,
+            ..
+        }
         | ExprKind::NewArray(_, left, right)
         | ExprKind::NewList(_, left, right) => vec![left, right],
         ExprKind::Call(callee, arguments) => {

@@ -841,6 +841,7 @@ fn start_checker<'a, 'run>(
         // `Drop.drop` borrows the dropped value through its only parameter.
         drop_root: user_drop.then(|| usize::MAX - parameters.clone().next().unwrap().id),
         later_use_budget: LATER_USE_NODES,
+        compound_guard_help: BTreeMap::new(),
         builtin_wrapper: contract.builtin_wrapper,
         field_borrows: contract.field_borrows,
         lends_mutable: contract.lends_mutable,
@@ -5927,6 +5928,8 @@ struct Checker<'a, 'run> {
     /// How many more steps the diagnostics may take in this function to find where a moved value
     /// or a borrow came from (`Flow`).
     later_use_budget: usize,
+    /// NC20: custom help text for guard loans protecting a compound-assignment target during RHS evaluation.
+    compound_guard_help: BTreeMap<usize, String>,
     /// The body is a generated function that applies a builtin to its own parameters (A30).
     builtin_wrapper: bool,
     /// A39: whether edition 2027+ record-field exclusive borrows are enabled for this body.
@@ -7798,7 +7801,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                         "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); record fields, array elements, and list elements are immutable",
                         span,
                     );
-                    if mutable && !place.non_record_step {
+                    if let Some(help) = self.module.compound_assigns.element_helps.get(&(
+                        span.source,
+                        span.start,
+                        span.end,
+                    )) {
+                        diagnostic.with_help(help.clone())
+                    } else if mutable && !place.non_record_step {
                         diagnostic.with_help(
                             "record fields are immutable in edition 2026: copy the field into a 'let mut' local, change it, and rebuild the record with '{ b with f = ... }'; edition 2027 can borrow it with 'ref mut b.f'",
                         )
@@ -7808,14 +7817,22 @@ impl<'a, 'run> Checker<'a, 'run> {
                         )
                     }
                 } else if place.non_record_step {
-                    Diagnostic::of(
+                    let diagnostic = Diagnostic::of(
                         DiagnosticKind::MutateImmutableValue,
                         "mutable access requires 'let mut' or an exclusive reference ('ref mut' or '&mut'); array elements, list elements, union payloads, and tuple components cannot be borrowed exclusively",
                         span,
-                    )
-                    .with_help(
-                        "write elements through an exclusive slice with 'Array.write', or keep the value in a 'let mut' local or a record field",
-                    )
+                    );
+                    if let Some(help) = self.module.compound_assigns.element_helps.get(&(
+                        span.source,
+                        span.start,
+                        span.end,
+                    )) {
+                        diagnostic.with_help(help.clone())
+                    } else {
+                        diagnostic.with_help(
+                            "write elements through an exclusive slice with 'Array.write', or keep the value in a 'let mut' local or a record field",
+                        )
+                    }
                 } else {
                     let diagnostic = Diagnostic::of(
                         DiagnosticKind::MutateImmutableValue,
@@ -8045,6 +8062,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                 used,
             );
         }
+        if let Some(custom_help) = self.compound_guard_help.get(&loan).cloned() {
+            return diagnostic.with_help(custom_help);
+        }
         // A31: a borrow that the body stored where the caller's data or a hidden environment
         // reaches (`State::kept`) is held by no local of the body.
         if self.state.kept.contains(&loan) {
@@ -8267,11 +8287,19 @@ impl<'a, 'run> Checker<'a, 'run> {
             _ => None,
         });
         let Some(name) = name else {
-            return error(
+            let mut diag = error(
                 DiagnosticKind::BorrowOfTemporary,
                 "borrow requires a local place; bind the temporary with 'let' first",
                 expression.span,
             );
+            if let Some(help) = self.module.compound_assigns.chained_window_helps.get(&(
+                expression.span.source,
+                expression.span.start,
+                expression.span.end,
+            )) {
+                diag = diag.with_help(help.clone());
+            }
+            return diag;
         };
         let union = expression.ty.display(&self.module.types());
         Diagnostic::of(
@@ -13458,17 +13486,77 @@ impl<'a, 'run> Checker<'a, 'run> {
         for (_, value) in bindings {
             count_uses(value, &mut future);
         }
+        let compound_block_meta = self
+            .module
+            .compound_assigns
+            .blocks
+            .get(&(
+                expression.span.source,
+                expression.span.start,
+                expression.span.end,
+            ))
+            .cloned();
+        let compound_mut_base = compound_block_meta.as_ref().and_then(|_| {
+            bindings
+                .iter()
+                .find_map(|(loc, val)| {
+                    if loc.name.starts_with("$compound.win.")
+                        && let E::Call(_, args) = &val.kind
+                    {
+                        args.get(1)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| match &tail.kind {
+                    E::Call(_, args) => args.get(2),
+                    _ => None,
+                })
+        });
         let mut ids = BTreeSet::new();
         for (local, value) in bindings {
             let mut current = live.clone();
             current.extend(future.keys().copied());
+            let is_compound_key = local.name.starts_with("$compound.key.");
+            let is_compound_rhs = local.name.starts_with("$compound.rhs.");
+            let binding_guard = if (is_compound_key || is_compound_rhs)
+                && let (Some(base_arg), Some((op, base_span, base_name, _))) =
+                    (compound_mut_base, &compound_block_meta)
+            {
+                let guard_help = is_compound_rhs.then(|| {
+                    format!(
+                        "the right side of '{}' cannot change {}; compute it into a 'let' first",
+                        op.compound_symbol(),
+                        base_name
+                            .as_deref()
+                            .map_or_else(|| "the target".to_owned(), |n| format!("'{n}'"))
+                    )
+                });
+                self.exclusive_base_guard(base_arg, &current, *base_span, guard_help.as_deref())?
+            } else {
+                None
+            };
+            if let Some(guard) = &binding_guard {
+                self.held.push(guard.clone());
+            }
+            let loan_mark = self.loans.len();
             // A31: the drops of the temporaries of the bound value are reported at the binding.
             let mark = self.hidden_log.len();
             let site = self.drop_site.replace(local.span);
             self.bound_next = true;
             let value_result = self.eval(value, Use::Consume, &current);
             self.drop_site = site;
+            if binding_guard.is_some() {
+                self.held.pop();
+            }
             let mut value_result = value_result?;
+            if is_compound_rhs && let Some((_, _, _, Some(overlap_help))) = &compound_block_meta {
+                for lid in loan_mark..self.loans.len() {
+                    self.compound_guard_help
+                        .entry(lid)
+                        .or_insert_with(|| overlap_help.clone());
+                }
+            }
             // A31: an immutable local bound to a reference that points at its loans' places.
             self.note_pointing(local, value, &value_result);
             self.absorb_hidden(mark, &mut value_result, &local.ty, Some(value));
@@ -14630,11 +14718,69 @@ impl<'a, 'run> Checker<'a, 'run> {
         }
     }
 
+    fn exclusive_base_guard(
+        &mut self,
+        base_arg: &TypedExpr,
+        during: &BTreeSet<usize>,
+        loan_span: Span,
+        help_text: Option<&str>,
+    ) -> Result<Option<Value>, Diagnostic> {
+        let places = if let E::Borrow(raw_target, true) = &base_arg.kind {
+            if !Self::is_guardable_index_place(raw_target) {
+                return Ok(None);
+            }
+            self.shared_exclusive(raw_target, base_arg.span)?;
+            self.exclusive_places(raw_target, during)?
+        } else {
+            if !Self::is_guardable_index_place(base_arg) {
+                return Ok(None);
+            }
+            let Some(inner_ty) = base_arg.ty.dereferenced() else {
+                return Ok(None);
+            };
+            let deref_expr = TypedExpr {
+                kind: E::Dereference(Box::new(base_arg.clone())),
+                ty: inner_ty,
+                span: base_arg.span,
+            };
+            self.shared_exclusive(&deref_expr, base_arg.span)?;
+            self.exclusive_places(&deref_expr, during)?
+        };
+        let mut guard = Value::default();
+        for (place, via) in &places {
+            self.access(place, via, Use::Borrow, loan_span)?;
+            let lid = self.loan(place.clone(), false, via.clone(), loan_span);
+            if let Some(help) = help_text {
+                self.compound_guard_help.insert(lid, help.to_owned());
+            }
+            guard.loans.insert(lid);
+        }
+        let mut mut_ref_roots = BTreeSet::new();
+        self.collect_d9_mutable_ref_roots(base_arg, &mut mut_ref_roots);
+        for root in mut_ref_roots {
+            let place = Place {
+                root,
+                fields: Vec::new(),
+                through_drop: false,
+                non_record_step: false,
+            };
+            let via = BTreeSet::new();
+            self.access(&place, &via, Use::Borrow, loan_span)?;
+            let lid = self.loan(place, false, via, loan_span);
+            if let Some(help) = help_text {
+                self.compound_guard_help.insert(lid, help.to_owned());
+            }
+            guard.loans.insert(lid);
+        }
+        Ok(Some(guard))
+    }
+
     fn index_base_guard(
         &mut self,
         index_method: crate::check::IndexMethodKind,
         arguments: &[TypedExpr],
         during: &BTreeSet<usize>,
+        compound_call_meta: Option<&(crate::syntax::BinaryOp, Span, Option<String>, String)>,
     ) -> Result<Option<Value>, Diagnostic> {
         let key_is_const = match &arguments[0].kind {
             E::BorrowOperand(inner) => inner.is_index_const(),
@@ -14665,51 +14811,24 @@ impl<'a, 'run> Checker<'a, 'run> {
                 }
                 Ok(Some(guard))
             }
-            crate::check::IndexMethodKind::Write => {
-                let places = if let E::Borrow(raw_target, true) = &base_arg.kind {
-                    if !Self::is_guardable_index_place(raw_target) {
-                        return Ok(None);
-                    }
-                    self.shared_exclusive(raw_target, base_arg.span)?;
-                    self.exclusive_places(raw_target, during)?
+            crate::check::IndexMethodKind::Write
+            | crate::check::IndexMethodKind::BorrowMut
+            | crate::check::IndexMethodKind::AssignOp(_) => {
+                let (loan_span, help_opt) = if let Some((op, target_span, target_name, _)) =
+                    compound_call_meta
+                {
+                    let help = format!(
+                        "the right side of '{}' cannot change {}; compute it into a 'let' first",
+                        op.compound_symbol(),
+                        target_name
+                            .as_deref()
+                            .map_or_else(|| "the target".to_owned(), |n| format!("'{n}'"))
+                    );
+                    (*target_span, Some(help))
                 } else {
-                    if !Self::is_guardable_index_place(base_arg) {
-                        return Ok(None);
-                    }
-                    let Some(inner_ty) = base_arg.ty.dereferenced() else {
-                        return Ok(None);
-                    };
-                    let deref_expr = TypedExpr {
-                        kind: E::Dereference(Box::new(base_arg.clone())),
-                        ty: inner_ty,
-                        span: base_arg.span,
-                    };
-                    self.shared_exclusive(&deref_expr, base_arg.span)?;
-                    self.exclusive_places(&deref_expr, during)?
+                    (base_arg.span, None)
                 };
-                let mut guard = Value::default();
-                for (place, via) in &places {
-                    self.access(place, via, Use::Borrow, base_arg.span)?;
-                    guard
-                        .loans
-                        .insert(self.loan(place.clone(), false, via.clone(), base_arg.span));
-                }
-                let mut mut_ref_roots = BTreeSet::new();
-                self.collect_d9_mutable_ref_roots(base_arg, &mut mut_ref_roots);
-                for root in mut_ref_roots {
-                    let place = Place {
-                        root,
-                        fields: Vec::new(),
-                        through_drop: false,
-                        non_record_step: false,
-                    };
-                    let via = BTreeSet::new();
-                    self.access(&place, &via, Use::Borrow, base_arg.span)?;
-                    guard
-                        .loans
-                        .insert(self.loan(place, false, via, base_arg.span));
-                }
-                Ok(Some(guard))
+                self.exclusive_base_guard(base_arg, during, loan_span, help_opt.as_deref())
             }
         }
     }
@@ -14794,22 +14913,38 @@ impl<'a, 'run> Checker<'a, 'run> {
         };
         current.regions = region_sources.and_then(call_slots);
         self.held.push(value);
+        let compound_call_meta = self
+            .module
+            .compound_assigns
+            .calls
+            .get(&(
+                expression.span.source,
+                expression.span.start,
+                expression.span.end,
+            ))
+            .cloned();
         for (index, argument) in arguments.iter().enumerate() {
-            // A38: while evaluating the key (`index == 0`) of an `Index` or `IndexMut` call,
-            // hold a shared guard on the base place so the key may read the base but cannot
-            // assign, move, or exclusively borrow it (`E1014`).
+            // A38 / NC20: while evaluating the key / RHS (`index == 0`) of an `Index`, `IndexMut`,
+            // `IndexBorrowMut`, or `AddAssign`..`RemAssign` call, hold a shared guard on the base
+            // place so it may be read but cannot be assigned, moved, or exclusively borrowed (`E1014`).
             let index_guard = if index == 0
                 && let Some(id) = known
                 && let Some(index_method) = self.module.functions[id].origin.index_method
                 && arguments.len() > index_method.base_param_index()
             {
-                self.index_base_guard(index_method, arguments, &during)?
+                self.index_base_guard(
+                    index_method,
+                    arguments,
+                    &during,
+                    compound_call_meta.as_ref(),
+                )?
             } else {
                 None
             };
             if let Some(guard) = &index_guard {
                 self.held.push(guard.clone());
             }
+            let rhs_loan_mark = self.loans.len();
             // A37/A38: a base-borrowing `Index` rejects a temporary base (`BorrowOperand` of a
             // non-place, or a `$index.temp_base` local bound for evaluation order) unless the
             // instance body is proven to return only contents behind `self` (`returns_contents(id, 1)`).
@@ -14838,6 +14973,15 @@ impl<'a, 'run> Checker<'a, 'run> {
                 self.held.pop();
             }
             let value = value?;
+            if index == 0
+                && let Some((_, _, _, ref overlap_help)) = compound_call_meta
+            {
+                for lid in rhs_loan_mark..self.loans.len() {
+                    self.compound_guard_help
+                        .entry(lid)
+                        .or_insert_with(|| overlap_help.clone());
+                }
+            }
             self.event_targets(mark, argument.span, callee);
             // A34 (`sharetype`): passing a fresh local's `Rc`/`Arc` (or `dyn`) to a callee other
             // than `Rc.get`/`Arc.get` may clone/share its block internally, so it is no longer
@@ -15380,7 +15524,82 @@ impl<'a, 'run> Checker<'a, 'run> {
             E::Assign(place, value) => {
                 self.shared_exclusive(place, expression.span)?;
                 let assigned = &**value;
-                let value = self.eval(value, Use::Consume, &during)?;
+                let value = if let Some((op, target_span, target_name)) = self
+                    .module
+                    .compound_assigns
+                    .assigns
+                    .get(&(
+                        expression.span.source,
+                        expression.span.start,
+                        expression.span.end,
+                    ))
+                    .cloned()
+                {
+                    let inner_val = match &value.kind {
+                        E::Checked(inner) => inner.as_ref(),
+                        _ => value,
+                    };
+                    if let E::Binary(_, read_place, rhs) = &inner_val.kind {
+                        let help_text = format!(
+                            "the right side of '{}' cannot change {}; compute it into a 'let' first",
+                            op.compound_symbol(),
+                            target_name
+                                .as_deref()
+                                .map_or_else(|| "the target".to_owned(), |n| format!("'{n}'"))
+                        );
+                        let mut guard = Value::default();
+                        let guard_places = self.exclusive_places(place, &during)?;
+                        for (gplace, via) in &guard_places {
+                            self.access(gplace, via, Use::Borrow, target_span)?;
+                            let lid =
+                                self.loan(gplace.clone(), false, via.clone(), target_span);
+                            self.compound_guard_help.insert(lid, help_text.clone());
+                            guard.loans.insert(lid);
+                        }
+                        let mut mut_ref_roots = BTreeSet::new();
+                        self.collect_d9_mutable_ref_roots(place, &mut mut_ref_roots);
+                        for root in mut_ref_roots {
+                            let rplace = Place {
+                                root,
+                                fields: Vec::new(),
+                                through_drop: false,
+                                non_record_step: false,
+                            };
+                            let via = BTreeSet::new();
+                            self.access(&rplace, &via, Use::Borrow, target_span)?;
+                            let lid = self.loan(rplace, false, via, target_span);
+                            self.compound_guard_help.insert(lid, help_text.clone());
+                            guard.loans.insert(lid);
+                        }
+                        let right_usage = if rhs.ty.is_string()
+                            && matches!(rhs.kind, E::ReferenceOperand(_))
+                        {
+                            Use::Read
+                        } else {
+                            Use::Consume
+                        };
+                        let left_usage = if read_place.ty.is_string()
+                            && matches!(read_place.kind, E::ReferenceOperand(_))
+                        {
+                            Use::Read
+                        } else {
+                            Use::Consume
+                        };
+                        self.held.push(guard);
+                        let rhs_res = self.eval(rhs, right_usage, &during);
+                        self.held.pop();
+                        let rhs_val = rhs_res?;
+                        self.held.push(rhs_val);
+                        let read_res = self.eval(read_place, left_usage, &during);
+                        self.held.pop();
+                        let _ = read_res?;
+                        Value::default()
+                    } else {
+                        self.eval(value, Use::Consume, &during)?
+                    }
+                } else {
+                    self.eval(value, Use::Consume, &during)?
+                };
                 self.held.push(value.clone());
                 for (place, via) in self.exclusive_places(place, &during)? {
                     if !unmarked_fields(&place).is_empty() {

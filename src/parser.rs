@@ -339,6 +339,10 @@ struct Parser<'a> {
     site_lambdas: usize,
     /// Parsing the condition of an `@ensures` line, where `@old (expression)` may appear.
     in_ensures: bool,
+    /// NC20: unborrowed window brackets (`(span, multi_axis)`) whose `]` was immediately followed
+    /// by a compound-assignment token, waiting to see if the bracket expression itself becomes the
+    /// direct LHS of `op=`.
+    pending_window_borrows: Vec<(Span, bool)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -408,6 +412,7 @@ impl<'a> Parser<'a> {
             site_contracts: Vec::new(),
             site_lambdas: 0,
             in_ensures: false,
+            pending_window_borrows: Vec::new(),
         }
     }
 
@@ -452,6 +457,7 @@ impl<'a> Parser<'a> {
             site_contracts: Vec::new(),
             site_lambdas: self.site_lambdas,
             in_ensures: self.in_ensures,
+            pending_window_borrows: Vec::new(),
         };
         #[cfg(test)]
         PROBES.with(|probes| {
@@ -1119,6 +1125,26 @@ impl Parser<'_> {
                             return Err(self.error_of(
                                 DiagnosticKind::ExpectedSingleTypeArgument,
                                 "Index and IndexMut instances take three type arguments: Index<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    "IndexBorrowMut" => {
+                        if arguments.len() != 3 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "IndexBorrowMut instances take three type arguments: IndexBorrowMut<Self, Key, Output>",
+                            ));
+                        }
+                        let ty = arguments.remove(0);
+                        (ty, arguments)
+                    }
+                    "AddAssign" | "SubAssign" | "MulAssign" | "DivAssign" | "RemAssign" => {
+                        if arguments.len() != 2 {
+                            return Err(self.error_of(
+                                DiagnosticKind::ExpectedSingleTypeArgument,
+                                "AddAssign, SubAssign, MulAssign, DivAssign and RemAssign instances take two type arguments: AddAssign<Target, Rhs>",
                             ));
                         }
                         let ty = arguments.remove(0);
@@ -2711,6 +2737,21 @@ impl Parser<'_> {
             loop {
                 let class = self.qualified_ident()?;
                 let ty = self.single_type_argument()?;
+                if matches!(
+                    class.text.as_str(),
+                    "AddAssign"
+                        | "SubAssign"
+                        | "MulAssign"
+                        | "DivAssign"
+                        | "RemAssign"
+                        | "IndexBorrowMut"
+                ) {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::ExpectedSingleTypeArgument,
+                        format!("{} cannot be used as a type class constraint", class.text),
+                        class.span,
+                    ));
+                }
                 constraints.push(ConstraintExpr {
                     name: ConstraintName::Class(class),
                     ty,
@@ -4643,6 +4684,30 @@ impl Parser<'_> {
         allow_record: bool,
         stop_at_newline: bool,
     ) -> Result<Expr, Diagnostic> {
+        let outer_pending = if minimum == 0 {
+            Some(std::mem::take(&mut self.pending_window_borrows))
+        } else {
+            None
+        };
+        let result = self.expression_inner_body(minimum, allow_record, stop_at_newline);
+        if let Some(outer) = outer_pending {
+            let inner = std::mem::replace(&mut self.pending_window_borrows, outer);
+            let left = result?;
+            if let Some((bad_span, multi_axis)) = inner.first().copied() {
+                Self::require_window_borrow(None, multi_axis, bad_span)?;
+            }
+            Ok(left)
+        } else {
+            result
+        }
+    }
+
+    fn expression_inner_body(
+        &mut self,
+        minimum: u8,
+        allow_record: bool,
+        stop_at_newline: bool,
+    ) -> Result<Expr, Diagnostic> {
         self.enter()?;
         let mut left = self.primary(allow_record, stop_at_newline)?;
         loop {
@@ -4683,6 +4748,45 @@ impl Parser<'_> {
                 let depth = left.depth.max(right.depth) + 1;
                 left = self.make(
                     ExprKind::Assign(Box::new(left), Box::new(right)),
+                    span,
+                    depth,
+                )?;
+                continue;
+            }
+            if minimum == 0
+                && let Some(op) = match self.current().kind {
+                    TokenKind::PlusEqual => Some(BinaryOp::Add),
+                    TokenKind::MinusEqual => Some(BinaryOp::Subtract),
+                    TokenKind::StarEqual => Some(BinaryOp::Multiply),
+                    TokenKind::SlashEqual => Some(BinaryOp::Divide),
+                    TokenKind::PercentEqual => Some(BinaryOp::Remainder),
+                    _ => None,
+                }
+            {
+                if matches!(
+                    left.kind,
+                    ExprKind::Slice { mutable: None, .. }
+                        | ExprKind::MultiIndex { borrow: None, .. }
+                ) {
+                    self.pending_window_borrows
+                        .retain(|(pending_span, _)| *pending_span != left.span);
+                }
+                if let Some((bad_span, multi_axis)) = self.pending_window_borrows.first().copied() {
+                    self.pending_window_borrows.clear();
+                    self.nesting -= 1;
+                    Self::require_window_borrow(None, multi_axis, bad_span)?;
+                }
+                let op_span = self.take().span;
+                let right = self.expression_inner(0, allow_record, stop_at_newline)?;
+                let span = left.span.through(right.span);
+                let depth = left.depth.max(right.depth) + 1;
+                left = self.make(
+                    ExprKind::CompoundAssign {
+                        op,
+                        op_span,
+                        target: Box::new(left),
+                        value: Box::new(right),
+                    },
                     span,
                     depth,
                 )?;
@@ -5144,6 +5248,17 @@ impl Parser<'_> {
         Ok(IndexComponent::Range(Box::new(key)))
     }
 
+    fn compound_assign_follows(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::PlusEqual
+                | TokenKind::MinusEqual
+                | TokenKind::StarEqual
+                | TokenKind::SlashEqual
+                | TokenKind::PercentEqual
+        )
+    }
+
     fn require_window_borrow(
         borrowed: Option<bool>,
         multi_axis: bool,
@@ -5236,7 +5351,12 @@ impl Parser<'_> {
                     ))
                 }
                 IndexComponent::Range(range) => {
-                    let mutable = Self::require_window_borrow(borrowed, false, span)?;
+                    let mutable = if borrowed.is_none() && self.compound_assign_follows() {
+                        self.pending_window_borrows.push((span, false));
+                        None
+                    } else {
+                        Some(Self::require_window_borrow(borrowed, false, span)?)
+                    };
                     let depth = range
                         .start
                         .iter()
@@ -5276,7 +5396,10 @@ impl Parser<'_> {
             .iter()
             .any(|(comp, _)| matches!(comp, IndexComponent::Range(_) | IndexComponent::Whole(_)));
         if has_range_or_whole {
-            Self::require_window_borrow(borrowed, true, span)?;
+            let defer = borrowed.is_none() && self.compound_assign_follows();
+            if !defer {
+                Self::require_window_borrow(borrowed, true, span)?;
+            }
             if components
                 .iter()
                 .all(|(comp, _)| matches!(comp, IndexComponent::Whole(_)))
@@ -5286,6 +5409,9 @@ impl Parser<'_> {
                     "a key made only of '..' selects everything; borrow the value itself with 'ref t'",
                     span,
                 ));
+            }
+            if defer {
+                self.pending_window_borrows.push((span, true));
             }
         }
 
@@ -5975,7 +6101,8 @@ impl Parser<'_> {
         self.record_symbolic_prefix(&token, mut_span, term, &value);
         if let Some(mutable) = borrow {
             match &mut value.kind {
-                ExprKind::Slice { .. } => {
+                ExprKind::Slice { mutable: slot, .. } => {
+                    *slot = Some(mutable);
                     return Ok(Expr {
                         span: token.span.through(value.span),
                         ..value
@@ -6059,7 +6186,8 @@ impl Parser<'_> {
         let span = token.span.through(value.span);
         if let Some(mutable) = borrow {
             match &mut value.kind {
-                ExprKind::Slice { .. } => {
+                ExprKind::Slice { mutable: slot, .. } => {
+                    *slot = Some(mutable);
                     return Ok(Expr { span, ..value });
                 }
                 ExprKind::MultiIndex { borrow: slot, .. } => {

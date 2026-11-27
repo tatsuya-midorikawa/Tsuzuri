@@ -174,7 +174,7 @@ pub fn analyze_modules_with_contracts(
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
-            edition: syntax::Edition::E2026,
+            edition: syntax::Edition::LATEST,
             package: None,
         }))
         .collect();
@@ -196,13 +196,20 @@ fn analyze_modules_in_edition(
             edition,
             package: None,
         })
-        .chain(std_sources.iter().map(|(path, text)| SourceInput {
-            path,
-            text,
-            origin: ModuleOrigin::Std,
-            namespace: "",
-            edition,
-            package: None,
+        .chain(std_sources.iter().map(|(path, text)| {
+            let std_edition = if stdlib::is_embedded_source(path, text) {
+                syntax::Edition::LATEST
+            } else {
+                edition
+            };
+            SourceInput {
+                path,
+                text,
+                origin: ModuleOrigin::Std,
+                namespace: "",
+                edition: std_edition,
+                package: None,
+            }
         }))
         .collect();
     analyze_inputs_all(&inputs)
@@ -617,7 +624,7 @@ pub fn analyze_modules_with_semantics(
             text,
             origin: ModuleOrigin::Std,
             namespace: "",
-            edition: syntax::Edition::E2026,
+            edition: syntax::Edition::LATEST,
             package: None,
         }))
         .collect();

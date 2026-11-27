@@ -1,0 +1,17 @@
+def say :: i64 -> i64 = \n ->
+    do! IO.writeln (to_string n)
+    n
+
+def pick :: ref mut i64 -> i64 -> ref mut i64 = \r n ->
+    do! IO.writeln ("place " + to_string n)
+    r
+
+def f :: unit -> i64 = \() ->
+    let mut x = 1
+    deref (pick (ref mut x) 1) += say 2
+    x
+
+f ()
+
+// rule: EVL-022
+// expect: stdout "place 1\n2\n3\n"

@@ -521,19 +521,26 @@ fn f _unit = 1
     },
     Hint {
         id: "compound-assignment",
-        title: "No compound assignment",
+        title: "Unsupported compound assignment operator",
         kind: "expected_expression",
         message_has: &[],
-        patterns: &[&["+", "@="], &["-", "@="], &["*", "@="], &["/", "@="]],
-        help: "there is no compound assignment; write 'x = x + 1'",
+        patterns: &[
+            &["**", "@="],
+            &["&&&", "@="],
+            &["|||", "@="],
+            &["^^^", "@="],
+            &["<<<", "@="],
+            &[">>>", "@="],
+        ],
+        help: "only + - * / % have an '=' form; write 'x = x op y'",
         bad: r#"def f :: i64 -> i64 = \n ->
     let mut x = n
-    x += 1
+    x **= 2
     x
 "#,
         good: r#"def f :: i64 -> i64 = \n ->
     let mut x = n
-    x = x + 1
+    x = x ** 2
     x
 "#,
         fix: None,

@@ -183,3 +183,136 @@ fn tensor_mut_is_opaque_noncopy_and_exclusive() {
         "let t0: Tensor<i64> = Tensor.zeros [2, 2]\nlet t1 = Tensor.update (\\m -> Tensor.fill 3 m) t0\nlet t2 = Tensor.ones [2, 2]\nlet v1 = Tensor.view (ref t1)\nlet _s = $\"{t1} {v1}\"\nlet _b = Tensor.broadcast_to [2, 2] (ref v1)\nif t1 == t2 then 1 else 0",
     );
 }
+
+#[test]
+fn tensor_compound_assign_and_scalar_in_place_semantics_and_traps() {
+    let dir = std::env::temp_dir().join(format!("tsuzuri-nc20-tensor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("Tsuzuri.toml"),
+        "[package]\nname = \"nc20tensor\"\nversion = \"0.1.0\"\nedition = \"2027\"\n",
+    )
+    .unwrap();
+    let main_tz = dir.join("Main.tz");
+    std::fs::write(
+        &main_tz,
+        r#"def main :: unit -> i32 = \() ->
+    // Same shape, row & col broadcast, 0-D scalar, empty tensor, negative stride, non-contiguous window.
+    let mut x = Tensor.zeros [2, 3]
+    let row = Tensor.of_array [3] [1.0, 2.0, 3.0]
+    let col = Tensor.of_array [2, 1] [10.0, 20.0]
+    x += row
+    x += col
+    x -= 1.0
+    x *= 2.0
+    x /= 2.0
+    let ok_bcast = x == Tensor.of_array [2, 3] [10.0, 11.0, 12.0, 20.0, 21.0, 22.0]
+
+    let mut s0 = Tensor.of_array [] [5.0]
+    s0 += Tensor.of_array [] [2.5]
+    s0 *= 2.0
+    let ok_0d = s0 == Tensor.of_array [] [15.0]
+
+    let mut emp: Tensor<f64> = Tensor.zeros [0, 3]
+    emp += 9.0
+    emp += Tensor.zeros [1, 3]
+    let ok_emp = Array.length (Tensor.as_array (ref emp)) == 0
+
+    let mut raw = [1, 2, 3, 4, 5, 6]
+    let mut m = Tensor.borrow_mut [2, 3] (ref mut raw)
+    let mut flipped = Tensor.flip_mut 1 (ref mut m)
+    Tensor.add_scalar_in_place 100 (ref mut flipped)
+    flipped -= Tensor.of_array [3] [1, 2, 3]
+    let ok_flip = raw == [98, 100, 102, 101, 103, 105]
+
+    let mut raw2 = [10, 20, 30, 40, 50, 60]
+    let mut m2 = Tensor.borrow_mut [2, 3] (ref mut raw2)
+    let mut perm = Tensor.permute_mut [1, 0] (ref mut m2)
+    Tensor.mul_scalar_in_place 2 (ref mut perm)
+    Tensor.div_scalar_in_place 5 (ref mut perm)
+    Tensor.rem_scalar_in_place 7 (ref mut perm)
+    Tensor.sub_scalar_in_place 1 (ref mut perm)
+    let ok_perm = raw2 == [3, 0, 4, 1, 5, 2]
+
+    // Bit-exact match between `x += y` and `Tensor.add_in_place` across -0.0, NaN, +/-Inf.
+    let nan = 0.0 / 0.0
+    let inf = 1.0 / 0.0
+    let special_init = [-0.0, 0.0, nan, inf, -inf, 1.25]
+    let special_rhs = Tensor.of_array [6] [-0.0, -0.0, 1.0, 2.0, 3.0, -1.25]
+    let mut t_op = Tensor.of_array [6] special_init
+    t_op += special_rhs
+    let mut buf_ip = [-0.0, 0.0, nan, inf, -inf, 1.25]
+    let mut m_ip = Tensor.borrow_mut [6] (ref mut buf_ip)
+    let _ = Tensor.add_in_place (Tensor.view (ref special_rhs)) (ref mut m_ip)
+    let arr_op = Tensor.as_array (ref t_op)
+    let mut ok_bits = true
+    for i in 0i64 ..< 6 do
+        let a = arr_op[i]
+        let b = buf_ip[i]
+        let same = (Math.is_nan a && Math.is_nan b) || (a == b && Math.copysign 1.0 a == Math.copysign 1.0 b)
+        if not same then ok_bits = false
+
+    // Integer wrapping (`i8`).
+    let mut ti8 = Tensor.of_array [2] [120i8, -120i8]
+    ti8 += 20i8
+    let ok_wrap = ti8 == Tensor.of_array [2] [-116i8, -100i8]
+
+    if ok_bcast && ok_0d && ok_emp && ok_flip && ok_perm && ok_bits && ok_wrap then 0i32 else 1i32
+"#,
+    )
+    .unwrap();
+    for opt in ["-O0", "-O3"] {
+        let exe = dir.join(if cfg!(windows) {
+            format!("t{opt}.exe")
+        } else {
+            format!("t{opt}")
+        });
+        let build = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["build", opt, "-o"])
+            .arg(&exe)
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{opt} build stderr:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let out = std::process::Command::new(&exe).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{opt} stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Shape-mismatch trap writes 0 elements before trapping, and integer division by zero traps.
+    for (trap_name, body) in [
+        (
+            "shape_mismatch",
+            "def main :: unit -> i32 = \\() ->\n    let mut a: Tensor<f64> = Tensor.ones [2, 3]\n    let b: Tensor<f64> = Tensor.ones [2, 4]\n    a += b\n    0i32\n",
+        ),
+        (
+            "div_zero",
+            "def main :: unit -> i32 = \\() ->\n    let mut a = Tensor.of_array [3] [10, 20, 30]\n    let b = Tensor.of_array [3] [2, 0, 5]\n    a /= b\n    0i32\n",
+        ),
+    ] {
+        std::fs::write(&main_tz, body).unwrap();
+        let exe = dir.join(if cfg!(windows) {
+            format!("{trap_name}.exe")
+        } else {
+            trap_name.to_owned()
+        });
+        let build = std::process::Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+            .args(["build", "-O0", "-o"])
+            .arg(&exe)
+            .arg(&dir)
+            .output()
+            .unwrap();
+        assert!(build.status.success(), "{trap_name} build failed");
+        let out = std::process::Command::new(&exe).output().unwrap();
+        assert!(!out.status.success(), "{trap_name} should trap");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

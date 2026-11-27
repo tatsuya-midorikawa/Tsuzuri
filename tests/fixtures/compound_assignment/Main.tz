@@ -1,0 +1,70 @@
+record Model { w: Tensor<i64>, g: Tensor<i64> }
+
+def log_push :: ref mut i64 -> own i64 -> unit = \log tag ->
+    deref log = deref log * 10 + tag
+
+def pick_i64 { r } :: ref mut i64 -> ref mut { r } i64 -> own i64 -> ref mut { r } i64 = \log r tag ->
+    log_push log tag
+    r
+
+export def builtin_arithmetic :: own i64 -> i64 = \n ->
+    let mut x = n
+    x += 10
+    x -= 3
+    x *= 4
+    x /= 2
+    x %= 100
+    let mut f = 1.5
+    f += 2.5
+    f *= 2.0
+    f /= 4.0
+    f -= 0.5
+    let mut s = "ab"
+    s += "cd"
+    s += $"({x})"
+    let mut u = u8"x"
+    u += u8"yz"
+    let mut v: i32x4 = Simd.splat 2i32
+    v += Simd.splat 5i32
+    v -= Simd.splat 1i32
+    v *= Simd.splat 3i32
+    let lane_sum = (Simd.sum_lanes v) as i64
+    let mut xs = [10, 20, 30]
+    xs[1] += n
+    x * 1000 + (f * 10.0) as i64 * 100 + s.length * 10 + u.length + lane_sum + xs[1]
+
+export def evaluation_order :: i64
+fn evaluation_order =
+    let mut log = 0
+    let mut x = 1
+    deref (pick_i64 (ref mut log) (ref mut x) 1) += { log_push (ref mut log) 2; 5 }
+    log * 100 + x
+
+export def tensor_in_place_and_fields :: own i64 -> i64 = \scale ->
+    let mut t = Tensor.init [2, 3] (\i -> i + 1)
+    let row = Tensor.of_array [3] [10, 20, 30]
+    t += row
+    t *= scale
+    t -= 2
+    t[0, 1] += 5
+    let mut model = Model {
+        w: Tensor.of_array [3] [100, 200, 300],
+        g: Tensor.of_array [3] [10, 20, 30]
+    }
+    model.w -= model.g
+    let mut w = ref mut t[[Slice.Sel.Item (Slice.Pos.Front 1), Slice.Sel.Whole]]
+    w += 3
+    Tensor.sum (Tensor.view (ref t)) + Tensor.sum (Tensor.view (ref model.w))
+
+export def trap_div_zero :: i64
+fn trap_div_zero =
+    let mut x = 10
+    x /= 0
+    x
+
+export def trap_tensor_mismatch :: i64
+fn trap_tensor_mismatch =
+    let mut a = Tensor.of_array [2, 3] [1, 2, 3, 4, 5, 6]
+    let b = Tensor.of_array [2, 4] [1, 2, 3, 4, 5, 6, 7, 8]
+    a += b
+    Tensor.sum (Tensor.view (ref a))

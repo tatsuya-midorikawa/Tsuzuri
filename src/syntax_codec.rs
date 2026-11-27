@@ -2004,6 +2004,18 @@ impl Wire for ExprKind {
                 else_branch.put(out)?;
                 has_else.put(out)
             }
+            CompoundAssign {
+                op,
+                op_span,
+                target,
+                value,
+            } => {
+                out.tag("ExprKind", 52);
+                op.put(out)?;
+                op_span.put(out)?;
+                target.put(out)?;
+                value.put(out)
+            }
         }
     }
 
@@ -2132,7 +2144,7 @@ impl Wire for ExprKind {
                 Ok(Slice {
                     value: Box::get(input)?,
                     range: Box::get(input)?,
-                    mutable: bool::get(input)?,
+                    mutable: Option::<bool>::get(input)?,
                 })
             }),
             40 => variant(input, |input| {
@@ -2179,7 +2191,15 @@ impl Wire for ExprKind {
                     has_else: bool::get(input)?,
                 })))
             }),
-            52..=u8::MAX => Err(Invalid),
+            52 => variant(input, |input| {
+                Ok(CompoundAssign {
+                    op: BinaryOp::get(input)?,
+                    op_span: Span::get(input)?,
+                    target: Box::get(input)?,
+                    value: Box::get(input)?,
+                })
+            }),
+            53..=u8::MAX => Err(Invalid),
         }
     }
 }
@@ -3042,6 +3062,13 @@ mod tests {
         seen.extend(
             round_trips(
                 "@last_error\nextern \"CloseHandle\" def close_raw :: i64 -> bool * i32u\n",
+                0,
+            )
+            .unwrap(),
+        );
+        seen.extend(
+            round_trips(
+                "def f :: i64 -> i64 = \\n ->\n    let mut x = n\n    x += 1\n    x -= 2\n    x *= 3\n    x /= 2\n    x %= 5\n    x\n",
                 0,
             )
             .unwrap(),

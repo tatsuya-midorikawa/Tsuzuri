@@ -160,7 +160,7 @@ export def borrow_call_move :: own i64 -> i64 = \n ->
 
 export def slice_write_move :: own i64 -> i64 = \n ->
     let mut out = new [i64](4, \i -> i + n)
-    Array.write 0 55 (ref mut out[0..])
+    Array.write 0 55 (ref mut out[0 ..])
     out[0] + out[2] * 10
 
 export def borrow_then_consume :: own i64 -> i64 = \n ->
@@ -196,6 +196,22 @@ export def stash_slice :: own i64 -> i64 = \n ->
     let fallback = [0, 0, 0, 0]
     let xs = new [i64](4, \i -> i + n)
     let mut views = [View { data: ref fallback }]
-    put_view (ref xs) (ref mut views[0..])
+    put_view (ref xs) (ref mut views[0 ..])
     let ys = Array.__set 0 9 xs
     views[0].data[0] * 100 + ys[0]
+
+record Acc { xs: [i64] }
+
+instance AddAssign<Acc, i64> {
+    fn add_assign d target =
+        Array.write 0 (target.xs[0] + deref d) (ref mut target.xs[0 ..])
+}
+
+def make_acc_updated :: own i64 -> Acc = \n ->
+    let mut acc = Acc { xs: new [i64](4, \i -> i + n) }
+    acc += 50
+    acc
+
+export def compound_assign_move :: own i64 -> i64 = \n ->
+    let acc = make_acc_updated n
+    acc.xs[0] + acc.xs[2] * 10

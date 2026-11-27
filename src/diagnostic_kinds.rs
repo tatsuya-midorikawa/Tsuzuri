@@ -261,6 +261,7 @@ diagnostic_kinds! {
         (CaptureSyncPrimitiveInFunctionValue, "capture_sync_primitive_in_function_value", "E1005"),
         (CaptureUnsendableInFunctionValue, "capture_unsendable_in_function_value", "E1005"),
         (CollectionElementExclusiveBorrow, "collection_element_exclusive_borrow", "E1005"),
+        (CompoundAssignUnsupportedTarget, "compound_assign_unsupported_target", "E1005"),
         (CpuFunctionWideVectorBoundary, "cpu_function_wide_vector_boundary", "E1005"),
         (DerefNonReference, "deref_non_reference", "E1005"),
         (ExclusiveSliceWholeArrayParameter, "exclusive_slice_whole_array_parameter", "E1005"),

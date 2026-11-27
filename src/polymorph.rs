@@ -920,6 +920,13 @@ pub(super) struct Classes {
     /// `IndexMut<Self, Key, Value>`), keyed uniquely by `(Self, Key)`.
     index_instances: Vec<IndexInstanceTemplate>,
     index_mut_instances: Vec<IndexInstanceTemplate>,
+    /// NC20: built-in 3-argument mutable-window instances (`IndexBorrowMut<Self, Key, Output>`),
+    /// restricted to `std` and keyed uniquely by `(Self, Key)`.
+    index_borrow_mut_instances: Vec<IndexInstanceTemplate>,
+    /// NC20: built-in 2-argument compound-assignment instances (`AddAssign`..`RemAssign`),
+    /// keyed uniquely by `(class, Target, Rhs)`.
+    assign_instances: Vec<AssignInstanceTemplate>,
+    assign_heads: BTreeMap<(usize, Option<HeadKey>, Option<HeadKey>), Vec<usize>>,
     /// NC19: unified arithmetic operator table (`Add`..`Pow` and `Neg`), holding both multi-type
     /// operator extension instances (`Extension`) and non-intrinsic 1-argument instances (`SameType`).
     operator_instances: Vec<OperatorInstanceTemplate>,
@@ -950,6 +957,25 @@ pub(super) struct IndexInstanceTemplate {
     function: usize,
     span: Span,
     origin: ModuleOrigin,
+}
+
+pub(super) struct AssignInstanceTemplate {
+    class: usize,
+    op: BinaryOp,
+    target_ty: Type,
+    rhs_ty: Type,
+    variables: Vec<String>,
+    constraints: Vec<Constraint>,
+    function: usize,
+    span: Span,
+    origin: ModuleOrigin,
+}
+
+pub(super) struct ResolvedAssignOp {
+    pub(super) function: usize,
+    pub(super) type_args: Vec<Type>,
+    pub(super) constraints: Vec<Constraint>,
+    pub(super) call_signature: Type,
 }
 
 pub(super) struct ResolvedIndex {
@@ -1025,7 +1051,7 @@ fn borrowed_arithmetic_class(name: &str) -> bool {
 }
 
 /// Built-in class names; they share the type namespace with record types.
-pub(crate) const BUILTIN_CLASSES: [&str; 36] = [
+pub(crate) const BUILTIN_CLASSES: [&str; 42] = [
     "SimdVector",
     "SimdNumeric",
     "SimdMask",
@@ -1062,6 +1088,12 @@ pub(crate) const BUILTIN_CLASSES: [&str; 36] = [
     "AtomicValue",
     "Index",
     "IndexMut",
+    "IndexBorrowMut",
+    "AddAssign",
+    "SubAssign",
+    "MulAssign",
+    "DivAssign",
+    "RemAssign",
 ];
 
 /// The qualified name of std's `Monoid` class (F15); a program cannot declare a module `Monoid`.
@@ -1132,6 +1164,18 @@ impl Classes {
                     .any(|inst| inst.function == function)
                     .then_some(crate::check::IndexMethodKind::Write)
             })
+            .or_else(|| {
+                self.index_borrow_mut_instances
+                    .iter()
+                    .any(|inst| inst.function == function)
+                    .then_some(crate::check::IndexMethodKind::BorrowMut)
+            })
+            .or_else(|| {
+                self.assign_instances
+                    .iter()
+                    .find(|inst| inst.function == function)
+                    .map(|inst| crate::check::IndexMethodKind::AssignOp(inst.op))
+            })
     }
 
     pub(super) fn instance_views(&self) -> Vec<InstanceView<'_>> {
@@ -1176,6 +1220,30 @@ impl Classes {
                 });
             }
         }
+        if let Some(&class) = self.names.get("IndexBorrowMut") {
+            for instance in &self.index_borrow_mut_instances {
+                views.push(InstanceView {
+                    class,
+                    head: &instance.self_ty,
+                    extra_args: vec![&instance.key_ty, &instance.output_ty],
+                    derived: false,
+                    span: instance.span,
+                    methods: vec![(instance.function, "index_borrow_mut")],
+                });
+            }
+        }
+        for instance in &self.assign_instances {
+            let (_, method_name) = assign_class_info(&self.declarations[instance.class].name)
+                .expect("assign instance class");
+            views.push(InstanceView {
+                class: instance.class,
+                head: &instance.target_ty,
+                extra_args: vec![&instance.rhs_ty],
+                derived: false,
+                span: instance.span,
+                methods: vec![(instance.function, method_name)],
+            });
+        }
         for instance in &self.operator_instances {
             let OperatorTarget::Extension { function } = instance.target else {
                 continue;
@@ -1217,6 +1285,9 @@ impl Classes {
             instances: Vec::new(),
             index_instances: Vec::new(),
             index_mut_instances: Vec::new(),
+            index_borrow_mut_instances: Vec::new(),
+            assign_instances: Vec::new(),
+            assign_heads: BTreeMap::new(),
             operator_instances: Vec::new(),
             operator_heads: BTreeMap::new(),
             oei_classes: BTreeSet::new(),
@@ -2273,6 +2344,22 @@ impl Classes {
                             functions,
                         );
                     }
+                    if class.builtin && class.name == "IndexBorrowMut" {
+                        return self.register_index_borrow_mut_instance(
+                            module, instance, names, types, functions,
+                        );
+                    }
+                    if class.builtin && assign_class_info(&class.name).is_some() {
+                        return self.register_assign_instance(
+                            id,
+                            module,
+                            instance,
+                            names,
+                            types,
+                            functions,
+                            &mut overlap_pairs,
+                        );
+                    }
                     if class.builtin
                         && borrowed_arithmetic_class(&class.name)
                         && !instance.extra_args.is_empty()
@@ -2873,6 +2960,403 @@ impl Classes {
         } else {
             self.index_instances.push(template);
         }
+        Ok(())
+    }
+
+    /// NC20 (D3): registers a 3-argument `IndexBorrowMut<Self, Key, Output>` instance.
+    /// Restricted to `std`; `Key` must not carry loans so the returned window holds only the
+    /// exclusive loan of `Self` (and whatever loans `Self` itself carries).
+    fn register_index_borrow_mut_instance(
+        &mut self,
+        module: &str,
+        instance: &InstanceDecl,
+        names: &Names,
+        types: &TypeContext<'_>,
+        functions: &mut Vec<(String, FunctionDecl)>,
+    ) -> Result<(), Diagnostic> {
+        let class_name = "IndexBorrowMut";
+        let method_name = "index_borrow_mut";
+        let current_origin = names.origin(module);
+        if current_origin != ModuleOrigin::Std {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinInstanceOverride,
+                "IndexBorrowMut instances are provided only by the standard library",
+                instance.class.span,
+            ));
+        }
+        let self_ty = resolve_type(&instance.ty, module, names)?;
+        bounded_type(&self_ty, instance.ty.span)?;
+        if instance.extra_args.len() != 2 {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedSingleTypeArgument,
+                "IndexBorrowMut instances require three type arguments",
+                instance.class.span,
+            ));
+        }
+        let key_ty = resolve_type(&instance.extra_args[0], module, names)?;
+        bounded_type(&key_ty, instance.extra_args[0].span)?;
+        if key_ty.carries_loans(types) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinInstanceOverride,
+                "IndexBorrowMut key type cannot hold borrowed references",
+                instance.extra_args[0].span,
+            ));
+        }
+        let output_ty = resolve_type(&instance.extra_args[1], module, names)?;
+        bounded_type(&output_ty, instance.extra_args[1].span)?;
+
+        if matches!(
+            self_ty,
+            Type::Variable(_)
+                | Type::Array(_)
+                | Type::List(_)
+                | Type::Vec(_)
+                | Type::FixedArray(..)
+                | Type::String
+                | Type::Utf8String
+        ) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinInstanceOverride,
+                "built-in instances and marker classes cannot be overridden",
+                instance.class.span,
+            ));
+        }
+        if let Type::Union(union, _) = &self_ty
+            && names.is_anonymous_union(*union)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AnonymousUnionInstance,
+                format!(
+                    "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                    self_ty.display_with(names)
+                ),
+                instance.class.span,
+            ));
+        }
+
+        let mut head_vars = variables(&self_ty);
+        for v in variables(&key_ty) {
+            if !head_vars.contains(&v) {
+                head_vars.push(v);
+            }
+        }
+        if variables(&output_ty).iter().any(|v| !head_vars.contains(v)) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                "IndexBorrowMut output type may only mention type variables from its container and key types",
+                instance.extra_args[1].span,
+            ));
+        }
+        let context = self.resolve_constraints(&instance.constraints, module, names)?;
+        if context.iter().any(|constraint| {
+            variables(&constraint.ty)
+                .iter()
+                .any(|variable| !head_vars.contains(variable))
+        }) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                "instance context mentions a type variable absent from its head",
+                instance.class.span,
+            ));
+        }
+
+        for previous in &self.index_borrow_mut_instances {
+            let mut inference = Inference::quiet();
+            let instantiate_pair = |inf: &mut Inference, s: &Type, k: &Type, vars: &[String]| {
+                let subs: BTreeMap<String, Type> = vars
+                    .iter()
+                    .map(|name| (name.clone(), inf.fresh()))
+                    .collect();
+                (substitute(s, &subs), substitute(k, &subs))
+            };
+            let (s1, k1) = instantiate_pair(
+                &mut inference,
+                &previous.self_ty,
+                &previous.key_ty,
+                &previous.variables,
+            );
+            let (s2, k2) = instantiate_pair(&mut inference, &self_ty, &key_ty, &head_vars);
+            if inference
+                .unify(&s1, &s2, types, instance.class.span)
+                .is_ok()
+                && inference
+                    .unify(&k1, &k2, types, instance.class.span)
+                    .is_ok()
+            {
+                return Err(overlapping_instance_diagnostic(
+                    class_name,
+                    &[previous.self_ty.clone(), previous.key_ty.clone()],
+                    previous.origin,
+                    previous.span,
+                    &[self_ty, key_ty],
+                    current_origin,
+                    instance.class.span,
+                    types,
+                ));
+            }
+        }
+
+        let mut method_def = None;
+        for definition in &instance.methods {
+            if definition.name.text != method_name {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceUnknownMethod,
+                    format!("unknown method '{}' for {class_name}", definition.name.text),
+                    definition.name.span,
+                ));
+            }
+            if method_def.replace(definition).is_some() {
+                return Err(duplicate(&definition.name));
+            }
+        }
+        let Some(definition) = method_def else {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceMissingMethod,
+                format!("missing method '{class_name}.{method_name}'"),
+                instance.class.span,
+            ));
+        };
+
+        let function_id = functions.len();
+        let fn_decl = index_borrow_mut_instance_function(
+            &self_ty,
+            &key_ty,
+            &output_ty,
+            definition,
+            format!("$instance.{function_id}.{method_name}"),
+            instance.constraints.clone(),
+            types,
+        )?;
+        let sig_for_vars = Signature {
+            parameters: vec![
+                Type::Reference(Box::new(key_ty.clone()), false),
+                Type::Reference(Box::new(self_ty.clone()), true),
+            ],
+            result: output_ty.clone(),
+        };
+        let sig_vars = variables(&sig_for_vars.as_type());
+        functions.push((module.into(), fn_decl));
+
+        let borrows_base = output_ty.carries_loans(types);
+        self.index_borrow_mut_instances.push(IndexInstanceTemplate {
+            self_ty,
+            key_ty,
+            output_ty,
+            borrows_base,
+            variables: sig_vars,
+            constraints: context,
+            function: function_id,
+            span: instance.class.span,
+            origin: current_origin,
+        });
+        Ok(())
+    }
+
+    /// NC20 (D1, D4): registers a 2-argument `AddAssign<Target, Rhs>`..`RemAssign<Target, Rhs>`
+    /// instance (`add_assign :: ref Rhs -> ref mut Target -> unit`).
+    #[allow(clippy::too_many_arguments)]
+    fn register_assign_instance(
+        &mut self,
+        class_id: usize,
+        module: &str,
+        instance: &InstanceDecl,
+        names: &Names,
+        types: &TypeContext<'_>,
+        functions: &mut Vec<(String, FunctionDecl)>,
+        overlap_pairs: &mut usize,
+    ) -> Result<(), Diagnostic> {
+        let class_name = self.declarations[class_id].name.clone();
+        let (op, method_name) = assign_class_info(&class_name).expect("assign class");
+        let target_ty = resolve_type(&instance.ty, module, names)?;
+        bounded_type(&target_ty, instance.ty.span)?;
+        if instance.extra_args.len() != 1 {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ExpectedSingleTypeArgument,
+                format!("{class_name} instances require two type arguments"),
+                instance.class.span,
+            ));
+        }
+        let rhs_ty = resolve_type(&instance.extra_args[0], module, names)?;
+        bounded_type(&rhs_ty, instance.extra_args[0].span)?;
+
+        if matches!(target_ty, Type::Variable(_) | Type::Reference(..))
+            || Checker::is_any_builtin_type(&target_ty)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::BuiltinInstanceOverride,
+                "built-in instances and marker classes cannot be overridden",
+                instance.class.span,
+            ));
+        }
+        if let Type::Union(union, _) = &target_ty
+            && names.is_anonymous_union(*union)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AnonymousUnionInstance,
+                format!(
+                    "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                    target_ty.display_with(names)
+                ),
+                instance.class.span,
+            ));
+        }
+        if let Type::Union(union, _) = &rhs_ty
+            && names.is_anonymous_union(*union)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AnonymousUnionInstance,
+                format!(
+                    "instances cannot be declared for the anonymous union {}; wrap it in a record, or declare a union with named cases",
+                    rhs_ty.display_with(names)
+                ),
+                instance.extra_args[0].span,
+            ));
+        }
+
+        let target_vars = variables(&target_ty);
+        if variables(&rhs_ty).iter().any(|v| !target_vars.contains(v)) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                format!(
+                    "{class_name} right-hand type may only mention type variables from its target type"
+                ),
+                instance.extra_args[0].span,
+            ));
+        }
+        let context = self.resolve_constraints(&instance.constraints, module, names)?;
+        if context.iter().any(|constraint| {
+            variables(&constraint.ty)
+                .iter()
+                .any(|variable| !target_vars.contains(variable))
+        }) {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceContextVariable,
+                "instance context mentions a type variable absent from its head",
+                instance.class.span,
+            ));
+        }
+
+        let current_origin = names.origin(module);
+        validate_orphan_instance(
+            &class_name,
+            &[target_ty.clone(), rhs_ty.clone()],
+            types,
+            names,
+            current_origin,
+            instance.class.span,
+        )?;
+
+        let t_head = head_constructor(&target_ty).filter(|_| !target_ty.contains_error());
+        let r_head = head_constructor(&rhs_ty).filter(|_| !rhs_ty.contains_error());
+        let mut candidate_indices = Vec::new();
+        for (&(cid, th, rh), indices) in &self.assign_heads {
+            if cid != class_id {
+                continue;
+            }
+            let t_ok = t_head.is_none() || th.is_none() || t_head == th;
+            let r_ok = r_head.is_none() || rh.is_none() || r_head == rh;
+            if t_ok && r_ok {
+                candidate_indices.extend(indices.iter().copied());
+            }
+        }
+        candidate_indices.sort_unstable();
+        candidate_indices.dedup();
+        for idx in candidate_indices {
+            let prev = &self.assign_instances[idx];
+            *overlap_pairs += 1;
+            if *overlap_pairs > 1024 {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceOverlapLimit,
+                    "instance overlap checking exceeds 1024 pairs",
+                    instance.class.span,
+                ));
+            }
+            let mut inf = Inference::quiet();
+            let subs1: BTreeMap<String, Type> = prev
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inf.fresh()))
+                .collect();
+            let subs2: BTreeMap<String, Type> = target_vars
+                .iter()
+                .map(|v| (v.clone(), inf.fresh()))
+                .collect();
+            let t1 = substitute(&prev.target_ty, &subs1);
+            let t2 = substitute(&target_ty, &subs2);
+            let r1 = substitute(&prev.rhs_ty, &subs1);
+            let r2 = substitute(&rhs_ty, &subs2);
+            if inf.unify(&t1, &t2, types, instance.class.span).is_ok()
+                && inf.unify(&r1, &r2, types, instance.class.span).is_ok()
+            {
+                return Err(overlapping_instance_diagnostic(
+                    &class_name,
+                    &[prev.target_ty.clone(), prev.rhs_ty.clone()],
+                    prev.origin,
+                    prev.span,
+                    &[target_ty, rhs_ty],
+                    current_origin,
+                    instance.class.span,
+                    types,
+                ));
+            }
+        }
+
+        let mut method_def = None;
+        for definition in &instance.methods {
+            if definition.name.text != method_name {
+                return Err(Diagnostic::of(
+                    DiagnosticKind::InstanceUnknownMethod,
+                    format!("unknown method '{}' for {class_name}", definition.name.text),
+                    definition.name.span,
+                ));
+            }
+            if method_def.replace(definition).is_some() {
+                return Err(duplicate(&definition.name));
+            }
+        }
+        let Some(definition) = method_def else {
+            return Err(Diagnostic::of(
+                DiagnosticKind::InstanceMissingMethod,
+                format!("missing method '{class_name}.{method_name}'"),
+                instance.class.span,
+            ));
+        };
+
+        let function_id = functions.len();
+        let fn_decl = assign_instance_function(
+            &target_ty,
+            &rhs_ty,
+            definition,
+            format!("$instance.{function_id}.{method_name}"),
+            instance.constraints.clone(),
+            types,
+        )?;
+        let sig_for_vars = Signature {
+            parameters: vec![
+                Type::Reference(Box::new(rhs_ty.clone()), false),
+                Type::Reference(Box::new(target_ty.clone()), true),
+            ],
+            result: Type::Unit,
+        };
+        let sig_vars = variables(&sig_for_vars.as_type());
+        functions.push((module.into(), fn_decl));
+
+        let idx = self.assign_instances.len();
+        self.assign_heads
+            .entry((class_id, t_head, r_head))
+            .or_default()
+            .push(idx);
+        self.assign_instances.push(AssignInstanceTemplate {
+            class: class_id,
+            op,
+            target_ty,
+            rhs_ty,
+            variables: sig_vars,
+            constraints: context,
+            function: function_id,
+            span: instance.class.span,
+            origin: current_origin,
+        });
         Ok(())
     }
 
@@ -4211,6 +4695,594 @@ impl Classes {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_index_borrow_mut(
+        &self,
+        self_ty: &Type,
+        key_ty: &Type,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        names: &Names,
+        span: Span,
+        key_span: Span,
+    ) -> Result<Option<ResolvedIndex>, Diagnostic> {
+        let list = &self.index_borrow_mut_instances;
+        let self_resolved = inference.resolve(self_ty);
+        if is_unknown(&self_resolved) {
+            return Ok(None);
+        }
+        let key_resolved = inference.resolve(key_ty);
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let actual_pair = Type::Tuple(vec![self_resolved.clone(), key_resolved.clone()]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut candidates = Vec::new();
+        for (idx, cand) in list.iter().enumerate() {
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|name| (name.clone(), inference.fresh()))
+                .collect();
+            let cand_pair = Type::Tuple(vec![
+                substitute(&cand.self_ty, &subs),
+                substitute(&cand.key_ty, &subs),
+            ]);
+            let accepted = inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
+                    }
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return true;
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                })
+            });
+            if accepted {
+                candidates.push(idx);
+            }
+        }
+        inference.quiet = was_quiet;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            let listed: Vec<String> = candidates
+                .iter()
+                .map(|&i| {
+                    let c = &list[i];
+                    format!(
+                        "IndexBorrowMut<{}, {}, {}>",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    )
+                })
+                .collect();
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::AmbiguousInstanceCandidates,
+                format!(
+                    "more than one IndexBorrowMut instance fits {} with this key: {}; give the key a type",
+                    self_resolved.display_with(names),
+                    listed.join(", ")
+                ),
+                key_span,
+            );
+            for &i in candidates.iter().take(8) {
+                let c = &list[i];
+                diag = diag.related(
+                    crate::diagnostic::RelatedRole::DeclaredHere,
+                    format!(
+                        "candidate IndexBorrowMut<{}, {}, {}> declared here",
+                        c.self_ty.display_with(names),
+                        c.key_ty.display_with(names),
+                        c.output_ty.display_with(names)
+                    ),
+                    c.span,
+                );
+            }
+            return Err(diag.with_help(
+                "annotate the key expression or parameter with a concrete type, for example '[Slice.Sel]'",
+            ));
+        }
+        let cand = &list[candidates[0]];
+        let subs: BTreeMap<String, Type> = cand
+            .variables
+            .iter()
+            .map(|name| (name.clone(), inference.fresh()))
+            .collect();
+        let cand_self = substitute(&cand.self_ty, &subs);
+        let cand_key = substitute(&cand.key_ty, &subs);
+        inference.unify(self_ty, &cand_self, types, span)?;
+        inference.unify(key_ty, &cand_key, types, span)?;
+        let type_args: Vec<Type> = cand
+            .variables
+            .iter()
+            .map(|name| inference.resolve(&subs[name]))
+            .collect();
+        let output_ty = inference.resolve(&substitute(&cand.output_ty, &subs));
+        let constraints: Vec<Constraint> = cand
+            .constraints
+            .iter()
+            .map(|c| Constraint {
+                class: c.class,
+                ty: inference.resolve(&substitute(&c.ty, &subs)),
+                span,
+            })
+            .collect();
+        let final_self = inference.resolve(&cand_self);
+        let final_key = inference.resolve(&cand_key);
+        let call_signature = Type::function(
+            vec![
+                Type::Reference(Box::new(final_key), false),
+                Type::Reference(Box::new(final_self), true),
+            ],
+            output_ty.clone(),
+        );
+        Ok(Some(ResolvedIndex {
+            function: cand.function,
+            type_args,
+            output_ty,
+            borrows_base: cand.borrows_base,
+            constraints,
+            call_signature,
+        }))
+    }
+
+    fn assign_candidate_indices(&self, class_id: usize, target_ty: &Type) -> Vec<usize> {
+        let t_head = head_constructor(target_ty);
+        let mut indices = Vec::new();
+        for (&(cid, th, _), bucket) in &self.assign_heads {
+            if cid == class_id && (t_head.is_none() || th.is_none() || t_head == th) {
+                indices.extend(bucket.iter().copied());
+            }
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        indices
+    }
+
+    /// NC20 (§4): chooses an expected RHS type for `target op= rhs` when `target` is a known
+    /// non-builtin named type:
+    /// - if exactly 1 `AddAssign`..`RemAssign` candidate unifies with `target`, returns its `Rhs`;
+    /// - if multiple candidates unify with `target` and `rhs` is an untyped number literal, picks
+    ///   the literal-compatible candidate per NC19 rule (a) (reporting `E1043` if >= 2 match).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn assign_op_rhs_hint(
+        &self,
+        class_id: usize,
+        op_symbol: &str,
+        target_ty: &Type,
+        rhs_is_untyped_lit: bool,
+        lit_is_float: bool,
+        lit_int: Option<(u128, bool)>,
+        lit_text: &str,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        names: &Names,
+        span: Span,
+    ) -> Result<Option<Type>, Diagnostic> {
+        let target_resolved = inference.resolve(target_ty);
+        if !Self::is_named_non_builtin_type(&target_resolved, names) {
+            return Ok(None);
+        }
+        let indices = self.assign_candidate_indices(class_id, &target_resolved);
+        if indices.is_empty() {
+            return Ok(None);
+        }
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut target_matches: Vec<(usize, Type)> = Vec::new();
+        for idx in indices {
+            let cand = &self.assign_instances[idx];
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let ct = substitute(&cand.target_ty, &subs);
+            let cr = substitute(&cand.rhs_ty, &subs);
+            let mut resolved_rhs = None;
+            let ok = inference.unifies(&ct, &target_resolved, types, |trial| {
+                let constraints_ok = before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    if before == &bound || bound.contains_error() {
+                        return true;
+                    }
+                    if matches!(bound, Type::Infer(_) | Type::Variable(_)) {
+                        return true;
+                    }
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return self.has_direct_candidate(*class, &bound, types);
+                    }
+                    self.validate(
+                        &Constraint {
+                            class: *class,
+                            ty: bound,
+                            span: *c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                });
+                if constraints_ok {
+                    resolved_rhs = Some(trial.resolve(&cr));
+                }
+                constraints_ok
+            });
+            if ok && let Some(rhs) = resolved_rhs {
+                target_matches.push((idx, rhs));
+            }
+        }
+        if target_matches.len() == 1 {
+            inference.quiet = was_quiet;
+            let (_, rhs) = target_matches.pop().unwrap();
+            return Ok(Some(rhs));
+        }
+        if !rhs_is_untyped_lit || target_matches.is_empty() {
+            inference.quiet = was_quiet;
+            return Ok(None);
+        }
+
+        let is_std_bigint = |ty: &Type| -> bool {
+            matches!(
+                ty,
+                Type::Record(id, _)
+                    if types.records[*id].origin == ModuleOrigin::Std
+                        && types.records[*id].name == "BigInt.BigInt"
+            )
+        };
+        let literal_accepts = |cand_lit: &Type, trial: &Inference| -> bool {
+            if let Type::Infer(_) = cand_lit {
+                return before_constraints.iter().all(|(class, before, _)| {
+                    if trial.resolve(before) != *cand_lit {
+                        return true;
+                    }
+                    let cname = self.declarations[*class].name.as_str();
+                    if lit_is_float {
+                        !matches!(cname, "Integer" | "SignedInteger" | "UnsignedInteger")
+                    } else if matches!(lit_int, Some((_, true))) {
+                        cname != "UnsignedInteger"
+                    } else {
+                        true
+                    }
+                });
+            }
+            if matches!(cand_lit, Type::Variable(_)) {
+                return true;
+            }
+            if lit_is_float {
+                return cand_lit.is_float();
+            }
+            if cand_lit.is_float() || is_std_bigint(cand_lit) {
+                return true;
+            }
+            if let Type::Integer(bits, signed) = cand_lit {
+                if let Some((val, neg)) = lit_int {
+                    if neg && !signed {
+                        return false;
+                    }
+                    let max = if *signed {
+                        (1u128 << (bits - 1)) - u128::from(!neg)
+                    } else if *bits == 128 {
+                        u128::MAX
+                    } else {
+                        (1u128 << bits) - 1
+                    };
+                    return val <= max;
+                }
+                return true;
+            }
+            false
+        };
+
+        let mut lit_matches: Vec<(usize, Type)> = Vec::new();
+        for (idx, _) in target_matches {
+            let cand = &self.assign_instances[idx];
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let ct = substitute(&cand.target_ty, &subs);
+            let cr = substitute(&cand.rhs_ty, &subs);
+            let mut resolved_rhs = None;
+            let ok = inference.unifies(&ct, &target_resolved, types, |trial| {
+                let rhs = trial.resolve(&cr);
+                if !literal_accepts(&rhs, trial) {
+                    return false;
+                }
+                resolved_rhs = Some(rhs);
+                true
+            });
+            if ok && let Some(rhs) = resolved_rhs {
+                lit_matches.push((idx, rhs));
+            }
+        }
+        inference.quiet = was_quiet;
+        match lit_matches.len() {
+            0 => Ok(None),
+            1 => Ok(Some(lit_matches.pop().unwrap().1)),
+            _ => {
+                let class_name = &self.declarations[class_id].name;
+                let listed: Vec<String> = lit_matches
+                    .iter()
+                    .map(|(idx, _)| {
+                        let c = &self.assign_instances[*idx];
+                        format!(
+                            "{class_name}<{}, {}>",
+                            c.target_ty.display_with(names),
+                            c.rhs_ty.display_with(names)
+                        )
+                    })
+                    .collect();
+                let sample_suffix = lit_matches
+                    .iter()
+                    .find_map(|(_, t)| match t {
+                        Type::Integer(64, true) => Some(format!("{lit_text}i64")),
+                        Type::Integer(32, true) => Some(format!("{lit_text}i32")),
+                        Type::Binary(64) => Some(format!("{lit_text}f64")),
+                        Type::Binary(32) => Some(format!("{lit_text}f32")),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| format!("{lit_text}i64"));
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::AmbiguousInstanceCandidates,
+                    format!(
+                        "ambiguous {class_name} instance for {} {op_symbol} {lit_text}: {} both apply; give the literal a suffix such as {sample_suffix}",
+                        target_resolved.display_with(names),
+                        listed.join(" and ")
+                    ),
+                    span,
+                );
+                for (idx, _) in lit_matches.iter().take(8) {
+                    let c = &self.assign_instances[*idx];
+                    diag = diag.related(
+                        crate::diagnostic::RelatedRole::DeclaredHere,
+                        format!(
+                            "candidate {class_name}<{}, {}> declared here",
+                            c.target_ty.display_with(names),
+                            c.rhs_ty.display_with(names)
+                        ),
+                        c.span,
+                    );
+                }
+                Err(diag)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_assign_op(
+        &self,
+        class_id: usize,
+        target_ty: &Type,
+        rhs_ty: &Type,
+        inference: &mut Inference,
+        pending_constraints: &[Constraint],
+        types: &TypeContext<'_>,
+        names: &Names,
+        span: Span,
+    ) -> Result<Option<ResolvedAssignOp>, Diagnostic> {
+        let target_resolved = inference.resolve(target_ty);
+        if is_unknown(&target_resolved) {
+            return Ok(None);
+        }
+        let rhs_resolved = inference.resolve(rhs_ty);
+        let indices = self.assign_candidate_indices(class_id, &target_resolved);
+        if indices.is_empty() {
+            return Ok(None);
+        }
+        let before_constraints: Vec<(usize, Type, Span)> = pending_constraints
+            .iter()
+            .map(|c| (c.class, inference.resolve(&c.ty), c.span))
+            .collect();
+        let actual_pair = Type::Tuple(vec![target_resolved.clone(), rhs_resolved.clone()]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let mut candidates = Vec::new();
+        for idx in indices {
+            let cand = &self.assign_instances[idx];
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let cand_pair = Type::Tuple(vec![
+                substitute(&cand.target_ty, &subs),
+                substitute(&cand.rhs_ty, &subs),
+            ]);
+            let accepted = inference.unifies(&actual_pair, &cand_pair, types, |trial| {
+                let check_constraint = |class: usize, bound: Type, c_span: Span| -> bool {
+                    if bound.contains_error() || matches!(bound, Type::Infer(_) | Type::Variable(_))
+                    {
+                        return true;
+                    }
+                    let mut has_unknown = false;
+                    map_type(&bound, &mut |part| {
+                        if is_unknown(part) {
+                            has_unknown = true;
+                        }
+                        part.clone()
+                    });
+                    if has_unknown {
+                        return self.has_direct_candidate(class, &bound, types);
+                    }
+                    self.validate(
+                        &Constraint {
+                            class,
+                            ty: bound,
+                            span: c_span,
+                        },
+                        types,
+                    )
+                    .is_ok()
+                };
+                before_constraints.iter().all(|(class, before, c_span)| {
+                    let bound = trial.resolve(before);
+                    before == &bound || check_constraint(*class, bound, *c_span)
+                }) && cand.constraints.iter().all(|c| {
+                    let bound = trial.resolve(&substitute(&c.ty, &subs));
+                    check_constraint(c.class, bound, span)
+                })
+            });
+            if accepted {
+                candidates.push(idx);
+            }
+        }
+        inference.quiet = was_quiet;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        if candidates.len() >= 2 {
+            let class_name = &self.declarations[class_id].name;
+            let listed: Vec<String> = candidates
+                .iter()
+                .map(|&i| {
+                    let c = &self.assign_instances[i];
+                    format!(
+                        "{class_name}<{}, {}>",
+                        c.target_ty.display_with(names),
+                        c.rhs_ty.display_with(names)
+                    )
+                })
+                .collect();
+            let mut diag = Diagnostic::of(
+                DiagnosticKind::AmbiguousInstanceCandidates,
+                format!(
+                    "more than one {class_name} instance fits ({}, {}): {}; annotate the operand type",
+                    target_resolved.display_with(names),
+                    rhs_resolved.display_with(names),
+                    listed.join(", ")
+                ),
+                span,
+            );
+            for &i in candidates.iter().take(8) {
+                let c = &self.assign_instances[i];
+                diag = diag.related(
+                    crate::diagnostic::RelatedRole::DeclaredHere,
+                    format!(
+                        "candidate {class_name}<{}, {}> declared here",
+                        c.target_ty.display_with(names),
+                        c.rhs_ty.display_with(names)
+                    ),
+                    c.span,
+                );
+            }
+            return Err(diag.with_help("annotate the right-hand expression with a concrete type"));
+        }
+        let cand = &self.assign_instances[candidates[0]];
+        let subs: BTreeMap<String, Type> = cand
+            .variables
+            .iter()
+            .map(|v| (v.clone(), inference.fresh()))
+            .collect();
+        let cand_target = substitute(&cand.target_ty, &subs);
+        let cand_rhs = substitute(&cand.rhs_ty, &subs);
+        inference.unify(target_ty, &cand_target, types, span)?;
+        inference.unify(rhs_ty, &cand_rhs, types, span)?;
+        let type_args: Vec<Type> = cand
+            .variables
+            .iter()
+            .map(|v| inference.resolve(&subs[v]))
+            .collect();
+        let constraints: Vec<Constraint> = cand
+            .constraints
+            .iter()
+            .map(|c| Constraint {
+                class: c.class,
+                ty: inference.resolve(&substitute(&c.ty, &subs)),
+                span,
+            })
+            .collect();
+        let final_target = inference.resolve(&cand_target);
+        let final_rhs = inference.resolve(&cand_rhs);
+        let call_signature = Type::function(
+            vec![
+                Type::Reference(Box::new(final_rhs), false),
+                Type::Reference(Box::new(final_target), true),
+            ],
+            Type::Unit,
+        );
+        Ok(Some(ResolvedAssignOp {
+            function: cand.function,
+            type_args,
+            constraints,
+            call_signature,
+        }))
+    }
+
+    pub(super) fn has_operator_for_assign_help(
+        &self,
+        op: BinaryOp,
+        target_ty: &Type,
+        rhs_ty: &Type,
+        inference: &mut Inference,
+        types: &TypeContext<'_>,
+    ) -> bool {
+        let Some(&arith_class) = self.names.get(binary_class(op)) else {
+            return false;
+        };
+        let t_res = inference.resolve(target_ty);
+        let r_res = inference.resolve(rhs_ty);
+        let actual = Type::Tuple(vec![t_res.clone(), r_res, t_res]);
+        let was_quiet = inference.quiet;
+        inference.quiet = true;
+        let found = self.operator_instances.iter().any(|cand| {
+            if cand.class != arith_class {
+                return false;
+            }
+            let Some(ref cand_r) = cand.right else {
+                return false;
+            };
+            let subs: BTreeMap<String, Type> = cand
+                .variables
+                .iter()
+                .map(|v| (v.clone(), inference.fresh()))
+                .collect();
+            let triple = Type::Tuple(vec![
+                substitute(&cand.left, &subs),
+                substitute(cand_r, &subs),
+                substitute(&cand.output, &subs),
+            ]);
+            inference.unifies(&actual, &triple, types, |_| true)
+        });
+        inference.quiet = was_quiet;
+        found
+    }
+
     /// Heads of the `Drop` instances: the records and unions with a user drop (B07).
     pub(super) fn drop_heads(&self) -> impl Iterator<Item = &Type> {
         let drop = self.names["Drop"];
@@ -5020,6 +6092,21 @@ impl Classes {
         if self.intrinsic(class, ty, types) || self.structural(class, ty) {
             return true;
         }
+        if matches!(
+            self.declarations[class].name.as_str(),
+            "Copy" | "Capture" | "Send" | "Sync"
+        ) {
+            let optimistic = map_type(ty, &mut |part| {
+                if is_unknown(part) {
+                    Type::I64
+                } else {
+                    part.clone()
+                }
+            });
+            if self.intrinsic(class, &optimistic, types) {
+                return true;
+            }
+        }
         let mut inf = Inference::quiet();
         let mut ty_vars = BTreeMap::new();
         let mut infer_vars = BTreeMap::new();
@@ -5375,12 +6462,35 @@ fn validate_format_instance(
     }
 }
 
+pub(super) fn assign_class_info(name: &str) -> Option<(BinaryOp, &'static str)> {
+    match name {
+        "AddAssign" => Some((BinaryOp::Add, "add_assign")),
+        "SubAssign" => Some((BinaryOp::Subtract, "sub_assign")),
+        "MulAssign" => Some((BinaryOp::Multiply, "mul_assign")),
+        "DivAssign" => Some((BinaryOp::Divide, "div_assign")),
+        "RemAssign" => Some((BinaryOp::Remainder, "rem_assign")),
+        _ => None,
+    }
+}
+
+pub(super) fn assign_op_class(op: BinaryOp) -> Option<&'static str> {
+    match op {
+        BinaryOp::Add => Some("AddAssign"),
+        BinaryOp::Subtract => Some("SubAssign"),
+        BinaryOp::Multiply => Some("MulAssign"),
+        BinaryOp::Divide => Some("DivAssign"),
+        BinaryOp::Remainder => Some("RemAssign"),
+        _ => None,
+    }
+}
+
 /// A37 (D4): header argument indices that participate in dispatch and the orphan rule, shared
-/// across `Index`/`IndexMut`, 1-argument arithmetic, and future NC19/NC20 classes.
+/// across `Index`/`IndexMut`, 1-argument arithmetic, and NC19/NC20 classes.
 pub(super) fn dispatch_positions(class_name: &str, arity: usize) -> &'static [usize] {
     match (class_name, arity) {
         ("Index" | "IndexMut", 3) => &[0, 1],
         ("Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow", 3) => &[0, 1],
+        ("AddAssign" | "SubAssign" | "MulAssign" | "DivAssign" | "RemAssign", 2) => &[0, 1],
         ("Neg", 2) => &[0],
         ("Add" | "Sub" | "Mul" | "Div" | "Rem" | "Pow" | "Neg", 1) => &[0],
         _ => &[],
@@ -5421,6 +6531,10 @@ fn validate_orphan_instance(
     let header_text = format!("{class_name}<{}>", args.join(", "));
     let message = if matches!(class_name, "Index" | "IndexMut") {
         format!("{header_text} needs a type declared in this program as its self or key type")
+    } else if assign_class_info(class_name).is_some() {
+        format!(
+            "{header_text} needs a type declared in this program as its target or right-hand type"
+        )
     } else if header.len() == 3 {
         format!(
             "{header_text} needs a type declared in this program as its left or right operand type"
@@ -5556,6 +6670,193 @@ fn operator_instance_function(
         constraints,
         body: definition.body,
         contracts: Vec::new(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn index_borrow_mut_instance_function(
+    self_ty: &Type,
+    key_ty: &Type,
+    output_ty: &Type,
+    definition: &Definition,
+    name: String,
+    constraints: Vec<ConstraintExpr>,
+    types: &TypeContext<'_>,
+) -> Result<FunctionDecl, Diagnostic> {
+    let pure = definition.pure;
+    let definition = crate::parser::normalize_definition(definition.clone(), pure, 2)?;
+    if definition.parameters.len() != 2 {
+        return Err(Diagnostic::of(
+            DiagnosticKind::InstanceMethodParameterCount,
+            format!("method '{}' expects 2 parameters", definition.name.text),
+            definition.name.span,
+        ));
+    }
+    let span = definition.name.span;
+    let region_ident = Ident {
+        text: "r".into(),
+        span,
+        provenance: Provenance::Generated,
+    };
+    let with_region = |inner: TypeExpr, r: &Ident| TypeExpr {
+        span: inner.span,
+        kind: TypeExprKind::Regions(Box::new(inner), vec![r.clone()].into_boxed_slice()),
+    };
+    let self_has_region = type_has_single_region(self_ty, types);
+    let needs_region = output_needs_region(output_ty, types) || self_has_region;
+    let regions = if needs_region {
+        vec![region_ident.clone()]
+    } else {
+        Vec::new()
+    };
+
+    let key_param = {
+        let (pname, pmut) = &definition.parameters[0];
+        let inner = type_expression(key_ty, types, pname.span);
+        Parameter {
+            name: pname.clone(),
+            mutable: *pmut,
+            ty: TypeExpr {
+                span: pname.span,
+                kind: TypeExprKind::Reference(Box::new(inner), false),
+            },
+            json: None,
+        }
+    };
+
+    let (sname, smut) = &definition.parameters[1];
+    let mut self_inner = type_expression(self_ty, types, sname.span);
+    if self_has_region {
+        self_inner = with_region(self_inner, &region_ident);
+    }
+    let mut self_param_ty = TypeExpr {
+        span: sname.span,
+        kind: TypeExprKind::Reference(Box::new(self_inner), true),
+    };
+    if needs_region {
+        self_param_ty = with_region(self_param_ty, &region_ident);
+    }
+    let self_param = Parameter {
+        name: sname.clone(),
+        mutable: *smut,
+        ty: self_param_ty,
+        json: None,
+    };
+    let mut res_ty = type_expression(output_ty, types, span);
+    if output_needs_region(output_ty, types) {
+        res_ty = with_region(res_ty, &region_ident);
+    }
+
+    Ok(FunctionDecl {
+        doc: None,
+        regions,
+        recursion: definition.recursion,
+        name: Ident {
+            text: name,
+            span,
+            provenance: Provenance::Generated,
+        },
+        visibility: Visibility::Public,
+        exported: false,
+        constant: false,
+        pure,
+        parameters: vec![key_param, self_param],
+        result: res_ty,
+        constraints,
+        contracts: Default::default(),
+        body: definition.body,
+    })
+}
+
+fn assign_instance_function(
+    target_ty: &Type,
+    rhs_ty: &Type,
+    definition: &Definition,
+    name: String,
+    constraints: Vec<ConstraintExpr>,
+    types: &TypeContext<'_>,
+) -> Result<FunctionDecl, Diagnostic> {
+    let pure = definition.pure;
+    let definition = crate::parser::normalize_definition(definition.clone(), pure, 2)?;
+    if definition.parameters.len() != 2 {
+        return Err(Diagnostic::of(
+            DiagnosticKind::InstanceMethodParameterCount,
+            format!("method '{}' expects 2 parameters", definition.name.text),
+            definition.name.span,
+        ));
+    }
+    let span = definition.name.span;
+    let with_region = |inner: TypeExpr, r: &Ident| TypeExpr {
+        span: inner.span,
+        kind: TypeExprKind::Regions(Box::new(inner), vec![r.clone()].into_boxed_slice()),
+    };
+    let mut regions = Vec::new();
+    let rhs_has_region = type_has_single_region(rhs_ty, types);
+    let target_has_region = type_has_single_region(target_ty, types);
+
+    let (rname, rmut) = &definition.parameters[0];
+    let mut rhs_inner = type_expression(rhs_ty, types, rname.span);
+    if rhs_has_region {
+        let s_ident = Ident {
+            text: "s".into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        rhs_inner = with_region(rhs_inner, &s_ident);
+        regions.push(s_ident);
+    }
+    let rhs_param = Parameter {
+        name: rname.clone(),
+        mutable: *rmut,
+        ty: TypeExpr {
+            span: rname.span,
+            kind: TypeExprKind::Reference(Box::new(rhs_inner), false),
+        },
+        json: None,
+    };
+
+    let (tname, tmut) = &definition.parameters[1];
+    let mut target_inner = type_expression(target_ty, types, tname.span);
+    if target_has_region {
+        let r_ident = Ident {
+            text: "r".into(),
+            span,
+            provenance: Provenance::Generated,
+        };
+        target_inner = with_region(target_inner, &r_ident);
+        regions.push(r_ident);
+    }
+    let target_param = Parameter {
+        name: tname.clone(),
+        mutable: *tmut,
+        ty: TypeExpr {
+            span: tname.span,
+            kind: TypeExprKind::Reference(Box::new(target_inner), true),
+        },
+        json: None,
+    };
+
+    Ok(FunctionDecl {
+        doc: None,
+        regions,
+        recursion: definition.recursion,
+        name: Ident {
+            text: name,
+            span,
+            provenance: Provenance::Generated,
+        },
+        visibility: Visibility::Public,
+        exported: false,
+        constant: false,
+        pure,
+        parameters: vec![rhs_param, target_param],
+        result: TypeExpr {
+            span,
+            kind: TypeExprKind::Named("unit".into()),
+        },
+        constraints,
+        contracts: Default::default(),
+        body: definition.body,
     })
 }
 
@@ -6828,6 +8129,51 @@ impl Checker<'_> {
                 ));
             }
         }
+        for (ty, op, span, name) in &self.undecided_compound_targets {
+            let resolved = self.inference.resolve(ty);
+            if !resolved.contains_error() && !Checker::is_any_builtin_type(&resolved) {
+                let op_str = op.compound_symbol();
+                let target_desc = match name {
+                    Some(n) => format!("'{n}'"),
+                    None => "its target".to_owned(),
+                };
+                return Err(Diagnostic::of(
+                    DiagnosticKind::CompoundAssignUnsupportedTarget,
+                    format!(
+                        "'{op_str}' must know the type of its target where it is checked; annotate {target_desc}"
+                    ),
+                    *span,
+                ));
+            }
+        }
+        for (elem_ty, rhs_ty, op, op_span) in std::mem::take(&mut self.undecided_compound_elements)
+        {
+            let resolved = self.inference.resolve(&elem_ty);
+            if !resolved.contains_error()
+                && !Checker::is_compound_builtin_arithmetic_type(&resolved)
+            {
+                let op_str = op.compound_symbol();
+                let shown = resolved.display_with(self.names);
+                let mut diag = Diagnostic::of(
+                    DiagnosticKind::CompoundAssignUnsupportedTarget,
+                    format!("'{op_str}' on an element of type {shown} is not available"),
+                    op_span,
+                );
+                if self.classes.has_operator_for_assign_help(
+                    op,
+                    &resolved,
+                    &rhs_ty,
+                    &mut self.inference,
+                    &self.types,
+                ) {
+                    diag = diag.with_help(format!(
+                        "write 't[k] = t[k] {} e'",
+                        Checker::binary_op_symbol(op)
+                    ));
+                }
+                return Err(diag);
+            }
+        }
         expression_types(body, &mut |ty, span| {
             let resolved = self.inference.resolve(ty);
             let mut ambiguous = false;
@@ -7663,6 +9009,7 @@ pub(super) fn specialize(
         link_libraries: module.link_libraries,
         link_frameworks: module.link_frameworks,
         weak_symbols: module.weak_symbols,
+        compound_assigns: module.compound_assigns,
     })
 }
 
