@@ -616,16 +616,26 @@ impl FunctionEmitter<'_, '_> {
                     self.instruction("call void @SetLastError(i32 0)");
                 }
                 crate::target::LastErrorAccess::Errno(sym) => {
+                    let ret_ty = self
+                        .module
+                        .extern_abis
+                        .get(sym)
+                        .map_or("ptr", |sig| sig.result.llvm());
                     self.intrinsics.insert(extern_declare(
                         self.module,
                         false,
                         "",
                         "",
                         sym,
-                        "ptr",
+                        ret_ty,
                         &[],
                     ));
-                    let ptr_val = self.value(format!("call ptr @{sym}()"));
+                    let ptr_val = if ret_ty == "ptr" {
+                        self.value(format!("call ptr @{sym}()"))
+                    } else {
+                        let raw = self.value(format!("call {ret_ty} @{sym}()"));
+                        self.value(format!("inttoptr {ret_ty} {raw} to ptr"))
+                    };
                     self.instruction(format!("store i32 0, ptr {ptr_val}"));
                     errno_ptr = Some(ptr_val);
                 }

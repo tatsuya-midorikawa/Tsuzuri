@@ -940,6 +940,8 @@ pub(super) struct Classes {
     /// with anything, is under `None`: `matching_instance` tries those for every type.
     lookup: BTreeMap<(usize, Option<HeadKey>), Vec<usize>>,
     function_reads: BTreeMap<String, Box<[bool]>>,
+    /// Function IDs of handwritten class default methods and non-derived instance methods (NS05).
+    user_written_methods: BTreeSet<usize>,
     /// The synthesized declarations behind anonymous unions (A24): a union of one of them has the
     /// structural instances of `structural` (A26).
     anonymous: BTreeSet<usize>,
@@ -1272,6 +1274,10 @@ impl Classes {
             == Some(&true)
     }
 
+    pub(super) fn has_user_written_body(&self, function: usize) -> bool {
+        self.user_written_methods.contains(&function)
+    }
+
     pub fn collect(
         modules: &[ModuleInput<'_>],
         names: &Names,
@@ -1295,6 +1301,7 @@ impl Classes {
             oei_lro_heads: BTreeMap::new(),
             lookup: BTreeMap::new(),
             function_reads: BTreeMap::new(),
+            user_written_methods: BTreeSet::new(),
             anonymous: names.anonymous_unions.iter().copied().collect(),
         };
         for name in BUILTIN_CLASSES {
@@ -2294,6 +2301,9 @@ impl Classes {
                             conventions.reads.clone(),
                         );
                     }
+                    if definition.name.provenance == Provenance::User {
+                        self.user_written_methods.insert(function);
+                    }
                     method.default = Some(function);
                 }
             }
@@ -2587,6 +2597,9 @@ impl Classes {
                                 types,
                             )?,
                         ));
+                        if !is_derived && definition.name.provenance == Provenance::User {
+                            self.user_written_methods.insert(function_id);
+                        }
                         if let Some(conventions) = class.conventions.get(method_index) {
                             self.function_reads.insert(
                                 functions[function_id].1.name.text.clone(),
@@ -2941,6 +2954,9 @@ impl Classes {
             }
         };
         let sig_vars = variables(&sig_for_vars.as_type());
+        if definition.name.provenance == Provenance::User {
+            self.user_written_methods.insert(function_id);
+        }
         functions.push((module.into(), fn_decl));
 
         let borrows_base = !mutable && output_ty.carries_loans(types);
@@ -3339,6 +3355,9 @@ impl Classes {
             result: Type::Unit,
         };
         let sig_vars = variables(&sig_for_vars.as_type());
+        if definition.name.provenance == Provenance::User {
+            self.user_written_methods.insert(function_id);
+        }
         functions.push((module.into(), fn_decl));
 
         let idx = self.assign_instances.len();
@@ -3711,6 +3730,9 @@ impl Classes {
             result: output.clone(),
         };
         let sig_vars = variables(&sig_for_vars.as_type());
+        if definition.name.provenance == Provenance::User {
+            self.user_written_methods.insert(function_id);
+        }
         functions.push((module.into(), fn_decl));
 
         self.insert_operator_template(OperatorInstanceTemplate {

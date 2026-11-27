@@ -1175,9 +1175,7 @@ pub(super) fn collect_unchecked_unwraps(
         if function.origin.module != ModuleOrigin::User
             || function.origin.test.is_some()
             || function.origin.bench.is_some()
-            || (function.origin.provenance != Provenance::User
-                && Some(id) != entry
-                && !constants.contains(&id))
+            || (!function.origin.user_written_body && Some(id) != entry && !constants.contains(&id))
         {
             continue;
         }

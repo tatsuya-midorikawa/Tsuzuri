@@ -4998,6 +4998,9 @@ pub struct FunctionOrigin {
     pub(crate) index_method: Option<IndexMethodKind>,
     /// A39: whether the module that wrote this function uses edition 2027+ parameter/field-borrow rules.
     pub(crate) field_borrows: bool,
+    /// NS05: whether this function's body was handwritten by a user (including handwritten
+    /// `instance` methods and `class` default methods, excluding `deriving` and `dyn` vtables).
+    pub(crate) user_written_body: bool,
 }
 
 /// A set of effect attributes (`crate::syntax::EffectKind`), one bit each (A20).
@@ -5041,6 +5044,7 @@ impl FunctionOrigin {
             trusted: None,
             index_method: None,
             field_borrows: false,
+            user_written_body: true,
         }
     }
 
@@ -10428,6 +10432,7 @@ fn check_modules_collect(
                     result: crate::abi::CType::I32,
                 },
                 "i32 ()",
+                "a 32-bit integer",
             ),
             (
                 "SetLastError",
@@ -10436,14 +10441,33 @@ fn check_modules_collect(
                     result: crate::abi::CType::Void,
                 },
                 "void (i32)",
+                "a 32-bit integer",
+            ),
+            (
+                "__errno_location",
+                crate::abi::CSignature {
+                    parameters: Vec::new(),
+                    result: crate::abi::CType::Ptr,
+                },
+                "ptr ()",
+                "a pointer or 64-bit integer",
+            ),
+            (
+                "__error",
+                crate::abi::CSignature {
+                    parameters: Vec::new(),
+                    result: crate::abi::CType::Ptr,
+                },
+                "ptr ()",
+                "a pointer or 64-bit integer",
             ),
         ];
-        for (symbol, expected, c_sig) in helpers {
+        for (symbol, expected, c_sig, kind_hint) in helpers {
             if let Some((_, span)) = data_symbols.get(symbol) {
                 diagnostics.push(Diagnostic::of(
                     DiagnosticKind::LastErrorHelperConflict,
                     format!(
-                        "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with a 32-bit integer"
+                        "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with {kind_hint}"
                     ),
                     *span,
                 ));
@@ -10454,7 +10478,7 @@ fn check_modules_collect(
                     diagnostics.push(Diagnostic::of(
                         DiagnosticKind::LastErrorHelperConflict,
                         format!(
-                            "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with a 32-bit integer"
+                            "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with {kind_hint}"
                         ),
                         *span,
                     ));
@@ -10725,6 +10749,8 @@ fn check_modules_collect(
                         pure_values: checker.pure_values,
                         index_method: classes.index_method(id),
                         field_borrows: checker.read_conventions,
+                        user_written_body: function.name.provenance == Provenance::User
+                            || classes.has_user_written_body(id),
                         ..FunctionOrigin::source(names.origin(module))
                     },
                     name: function.name.text.clone(),

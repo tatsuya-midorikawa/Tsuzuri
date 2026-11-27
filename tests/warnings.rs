@@ -856,3 +856,79 @@ def run_all :: unit -> i64 = \\() ->
 
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn warn_unwrap_checks_handwritten_instance_methods_and_class_defaults_but_skips_deriving() {
+    use std::process::Command;
+
+    let root = package_root(
+        "warn-unwrap-methods",
+        &[
+            (
+                "app/Tsuzuri.toml",
+                "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2027\"\n",
+            ),
+            (
+                "app/Extractor.tt",
+                "\
+class Extractor<'a> {
+    def extract :: ref 'a -> i64
+    def extract_default :: ref 'a -> i64
+    fn extract_default _x = Maybe.get (Maybe.Some 7)
+}
+",
+            ),
+            (
+                "app/Main.tz",
+                "\
+record Boxed { v: Maybe<i64> } deriving (Encode, Decode)
+record Plain { n: i64 } deriving (Eq, Display)
+
+instance Extractor.Extractor<Boxed> {
+    fn extract b = Maybe.get b.v
+}
+
+def main :: unit -> i32 = \\() ->
+    let b = Boxed { v: Maybe.Some 5 }
+    let _enc = Json.encode b
+    (Extractor.extract (ref b) + Extractor.extract_default (ref b) - 12) as i32
+",
+            ),
+        ],
+    );
+    let app = root.join("app");
+    let cache = root.join("cache");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--json"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let items: Vec<serde_json::Value> = String::from_utf8(out.stderr)
+        .unwrap()
+        .lines()
+        .filter(|line| line.contains("\"W1011\""))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        items.len(),
+        2,
+        "expected exactly 2 W1011 warnings (class default + handwritten instance method, 0 from deriving): {items:#?}"
+    );
+    let denied = Command::new(env!("CARGO_BIN_EXE_tsuzuri"))
+        .arg("check")
+        .arg(&app)
+        .args(["--warn", "unwrap", "--deny-warnings"])
+        .env("TSUZURI_CACHE_DIR", &cache)
+        .output()
+        .unwrap();
+    assert_eq!(denied.status.code(), Some(1));
+    std::fs::remove_dir_all(root).unwrap();
+}

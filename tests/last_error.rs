@@ -230,6 +230,60 @@ export def run :: i64 -> i32u = \h ->
         .count();
     assert_eq!(gle_declares, 1, "expected 1 GetLastError declare:\n{ir}");
     assert_eq!(sle_declares, 1, "expected 1 SetLastError declare:\n{ir}");
+
+    // POSIX / Apple errno helpers (`__errno_location` and `__error`):
+    // user declarations starting with `__` are rejected with `ReservedExternSymbol` (`E1008`),
+    // and if `module.extern_abis` carries an `i64 ()` entry for the helper symbol, `llvm::emit`
+    // reconciles the helper call with `inttoptr` and emits a single `declare`.
+    for reserved_errno in [
+        "extern \"__errno_location\" def bad :: unit -> i64\n@last_error\nextern \"close\" def c :: i32 -> i32 * i32u\n",
+        "extern \"__error\" def bad :: unit -> i64\n@last_error\nextern \"close\" def c :: i32 -> i32 * i32u\n",
+    ] {
+        expect_error(
+            reserved_errno,
+            "E1008",
+            DiagnosticKind::ReservedExternSymbol,
+        );
+    }
+
+    let ok_errno = r#"
+@last_error
+extern "close" def close_fd :: i32 -> i32 * i32u
+
+export def run :: i32 -> i64 = \fd ->
+    let (_, err) = close_fd fd
+    err as i64
+"#;
+    let mut errno_mod = analyze(ok_errno).expect("analyze close_fd");
+    for sym in ["__errno_location", "__error"] {
+        errno_mod.extern_abis.insert(
+            sym.to_owned(),
+            tsuzuri::abi::CSignature {
+                parameters: Vec::new(),
+                result: tsuzuri::abi::CType::I64,
+            },
+        );
+    }
+    for (triple, sym) in [
+        (Triple::X86_64LinuxGnu, "__errno_location"),
+        (Triple::Aarch64AppleDarwin, "__error"),
+    ] {
+        let _guard = PlatformScope::enter(Platform::new(Some(triple)));
+        let ir = llvm::emit(&errno_mod, llvm::Entry::Library).expect("emit POSIX IR");
+        let decls: Vec<&str> = ir
+            .lines()
+            .filter(|l| l.starts_with("declare ") && l.contains(&format!("@{sym}(")))
+            .collect();
+        assert_eq!(
+            decls,
+            vec![format!("declare i64 @{sym}()")],
+            "expected single merged i64 declare for {sym}:\n{ir}"
+        );
+        assert!(
+            ir.contains("inttoptr i64 "),
+            "expected inttoptr cast for {sym}:\n{ir}"
+        );
+    }
 }
 
 fn function_lines<'a>(ir: &'a str, needle: &str) -> Vec<&'a str> {
