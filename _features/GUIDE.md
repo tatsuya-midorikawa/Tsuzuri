@@ -2122,7 +2122,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
 ### D-67 Tsuzuri だけで macOS のデスクトップアプリを書く（M01〜M22）
 
-- **状態**: **承認済み（2026-11-26）**。7 つの分岐は、すべて推奨の案（下の太字）で決まった。各チケットの D-53・D-55 の登録と、分岐ではない「要承認」の決定事項は、各チケットの「承認」の行のとおり、まだ決まっていない。承認が記録されるまで、該当する Phase に着手しない（GUIDE §0 の 1）。承認の要らない M08・M21・M22 は、すぐに進めてよい。選ばれなかった案でだけ要るチケットは M18 だけで、状態を `blocked` にした（`scripts/repo-kb` が読む状態は `todo`・`doing`・`done`・`blocked` で、`closed` は使わない）。見出しは変えない（チケットからのリンクの anchor を保つ）。
+- **状態**: **承認済み（2026-11-26）**。M01・M02 は 2026-11-27 に実装した（下の「委任による決定（2026-11-27）」）。7 つの分岐は、すべて推奨の案（下の太字）で決まった。各チケットの D-53・D-55 の登録と、分岐ではない「要承認」の決定事項は、各チケットの「承認」の行のとおり、まだ決まっていない。承認が記録されるまで、該当する Phase に着手しない（GUIDE §0 の 1）。承認の要らない M08・M21・M22 は、すぐに進めてよい。選ばれなかった案でだけ要るチケットは M18 だけで、状態を `blocked` にした（`scripts/repo-kb` が読む状態は `todo`・`doing`・`done`・`blocked` で、`closed` は使わない）。見出しは変えない（チケットからのリンクの anchor を保つ）。
 - **経緯**: 2026-11-26、利用者の依頼「_features にあるチケットをすべて実装できたと仮定した場合、その状況で Tsuzuri を使った macOS のデスクトップ アプリ開発はできるか検討し、その結果を報告して」に対して、6 つの観点の調査と検証を行い、arm64 の Mac で実測した（HEAD `804b7970`）。結論は「条件付きでできる」だった。今でも C を書かずに AppKit のアプリが動く（NSApplication、実行時に作る delegate、NSWindow、`drawRect:`、target-action、NSMenu、NSTimer、メインスレッドへの dispatch、手で組んだ `.app` と hardened runtime）。ただし、ABI の知識に頼る回避策を積み重ねた結果である。
   - `objc_msgSend` を整数 9 個と double 4 個の上位形にそろえ、空きを 0 で埋める（W14 の `E1008` を避けるため）。
   - f64 と構造体の結果を `method_invoke` か `NSInvocation` で受け、NSRect を f64 4 個に分ける。
@@ -2215,6 +2215,15 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
   - 「現状」の行番号は着手時に `grep` で確かめ直す。調査の作業ディレクトリ（`target/scratch/macos-probe/` など）は残っていないので、再現に要るソースの断片はチケットの「現状」に載せる。
 - **ほかの判断は各チケットで行う**: 各チケットの決定事項で「要承認」とした項目がそれにあたる。主なものは、`extern class` の既定のスレッドの性質（M01 の D1。推奨は W19 の `local`）、メンバーの構文（M02 の D1〜D4）、クラスの登録の方式（M03 の D3。推奨は実行時の API とロード時の constructor）、`ObjC.call_block` のハンドルを先に置く D-59 の例外（M04 の D5）、`ZUtf8String` の名前（M06 の D2）、生成した宣言の `@trusted`（M07 の D6。W27 と共有）、macOS の GPU のランタイムの探索に bundle の `Contents/Frameworks` を足すこと（M12 の D1）、生成コードの `ssp`（M16 の D3）、弱い import の検査の形（M17 の D3）、物体の出力引数の所有の規則（M23 の D2。pass-by-writeback）と弱い参照の場所（M23 の D8）、tzroutine の autorelease pool をランタイムが自動で回すか（M10 の D3。Phase 2。承認しなければ、`ObjC.with_autorelease_pool` を書き忘れた tzroutine は今と同じく漏れる）。
 - **1 チケット 1 PR**。XL と大きい L は Phase ごとに 1 PR とし、人間が求めない限り Phase 1 だけを実装する。推奨順と並行できる組は README の「進め方」にある。
+- **委任による決定（2026-11-27）**: 利用者は M01・M02・W36 の実装を依頼し、「実装完了までに複数フェーズある場合には、すべてのフェーズを完了させること」「実装を進めるうえで何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」と指示した。この委任に基づき、次を決めた（どれも各チケットの推奨の案。チケットの状態は「承認済み（D-67 の委任で決定、2026-11-27）」と書く）。3 つのチケットは、利用者の指示で 1 つの PR にまとめた。
+
+  | チケット | 決定 | 内容 |
+  | --- | --- | --- |
+  | M01 | D1・D3・D9・D10 | 既定のスレッドの性質は W19 の `local`（`sync` で Send・Sync）。属性は `@returns_retained`・`@returns_not_retained`。D-55 に `extern` の後の `class`、文脈キーワード `sync`、組み込みのモジュール `ObjC`（`RESERVED_MODULES` は 80 から 81）、型 `ObjC.Object`・`ObjC.Class`・`ObjC.Sel` と関数 `ObjC.retain`・`upcast`・`upcast_owned`・`downcast`・`sel` を登録した。`abi_apple_only` は M17 の登録を使う |
+  | M02 | D1〜D4・D14、Phase 2 | メンバーの構文、クラスメソッドの印 `class`、`Self`、`extern category`（文脈キーワード `category`）、`ObjC.literal` を D-55 に登録した。Phase 2（`@c_layout` の値渡しと値返し）は W36 の分類を使う |
+  | W36 | D1、停止条件 S1 は A | `extern def` の `ref` のない `@c_layout` record は C の値渡し・値返しにする。W21 が出荷したポインター渡しからの互換を破る変更で、`docs/stability.md` に記録した。D2（W21 での綴りの予約）は W21 が出荷済みなので当たらない。Phase 2（System V x86-64 と AAPCS64）は分岐 4 のとおり実装した |
+
+  実装で設計から外した点（各チケットの「実装と検証」に理由がある）: 送信は新しい式の種類 `TypedExprKind::ObjcSend` でなく、呼び出し地点で下がる extern 関数（`HostImport::objc`）で表した。Objective-C に到達する E2E のプログラムは `tests/fixtures/` でなく `tests/objc/` に置いた。後続のチケット（M03・M05・M23 など）は、`HostImport::objc`（`objc::ObjcSend`）と `FunctionEmitter::host_call` を送信の 1 か所として読む。
 
 ## 10. 完了の定義（全チケット共通）
 

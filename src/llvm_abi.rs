@@ -572,15 +572,26 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         TypedExprKind::HostCall(import, _) => Some(import.as_ref()),
         _ => None,
     };
+    // W36: an `extern def` passes and returns a `@c_layout` record without `ref` as the C struct
+    // itself. An `export def` keeps the pointer forms for every record.
+    let by_value = |ty: &Type| {
+        import.is_some()
+            && crate::abi::extern_record_passing(ty, &types)
+                == Some(crate::abi::RecordPassing::ByValue)
+    };
     let mut parameters = Vec::new();
     let result = function_c_result(function);
     if let Some(buffer) = Buffer::of(result) {
         parameters.push(format!("tsuzuri_{}_buffer *out", buffer.name()));
-    } else if matches!(result, Type::Record(..)) {
+    } else if matches!(result, Type::Record(..)) && !by_value(result) {
         parameters.push(format!("{} *out", record_name(result, module)));
     }
     for (index, ty) in function.signature.parameters.iter().enumerate() {
         if *ty == Type::Unit {
+            continue;
+        }
+        if by_value(ty) {
+            parameters.push(format!("{} arg{index}", record_name(ty, module)));
             continue;
         }
         if let Type::Function(inputs, output) = match ty {

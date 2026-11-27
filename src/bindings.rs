@@ -124,7 +124,11 @@ pub(crate) fn validate_wasm_imports(
         .map(|(id, _)| id)
         .collect();
     let reachable = crate::llvm::reachable_functions(module, Some(&roots), false);
-    crate::llvm::validate_wasm_externs(module, &reachable)
+    crate::llvm::validate_wasm_externs(module, &reachable)?;
+    // M01: the build of the module refuses a reached use of Objective-C, so the glue would load nothing.
+    crate::llvm::validate_objc_target(module, &reachable, true)?;
+    // W36: the glue would describe a pointer for a struct that the build refuses to pass by value.
+    crate::llvm::byvalue::validate(module, &reachable, true)
 }
 
 /// The host imports that the exports and the entry reach, by WASM import name.

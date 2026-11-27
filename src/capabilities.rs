@@ -407,6 +407,10 @@ pub struct ExternUse {
     pub weak: bool,
     /// The references from functions that are not extern, by source and start, without repeats.
     pub uses: Vec<Span>,
+    /// M01, M02: an `extern class` or `extern category` (`function` is `usize::MAX`): `name` is
+    /// the class or category and `symbol` the class object `OBJC_CLASS_$_<runtime name>`. `None`
+    /// for an extern function.
+    pub objc: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -609,6 +613,30 @@ pub fn analyze_with_limits(
     };
     let mut edges: Vec<Vec<(usize, Span)>> = vec![Vec::new(); count];
     let mut builtins: Vec<Vec<(&'static str, Span)>> = vec![Vec::new(); count];
+    // M01: the uses of Objective-C classes in each function: the class, the place, and the
+    // function of `ObjC` that calls the runtime there (`None` for a use without a call).
+    let mut objc_uses: Vec<Vec<(String, Span, Option<&'static str>)>> = vec![Vec::new(); count];
+    let objc_class = |ty: &crate::check::Type| -> Option<String> {
+        use crate::check::Type;
+        let types = module.types();
+        let mut ty = ty;
+        while let Type::Reference(inner, _) = ty {
+            ty = inner;
+        }
+        let ty = crate::abi::std_maybe_payload(ty, &types).unwrap_or(ty);
+        let ty = match ty {
+            Type::Reference(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        match ty {
+            Type::Handle(name, kind)
+                if kind.objc() && module.objc.classes.contains_key(name.as_ref()) =>
+            {
+                Some(name.to_string())
+            }
+            _ => None,
+        }
+    };
     let mut nodes = 0usize;
     for (id, function) in functions.iter().enumerate() {
         let mut stack = vec![&function.body];
@@ -628,7 +656,30 @@ pub fn analyze_with_limits(
                 | TypedExprKind::GenericFunction(target, _)
                 | TypedExprKind::Closure(target, _) => edges[id].push((*target, expression.span)),
                 TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
-                    builtins[id].push((instance.builtin.name(), expression.span))
+                    builtins[id].push((instance.builtin.name(), expression.span));
+                    if instance.builtin.is_objc() {
+                        let calls = matches!(
+                            instance.builtin,
+                            crate::check::Builtin::ObjcRetain | crate::check::Builtin::ObjcDowncast
+                        )
+                        .then_some(instance.builtin.name());
+                        let mut named = false;
+                        for ty in &instance.types {
+                            if let Some(class) = objc_class(ty) {
+                                objc_uses[id].push((class, expression.span, calls));
+                                named = true;
+                            }
+                        }
+                        // `ObjC.Object` is no declared class and has no audit row, but the call
+                        // reaches the runtime all the same: the site stands under its name.
+                        if !named && calls.is_some() {
+                            objc_uses[id].push((
+                                crate::syntax::OBJC_OBJECT.to_owned(),
+                                expression.span,
+                                calls,
+                            ));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -659,6 +710,24 @@ pub fn analyze_with_limits(
             }
         }
     }
+    // M01: the Objective-C uses of a wrapper belong to each function that names it, at the
+    // place of that reference, as its builtins do.
+    let objc_uses: Vec<Vec<(String, Span, Option<&'static str>)>> = (0..count)
+        .map(|id| {
+            if wrapper(id) {
+                return Vec::new();
+            }
+            let mut uses = objc_uses[id].clone();
+            for &(target, span) in edges[id].iter().filter(|(target, _)| wrapper(*target)) {
+                uses.extend(
+                    objc_uses[target]
+                        .iter()
+                        .map(|(class, _, calls)| (class.clone(), span, *calls)),
+                );
+            }
+            uses
+        })
+        .collect();
     for list in &mut edges {
         list.retain(|(target, _)| !wrapper(*target));
     }
@@ -725,6 +794,8 @@ pub fn analyze_with_limits(
     let mut sites: BTreeMap<(Option<PackageId>, usize, usize, usize, Capability), Site> =
         BTreeMap::new();
     let mut externs: BTreeMap<usize, BTreeSet<(usize, usize, usize)>> = BTreeMap::new();
+    // M01: the uses of each Objective-C class, as `externs` holds those of each extern function.
+    let mut class_uses: BTreeMap<String, BTreeSet<(usize, usize, usize)>> = BTreeMap::new();
     for id in (0..count).filter(|&id| !is_std(id) && !is_extern(id)) {
         let Some(source) = source_of(id) else {
             continue;
@@ -746,8 +817,72 @@ pub fn analyze_with_limits(
             );
             sites.entry(key).or_insert(site);
         };
+        for (class, span, calls) in &objc_uses[id] {
+            if module.objc.classes.contains_key(class) {
+                class_uses.entry(class.clone()).or_default().insert((
+                    span.source.unwrap_or(usize::MAX),
+                    span.start,
+                    span.end,
+                ));
+            }
+            // Retaining and the checked cast call the Objective-C runtime (M01 spec 6).
+            if let Some(callee) = calls {
+                add(Site {
+                    capability: Capability::Ffi,
+                    span: *span,
+                    callee: (*callee).to_owned(),
+                    function: function.clone(),
+                    scope,
+                    via: Vec::new(),
+                    source_span: module.objc.classes.get(class).map(|info| info.span),
+                    primitive: None,
+                });
+            }
+        }
         for &(target, span) in &edges[id] {
+            // M02: a message send is a use of the class or category that the call names, and of
+            // the base that declares an inherited member: the contract that a person confirms
+            // with `@trusted` is the declaring one, so its row must not read as unused. The
+            // function that stands for the send is no declaration of the program, so it has no
+            // row of its own.
+            if let TypedExprKind::HostCall(import, _) = &functions[target].body.kind
+                && let Some(send) = &import.objc
+            {
+                for used in [&send.owner, &send.declaring] {
+                    class_uses.entry(used.clone()).or_default().insert((
+                        span.source.unwrap_or(usize::MAX),
+                        span.start,
+                        span.end,
+                    ));
+                }
+                add(Site {
+                    capability: Capability::Ffi,
+                    span,
+                    callee: send.display.clone(),
+                    function: function.clone(),
+                    scope,
+                    via: Vec::new(),
+                    source_span: Some(functions[target].span),
+                    primitive: None,
+                });
+                continue;
+            }
             if is_extern(target) {
+                // M01: a call of an extern function that takes or returns a class uses it.
+                let signature = &functions[target].signature;
+                for ty in signature
+                    .parameters
+                    .iter()
+                    .chain(std::iter::once(&signature.result))
+                {
+                    if let Some(class) = objc_class(ty) {
+                        class_uses.entry(class).or_default().insert((
+                            span.source.unwrap_or(usize::MAX),
+                            span.start,
+                            span.end,
+                        ));
+                    }
+                }
                 externs.entry(target).or_default().insert((
                     span.source.unwrap_or(usize::MAX),
                     span.start,
@@ -909,6 +1044,9 @@ pub fn analyze_with_limits(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if import.objc.is_some() {
+            continue;
+        }
         let uses = externs
             .remove(&id)
             .unwrap_or_default()
@@ -935,6 +1073,75 @@ pub fn analyze_with_limits(
             framework: import.framework.clone(),
             weak: import.weak,
             uses,
+            objc: None,
+        });
+    }
+    // M01: one row for each `extern class`, with the uses of the class as a type argument of
+    // `ObjC.*` and in the signature of a called extern function. A drop is no use.
+    for (qualified, info) in &module.objc.classes {
+        let uses = class_uses
+            .remove(qualified)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(source, start, end)| Span {
+                start,
+                end,
+                source: (source != usize::MAX).then_some(source),
+            })
+            .collect();
+        extern_uses.push(ExternUse {
+            function: usize::MAX,
+            name: qualified.rsplit('.').next().unwrap_or(qualified).to_owned(),
+            symbol: crate::llvm::objc_class_symbol(&info.runtime_name),
+            view: None,
+            data: None,
+            package: info
+                .span
+                .source
+                .and_then(|source| sources.get(source))
+                .and_then(|source| source.package.clone()),
+            span: info.span,
+            trusted: info.trusted.then_some(0),
+            link: None,
+            framework: None,
+            weak: info.weak,
+            uses,
+            objc: Some("class"),
+        });
+    }
+    // M02: one row for each `extern category`, with the class object of the class it extends.
+    for (qualified, info) in &module.objc.categories {
+        let uses = class_uses
+            .remove(qualified)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(source, start, end)| Span {
+                start,
+                end,
+                source: (source != usize::MAX).then_some(source),
+            })
+            .collect();
+        let Some(runtime_name) = module.objc.runtime_name(&info.class) else {
+            continue;
+        };
+        extern_uses.push(ExternUse {
+            function: usize::MAX,
+            name: qualified.rsplit('.').next().unwrap_or(qualified).to_owned(),
+            symbol: crate::llvm::objc_class_symbol(runtime_name),
+            view: None,
+            data: None,
+            package: info
+                .span
+                .source
+                .and_then(|source| sources.get(source))
+                .and_then(|source| source.package.clone()),
+            span: info.span,
+            trusted: info.trusted.then_some(0),
+            link: None,
+            framework: None,
+            weak: false,
+            uses,
+            objc: Some("category"),
         });
     }
     extern_uses.sort_by(|left, right| {
@@ -1106,7 +1313,8 @@ pub fn untrusted_externs(analysis: &Analysis, root_only: bool) -> Vec<Diagnostic
             Diagnostic::of(
                 DiagnosticKind::UntrustedExtern,
                 format!(
-                    "extern function '{}' is used but not marked '@trusted'; review its contract and add '@trusted' above its declaration",
+                    "extern {} '{}' is used but not marked '@trusted'; review its contract and add '@trusted' above its declaration",
+                    extern_use.objc.unwrap_or("function"),
                     extern_use.name
                 ),
                 extern_use.span,

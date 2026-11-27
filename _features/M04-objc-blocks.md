@@ -5,7 +5,7 @@
 | ID | M04 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M01](M01-objc-class-types.md), ([M02](M02-objc-typed-message-send.md)), ([M03](M03-objc-classes-defined-in-tsuzuri.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（M02 はメンバーの引数、M03 は型の符号化器を共有） |
+| 依存 | [M01](_completed/M01-objc-class-types.md), ([M02](_completed/M02-objc-typed-message-send.md)), ([M03](M03-objc-classes-defined-in-tsuzuri.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（M02 はメンバーの引数、M03 は型の符号化器を共有） |
 | 後続 | [M14](M14-tls-http-packages.md)（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md), [M13](M13-desktop-os-services-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（Block は calloc・FnPtr の @c_layout・memcpy・dlsym で手作りし、解放もできない）」に当たる。HEAD `804b7970` で確認） |
@@ -60,7 +60,7 @@ Apple の API の多くは Block を取る。`dispatch_async` と `dispatch_afte
 
 ### 着手条件
 
-- [M01](M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、`abi_apple_only`、ObjC の型の位置の規則）。確認: `grep -nE "^\| M01 " _features/README.md`。M02 があればメンバーの引数の段、M03 があれば型の符号化器を共有する。
+- [M01](_completed/M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、`abi_apple_only`、ObjC の型の位置の規則）。確認: `grep -nE "^\| M01 " _features/README.md`。M02 があればメンバーの引数の段、M03 があれば型の符号化器を共有する。
 - D-67 の分岐 1 は X′ で承認済み（2026-11-26）。決定事項の D6（D-55 の登録）が承認済みであること。**承認が記録されるまで、該当する Phase に着手しない。**
 - **人間が求めない限り Phase 1 だけを実装する。** Phase 2 は人間が求めたときだけで、M03 の Phase 1 が done（IMP の引数）。`ObjC.call_block` の段は決定事項 D5 の承認の後（承認がなければ、Phase 2 は受け取った Block を保持して渡すだけにする）。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）と `check --json`、コールバックを使う fixture（`tests/fixtures/ffi_extensions`）と M01〜M03 の fixture の IR を `target/scratch/m04/before/` に保存する。
@@ -406,8 +406,8 @@ entry:
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](M01-objc-class-types.md): 組み込みのモジュール `ObjC`（std のファイルを持つか。決定事項 D10 の record の置き場）、ObjC の所有の規則と drop、`ref C`・`Maybe<ref C>` の ABI、kind `abi_apple_only`・`objc_object_position`・`objc_owned_object_argument`、`@returns_retained`（Phase 2）。
-- [M02](M02-objc-typed-message-send.md)（あれば）: メンバーの引数の分類（`abi::objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口）、ObjC の位置の `bool`（`i1 zeroext`）と `ref mut bool`（1 バイト）の規則、結果の受け取り（Phase 2）。
+- [M01](_completed/M01-objc-class-types.md): 組み込みのモジュール `ObjC`（std のファイルを持つか。決定事項 D10 の record の置き場）、ObjC の所有の規則と drop、`ref C`・`Maybe<ref C>` の ABI、kind `abi_apple_only`・`objc_object_position`・`objc_owned_object_argument`、`@returns_retained`（Phase 2）。
+- [M02](_completed/M02-objc-typed-message-send.md)（あれば）: メンバーの引数の分類（`abi::objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口）、ObjC の位置の `bool`（`i1 zeroext`）と `ref mut bool`（1 バイト）の規則、結果の受け取り（Phase 2）。
 - [M03](M03-objc-classes-defined-in-tsuzuri.md): `src/objc_encoding.rs`（M04 が先なら M04 が作る）。Phase 2 の IMP の引数の型の表と包み。
 - [W12](_completed/W12-static-callback-lifetime.md)・[W22](_completed/W22-fnptr-values.md): `llvm_abi::wrapper`、`WrapperKind::Callback`、`@tz.main.done`、`with_blocking_externs`、`validate_callbacks`。
 - [W23](_completed/W23-anchor-state.md): `Anchor.token`・`read`・`update`、`WrongThread`。

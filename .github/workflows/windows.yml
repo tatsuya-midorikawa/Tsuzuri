@@ -191,6 +191,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "c_layout.mjs failed: $LASTEXITCODE" }
           node tests/extern_view.mjs target/release/tsuzuri.exe
           if ($LASTEXITCODE -ne 0) { throw "extern_view.mjs failed: $LASTEXITCODE" }
+      # W36: @c_layout records by value against a C host (x64 and Arm64), and every declare against Clang.
+      - name: C structs by value end to end (W36)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/c_layout_by_value.mjs target/release/tsuzuri.exe
+          if ($LASTEXITCODE -ne 0) { throw "c_layout_by_value.mjs failed: $LASTEXITCODE" }
       # TZ02: tzroutine { } end to end on fibers.
       - name: tzroutine end to end (TZ02)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

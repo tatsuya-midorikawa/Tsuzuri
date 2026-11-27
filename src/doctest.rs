@@ -383,6 +383,15 @@ fn documented_items<'a>(program: &'a Program) -> Vec<Item<'a>> {
             );
         }
     }
+    for declaration in &program.extern_classes {
+        if public(declaration.visibility) {
+            push(
+                &declaration.name.text,
+                OwnerKind::ExternType,
+                declaration.doc.as_ref(),
+            );
+        }
+    }
     for declaration in &program.records {
         if public(declaration.visibility) {
             push(

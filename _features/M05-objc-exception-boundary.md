@@ -5,7 +5,7 @@
 | ID | M05 |
 | 優先度 | P2（正しく書いた AppKit の呼び出しで NSException はふつう起きない。例外を投げうる呼び出しは ObjC のシムの `@try` でも包める。D-67 の分岐 2 は承認済み（2026-11-26）） |
 | 規模 | M（結果の位置の検査、`invoke` と landingpad の生成、`ObjC.Exception` と 2 つの関数、ブロッキングの包みの対応、macOS の E2E、文書） |
-| 依存 | [M02](M02-objc-typed-message-send.md) |
+| 依存 | [M02](_completed/M02-objc-typed-message-send.md) |
 | 後続 | –（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1 の @try と配布の注意（NSException が Tsuzuri のフレームを越えると abort。exit 134）」に当たる。HEAD `804b7970` で確認） |
@@ -50,7 +50,7 @@ D-67 の分岐 1（X′）で AppKit を Tsuzuri から直接呼ぶと、例外�
 
 ### 着手条件
 
-- [M02](M02-objc-typed-message-send.md) の Phase 1 が done（メンバーの型付きの送信、selref、`declare` を 1 つにする規則、送信のブロッキングの包み）。M02 は [M01](M01-objc-class-types.md)（`ObjC.Object`・所有・`abi_apple_only`）を前提にする。確認: `grep -nE "^\| M0[12] " _features/README.md`。
+- [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（メンバーの型付きの送信、selref、`declare` を 1 つにする規則、送信のブロッキングの包み）。M02 は [M01](_completed/M01-objc-class-types.md)（`ObjC.Object`・所有・`abi_apple_only`）を前提にする。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 2 は承認済み（2026-11-26。分岐 2 は決定事項 D1）。決定事項 D9 が承認されている。**承認が記録されるまで、該当する Phase に着手しない**（このチケットは Phase に分けないので、全体に着手しない）。分岐 2 を認めずにこのチケットを閉じる案（D1 の退けた案 (a)）は選ばれなかった。
 - 「現状」の再現を着手時の HEAD で実行し、食い違えばこのチケットを直してから始める。
 - ベースライン: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm`（native、`--target aarch64-apple-darwin`、`--target wasm32`）、`--emit header`、`check --json` を `target/scratch/m05/base/` に保存する（受け入れ条件の比較に使う）。M01・M02 の fixture（ObjC を使うが境界を使わない）も含める。
@@ -333,8 +333,8 @@ tz.objc.join.<n>:
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`ObjC.Object`、`HandleKind` の ObjC の種類と脇の表、`ObjC.upcast`・`ObjC.upcast_owned`、`sync` の性質、drop の `objc_release`、+0 の結果の受け取り方（M01 の D6 の `clang.arc.attachedcall` の bundle）、kind `objc_object_position`・`abi_apple_only`、`Globals` の `objc_used` とモジュールのフラグ、`validate_objc_target`、ObjC を使うビルドへの `-lobjc`。名前が違えば止めて報告する（GUIDE-LITE §11）。
-- [M02](M02-objc-typed-message-send.md)（Phase 1）: メンバーの宣言と結果の検査（`abi::objc_result`）、M01 の `selref`、`FunctionEmitter::objc_send` と `call` を出す 1 か所 `ObjcCallSite`（M05 はここで呼び出しの命令だけを `invoke` に替える）、`declare` を 1 つにする規則、init の族の受け手の消費、送信のブロッキングの包み（M02 の D12。`extern_symbols` に `objc_msgSend` を足し、`with_blocking_externs` の照合に任せる）。
+- [M01](_completed/M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`ObjC.Object`、`HandleKind` の ObjC の種類と脇の表、`ObjC.upcast`・`ObjC.upcast_owned`、`sync` の性質、drop の `objc_release`、+0 の結果の受け取り方（M01 の D6 の `clang.arc.attachedcall` の bundle）、kind `objc_object_position`・`abi_apple_only`、`Globals` の `objc_used` とモジュールのフラグ、`validate_objc_target`、ObjC を使うビルドへの `-lobjc`。名前が違えば止めて報告する（GUIDE-LITE §11）。
+- [M02](_completed/M02-objc-typed-message-send.md)（Phase 1）: メンバーの宣言と結果の検査（`abi::objc_result`）、M01 の `selref`、`FunctionEmitter::objc_send` と `call` を出す 1 か所 `ObjcCallSite`（M05 はここで呼び出しの命令だけを `invoke` に替える）、`declare` を 1 つにする規則、init の族の受け手の消費、送信のブロッキングの包み（M02 の D12。`extern_symbols` に `objc_msgSend` を足し、`with_blocking_externs` の照合に任せる）。
 - TZ08 の `tsuzuri_tz_blocking_enter`・`_exit`（`src/runtime/tzroutine.c`）。
 - PB05 の fast のコード生成器の `E2002` `fast_backend_unsupported_construct`（変えない）。
 

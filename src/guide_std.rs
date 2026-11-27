@@ -361,6 +361,12 @@ fn type_entries(module: &str, program: &Program, types: &mut Vec<(String, String
         let line = extern_type.header();
         types.push((extern_type.name.text.clone(), line));
     }
+    for class in &program.extern_classes {
+        if class.visibility == Visibility::Private {
+            continue;
+        }
+        types.push((class.name.text.clone(), class.header()));
+    }
 }
 
 /// A builtin's scheme as source code would write its signature:

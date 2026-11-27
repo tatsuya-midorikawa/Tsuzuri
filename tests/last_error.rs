@@ -520,3 +520,56 @@ export def run :: i64 -> i32u = \h ->
     assert_eq!(err.code, "E1008");
     assert_eq!(err.kind, Some(DiagnosticKind::AbiNativeOnly.id()));
 }
+
+#[test]
+fn rejects_last_error_on_objc_declarations_and_lowers_by_value_record_results() {
+    for src in [
+        "@last_error\nextern class A : ObjC.Object\n0\n",
+        "extern class A : ObjC.Object\n@last_error\nextern category Cat : A {}\n0\n",
+    ] {
+        let err = analyze(src).expect_err("extern class / category must reject @last_error");
+        assert_eq!(err.code, "E0002");
+        assert_eq!(
+            err.kind,
+            Some(DiagnosticKind::MisplacedLastErrorAttribute.id())
+        );
+    }
+
+    let by_value_last_error = r#"
+@c_layout
+record Point { x: i32, y: i32 }
+
+@c_layout
+record BigBox { a: i64, b: i64, c: i64, d: i64, e: i64 }
+
+@trusted
+@last_error
+extern "make_point" def make_point :: i32 -> Point * i32u
+
+@trusted
+@last_error
+extern "make_box" def make_box :: i32 -> BigBox * i32u
+
+export def run :: i32 -> i64 = \v ->
+    let (pt, err1) = make_point v
+    let (bx, err2) = make_box v
+    (pt.x + pt.y) as i64 + bx.a + bx.e + (err1 + err2) as i64
+"#;
+    let m =
+        analyze(by_value_last_error).expect("analyze @last_error with @c_layout by-value result");
+    for triple in [
+        "x86_64-pc-windows-msvc",
+        "x86_64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+    ] {
+        let _guard = PlatformScope::enter(Platform::new(Some(Triple::parse(triple).unwrap())));
+        let ir = llvm::emit(&m, llvm::Entry::Library).expect("emit @last_error by-value IR");
+        assert!(
+            ir.contains("@make_point(") && ir.contains("@make_box("),
+            "missing calls for {triple}:\n{ir}"
+        );
+    }
+    let wasm_err = llvm::emit_target(&m, llvm::Entry::Library, true)
+        .expect_err("wasm must reject @last_error by-value result");
+    assert_eq!(wasm_err.code, "E1008");
+}

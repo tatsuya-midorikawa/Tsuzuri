@@ -620,6 +620,40 @@ fn extern_needs_ffi_and_trusted_does_not_change_it() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// M01: `ObjC.retain` and `ObjC.downcast` call the Objective-C runtime, also when the only type
+/// they name is the built-in root `ObjC.Object`, which is no declared class.
+#[test]
+fn objc_runtime_calls_on_the_root_class_need_ffi() {
+    let root = scratch("objc-root");
+    write(
+        &root,
+        "Tsuzuri.toml",
+        "[package]\nname = \"objcroot\"\nversion = \"0.1.0\"\n\n[capabilities]\nallow = []\n",
+    );
+    write(
+        &root,
+        "Main.tz",
+        "\
+def keep :: ref ObjC.Object -> ObjC.Object = \\object -> ObjC.retain object
+def narrow :: ref ObjC.Object -> Maybe<ObjC.Object> = \\object -> ObjC.downcast object
+def main :: unit -> i32 = \\() -> 0
+",
+    );
+    let mut messages: Vec<String> = check_errors(&root)
+        .iter()
+        .map(|error| error.message.clone())
+        .collect();
+    messages.sort();
+    assert_eq!(
+        messages,
+        [
+            "the root package may not use capability 'ffi' ('ObjC.downcast'); add \"ffi\" to allow in [capabilities]",
+            "the root package may not use capability 'ffi' ('ObjC.retain'); add \"ffi\" to allow in [capabilities]",
+        ]
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn limits_report_e1017() {
     let project = Project::load(Path::new("examples/io")).unwrap();

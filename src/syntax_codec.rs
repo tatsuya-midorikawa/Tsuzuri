@@ -278,7 +278,13 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
-unit_enum!(HandleKind { Owned, Copy, Local });
+unit_enum!(HandleKind {
+    Owned,
+    Copy,
+    Local,
+    ObjcLocal,
+    ObjcSync
+});
 unit_enum!(DataAccess { Read, Address });
 unit_enum!(LinkKind { Library, Framework });
 unit_enum!(ContractKind { Requires, Ensures });
@@ -562,6 +568,8 @@ impl Wire for Program {
             constants,
             externs,
             extern_types,
+            extern_classes,
+            extern_categories,
             records,
             unions,
             functions,
@@ -581,6 +589,7 @@ impl Wire for Program {
             links,
             weaks,
             last_error,
+            returns_retained,
             noncanonical,
             aliases,
             declaration_starts,
@@ -592,6 +601,8 @@ impl Wire for Program {
         constants.put(out)?;
         externs.put(out)?;
         extern_types.put(out)?;
+        extern_classes.put(out)?;
+        extern_categories.put(out)?;
         records.put(out)?;
         unions.put(out)?;
         functions.put(out)?;
@@ -615,6 +626,7 @@ impl Wire for Program {
         links.put(out)?;
         weaks.put(out)?;
         last_error.put(out)?;
+        returns_retained.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -633,6 +645,8 @@ impl Wire for Program {
             constants: Vec::get(input)?,
             externs: Vec::get(input)?,
             extern_types: Vec::get(input)?,
+            extern_classes: Vec::get(input)?,
+            extern_categories: Vec::get(input)?,
             records: Vec::get(input)?,
             unions: Vec::get(input)?,
             functions: Vec::get(input)?,
@@ -652,6 +666,7 @@ impl Wire for Program {
             links: Vec::get(input)?,
             weaks: Vec::get(input)?,
             last_error: Vec::get(input)?,
+            returns_retained: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -1308,6 +1323,132 @@ impl Wire for ExternTypeDecl {
             kind: HandleKind::get(input)?,
             kind_span: Option::get(input)?,
             name: Ident::get(input)?,
+        })
+    }
+}
+
+impl Wire for ExternClassDecl {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ExternClassDecl {
+            doc,
+            visibility,
+            runtime_name,
+            sync,
+            name,
+            base,
+            body,
+            members,
+            trusted,
+            weak,
+        } = self;
+        put_doc(doc, out)?;
+        visibility.put(out)?;
+        runtime_name.put(out)?;
+        sync.put(out)?;
+        name.put(out)?;
+        base.put(out)?;
+        body.put(out)?;
+        members.put(out)?;
+        trusted.put(out)?;
+        weak.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ExternClassDecl {
+            doc: Option::get(input)?,
+            visibility: Visibility::get(input)?,
+            runtime_name: Option::get(input)?,
+            sync: Option::get(input)?,
+            name: Ident::get(input)?,
+            base: TypeExpr::get(input)?,
+            body: bool::get(input)?,
+            members: Vec::get(input)?,
+            trusted: Option::get(input)?,
+            weak: Option::get(input)?,
+        })
+    }
+}
+
+impl Wire for ExternCategoryDecl {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ExternCategoryDecl {
+            doc,
+            visibility,
+            name,
+            class,
+            members,
+            trusted,
+        } = self;
+        put_doc(doc, out)?;
+        visibility.put(out)?;
+        name.put(out)?;
+        class.put(out)?;
+        members.put(out)?;
+        trusted.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ExternCategoryDecl {
+            doc: Option::get(input)?,
+            visibility: Visibility::get(input)?,
+            name: Ident::get(input)?,
+            class: TypeExpr::get(input)?,
+            members: Vec::get(input)?,
+            trusted: Option::get(input)?,
+        })
+    }
+}
+
+impl Wire for ObjcMember {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ObjcMember {
+            doc,
+            returns,
+            class_method,
+            selector,
+            name,
+            parameters,
+            result,
+        } = self;
+        put_doc(doc, out)?;
+        returns.put(out)?;
+        class_method.put(out)?;
+        selector.put(out)?;
+        name.put(out)?;
+        parameters.put(out)?;
+        result.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ObjcMember {
+            doc: Option::get(input)?,
+            returns: Option::get(input)?,
+            class_method: Option::get(input)?,
+            selector: Option::get(input)?,
+            name: Ident::get(input)?,
+            parameters: Vec::get(input)?,
+            result: TypeExpr::get(input)?,
+        })
+    }
+}
+
+impl Wire for OwnershipAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let OwnershipAttribute {
+            target,
+            retained,
+            span,
+        } = self;
+        target.put(out)?;
+        retained.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(OwnershipAttribute {
+            target: Ident::get(input)?,
+            retained: bool::get(input)?,
+            span: Span::get(input)?,
         })
     }
 }
@@ -3029,6 +3170,14 @@ mod tests {
             )
             .unwrap(),
         );
+        // M01, M02: Objective-C classes, categories, members and the ownership attributes.
+        seen.extend(
+            round_trips(
+                "@trusted @weak\nextern \"NSThing\" class sync Thing : ObjC.Object {\n    /// Makes one.\n    class \"thingWithValue:\" with_value :: i64 -> Maybe<Self>\n    @returns_retained\n    twin :: unit -> Thing\n}\nextern class Plain : ObjC.Object\n@trusted\nextern category Extras : Thing {\n    @returns_not_retained\n    \"otherThing:\" other :: ref Thing -> Thing\n}\n@returns_retained\nextern \"make\" def make :: unit -> Thing\n",
+                0,
+            )
+            .unwrap(),
+        );
         // A24: anonymous union types and type test patterns.
         seen.extend(
             round_trips(
@@ -3158,6 +3307,8 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
+            // `ObjcLocal` and `ObjcSync` (tags 3 and 4) are the kinds of the checker's handle types;
+            // an `extern class` declaration writes `sync` as a span, not a `HandleKind` (M01).
             ("HandleKind", 3),
             ("Recursion", 3),
             ("DeriveClass", 8),
@@ -3408,10 +3559,11 @@ add_one 41
     }
 
     const GOLDEN: &str = concat!(
-        "000000000000000101084120706f696e742e000c0100015014150100000001017818190100000369",
-        "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
-        "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
-        "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000000000000000300224500",
+        "0000000000000000000101084120706f696e742e000c010001501415010000000101781819010000",
+        "036936341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01",
+        "00000003693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000001",
+        "01664a4d010e050f0a01665051010050510101010001005253010150530102000200575801015058",
+        "010345580100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000",
+        "0000000000000000000300224500",
     );
 }

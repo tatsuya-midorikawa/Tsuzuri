@@ -155,12 +155,31 @@ jobs:
           node tests/macos_link_inputs.mjs target/release/tsuzuri
           node tests/data_symbols.mjs target/release/tsuzuri
           node tests/weak_import.mjs target/release/tsuzuri
+      # M01, M02: Objective-C classes and typed message sends against ARC hosts that count their objects, with Apple's
+      # ld and with the bundled toolchain, and the type of every objc_msgSend call against Apple clang's lowering of
+      # the same message (tests/objc_send_reference.m). The window of the AppKit case is never shown.
+      - name: Objective-C classes and message sends (M01, M02)
+        if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
+          node tests/objc_classes.mjs target/release/tsuzuri
+          node tests/objc_send.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
           node tests/e2e.mjs target/release/tsuzuri
+      # W36: `@c_layout` records passed and returned by value. Every declare of every target against this Clang,
+      # and the host's own ABI end to end with a C host: AAPCS64 on darwin-arm64 and linux-arm64, System V on linux-x64.
+      - name: C structs by value (W36)
+        if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_WASM_LD="${TSUZURI_WASM_LD:-$LLVM_PREFIX/bin/wasm-ld}"
+          node tests/c_layout.mjs target/release/tsuzuri
+          node tests/c_layout_by_value.mjs target/release/tsuzuri
       - name: Language conformance suite
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |

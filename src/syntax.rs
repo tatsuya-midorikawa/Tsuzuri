@@ -303,6 +303,10 @@ pub struct Program {
     pub constants: Vec<ConstDecl>,
     pub externs: Vec<SignatureDecl>,
     pub extern_types: Vec<ExternTypeDecl>,
+    /// `extern class` declarations: Objective-C classes as types (M01).
+    pub extern_classes: Vec<ExternClassDecl>,
+    /// `extern category` declarations: more members of an Objective-C class (M02).
+    pub extern_categories: Vec<ExternCategoryDecl>,
     pub records: Vec<RecordDecl>,
     pub unions: Vec<UnionDecl>,
     pub functions: Vec<FunctionDecl>,
@@ -335,6 +339,9 @@ pub struct Program {
     pub weaks: Vec<WeakAttribute>,
     /// The `@last_error` attributes of this module's extern function declarations (W16).
     pub last_error: Vec<LastErrorAttribute>,
+    /// The `@returns_retained` / `@returns_not_retained` attributes of this module's extern
+    /// function declarations (M01). A member of an extern class carries its own.
+    pub returns_retained: Vec<OwnershipAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -836,7 +843,7 @@ pub struct LinkName {
 }
 
 impl LinkName {
-    fn quote_str(text: &str) -> String {
+    pub(crate) fn quote_str(text: &str) -> String {
         let mut out = String::with_capacity(text.len() + 2);
         out.push('"');
         for ch in text.chars() {
@@ -890,7 +897,8 @@ impl SignatureDecl {
     }
 }
 
-/// What an `extern type` declaration says about its values (E12 D3, W18, W19).
+/// What an `extern type` or `extern class` declaration says about its values (E12 D3, W18, W19,
+/// M01).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HandleKind {
     /// `extern type H`: moved, not capturable, Send, not Sync (E12 D3).
@@ -899,16 +907,203 @@ pub enum HandleKind {
     Copy,
     /// `extern type local H`: moved, bound to its OS thread, neither Send nor Sync (W19).
     Local,
+    /// `extern class C` and `ObjC.Object`: one strong reference to an Objective-C object, released
+    /// on drop and bound to its OS thread like `Local` (M01).
+    ObjcLocal,
+    /// `extern class sync C`: one strong reference to an Objective-C object that any thread may
+    /// use, so the value is Send and Sync (M01).
+    ObjcSync,
 }
 
 impl HandleKind {
+    /// The modifier after `extern type`; an Objective-C class is not written as an `extern type`.
     pub fn keyword(self) -> Option<&'static str> {
         match self {
-            Self::Owned => None,
+            Self::Owned | Self::ObjcLocal | Self::ObjcSync => None,
             Self::Copy => Some("copy"),
             Self::Local => Some("local"),
         }
     }
+
+    /// A value that the host does not hand over: copied freely and never dropped (W18).
+    pub fn copy(self) -> bool {
+        match self {
+            Self::Copy => true,
+            Self::Owned | Self::Local | Self::ObjcLocal | Self::ObjcSync => false,
+        }
+    }
+
+    /// A moved value: every kind but `copy`.
+    pub fn owned(self) -> bool {
+        !self.copy()
+    }
+
+    /// Bound to the OS thread that created it: neither Send nor Sync, and the code that touches
+    /// it is `pinned` (W19, M01).
+    pub fn thread_bound(self) -> bool {
+        match self {
+            Self::Local | Self::ObjcLocal => true,
+            Self::Owned | Self::Copy | Self::ObjcSync => false,
+        }
+    }
+
+    /// A strong reference to an Objective-C object, which a drop releases (M01).
+    pub fn objc(self) -> bool {
+        match self {
+            Self::ObjcLocal | Self::ObjcSync => true,
+            Self::Owned | Self::Copy | Self::Local => false,
+        }
+    }
+
+    /// Whether several threads may share a borrow of the value.
+    pub fn syncable(self) -> bool {
+        match self {
+            Self::Copy | Self::ObjcSync => true,
+            Self::Owned | Self::Local | Self::ObjcLocal => false,
+        }
+    }
+}
+
+/// The built-in root of every `extern class` chain: Objective-C's `id` (M01).
+pub const OBJC_OBJECT: &str = "ObjC.Object";
+/// Objective-C's `Class`, a copy handle (M01).
+pub const OBJC_CLASS: &str = "ObjC.Class";
+/// Objective-C's `SEL`, a copy handle (M01).
+pub const OBJC_SEL: &str = "ObjC.Sel";
+
+/// `extern ["RuntimeName"] class [sync] Name : Base [{ members }]`: an Objective-C class as a
+/// type (M01), with the methods that the program sends to it (M02).
+#[derive(Clone, Debug)]
+pub struct ExternClassDecl {
+    pub doc: Option<Documentation>,
+    pub visibility: Visibility,
+    /// The class's name in the Objective-C runtime, when it differs from `name`.
+    pub runtime_name: Option<(String, Span)>,
+    /// The span of `sync`: the values are Send and Sync.
+    pub sync: Option<Span>,
+    pub name: Ident,
+    pub base: TypeExpr,
+    /// Whether a `{ ... }` body follows, which may be empty.
+    pub body: bool,
+    pub members: Vec<ObjcMember>,
+    /// The span of `@trusted` before the declaration (E15).
+    pub trusted: Option<Span>,
+    /// The span of `@weak` before the declaration: the class may be missing at run time (M17).
+    pub weak: Option<Span>,
+}
+
+impl ExternClassDecl {
+    /// The name that the Objective-C runtime knows the class by.
+    pub fn runtime_name(&self) -> &str {
+        self.runtime_name
+            .as_ref()
+            .map_or(self.name.text.as_str(), |(name, _)| name.as_str())
+    }
+
+    pub fn header(&self) -> String {
+        self.header_with(&self.name.text)
+    }
+
+    /// The declaration's first line with `name` in place of the class name.
+    pub fn header_with(&self, name: &str) -> String {
+        let mut header = String::from("extern ");
+        if let Some((runtime, _)) = &self.runtime_name {
+            header.push_str(&LinkName::quote_str(runtime));
+            header.push(' ');
+        }
+        header.push_str("class ");
+        if self.sync.is_some() {
+            header.push_str("sync ");
+        }
+        header.push_str(name);
+        header.push_str(" : ");
+        header.push_str(&crate::docgen::type_text(&self.base));
+        header
+    }
+}
+
+/// `extern category Name : Class { members }`: a namespace of more members of an Objective-C
+/// class (M02).
+#[derive(Clone, Debug)]
+pub struct ExternCategoryDecl {
+    pub doc: Option<Documentation>,
+    pub visibility: Visibility,
+    pub name: Ident,
+    pub class: TypeExpr,
+    pub members: Vec<ObjcMember>,
+    /// The span of `@trusted` before the declaration (E15).
+    pub trusted: Option<Span>,
+}
+
+impl ExternCategoryDecl {
+    pub fn header(&self) -> String {
+        format!(
+            "extern category {} : {}",
+            self.name.text,
+            crate::docgen::type_text(&self.class)
+        )
+    }
+}
+
+/// A method of an `extern class` or `extern category`: `[class] ["selector:"] name :: Type` (M02).
+#[derive(Clone, Debug)]
+pub struct ObjcMember {
+    pub doc: Option<Documentation>,
+    /// `@returns_retained` (`true`) or `@returns_not_retained` (`false`) and its span.
+    pub returns: Option<(bool, Span)>,
+    /// The span of a leading `class`: a class method.
+    pub class_method: Option<Span>,
+    /// The Objective-C selector when it is written; a member without arguments may leave it out.
+    pub selector: Option<(Box<str>, Span)>,
+    pub name: Ident,
+    /// The parameters after the receiver; `unit` alone for a method without arguments.
+    pub parameters: Vec<TypeExpr>,
+    pub result: TypeExpr,
+}
+
+impl ObjcMember {
+    /// The selector that the member sends: the written string, or the name.
+    pub fn selector(&self) -> &str {
+        self.selector
+            .as_ref()
+            .map_or(self.name.text.as_str(), |(selector, _)| selector)
+    }
+
+    /// The member as its declaration writes it, on one line.
+    pub fn header(&self) -> String {
+        let mut header = String::new();
+        if let Some((retained, _)) = self.returns {
+            header.push_str(if retained {
+                "@returns_retained "
+            } else {
+                "@returns_not_retained "
+            });
+        }
+        if self.class_method.is_some() {
+            header.push_str("class ");
+        }
+        if let Some((selector, _)) = &self.selector {
+            header.push_str(&LinkName::quote_str(selector));
+            header.push(' ');
+        }
+        header.push_str(&self.name.text);
+        header.push_str(" :: ");
+        for parameter in &self.parameters {
+            header.push_str(&crate::docgen::type_text(parameter));
+            header.push_str(" -> ");
+        }
+        header.push_str(&crate::docgen::type_text(&self.result));
+        header
+    }
+}
+
+/// `@returns_retained` or `@returns_not_retained` before an `extern def` (M01): whether the
+/// function hands over a +1 reference of its Objective-C result.
+#[derive(Clone, Debug)]
+pub struct OwnershipAttribute {
+    pub target: Ident,
+    pub retained: bool,
+    pub span: Span,
 }
 
 /// `extern type [copy] Name`: an opaque host handle.

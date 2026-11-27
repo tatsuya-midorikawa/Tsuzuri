@@ -5,13 +5,13 @@
 | ID | M18 |
 | 優先度 | P3（D-67 の分岐 3 で方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない。Apple は macOS 26 を Intel 対応の最後の版と発表している（リポジトリの外の事実。着手時に確かめる）） |
 | 規模 | XL（Phase 1・2。方針を改める決定があるまで着手しない） |
-| 依存 | ([W36](W36-c-layout-by-value.md)), ([M17](_completed/M17-macos-min-version-and-weak-import.md)), ([M02](M02-objc-typed-message-send.md)) |
+| 依存 | ([W36](_completed/W36-c-layout-by-value.md)), ([M17](_completed/M17-macos-min-version-and-weak-import.md)), ([M02](_completed/M02-objc-typed-message-send.md)) |
 | 後続 | – |
 | 状態 | blocked（D-67 の分岐 3 で、d719cf68 の「5 つのプラットフォーム」の方針を改めないと決めた（2026-11-26）。方針を改める決定があるまで着手しない） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 3（Intel Mac 向けの出力と Universal 2 が作れない）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 3（d719cf68 と README.md:877・platforms.md:15 の方針の改訂、tier と CI の機械）は承認済み（2026-11-26。改めない）。決定事項 D1（方針を改める案）は却下で、状態は `blocked`。方針を改める決定があるまで着手しない。そのときは、D-55 の登録（target の名前 `x86_64-apple-darwin` を戻すこと、Universal 2 の綴り、`TSUZURI_LIPO`）と決定事項 D2・D3 も要承認。ほかは既定案 |
 | 改善する劣位 | C・Swift（Xcode の `ARCHS` と `lipo`）・Go（`GOARCH=amd64`）・Rust（`x86_64-apple-darwin`）比: Intel Mac で動く実行ファイルと、1 つのファイルで Apple シリコンと Intel の両方で動く Universal 2 のバイナリを作れない。Apple シリコン専用として配るしかない |
-| 手本にする既存実装 | d719cf68 より前の `x86_64-apple-darwin`（`git show d719cf68^:src/target.rs` の `X86_64AppleDarwin`、`git show d719cf68^:scripts/toolchain/clang.rs` の `NATIVE_TARGETS`、`git show d719cf68^:tests/targets.mjs` の 249〜262 行の Rosetta の実行、`git show d719cf68^:.github/workflows/targets.yml` の `macos-15-intel`）、`src/target.rs` の `Triple::spec`・`cpu_levels`・`ForeignRunner`（`TSUZURI_RUNNER`）、`src/driver.rs` の `tool("TSUZURI_DSYMUTIL", "dsymutil")`（外部のツールの探し方。`resolve_tool`）、[W36](W36-c-layout-by-value.md) の Phase 2（System V x86-64 の分類） |
+| 手本にする既存実装 | d719cf68 より前の `x86_64-apple-darwin`（`git show d719cf68^:src/target.rs` の `X86_64AppleDarwin`、`git show d719cf68^:scripts/toolchain/clang.rs` の `NATIVE_TARGETS`、`git show d719cf68^:tests/targets.mjs` の 249〜262 行の Rosetta の実行、`git show d719cf68^:.github/workflows/targets.yml` の `macos-15-intel`）、`src/target.rs` の `Triple::spec`・`cpu_levels`・`ForeignRunner`（`TSUZURI_RUNNER`）、`src/driver.rs` の `tool("TSUZURI_DSYMUTIL", "dsymutil")`（外部のツールの探し方。`resolve_tool`）、[W36](_completed/W36-c-layout-by-value.md) の Phase 2（System V x86-64 の分類） |
 | 主な影響ファイル | `src/target.rs`, `src/driver.rs`, `src/main.rs`, `src/test_runner.rs`, `src/diagnostic_kinds.rs`, `scripts/toolchain/clang.rs`, `src/runtime/tzroutine.c`, `src/runtime/cpu.c`, `tests/targets.rs`, `tests/targets.mjs`, `tests/platforms.mjs`, `.github/workflows/targets.yml`, `README.md`, `docs/architecture.md`, `docs/language.md`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/built-in-types-and-modules/net.md`, `_features/W36-c-layout-by-value.md` |
 
 ## 実装者向け早見
@@ -193,10 +193,10 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 - `-g`: macOS のホストの `dsymutil` が今の arm64 と同じく `.dwarf` を作る。
 - ランタイム: C は変えない（D5）。
 
-### 2. Phase 1: ObjC の x86_64 の差（[M02](M02-objc-typed-message-send.md) が入っているとき。D4）
+### 2. Phase 1: ObjC の x86_64 の差（[M02](_completed/M02-objc-typed-message-send.md) が入っているとき。D4）
 
 - メンバーの `bool` は x86_64 で `i8 signext`（arm64 は `i1 zeroext`）。結果は `!= 0` で `bool` に正規化する（`signed char` の BOOL は 0・1 以外を持ちうる）。引数は 0 か 1 を渡す。`ref mut bool` は 1 バイトの `BOOL *` で、arm64 と同じ規則（非ゼロを true）。
-- 構造体の結果: [W36](W36-c-layout-by-value.md) の Phase 2 の System V の分類がメモリー（`sret`）にするときだけ `objc_msgSend_stret`（[M03](M03-objc-classes-defined-in-tsuzuri.md) の super は `objc_msgSendSuper2_stret`）を呼び、`sret` の領域を最初の引数にする。レジスターで返る構造体（NSPoint の `{ double, double }`、NSRange の `{ i64, i64 }`）は `objc_msgSend` を分類の型で呼ぶ。W36 の Phase 2 がなければ、x86_64 の構造体の値渡しと値返しは `E1008`（`abi_record_by_value_target`）のまま。
+- 構造体の結果: [W36](_completed/W36-c-layout-by-value.md) の Phase 2 の System V の分類がメモリー（`sret`）にするときだけ `objc_msgSend_stret`（[M03](M03-objc-classes-defined-in-tsuzuri.md) の super は `objc_msgSendSuper2_stret`）を呼び、`sret` の領域を最初の引数にする。レジスターで返る構造体（NSPoint の `{ double, double }`、NSRange の `{ i64, i64 }`）は `objc_msgSend` を分類の型で呼ぶ。W36 の Phase 2 がなければ、x86_64 の構造体の値渡しと値返しは `E1008`（`abi_record_by_value_target`）のまま。
 - 受け手は型で非 nil なので、clang が nil の受け手に置く結果の 0 埋め（「現状」）は要らない（M02 の arm64 と同じ）。`@weak` のクラス（M17）は classref の NULL を検査してトラップする。
 - `objc_msgSend_fpret`・`fp2ret` は使わない（x86-64 では `long double` の結果だけで、Tsuzuri に `long double` はない）。
 - selref・classref・superref・CFSTR・Block の literal・モジュールのフラグは arm64 と同じ形で出す（フラグの 6 つが同じことを確かめた）。
@@ -250,9 +250,9 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 
 ## 前提とする他チケットのインターフェース
 
-- [W36](W36-c-layout-by-value.md)（弱い）: Phase 2 の System V x86-64 の分類（`llvm_byvalue::classify`）。W36:164 の「Intel の macOS」は、この target がある場合に効く。M18 が先なら、W36 の Phase 2 は x86_64-apple-darwin を Linux と同じ分類で扱う（macOS の x86-64 は System V に従う）。
+- [W36](_completed/W36-c-layout-by-value.md)（弱い）: Phase 2 の System V x86-64 の分類（`llvm_byvalue::classify`）。W36:164 の「Intel の macOS」は、この target がある場合に効く。M18 が先なら、W36 の Phase 2 は x86_64-apple-darwin を Linux と同じ分類で扱う（macOS の x86-64 は System V に従う）。
 - [M17](_completed/M17-macos-min-version-and-weak-import.md)（弱い）: `[macos] min_version` と、版を Clang の target と launcher に渡す口。x86_64 にも同じ版を使う。
-- [M02](M02-objc-typed-message-send.md)（弱い）: ObjC の送信の下げ方。M02 が後なら、M02 が仕様 2 の差を足す（このチケットの参照の表を使う）。
+- [M02](_completed/M02-objc-typed-message-send.md)（弱い）: ObjC の送信の下げ方。M02 が後なら、M02 が仕様 2 の差を足す（このチケットの参照の表を使う）。
 - [M16](M16-macos-signing-notarization-hardening.md)（あれば）: `TSUZURI_CODESIGN` と署名の手順。M16 の Developer ID の署名は bundle の中の fat のファイルの全スライスを署名し直すので、仕様 1 の ad-hoc の署名と矛盾しない。
 
 ## 他チケットへ提供するインターフェース

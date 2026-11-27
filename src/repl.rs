@@ -478,6 +478,18 @@ fn classify(path: &str, text: String, program: &Program) -> Result<Input, Diagno
             .iter()
             .map(|handle| (handle.name.span, EXTERNS)),
     );
+    rejected.extend(
+        program
+            .extern_classes
+            .iter()
+            .map(|class| (class.name.span, EXTERNS)),
+    );
+    rejected.extend(
+        program
+            .extern_categories
+            .iter()
+            .map(|category| (category.name.span, EXTERNS)),
+    );
     rejected.extend(program.tests.iter().map(|test| (test.name_span, TESTS)));
     rejected.extend(
         program

@@ -889,6 +889,34 @@ if (isMain) {
   assert.equal(execute(fontExe, [], false).status, 7, "CreateFontIndirectW with @c_layout LogFont");
   console.log("Windows MSVC: W21 @c_layout Win32 header parity & CreateFontIndirectW passed");
 
+  // W36: a @c_layout record without ref is the C struct by value. PtInRect(const RECT *, POINT) takes
+  // the POINT in one integer register on x64 and Arm64; a pointer there reads another point.
+  const byValueWin = join(directory, "by-value-win");
+  mkdirSync(byValueWin);
+  writeFileSync(join(byValueWin, "Main.tz"), [
+    "@c_layout",
+    "record Rect { left: i32, top: i32, right: i32, bottom: i32 }",
+    "@c_layout",
+    "record Point { x: i32, y: i32 }",
+    "@trusted",
+    'extern "PtInRect" def pt_in_rect :: ref Rect -> Point -> i32',
+    "def main :: unit -> i32 = \\() ->",
+    "    let r = Rect { left: 0i32, top: 0i32, right: 10i32, bottom: 10i32 }",
+    "    let inside = pt_in_rect (ref r) (Point { x: 5i32, y: 5i32 })",
+    "    let outside = pt_in_rect (ref r) (Point { x: 5i32, y: 50i32 })",
+    "    inside + outside * 10i32",
+    "",
+  ].join("\n"));
+  const byValueIr = join(directory, "by-value-win.ll");
+  cli(["build", byValueWin, "--no-cache", "--emit", "llvm", "-o", byValueIr]);
+  assert.match(readFileSync(byValueIr, "utf8"), /^declare (?:dllimport )?i32 @PtInRect\(ptr, i64\)$/m, "PtInRect takes the POINT by value");
+  for (const optimization of ["-O0", "-O3"]) {
+    const byValueExe = join(directory, `by-value-win${optimization}.exe`);
+    cli(["build", byValueWin, "--no-cache", optimization, "-l", "user32", "-o", byValueExe]);
+    assert.equal(execute(byValueExe, [], false).status, 1, `PtInRect with a by-value POINT ${optimization}`);
+  }
+  console.log("Windows MSVC: W36 @c_layout by value (PtInRect) passed");
+
   // W24 + NS07: extern view with ExternAddr live HeapAlloc / HeapFree round-trip, zero rejection, and misaligned trap site.
   const winViewDir = join(directory, "win-extern-view");
   mkdirSync(winViewDir);

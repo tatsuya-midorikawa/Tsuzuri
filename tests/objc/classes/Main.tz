@@ -1,0 +1,245 @@
+// M01: `extern class`, the built-in module `ObjC`, and the ownership of Objective-C objects.
+// tests/objc_classes.mjs links this program with tests/objc_classes_host.m and runs one case for each
+// argument. The host counts its probe objects between init and dealloc (`tzobjc_live`), so the expected
+// output of every case comes from the host, not from this compiler. The autorelease pool is pushed and
+// popped through `extern` until M10 gives the module a function for it.
+
+@trusted
+extern class NSObject : ObjC.Object
+
+@trusted
+extern class TzProbe : NSObject
+
+@trusted
+extern class TzProbeChild : TzProbe
+
+@trusted
+extern class sync TzShared : NSObject
+
+@trusted
+extern "tzobjc_make_child" def make_child :: unit -> TzProbeChild
+
+@trusted
+extern "tzobjc_make" def make :: unit -> TzProbe
+
+@trusted
+extern "tzobjc_make_shared" def make_shared :: unit -> TzShared
+
+@trusted
+@returns_retained
+extern "tzobjc_new_probe" def new_probe :: unit -> TzProbe
+
+// The same +1 function without its attribute: the caller retains once more and leaks one reference.
+@trusted
+extern "tzobjc_new_probe" def new_probe_forgotten :: unit -> TzProbe
+
+@trusted
+extern "tzobjc_maybe" def maybe :: i32 -> Maybe<TzProbe>
+
+@trusted
+extern "tzobjc_nil" def nil_probe :: unit -> TzProbe
+
+@trusted
+extern "tzobjc_tag" def tag :: ref TzProbe -> i64
+
+@trusted
+extern "tzobjc_live" def live :: unit -> i64
+
+@trusted
+@count(2, none)
+extern "tzobjc_sel_is" def sel_is :: ObjC.Sel -> ref utf8string -> i32
+
+@trusted
+extern "tzobjc_set_global" def set_global :: i32 -> unit
+
+@trusted
+extern "tzobjc_global" view def global :: unit -> Maybe<TzProbe>
+
+@trusted
+extern "objc_autoreleasePoolPush" def pool_push :: unit -> i64
+
+@trusted
+extern "objc_autoreleasePoolPop" def pool_pop :: i64 -> unit
+
+record Holder { probe: TzProbe, extra: Maybe<TzProbe> }
+
+const DESCRIPTION: string = "description"
+
+// Takes its argument and drops it.
+def discard :: own TzProbe -> unit = \_probe -> ()
+
+// The example of the ticket: 21 for the downcast child and 21 for the child itself.
+def use_objects :: unit -> i64 = \() ->
+    let child = make_child ()
+    let base: TzProbe = ObjC.upcast_owned (ObjC.retain (ref child))
+    let again: Maybe<TzProbeChild> = ObjC.downcast (ref base)
+    let found = match again with
+        | Maybe.Some c -> tag (ObjC.upcast (ref c))
+        | Maybe.None -> 0
+    found + tag (ObjC.upcast (ref child))
+
+def balance :: unit -> string = \() ->
+    let pool = pool_push ()
+    let total = use_objects ()
+    pool_pop pool
+    $"{total} {live ()}"
+
+// The live objects while a +1 result is held.
+def hold_retained :: unit -> i64 = \() ->
+    let probe = new_probe ()
+    live () + 0 * tag (ref probe)
+
+def hold_forgotten :: unit -> i64 = \() ->
+    let probe = new_probe_forgotten ()
+    live () + 0 * tag (ref probe)
+
+def retained :: unit -> string = \() ->
+    let pool = pool_push ()
+    let inside = hold_retained ()
+    pool_pop pool
+    $"{inside} {live ()}"
+
+def forgotten_attribute :: unit -> string = \() ->
+    let pool = pool_push ()
+    let inside = hold_forgotten ()
+    pool_pop pool
+    $"{inside} {live ()}"
+
+def retain_and_drop :: unit -> string = \() ->
+    let pool = pool_push ()
+    let first = new_probe ()
+    let second = ObjC.retain (ref first)
+    let both = live ()
+    discard first
+    let one = live ()
+    discard second
+    let none = live ()
+    pool_pop pool
+    $"{both} {one} {none} {live ()}"
+
+// A +0 result that is dropped before the pool is popped: the retain takes the object over from the
+// callee without the pool (clang's attached call), so the drop deallocates it.
+def handshake :: unit -> string = \() ->
+    let pool = pool_push ()
+    discard (make ())
+    let before = live ()
+    pool_pop pool
+    $"{before} {live ()}"
+
+def maybe_text :: i32 -> string = \present ->
+    match maybe present with
+    | Maybe.Some probe -> $"Some{tag (ref probe)}"
+    | Maybe.None -> "None"
+
+def maybe_nil :: unit -> string = \() ->
+    let pool = pool_push ()
+    let absent = maybe_text 0i32
+    let present = maybe_text 1i32
+    pool_pop pool
+    $"{absent} {present} {live ()}"
+
+def nil_trap :: unit -> string = \() ->
+    let probe = nil_probe ()
+    $"{tag (ref probe)}"
+
+def downcasts :: unit -> string = \() ->
+    let parent = make ()
+    let child = make_child ()
+    let to_child: Maybe<TzProbeChild> = ObjC.downcast (ref parent)
+    let to_parent: Maybe<TzProbe> = ObjC.downcast (ref child)
+    let to_root: Maybe<NSObject> = ObjC.downcast (ref child)
+    let to_object: Maybe<ObjC.Object> = ObjC.downcast (ref child)
+    let to_other: Maybe<TzShared> = ObjC.downcast (ref child)
+    let a = match to_child with | Maybe.Some _ -> "Some" | Maybe.None -> "None"
+    let b = match to_parent with | Maybe.Some p -> $"Some{tag (ref p)}" | Maybe.None -> "None"
+    let c = match to_root with | Maybe.Some _ -> "Some" | Maybe.None -> "None"
+    let d = match to_object with | Maybe.Some _ -> "Some" | Maybe.None -> "None"
+    let e = match to_other with | Maybe.Some _ -> "Some" | Maybe.None -> "None"
+    $"{a} {b} {c} {d} {e} {live ()}"
+
+def downcast :: unit -> string = \() ->
+    let pool = pool_push ()
+    let text = downcasts ()
+    pool_pop pool
+    $"{text} {live ()}"
+
+// Objects as a record's fields, a `Maybe` payload, and the elements of an array and a `Vec`.
+def hold_many :: unit -> i64 = \() ->
+    let holder = Holder { probe: make (), extra: maybe 1i32 }
+    let probes = [make (), new_probe (), make ()]
+    let vector = Vec.add (make ()) (Vec.add (new_probe ()) (Vec.empty()))
+    let moved = holder
+    live () + 0 * (tag (ref moved.probe) + tag (ref probes[1]) + Vec.length (ref vector))
+
+def moves :: unit -> string = \() ->
+    let pool = pool_push ()
+    let inside = hold_many ()
+    pool_pop pool
+    $"{inside} {live ()}"
+
+// Waits until the host has no live object, for at most `rounds` yields; the count that remains.
+def rec wait_for_zero :: i64 -> i64 = \rounds ->
+    if live () == 0 || rounds == 0 then live ()
+    else
+        Routine.yield ()
+        wait_for_zero (rounds - 1)
+
+// A `sync` object moves into a tzroutine, which drops it on its own thread.
+def sync_thread :: unit -> string = \() ->
+    let pool = pool_push ()
+    let shared = make_shared ()
+    let before = live ()
+    let finished: Channel<unit> = Channel.make 1
+    let signal = Channel.share finished
+    tzroutine {
+        let moved = shared
+        let kept: Maybe<TzShared> = ObjC.downcast (ref moved)
+        let _same = match kept with | Maybe.Some _ -> 1 | Maybe.None -> 0
+        Channel.send signal ()
+    }
+    let _done = Channel.recv finished
+    pool_pop pool
+    // The tzroutine has sent its signal; give its body time to end and drop the object.
+    $"{before} {wait_for_zero 2000}"
+
+def selector :: unit -> string = \() ->
+    let literal = sel_is (ObjC.sel "description") (ref u8"description\0")
+    let constant = sel_is (ObjC.sel DESCRIPTION) (ref u8"description\0")
+    let keyword = sel_is (ObjC.sel "initWithBytes:length:encoding:") (ref u8"initWithBytes:length:encoding:\0")
+    let other = sel_is (ObjC.sel "length") (ref u8"description\0")
+    $"{literal} {constant} {keyword} {other}"
+
+// M06 with M01: a data symbol that holds an object is read with a retain.
+def read_global :: unit -> string = \() ->
+    match global () with
+    | Maybe.Some probe -> $"Some{tag (ref probe)}"
+    | Maybe.None -> "None"
+
+def data_symbol :: unit -> string = \() ->
+    let pool = pool_push ()
+    let empty = read_global ()
+    set_global 1i32
+    let full = read_global ()
+    let held = live ()
+    set_global 0i32
+    pool_pop pool
+    $"{empty} {full} {held} {live ()}"
+
+def main :: Array<string> -> i32 = \arguments ->
+    let given = arguments.length > 0
+    let text =
+        if given && arguments[0] == "balance" then balance ()
+        elif given && arguments[0] == "retained" then retained ()
+        elif given && arguments[0] == "forgotten_attribute" then forgotten_attribute ()
+        elif given && arguments[0] == "retain_and_drop" then retain_and_drop ()
+        elif given && arguments[0] == "handshake" then handshake ()
+        elif given && arguments[0] == "maybe_nil" then maybe_nil ()
+        elif given && arguments[0] == "nil_trap" then nil_trap ()
+        elif given && arguments[0] == "downcast" then downcast ()
+        elif given && arguments[0] == "moves" then moves ()
+        elif given && arguments[0] == "sync_thread" then sync_thread ()
+        elif given && arguments[0] == "selector" then selector ()
+        elif given && arguments[0] == "data_symbol" then data_symbol ()
+        else "unknown case"
+    do! IO.writeln text
+    0

@@ -9032,6 +9032,7 @@ pub(super) fn specialize(
         link_frameworks: module.link_frameworks,
         weak_symbols: module.weak_symbols,
         compound_assigns: module.compound_assigns,
+        objc: module.objc,
     })
 }
 

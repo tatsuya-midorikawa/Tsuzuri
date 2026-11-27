@@ -5,7 +5,7 @@
 | ID | M12 |
 | 優先度 | P3（GPU の計算を使う `.app` と、GPU でウィンドウに描くアプリだけが要る。今の回避策は、Phase 1 が環境変数 `TSUZURI_VULKAN_LIBRARY`・`TSUZURI_WEBGPU_LIBRARY`、Phase 2 が C・ObjC・Swift のシムである） |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](M01-objc-class-types.md)), ([M02](M02-objc-typed-message-send.md)), ([M15](M15-macos-app-bundle.md))（M01 は Phase 2 の前提。M15 は同梱の手順の文書だけ） |
+| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](_completed/M01-objc-class-types.md)), ([M02](_completed/M02-objc-typed-message-send.md)), ([M15](M15-macos-app-bundle.md))（M01 は Phase 2 の前提。M15 は同梱の手順の文書だけ） |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（Gpu は計算専用で、ウィンドウへの表示がない。GPU のランタイムが Homebrew の絶対パスを dlopen するので、.app に同梱した形にならない）」に当たる。HEAD `804b7970` で確認） |
@@ -215,8 +215,8 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
 
 - Phase 1: なし。
 - Phase 2:
-  - [M01](M01-objc-class-types.md): `ObjC.Object`（`ref ObjC.Object` の引数）と `objc_opt_isKindOfClass` の下げ方（D6 の (a)）。D-67 の分岐 1 が X′ に決まったので D6 の (b) は採らず、M01 が done になってから Phase 2 に着手する。
-  - [M02](M02-objc-typed-message-send.md): 利用者が CAMetalLayer を作り（`CAMetalLayer.layer ()`）、ビューの `setLayer:`・`setWantsLayer:` を呼ぶ型付きの送信。M02 がなければ、利用者は今の `objc_msgSend` の手書きの宣言で layer を作る。
+  - [M01](_completed/M01-objc-class-types.md): `ObjC.Object`（`ref ObjC.Object` の引数）と `objc_opt_isKindOfClass` の下げ方（D6 の (a)）。D-67 の分岐 1 が X′ に決まったので D6 の (b) は採らず、M01 が done になってから Phase 2 に着手する。
+  - [M02](_completed/M02-objc-typed-message-send.md): 利用者が CAMetalLayer を作り（`CAMetalLayer.layer ()`）、ビューの `setLayer:`・`setWantsLayer:` を呼ぶ型付きの送信。M02 がなければ、利用者は今の `objc_msgSend` の手書きの宣言で layer を作る。
   - [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) の D2: Metal のバックエンドの判断（D7）。
 - 文書: [M15](M15-macos-app-bundle.md) の `[macos] embed`（`Contents/Frameworks` に写すファイル）と、[M16](M16-macos-signing-notarization-hardening.md) の Developer ID 署名。出荷されていなければ、手で bundle を作る手順と `codesign` の手順を書く。
 

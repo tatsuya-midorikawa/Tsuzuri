@@ -342,6 +342,33 @@ pub(crate) fn system_libraries_from_symbols(
     found.into_iter().collect()
 }
 
+/// M01 D11: the libraries that the IR of an Objective-C image needs at link time. The compiler
+/// calls libobjc (`objc_retain`, `objc_release`, ...) for a program that holds Objective-C
+/// objects, so a Mach-O link of such IR names `objc`; any other IR and any other platform get
+/// nothing.
+pub fn objc_link_libraries(ir: &str, platform: crate::target::Platform) -> Vec<String> {
+    if platform.mach_o() && llvm::uses_objc(ir) {
+        vec!["objc".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Appends the libraries of `objc_link_libraries` to the system libraries of a link, after the
+/// `@link` libraries, unless the command line or an `@link` names them already.
+pub(crate) fn add_objc_libraries(
+    system_libraries: &mut Vec<String>,
+    ir: &str,
+    platform: crate::target::Platform,
+    links: &LinkInputs,
+) {
+    for library in objc_link_libraries(ir, platform) {
+        if !links.libraries.contains(&library) && !system_libraries.contains(&library) {
+            system_libraries.push(library);
+        }
+    }
+}
+
 /// M20 Phase 2: macOS frameworks requested by `@link(framework = "name")` on extern symbols referenced in `ir`,
 /// sorted and excluding frameworks already listed in `links.frameworks`.
 pub fn system_frameworks(module: &CheckedModule, ir: &str, links: &LinkInputs) -> Vec<String> {
@@ -379,6 +406,7 @@ pub(crate) fn prepare_link_extras(
     clang: &OsStr,
     links: &LinkInputs,
     system_frameworks: &[String],
+    system_libraries: &[String],
 ) -> Result<Vec<OsString>, Diagnostic> {
     if !system_frameworks.is_empty() && !platform.mach_o() {
         return Err(driver_error_of(
@@ -389,14 +417,40 @@ pub(crate) fn prepare_link_extras(
             ),
         ));
     }
+    macos_sdk_link_args(
+        platform,
+        clang,
+        sdk_dependent_input(links, system_frameworks, system_libraries),
+    )
+}
+
+/// The link input that makes a Mach-O link need the SDK's search paths with the bundled linker:
+/// the first framework by name, or libobjc (M01) when no framework is linked. libobjc counts
+/// wherever it is named: the driver adds it for Objective-C IR, an `@link("objc")` requests it,
+/// and `-l objc` on the command line takes it out of `system_libraries` but not out of the link.
+fn sdk_dependent_input<'a>(
+    links: &'a LinkInputs,
+    system_frameworks: &'a [String],
+    system_libraries: &'a [String],
+) -> Option<&'a str> {
     let first_framework = links
         .frameworks
         .iter()
         .chain(system_frameworks.iter())
         .min()
         .map(String::as_str);
-    macos_sdk_link_args(platform, clang, first_framework)
+    // The bundled linker searches no system path for libobjc: it comes from the SDK too.
+    let sdk_library = links
+        .libraries
+        .iter()
+        .chain(system_libraries.iter())
+        .any(|library| library == "objc")
+        .then_some(OBJC_SDK_LIBRARY);
+    first_framework.or(sdk_library)
 }
+
+/// What `prepare_link_extras` names in place of a framework when only libobjc needs the SDK.
+const OBJC_SDK_LIBRARY: &str = "libobjc";
 
 pub(crate) fn macos_sdk_link_args(
     platform: crate::target::Platform,
@@ -463,10 +517,15 @@ fn sdk_flags(sdk: &Path) -> Vec<OsString> {
 }
 
 fn macos_sdk_error(framework_name: &str) -> Diagnostic {
+    let needed = if framework_name == OBJC_SDK_LIBRARY {
+        "linking libobjc for an Objective-C program".to_owned()
+    } else {
+        format!("linking the macOS framework '{framework_name}'")
+    };
     driver_error_of(
         DiagnosticKind::MacosSdkNotFound,
         format!(
-            "linking the macOS framework '{framework_name}' with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; install the Xcode Command Line Tools (xcode-select --install), or set TSUZURI_CLANG to Apple's clang"
+            "{needed} with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; install the Xcode Command Line Tools (xcode-select --install), or set TSUZURI_CLANG to Apple's clang"
         ),
     )
 }
@@ -4676,7 +4735,10 @@ fn build_complete(
     } else {
         MacosChoice::None
     };
-    let sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
+    let mut sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
+    if options.target == Target::Native {
+        add_objc_libraries(&mut sys_libraries, &text, platform, links);
+    }
     let sys_frameworks = system_frameworks_from_symbols(module, &runtime_symbols, links);
     let sdk_link_args = if options.target == Target::Native
         && matches!(options.emit, Emit::Executable | Emit::Shared)
@@ -4686,6 +4748,7 @@ fn build_complete(
             &tool("TSUZURI_CLANG", "clang"),
             links,
             &sys_frameworks,
+            &sys_libraries,
         )?
     } else {
         if !sys_frameworks.is_empty() && options.target == Target::Native && !platform.mach_o() {
@@ -9220,6 +9283,39 @@ mod tests {
                 "-Wl,-rpath,@executable_path/../Frameworks",
             ]
         );
+    }
+
+    #[test]
+    fn libobjc_needs_the_sdk_wherever_the_link_names_it() {
+        let none = LinkInputs::default();
+        let objc = vec!["objc".to_owned()];
+        let z = vec!["z".to_owned()];
+        let app_kit = vec!["AppKit".to_owned()];
+        // The driver or an `@link("objc")` adds it to the system libraries.
+        assert_eq!(
+            sdk_dependent_input(&none, &[], &objc),
+            Some(OBJC_SDK_LIBRARY)
+        );
+        // `-l objc` on the command line: the system libraries no longer list it, the link still does.
+        let explicit = LinkInputs {
+            libraries: objc.clone(),
+            ..LinkInputs::default()
+        };
+        assert_eq!(
+            sdk_dependent_input(&explicit, &[], &[]),
+            Some(OBJC_SDK_LIBRARY)
+        );
+        // A framework names the SDK error; another library needs no SDK.
+        assert_eq!(
+            sdk_dependent_input(&explicit, &app_kit, &[]),
+            Some("AppKit")
+        );
+        assert_eq!(sdk_dependent_input(&none, &[], &z), None);
+        let other = LinkInputs {
+            libraries: z.clone(),
+            ..LinkInputs::default()
+        };
+        assert_eq!(sdk_dependent_input(&other, &[], &[]), None);
     }
 
     #[test]

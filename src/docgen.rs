@@ -438,6 +438,40 @@ fn render_declarations(program: &Program) -> String {
             section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),
         ));
     }
+    // M01, M02: an Objective-C class or category with its members, as the source writes them.
+    let objc_body = |header: String, body: bool, members: &[ObjcMember]| {
+        if !body {
+            return header;
+        }
+        let mut code = header;
+        code.push_str(" {");
+        for member in members {
+            code.push_str("\n    ");
+            code.push_str(&member.header());
+        }
+        code.push_str(if members.is_empty() { "}" } else { "\n}" });
+        code
+    };
+    for declaration in &program.extern_classes {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let code = objc_body(declaration.header(), declaration.body, &declaration.members);
+        declarations.push((
+            declaration.name.span.start,
+            section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),
+        ));
+    }
+    for declaration in &program.extern_categories {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let code = objc_body(declaration.header(), true, &declaration.members);
+        declarations.push((
+            declaration.name.span.start,
+            section(&declaration.name.text, &code, declaration.doc.as_ref(), 2),
+        ));
+    }
     for declaration in &program.records {
         if declaration.visibility == Visibility::Private {
             continue;

@@ -188,6 +188,7 @@ jobs:
         run: |
           node tests/ffi_extensions.mjs target/debug/tsuzuri
           node tests/c_layout.mjs target/debug/tsuzuri
+          node tests/c_layout_by_value.mjs target/debug/tsuzuri
           node tests/extern_view.mjs target/debug/tsuzuri
       - name: Computation expressions
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
