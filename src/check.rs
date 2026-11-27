@@ -5656,6 +5656,13 @@ impl HostImport {
         self.view.is_some() || self.data.is_some() || self.objc.is_some()
     }
 
+    /// An extern view or a data symbol: code that the compiler itself writes to read or write
+    /// host memory, which calls no function of the host. A message send (M02) lowers inline too
+    /// but calls foreign code, so the effect analysis does not vouch for it.
+    pub fn reads_host_memory(&self) -> bool {
+        self.view.is_some() || self.data.is_some()
+    }
+
     /// Explicit C symbol name for `@link` resolution (function `native_symbol` when explicit, or `data.symbol`).
     pub fn explicit_c_symbol(&self) -> Option<&str> {
         if let Some(data) = &self.data {

@@ -1051,10 +1051,18 @@ extern \"make\" def make :: unit -> NSObject
     // a category's member, and the ownership of an extern function's result break callers.
     for (label, from, to) in [
         ("removed", "    hash :: unit -> i64u\n", ""),
-        ("selector", "    hash :: unit", "    \"hashValue\" hash :: unit"),
+        (
+            "selector",
+            "    hash :: unit",
+            "    \"hashValue\" hash :: unit",
+        ),
         ("type", "hash :: unit -> i64u", "hash :: unit -> i64"),
         ("class-method", "    hash :: unit", "    class hash :: unit"),
-        ("sync", "extern class NSObject", "extern class sync NSObject"),
+        (
+            "sync",
+            "extern class NSObject",
+            "extern class sync NSObject",
+        ),
         (
             "runtime-name",
             "extern class NSObject",
@@ -1108,11 +1116,57 @@ extern category Extras : NSObject {
         String::from_utf8_lossy(&output.stderr)
     );
     let page = fs::read_to_string(out.join("Cocoa.md")).unwrap();
-    assert!(page.contains("extern class NSObject : ObjC.Object {"), "{page}");
+    assert!(
+        page.contains("extern class NSObject : ObjC.Object {"),
+        "{page}"
+    );
     assert!(page.contains("    class alloc :: unit -> Self"), "{page}");
-    assert!(page.contains("    \"isProxy\" is_proxy :: unit -> bool"), "{page}");
-    assert!(page.contains("extern category Extras : NSObject {"), "{page}");
+    assert!(
+        page.contains("    \"isProxy\" is_proxy :: unit -> bool"),
+        "{page}"
+    );
+    assert!(
+        page.contains("extern category Extras : NSObject {"),
+        "{page}"
+    );
     assert!(page.contains("The root class."), "{page}");
     assert!(page.contains("More of NSObject."), "{page}");
     fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn a_send_is_an_extern_effect() {
+    // A message runs foreign code: the effect attributes that forbid `extern` (`@no_copy` does
+    // not) reject it, with
+    // or without `@trusted` on the class (a class takes no `@trusted` properties). The compiler
+    // vouches only for extern views and data symbols, which lower inline too.
+    for attribute in ["@no_alloc", "@no_trap", "@terminates"] {
+        rejects(
+            &with_cocoa(&format!(
+                "{attribute}\ndef f :: ref NSString -> i64u = \\text -> NSString.length text\n0\n"
+            )),
+            DiagnosticKind::EffectExternInAttribute,
+        );
+    }
+    // So does a function that only drops an object, or retains one.
+    rejects(
+        &with_cocoa("@terminates\ndef f :: own NSString -> unit = \\_text -> ()\n0\n"),
+        DiagnosticKind::EffectExternInAttribute,
+    );
+    rejects(
+        &with_cocoa(
+            "@no_alloc\ndef f :: ref NSString -> NSString = \\text -> ObjC.retain text\n0\n",
+        ),
+        DiagnosticKind::EffectExternInAttribute,
+    );
+    // The casts and a selector call nothing.
+    accepts(&with_cocoa(
+        "\
+@no_alloc @no_trap @terminates
+def f :: ref NSMutableString -> ref NSString = \\text -> ObjC.upcast text
+@no_alloc @no_trap @terminates
+def g :: unit -> ObjC.Sel = \\() -> ObjC.sel \"length\"
+0
+",
+    ));
 }

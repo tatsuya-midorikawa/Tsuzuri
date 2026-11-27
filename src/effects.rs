@@ -1377,7 +1377,7 @@ impl<'s, 'a> Scan<'s, 'a> {
     fn host_call_here(&mut self, callee: usize, span: Span) {
         let function = &self.state.module.functions[callee];
         if let TypedExprKind::HostCall(import, _) = &function.body.kind {
-            if import.lowers_inline() {
+            if import.reads_host_memory() {
                 let types = self.state.module.types();
                 if inline_import_can_trap(import, &function.body.ty, &types) {
                     self.source(
@@ -1414,17 +1414,19 @@ impl<'s, 'a> Scan<'s, 'a> {
         }
     }
 
+    /// M01: a value of type `ty` that owns an Objective-C object is released when it is dropped,
+    /// which calls the runtime: a source of `extern`, not of `user_drop`. Called where the
+    /// function receives such a value to own: an owned parameter and the result of a call.
+    fn objc_release(&mut self, ty: &Type, span: Span) {
+        let types = self.state.module.types();
+        if !types.stored_all(ty, |part| !part.is_objc_object()) {
+            self.source(Effect::Extern, span, "objc-release");
+        }
+    }
+
     /// The `Drop` implementations that dropping a value of type `ty` runs: a source of
     /// `user_drop` and an edge to each.
     fn user_drop(&mut self, ty: &Type, span: Span) {
-        // M01: dropping an Objective-C object releases it, which calls the runtime: `extern`,
-        // not `user_drop`.
-        if self.state.module.objc.has_objects() {
-            let types = self.state.module.types();
-            if !types.stored_all(ty, |part| !part.is_objc_object()) {
-                self.source(Effect::Extern, span, "objc-release");
-            }
-        }
         let drops = self.state.drop_functions(ty);
         if drops.is_empty() {
             return;
@@ -1486,6 +1488,7 @@ impl<'s, 'a> Scan<'s, 'a> {
     fn scan(&mut self) -> Result<(), Diagnostic> {
         let function = self.function;
         let user_drops = !self.state.module.user_drops.is_empty();
+        let objc = self.state.module.objc.has_objects();
         // The compact form replaces the body of `String.slice` and `String.join` with a runtime
         // call that builds the result; the rule counts it in both forms.
         if crate::llvm::compact_replacement(function).is_some() {
@@ -1512,7 +1515,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.source(Effect::Pinned, span, "local-handle");
             }
         }
-        if user_drops {
+        if user_drops || objc {
             // The function drops the owned parameters that its body does not move on, so their
             // destructors run here even when no expression names them (review of #63). A
             // parameter read by default is a reference, and the environment of an owned function
@@ -1528,7 +1531,14 @@ impl<'s, 'a> Scan<'s, 'a> {
                 } else {
                     parameter.span
                 };
-                self.user_drop(&parameter.ty, span);
+                if user_drops {
+                    self.user_drop(&parameter.ty, span);
+                }
+                // M01: an owned Objective-C object is released here unless the body moves it
+                // on. A wrapper of `ObjC.upcast_owned` only hands its argument on.
+                if objc && wrapper_builtin(function) != Some(Builtin::ObjcUpcastOwned) {
+                    self.objc_release(&parameter.ty, span);
+                }
             }
         }
         self.scan_root(&function.body)
@@ -1538,6 +1548,7 @@ impl<'s, 'a> Scan<'s, 'a> {
         let module = self.state.module;
         let types = module.types();
         let user_drops = !module.user_drops.is_empty();
+        let objc = module.objc.has_objects();
         let track_pinned = module.thread_bound && self.state.computes(Effect::Pinned);
         let mut entered = Vec::new();
         let mut stack = vec![Item::Node(root, Ctx::default())];
@@ -1573,6 +1584,27 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
             if user_drops {
                 self.user_drop(&expression.ty, expression.span);
+            }
+            // M01: the result of a call is a value that this function owns; an Objective-C
+            // object in it is released when it is dropped. `ObjC.upcast_owned` makes no value:
+            // its result is its argument.
+            if objc
+                && matches!(
+                    expression.kind,
+                    TypedExprKind::Call(..) | TypedExprKind::HostCall(..)
+                )
+                && !matches!(
+                    &expression.kind,
+                    TypedExprKind::Call(callee, _)
+                        if matches!(
+                            &callee.kind,
+                            TypedExprKind::Function(FunctionRef::User(id))
+                                if wrapper_builtin(&module.functions[*id])
+                                    == Some(Builtin::ObjcUpcastOwned)
+                        )
+                )
+            {
+                self.objc_release(&expression.ty, expression.span);
             }
             let pushed = self.node(expression, ctx, &types, &mut stack);
             if !pushed {
@@ -1869,6 +1901,16 @@ impl<'s, 'a> Scan<'s, 'a> {
                 {
                     self.source(Effect::Alloc, span, "partial-application");
                 }
+                // M01, M02: the argument of `ObjC.sel` and `ObjC.literal` is a compile-time
+                // string that the lowering reads where it is called; no string exists at run
+                // time, so there is nothing to scan.
+                if matches!(
+                    &callee.kind,
+                    K::Function(FunctionRef::Builtin(instance))
+                        if matches!(instance.builtin, Builtin::ObjcSel | Builtin::ObjcLiteral)
+                ) {
+                    return true;
+                }
                 let pinning_mask =
                     pinning_argument_mask(self.state.module, callee, arguments.len());
                 for (index, value) in arguments.iter().enumerate().rev() {
@@ -1904,7 +1946,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 true
             }
             K::HostCall(import, _) => {
-                if import.lowers_inline() {
+                if import.reads_host_memory() {
                     let can_trap = inline_import_can_trap(import, &expression.ty, types);
                     // W24 / M06 / M17: an extern view or data symbol does not allocate, deep-copy,
                     // or diverge; a weak data symbol without non-nullable handle fields in a record
@@ -3558,7 +3600,7 @@ pub fn trusted_kinds(module: &CheckedModule) -> Vec<EffectKind> {
     let mut has_nontrapping_inline = false;
     for function in &module.functions {
         if let TypedExprKind::HostCall(import, _) = &function.body.kind
-            && import.lowers_inline()
+            && import.reads_host_memory()
         {
             has_inline = true;
             if !inline_import_can_trap(import, &function.body.ty, &types) {

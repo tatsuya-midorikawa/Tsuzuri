@@ -490,7 +490,8 @@ pub(crate) fn validate(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
-        if import.lowers_inline() {
+        // An extern view and a data symbol pass no record by value; a message send (M02) does.
+        if import.reads_host_memory() {
             continue;
         }
         let signature = &function.signature;
@@ -515,7 +516,11 @@ pub(crate) fn validate(
         if let Some((ty, result, reason)) = refused {
             let qualified = ty.display(&types);
             let record = qualified.rsplit('.').next().unwrap_or(&qualified);
-            let name = &function.name;
+            // M02: a message send is named as source code names it, `Class.member`.
+            let name = import
+                .objc
+                .as_ref()
+                .map_or(function.name.as_str(), |send| send.display.as_str());
             let verb = if result { "returns" } else { "passes" };
             let pointer = if result {
                 format!("return it through a 'ref mut {record}' parameter")
