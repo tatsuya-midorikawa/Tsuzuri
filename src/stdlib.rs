@@ -249,6 +249,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Context.AfterFunc"
             | "ErrGroup.ErrGroup"
             | "Anchor.Anchor"
+            | "Anchor.Shared"
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
             | "ExternAddr.ExternAddr"

@@ -55,6 +55,25 @@ def callback_on_thread :: unit -> i32 = \() ->
     say "not reached"
     0
 
+record Inbox { out: Channel<i64>, base: i64 }
+
+// Runs on a thread of the host that has not joined the runtime (M09 Phase 3).
+def on_host_thread :: i64 -> unit = \token ->
+    let _sent = Anchor.read_shared (\(inbox: ref Inbox) -> Channel.send (ref inbox.out) (inbox.base + 1)) token
+    ()
+
+// A thread of the host reads a shared anchor and sends to a tzroutine through the channel in it.
+def shared_from_thread :: unit -> i32 = \() ->
+    let results: Channel<i64> = Channel.make 1
+    let inbox = Anchor.create_shared (Inbox { out: Channel.share results, base: 41 })
+    tzroutine {
+        match Channel.recv results with
+        | Maybe.Some value -> say $"tzroutine received {value}"
+        | Maybe.None -> say "closed"
+    }
+    call_on_thread on_host_thread (Anchor.shared_token (ref inbox))
+    0
+
 def main :: Array<string> -> i32 = \args ->
     let named = Array.length args > 0
     if named && args[0] == "callback_on_main" then
@@ -63,5 +82,7 @@ def main :: Array<string> -> i32 = \args ->
         plain_callback_on_thread ()
     elif named && args[0] == "callback_on_thread" then
         callback_on_thread ()
+    elif named && args[0] == "shared_from_thread" then
+        shared_from_thread ()
     else
         2

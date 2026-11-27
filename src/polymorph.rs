@@ -7376,7 +7376,7 @@ impl Checker<'_> {
             Builtin::SyncMapReplace => Some("SyncMap"),
             // TZ07: every `Context` builtin is behind `std/Context.tz`.
             builtin if builtin.is_context() => Some("Context"),
-            Builtin::AnchorRelease => Some("Anchor"),
+            Builtin::AnchorRelease | Builtin::AnchorDetach => Some("Anchor"),
             _ => None,
         };
         if let Some(module) = sync_module

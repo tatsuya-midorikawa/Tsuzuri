@@ -54,6 +54,7 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::OnceValueGet
         | Builtin::CondWaitWith
         | Builtin::AnchorRead
+        | Builtin::AnchorReadShared
         | Builtin::AnchorUpdate
         | Builtin::DomainRun => Position::Inline,
 
@@ -182,6 +183,9 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::DynOf
         | Builtin::AnchorCreate
         | Builtin::AnchorRelease
+        | Builtin::AnchorCreateShared
+        | Builtin::AnchorDetach
+        | Builtin::AnchorReleaseShared
         | Builtin::ZStringLiteral
         | Builtin::ZUtf8StringLiteral
         | Builtin::ObjcRetain

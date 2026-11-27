@@ -5352,6 +5352,7 @@ typedef struct tzr_anchor_slot {
     uint32_t writer;
     uint32_t next_free;
     uint16_t retired;
+    uint16_t detached;   /* a shared anchor that Anchor.release_shared releases, not its owner's drop */
 } tzr_anchor_slot;
 
 static uint32_t tzr_anchor_gen_max = 0xFFFFFFu;
@@ -5413,10 +5414,12 @@ static void tzr_anchor_free_detached(tzr_anchor_detached d) {
     d.release(d.chunks);
 }
 
-TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*drop)(void *),
-                                         void *(*alloc)(int64_t), void (*release)(void *)) {
-    uint64_t pinned_gid = tzr_anchor_pin_current();
-    uint64_t owner = tzr_anchor_thread_id();
+/* An anchor of the calling thread (W23), or with `shared` one that every thread reads (M09 Phase 3):
+ * its owner is 0, which no thread's id is, and its creator is not pinned. */
+static int64_t tzr_anchor_new(void *box, const void *type, void (*drop)(void *),
+                              void *(*alloc)(int64_t), void (*release)(void *), int shared) {
+    uint64_t pinned_gid = shared ? 0 : tzr_anchor_pin_current();
+    uint64_t owner = shared ? 0 : tzr_anchor_thread_id();
     tzr_anchor_slot *spare_chunk = NULL;
     tzr_anchor_slot **spare_table = NULL;
     uint32_t spare_cap = 0;
@@ -5474,6 +5477,7 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
             slot->drop = drop;
             slot->readers = 0;
             slot->writer = 0;
+            slot->detached = 0;
             slot->next_free = UINT32_MAX;
             tzr_anchors.live++;
             tzr_anchors.active++;
@@ -5512,8 +5516,51 @@ TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*dro
     }
 }
 
+TZR_API int64_t tsuzuri_tz_anchor_create(void *box, const void *type, void (*drop)(void *),
+                                         void *(*alloc)(int64_t), void (*release)(void *)) {
+    return tzr_anchor_new(box, type, drop, alloc, release, 0);
+}
+
+TZR_API int64_t tsuzuri_tz_anchor_create_shared(void *box, const void *type, void (*drop)(void *),
+                                                void *(*alloc)(int64_t), void (*release)(void *)) {
+    return tzr_anchor_new(box, type, drop, alloc, release, 1);
+}
+
+/* Anchor.read_shared: begins a read of a shared anchor on any thread, one that has not joined the
+ * runtime too. Status: 0 = ok, 1 = Stale, 2 = WrongType (another value type, or an anchor of one
+ * thread). tsuzuri_tz_anchor_end(token, 0) ends the read; the last read of a released anchor drops
+ * its value. */
+TZR_API int32_t tsuzuri_tz_anchor_begin_shared(int64_t token, const void *type, void **box) {
+    if (token <= 0) return 1;
+    uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
+    uint32_t gen = (uint32_t)(((uint64_t)token >> 24) & TZR_ANCHOR_IDX_MASK);
+    uint32_t epoch = (uint32_t)(((uint64_t)token >> 48) & TZR_ANCHOR_EPOCH_MAX);
+    if (idx1 == 0 || gen == 0 || epoch == 0) return 1;
+    uint32_t idx = idx1 - 1u;
+
+    tzr_lock_acquire(&tzr_anchors.lock);
+    if (epoch != tzr_anchors.epoch || idx >= tzr_anchors.slot_count) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 1;
+    }
+    tzr_anchor_slot *slot = tzr_anchor_at(idx);
+    if (slot->state != TZR_ANCHOR_LIVE || slot->generation != gen) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 1;
+    }
+    if (slot->owner != 0 || slot->type != type) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 2;
+    }
+    slot->readers++;
+    *box = slot->box;
+    tzr_lock_release(&tzr_anchors.lock);
+    return 0;
+}
+
 /* Status: 0 = ok, 1 = Stale, 2 = WrongType, 3 = WrongThread, 4 = Busy.
- * Check order (W23 spec 2): Stale -> WrongThread -> WrongType -> Busy. */
+ * Check order (W23 spec 2): Stale -> WrongThread -> WrongType -> Busy. A shared anchor belongs to no
+ * thread and is read with Anchor.read_shared only: WrongType. */
 TZR_API int32_t tsuzuri_tz_anchor_begin(int64_t token, const void *type, int32_t exclusive, void **box) {
     if (token <= 0) return 1;
     uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
@@ -5532,6 +5579,10 @@ TZR_API int32_t tsuzuri_tz_anchor_begin(int64_t token, const void *type, int32_t
     if (slot->state != TZR_ANCHOR_LIVE || slot->generation != gen) {
         tzr_lock_release(&tzr_anchors.lock);
         return 1;
+    }
+    if (slot->owner == 0) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 2;
     }
     if (slot->owner != caller) {
         tzr_lock_release(&tzr_anchors.lock);
@@ -5604,23 +5655,31 @@ TZR_API int32_t tsuzuri_tz_anchor_end(int64_t token, int32_t exclusive) {
     return 0;
 }
 
-TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
-    if (token <= 0) return;
+/* Retires the anchor of `token`: later reads are Stale, and its value is dropped now, or by the
+ * end of the last borrow that holds it. `by_token` 0 is the drop of the owner, which leaves a
+ * detached shared anchor alone; 1 is Anchor.release_shared, which releases only a detached one.
+ * Returns whether it retired the anchor. */
+static int32_t tzr_anchor_retire(int64_t token, int by_token) {
+    if (token <= 0) return 0;
     uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
     uint32_t gen = (uint32_t)(((uint64_t)token >> 24) & TZR_ANCHOR_IDX_MASK);
     uint32_t epoch = (uint32_t)(((uint64_t)token >> 48) & TZR_ANCHOR_EPOCH_MAX);
-    if (idx1 == 0 || gen == 0 || epoch == 0) return;
+    if (idx1 == 0 || gen == 0 || epoch == 0) return 0;
     uint32_t idx = idx1 - 1u;
 
     tzr_lock_acquire(&tzr_anchors.lock);
     if (epoch != tzr_anchors.epoch || idx >= tzr_anchors.slot_count) {
         tzr_lock_release(&tzr_anchors.lock);
-        return;
+        return 0;
     }
     tzr_anchor_slot *slot = tzr_anchor_at(idx);
     if (slot->state != TZR_ANCHOR_LIVE || slot->generation != gen) {
         tzr_lock_release(&tzr_anchors.lock);
-        return;
+        return 0;
+    }
+    if (by_token ? (slot->owner != 0 || !slot->detached) : slot->detached) {
+        tzr_lock_release(&tzr_anchors.lock);
+        return 0;
     }
     if (slot->generation < tzr_anchor_gen_max) {
         slot->generation++;
@@ -5633,7 +5692,7 @@ TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
     if (slot->readers > 0 || slot->writer != 0) {
         /* Keep pinned_gid on the DYING slot until tsuzuri_tz_anchor_end finishes dropping box. */
         tzr_lock_release(&tzr_anchors.lock);
-        return;
+        return 1;
     }
     void *box = slot->box;
     void (*drop)(void *) = slot->drop;
@@ -5647,4 +5706,27 @@ TZR_API void tsuzuri_tz_anchor_release(int64_t token) {
     tzr_anchor_detached detached = tzr_anchor_finish_dying(idx);
     tzr_lock_release(&tzr_anchors.lock);
     tzr_anchor_free_detached(detached);
+    return 1;
+}
+
+TZR_API void tsuzuri_tz_anchor_release(int64_t token) { (void)tzr_anchor_retire(token, 0); }
+
+/* Anchor.release_shared: 1 when `token` named a detached shared anchor, which it retires. */
+TZR_API int32_t tsuzuri_tz_anchor_release_shared(int64_t token) { return tzr_anchor_retire(token, 1); }
+
+/* Anchor.detach_shared: the owner gives the shared anchor of `token` up; its drop then leaves the
+ * value, which stays until Anchor.release_shared names the token. */
+TZR_API void tsuzuri_tz_anchor_detach(int64_t token) {
+    if (token <= 0) return;
+    uint32_t idx1 = (uint32_t)((uint64_t)token & TZR_ANCHOR_IDX_MASK);
+    uint32_t gen = (uint32_t)(((uint64_t)token >> 24) & TZR_ANCHOR_IDX_MASK);
+    uint32_t epoch = (uint32_t)(((uint64_t)token >> 48) & TZR_ANCHOR_EPOCH_MAX);
+    if (idx1 == 0 || gen == 0 || epoch == 0) return;
+    uint32_t idx = idx1 - 1u;
+    tzr_lock_acquire(&tzr_anchors.lock);
+    if (epoch == tzr_anchors.epoch && idx < tzr_anchors.slot_count) {
+        tzr_anchor_slot *slot = tzr_anchor_at(idx);
+        if (slot->state == TZR_ANCHOR_LIVE && slot->generation == gen && slot->owner == 0) slot->detached = 1;
+    }
+    tzr_lock_release(&tzr_anchors.lock);
 }

@@ -1824,6 +1824,18 @@ pub enum Builtin {
     AnchorRead,
     AnchorUpdate,
     AnchorRelease,
+    /// `Anchor.create_shared :: (Send<'a>, Sync<'a>) => 'a -> Anchor.Shared<'a>` (M09 Phase 3):
+    /// stores the value in the anchor table for every thread to read.
+    AnchorCreateShared,
+    /// `Anchor.read_shared :: (ref 'a -> 'b) -> i64 -> Result<'b, Anchor.Error>`: reads a shared
+    /// anchor on any thread, also one that has not joined the runtime.
+    AnchorReadShared,
+    /// `Anchor.__detach :: i64 -> unit`: the body of `Anchor.detach_shared`, private to
+    /// `std/Anchor.tz`: the value stays until `Anchor.release_shared` names its token.
+    AnchorDetach,
+    /// `Anchor.release_shared :: i64 -> bool`: drops the value of a detached shared anchor once no
+    /// read holds it; whether the token named one.
+    AnchorReleaseShared,
     /// W20: `ZString.literal :: string -> ref ZString`, rewritten to a borrow of static UTF-16+NUL data.
     ZStringLiteral,
     /// M06: `ZUtf8String.literal :: string -> ref ZUtf8String`, rewritten to a borrow of static UTF-8+NUL data.
@@ -2480,6 +2492,10 @@ impl Builtin {
         Self::AnchorRead,
         Self::AnchorUpdate,
         Self::AnchorRelease,
+        Self::AnchorCreateShared,
+        Self::AnchorReadShared,
+        Self::AnchorDetach,
+        Self::AnchorReleaseShared,
         Self::ZStringLiteral,
         Self::ZUtf8StringLiteral,
         Self::ObjcRetain,
@@ -2876,6 +2892,10 @@ impl Builtin {
             Self::AnchorRead => "Anchor.read",
             Self::AnchorUpdate => "Anchor.update",
             Self::AnchorRelease => "Anchor.__release",
+            Self::AnchorCreateShared => "Anchor.create_shared",
+            Self::AnchorReadShared => "Anchor.read_shared",
+            Self::AnchorDetach => "Anchor.__detach",
+            Self::AnchorReleaseShared => "Anchor.release_shared",
             Self::ZStringLiteral => "ZString.literal",
             Self::ZUtf8StringLiteral => "ZUtf8String.literal",
             Self::ObjcRetain => "ObjC.retain",
@@ -3666,9 +3686,14 @@ impl Builtin {
             // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
             Self::DynOf => (vec![a()], Var("b"), Vec::new()),
             Self::FnPtrOf => (vec![a()], BuiltinType::FnPtr(Box::new(a())), Vec::new()),
-            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
-                self.anchor_scheme()
-            }
+            Self::AnchorCreate
+            | Self::AnchorRead
+            | Self::AnchorUpdate
+            | Self::AnchorRelease
+            | Self::AnchorCreateShared
+            | Self::AnchorReadShared
+            | Self::AnchorDetach
+            | Self::AnchorReleaseShared => self.anchor_scheme(),
             // M01: the type arguments are Objective-C classes, which `validate_objc_builtins`
             // checks where the program calls them; a scheme cannot say it.
             Self::ObjcRetain => (vec![Reference(Box::new(a()), false)], a(), Vec::new()),
@@ -4579,7 +4604,14 @@ impl Builtin {
     pub(crate) fn is_anchor(self) -> bool {
         matches!(
             self,
-            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease
+            Self::AnchorCreate
+                | Self::AnchorRead
+                | Self::AnchorUpdate
+                | Self::AnchorRelease
+                | Self::AnchorCreateShared
+                | Self::AnchorReadShared
+                | Self::AnchorDetach
+                | Self::AnchorReleaseShared
         )
     }
 
@@ -4597,7 +4629,7 @@ impl Builtin {
         let result_of = |ok| std("Result", "Result", vec![ok, error()]);
         match self {
             Self::AnchorCreate => (vec![a()], std("Anchor", "Anchor", vec![a()]), Vec::new()),
-            Self::AnchorRead => (
+            Self::AnchorRead | Self::AnchorReadShared => (
                 vec![
                     Function(vec![Reference(Box::new(a()), false)], Box::new(b())),
                     Concrete(Type::I64),
@@ -4605,6 +4637,25 @@ impl Builtin {
                 result_of(b()),
                 Vec::new(),
             ),
+            // Every thread may read the value at once, and the thread of the last read drops it.
+            Self::AnchorCreateShared => (
+                vec![a()],
+                std("Anchor", "Shared", vec![a()]),
+                vec![
+                    BuiltinConstraint {
+                        class: "Send",
+                        ty: a(),
+                    },
+                    BuiltinConstraint {
+                        class: "Sync",
+                        ty: a(),
+                    },
+                ],
+            ),
+            Self::AnchorDetach => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
+            Self::AnchorReleaseShared => {
+                (vec![Concrete(Type::I64)], Concrete(Type::Bool), Vec::new())
+            }
             Self::AnchorUpdate => (
                 vec![Function(vec![a()], Box::new(a())), Concrete(Type::I64)],
                 result_of(Concrete(Type::Unit)),

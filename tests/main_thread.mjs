@@ -176,7 +176,17 @@ try {
       wrong.stderr,
       /Tsuzuri runtime: a callback that uses main-thread handles was called on another thread/,
     );
-    ran += 3;
+    // Phase 3: a thread of the host that has not joined the runtime reads a shared anchor and
+    // sends 41 + 1 to a tzroutine through the channel in it.
+    for (const procs of [1, 4]) {
+      const shared = must(executable, ["shared_from_thread"], {
+        env: { ...env, TSUZURI_MAXPROCS: String(procs) },
+        timeout: 15_000,
+      });
+      assert.equal(shared.stdout, "tzroutine received 42\n", `${optimization} P${procs}`);
+      assert.equal(shared.stderr, "", `${optimization} P${procs}`);
+    }
+    ran += 5;
   }
 
   // The counting allocator: the boxes of the functions that ran and of those that were dropped are
