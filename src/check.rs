@@ -5638,6 +5638,10 @@ pub struct HostImport {
     /// M01: declared `@returns_retained`: the Objective-C object that the function returns is a
     /// +1 reference, which the caller owns without retaining it.
     pub returns_retained: bool,
+    /// M02: a message send: the function stands for one member of an `extern class` or
+    /// `extern category` called on one class, and lowers to a call of `objc_msgSend` with the
+    /// member's C types instead of a call of `native_symbol`.
+    pub objc: Option<Box<crate::objc::ObjcSend>>,
 }
 
 impl HostImport {
@@ -5649,7 +5653,7 @@ impl HostImport {
 
     /// Whether calls lower inline at each call site without a standalone function body or C prototype.
     pub fn lowers_inline(&self) -> bool {
-        self.view.is_some() || self.data.is_some()
+        self.view.is_some() || self.data.is_some() || self.objc.is_some()
     }
 
     /// Explicit C symbol name for `@link` resolution (function `native_symbol` when explicit, or `data.symbol`).
@@ -6518,6 +6522,10 @@ struct Names {
     /// Whether some type expression named `ObjC.Object`, whose values are bound to their thread
     /// like those of an `extern type local` (M01).
     objc_object_used: std::sync::atomic::AtomicBool,
+    /// The function that stands for a member called on a class or category, by the qualified
+    /// name of that class or category and the member's name (M02). Only the pairs that some
+    /// expression of the program spells are there.
+    objc_sends: BTreeMap<(String, String), usize>,
     /// Number of type parameters of each record declaration, by record id.
     record_arities: Vec<usize>,
     /// The qualified name of each record declaration, by record id: the canonical order of anonymous
@@ -7757,6 +7765,33 @@ impl Names {
         self.check_module(module, name, span)
     }
 
+    /// M02: the qualified name of the `extern class` or `extern category` that `path` names from
+    /// `module`, when it names one: the owner of `path.member`.
+    fn objc_class(&self, module: &str, path: &str, span: Span) -> Option<String> {
+        if self.objc.is_empty() {
+            return None;
+        }
+        // A category is no type: its own module names it bare, another one with the module.
+        let own = format!("{module}.{path}");
+        if self.objc.categories.contains_key(&own) {
+            return Some(own);
+        }
+        if let Some(category) = self.objc.categories.get(path)
+            && (category.public || category.name.rsplit_once('.').map(|(owner, _)| owner) == Some(module))
+            && self.searchable_path(module, path)
+        {
+            return Some(path.to_owned());
+        }
+        match self.quiet_named_type(module, path, span)? {
+            NamedType::Handle(info)
+                if self.objc.classes.contains_key(&info.name) && info.visible_from(module) =>
+            {
+                Some(info.name.clone())
+            }
+            _ => None,
+        }
+    }
+
     fn type_choice(&self, module: &str, name: &str) -> Choice<NamedType<'_>> {
         // M01: `ObjC.Object`, `ObjC.Class` and `ObjC.Sel` belong to a built-in module without a
         // source file, which no module search finds.
@@ -8971,6 +9006,7 @@ fn check_modules_collect(
                     framework: None,
                     weak: false,
                     returns_retained: false,
+                    objc: None,
                 }
             } else if external.view {
                 HostImport {
@@ -8986,6 +9022,7 @@ fn check_modules_collect(
                     framework: None,
                     weak: false,
                     returns_retained: false,
+                    objc: None,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -9007,6 +9044,7 @@ fn check_modules_collect(
                     framework: None,
                     weak: false,
                     returns_retained: false,
+                    objc: None,
                 }
             } else {
                 let native_symbol = format!(
@@ -9030,6 +9068,7 @@ fn check_modules_collect(
                     framework: None,
                     weak: false,
                     returns_retained: false,
+                    objc: None,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -9761,6 +9800,14 @@ fn check_modules_collect(
         &mut function_declarations,
         diagnostics,
     )?;
+    // M02: one function for each member of an `extern class` or `extern category` that the
+    // program may call, after every other declaration so that their ids stay as they are.
+    let objc_members = declare_objc_sends(
+        &mut names,
+        &mut function_declarations,
+        &mut external_functions,
+        &mut trusted_by_id,
+    );
     for head in classes.drop_heads() {
         match head {
             Type::Record(id, _) => records[*id].user_drop = true,
@@ -10042,7 +10089,17 @@ fn check_modules_collect(
                         function.name.span,
                     ));
                 }
-                if let Some(data) = external_functions[&id].data.clone() {
+                if external_functions[&id].objc.is_some() {
+                    // M02: a member is validated once, on the class or category that declares
+                    // it; the function of a derived class repeats the same declaration.
+                    if let Some(check) = objc_members.get(&id) {
+                        let send = external_functions[&id]
+                            .objc
+                            .as_deref()
+                            .expect("checked above");
+                        validate_objc_member(function, &signature, check, send, &types)?;
+                    }
+                } else if let Some(data) = external_functions[&id].data.clone() {
                     if let Some((_, _, _, _, first_fn_span)) = explicit_symbols.get(&data.symbol) {
                         return Err(Diagnostic::of(
                             DiagnosticKind::ConflictingExternDeclaration,
@@ -11820,6 +11877,18 @@ fn validate_callbacks(module: &CheckedModule) -> Result<(), Diagnostic> {
             &module.functions[id].body.kind,
             TypedExprKind::HostCall(import, _) if import.data.is_some()
         );
+        if let TypedExprKind::HostCall(import, _) = &module.functions[id].body.kind
+            && let Some(send) = &import.objc
+        {
+            return Diagnostic::of(
+                DiagnosticKind::ObjcMethodNotCalled,
+                format!(
+                    "'{}' sends a message and must be called directly with all its arguments; it cannot be a function value or be applied in part",
+                    send.display
+                ),
+                span,
+            );
+        }
         Diagnostic::of(
             DiagnosticKind::ExternViewCallForm,
             if is_data {
@@ -12358,7 +12427,7 @@ fn resolve_objc_classes(
                     depth: 0,
                     public: class.visibility == Visibility::Public,
                     span: class.name.span,
-                    members: Vec::new(),
+                    members: objc_member_infos(&class.members, module.name),
                 },
             );
         }
@@ -12432,7 +12501,506 @@ fn resolve_objc_classes(
     for name in rejected {
         classes.remove(&name);
     }
+    // M02: a member name is declared once in a chain, the bases included: `C.m` names one member.
+    let duplicate_member = |member: &crate::objc::ObjcMemberInfo, owner: &str| {
+        Diagnostic::of(
+            DiagnosticKind::DuplicateObjcMember,
+            format!(
+                "'{}' is declared more than once for '{}' (its bases included); a selector may have several names, but a name stands for one member, so rename one",
+                member.name,
+                type_display(owner)
+            ),
+            member.span,
+        )
+    };
+    for name in &names_in_order {
+        let Some(info) = classes.get(name) else {
+            continue;
+        };
+        let mut seen = BTreeSet::new();
+        let mut base = info.base.as_deref();
+        while let Some(current) = base.and_then(|base| classes.get(base)) {
+            seen.extend(current.members.iter().map(|member| member.name.as_str()));
+            base = current.base.as_deref();
+        }
+        for member in &info.members {
+            if diagnostics.is_full() {
+                break;
+            }
+            if !seen.insert(member.name.as_str()) {
+                diagnostics.push(duplicate_member(member, name));
+            }
+        }
+    }
     names.objc.classes = classes;
+    // M02: the categories. A category is a namespace of members, not a type; its name shares the
+    // module's type names so that `Name.member` stays unambiguous.
+    for module in modules {
+        for category in &module.program.extern_categories {
+            if diagnostics.is_full() {
+                return;
+            }
+            let qualified = format!("{}.{}", module.name, category.name.text);
+            if reserved_type_name(&category.name.text)
+                || names.records.contains_key(&qualified)
+                || names.unions.contains_key(&qualified)
+                || names.handles.contains_key(&qualified)
+                || names.type_aliases.contains_key(&qualified)
+                || names.objc.categories.contains_key(&qualified)
+            {
+                diagnostics.push(duplicate(&category.name));
+                continue;
+            }
+            let TypeExprKind::Named(class_name) = &category.class.kind else {
+                unreachable!("the parser reads the class of an extern category as a name")
+            };
+            let class = match names.named_type(module.name, class_name, category.class.span) {
+                Ok(NamedType::Handle(info))
+                    if names.handle_kinds[info.id].objc()
+                        && names.objc.classes.contains_key(&info.name) =>
+                {
+                    if let Err(error) =
+                        info.require_visible("extern class", module.name, category.class.span)
+                    {
+                        diagnostics.push(error);
+                        continue;
+                    }
+                    info.name.clone()
+                }
+                Ok(_) => {
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::ObjcClassBaseNotClass,
+                        format!(
+                            "an extern category adds members to an extern class; '{class_name}' is not one"
+                        ),
+                        category.class.span,
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    diagnostics.push(error);
+                    continue;
+                }
+            };
+            let members = objc_member_infos(&category.members, module.name);
+            let mut seen = BTreeSet::new();
+            for member in &members {
+                if !seen.insert(member.name.as_str()) {
+                    diagnostics.push(duplicate_member(member, &qualified));
+                }
+            }
+            names.objc.categories.insert(
+                qualified.clone(),
+                crate::objc::ObjcCategoryInfo {
+                    name: qualified,
+                    class,
+                    trusted: category.trusted.is_some(),
+                    public: category.visibility == Visibility::Public,
+                    span: category.name.span,
+                    members,
+                },
+            );
+        }
+    }
+}
+
+/// M02: what the checker still has to validate of a member, by the id of the function that
+/// stands for it on the class or category that declares it.
+struct ObjcMemberCheck {
+    /// The span of the written selector, or of the name.
+    selector_span: Span,
+    /// Whether the selector is written; a member with arguments must write it.
+    written: bool,
+    /// The span of `@returns_retained` or `@returns_not_retained`.
+    returns: Option<Span>,
+    /// Whether the function takes the receiver as its first parameter.
+    receiver: bool,
+}
+
+/// M02: declares the functions that stand for message sends. A member `m` of the class `D` is
+/// called as `C.m` for `D` and every class `C` that derives from it, with `Self` and the receiver
+/// typed as `C`; each pair `(C, m)` is one function whose body is a `HostCall` that lowers to
+/// `objc_msgSend` where it is called. Every member gets the function of its own class (or
+/// category), which also carries the validation of the declaration; a pair of a derived class
+/// and an inherited member is declared only when some expression of the program spells it.
+/// Returns the checks of the declared members by function id. Without members nothing changes.
+fn declare_objc_sends(
+    names: &mut Names,
+    function_declarations: &mut Vec<(String, FunctionDecl)>,
+    external_functions: &mut BTreeMap<usize, HostImport>,
+    trusted_by_id: &mut BTreeMap<usize, u8>,
+) -> BTreeMap<usize, ObjcMemberCheck> {
+    let mut checks = BTreeMap::new();
+    let member_names: BTreeSet<&str> = names
+        .objc
+        .classes
+        .values()
+        .flat_map(|class| class.members.iter())
+        .chain(
+            names
+                .objc
+                .categories
+                .values()
+                .flat_map(|category| category.members.iter()),
+        )
+        .map(|member| member.name.as_str())
+        .collect();
+    if member_names.is_empty() {
+        return checks;
+    }
+    // The pairs of an owner (the qualified name of a class or category) and a member name.
+    let mut pairs: BTreeSet<(String, String)> = BTreeSet::new();
+    for (qualified, class) in &names.objc.classes {
+        for member in &class.members {
+            pairs.insert((qualified.clone(), member.name.clone()));
+        }
+    }
+    for (qualified, category) in &names.objc.categories {
+        for member in &category.members {
+            pairs.insert((qualified.clone(), member.name.clone()));
+        }
+    }
+    // The inherited members that the program names: `Owner.member` spelled in some body.
+    for (module, function) in function_declarations.iter() {
+        let mut visit = |expression: &Expr| {
+            let ExprKind::Field(_, field) = &expression.kind else {
+                return;
+            };
+            if !member_names.contains(field.text.as_str()) {
+                return;
+            }
+            let Some((path, _)) = expression_path(expression) else {
+                return;
+            };
+            let Some((owner, member)) = path.rsplit_once('.') else {
+                return;
+            };
+            if let Some(class) = names.objc_class(module, owner, expression.span)
+                && names.objc.member(&class, member).is_some()
+            {
+                pairs.insert((class, member.to_owned()));
+            }
+        };
+        function.body.visit(&mut visit);
+        for contract in &function.contracts {
+            contract.condition.visit(&mut visit);
+        }
+    }
+    let named = |name: String, span: Span| TypeExpr {
+        kind: TypeExprKind::Named(name),
+        span,
+    };
+    for (owner, member_name) in pairs {
+        // The class that receives the message, the declaration of the member, and whether the
+        // owner declares the member itself (its function validates the declaration).
+        let (class, member, own, trusted) = match names.objc.categories.get(&owner) {
+            Some(category) => {
+                let Some(member) = category
+                    .members
+                    .iter()
+                    .find(|member| member.name == member_name)
+                else {
+                    continue;
+                };
+                (category.class.clone(), member.clone(), true, category.trusted)
+            }
+            None => {
+                let Some(declaring) = names.objc.chain(&owner).into_iter().find(|class| {
+                    class
+                        .members
+                        .iter()
+                        .any(|member| member.name == member_name)
+                }) else {
+                    continue;
+                };
+                let member = declaring
+                    .members
+                    .iter()
+                    .find(|member| member.name == member_name)
+                    .expect("found above")
+                    .clone();
+                (
+                    owner.clone(),
+                    member,
+                    declaring.name == owner,
+                    declaring.trusted,
+                )
+            }
+        };
+        let Some(runtime_name) = names.objc.runtime_name(&class).map(str::to_owned) else {
+            continue;
+        };
+        let declaration = &member.declaration;
+        let span = declaration.name.span;
+        let this = |span: Span| named(key_path(&class), span);
+        // `Self` and `Maybe<Self>` stand for the class that the call names (instancetype).
+        let result = match &declaration.result.kind {
+            TypeExprKind::Named(word) if word == "Self" => this(declaration.result.span),
+            TypeExprKind::Apply(head, arguments)
+                if matches!(
+                    arguments.as_ref(),
+                    [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "Self"
+                ) =>
+            {
+                TypeExpr {
+                    kind: TypeExprKind::Apply(
+                        head.clone(),
+                        vec![this(arguments[0].span)].into_boxed_slice(),
+                    ),
+                    span: declaration.result.span,
+                }
+            }
+            _ => declaration.result.clone(),
+        };
+        // A family applies to a member that returns an object; `init` only to an instance method
+        // (clang's rule). The object types are the classes and `ObjC.Object`.
+        let result_object = {
+            let payload = match &result.kind {
+                TypeExprKind::Apply(head, arguments)
+                    if head.text == "Maybe" && arguments.len() == 1 =>
+                {
+                    &arguments[0]
+                }
+                _ => &result,
+            };
+            matches!(
+                &payload.kind,
+                TypeExprKind::Named(name)
+                    if matches!(
+                        names.quiet_named_type(&member.module, name, payload.span),
+                        Some(NamedType::Handle(info)) if names.handle_kinds[info.id].objc()
+                    )
+            )
+        };
+        let family = crate::objc::method_family(&member.selector).filter(|family| {
+            result_object && (*family != crate::objc::Family::Init || !member.class_method)
+        });
+        let retained = match declaration.returns {
+            Some((retained, _)) => retained,
+            None => family.is_some(),
+        };
+        let mut parameters = Vec::new();
+        if !member.class_method {
+            // The receiver is borrowed (+0); `init` consumes it and hands back the result.
+            let receiver = this(span);
+            parameters.push(if family == Some(crate::objc::Family::Init) {
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::Own(Box::new(receiver)),
+                }
+            } else {
+                TypeExpr {
+                    span,
+                    kind: TypeExprKind::Reference(Box::new(receiver), false),
+                }
+            });
+        }
+        // A method without arguments is written `unit -> R`; with a receiver the `unit` goes.
+        let takes_nothing = matches!(
+            declaration.parameters.as_slice(),
+            [TypeExpr { kind: TypeExprKind::Named(word), .. }] if word == "unit"
+        );
+        if member.class_method || !takes_nothing {
+            parameters.extend(declaration.parameters.iter().cloned());
+        }
+        let id = function_declarations.len();
+        let short = |qualified: &str| qualified.rsplit('.').next().unwrap_or(qualified).to_owned();
+        let display = format!("{}.{}", short(&owner), member.name);
+        external_functions.insert(
+            id,
+            HostImport {
+                native_symbol: "objc_msgSend".to_owned(),
+                wasm_module: "tsuzuri".to_owned(),
+                wasm_name: "objc_msgSend".to_owned(),
+                explicit: false,
+                callbacks: false,
+                counts: Vec::new(),
+                view: None,
+                data: None,
+                library: None,
+                framework: None,
+                weak: false,
+                returns_retained: retained,
+                objc: Some(Box::new(crate::objc::ObjcSend {
+                    selector: member.selector.clone(),
+                    class: member.class_method.then_some(runtime_name),
+                    retained,
+                    display,
+                    owner: owner.clone(),
+                })),
+            },
+        );
+        if trusted {
+            trusted_by_id.insert(id, 0);
+        }
+        if own {
+            checks.insert(
+                id,
+                ObjcMemberCheck {
+                    selector_span: declaration
+                        .selector
+                        .as_ref()
+                        .map_or(span, |(_, span)| *span),
+                    written: declaration.selector.is_some(),
+                    returns: declaration.returns.map(|(_, span)| span),
+                    receiver: !member.class_method,
+                },
+            );
+        }
+        names
+            .objc_sends
+            .insert((owner.clone(), member.name.clone()), id);
+        function_declarations.push((
+            member.module.clone(),
+            FunctionDecl {
+                doc: None,
+                name: Ident {
+                    // No source name has a '$', so the function cannot collide with a declaration.
+                    text: format!("$objc${}${}", owner.replace('.', "$"), member.name),
+                    span,
+                    provenance: Provenance::Generated,
+                },
+                regions: Vec::new(),
+                recursion: None,
+                visibility: Visibility::Public,
+                exported: false,
+                constant: false,
+                pure: false,
+                parameters: parameters
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, ty)| Parameter {
+                        name: Ident {
+                            text: format!("$host_arg{index}"),
+                            span: ty.span,
+                            provenance: Provenance::Generated,
+                        },
+                        mutable: false,
+                        ty,
+                        json: None,
+                    })
+                    .collect(),
+                result,
+                constraints: Vec::new(),
+                body: Expr {
+                    kind: ExprKind::Unit,
+                    span,
+                    depth: 1,
+                },
+                contracts: Vec::new(),
+            },
+        ));
+    }
+    checks
+}
+
+/// M02 specs 2 and 5: checks the declaration of a member with its resolved types: the selector's
+/// shape and length, that its colons count the C arguments, the types that a message carries,
+/// and that an ownership attribute stands before an object result.
+fn validate_objc_member(
+    function: &FunctionDecl,
+    signature: &Signature,
+    check: &ObjcMemberCheck,
+    send: &crate::objc::ObjcSend,
+    types: &TypeContext<'_>,
+) -> Result<(), Diagnostic> {
+    let span = function.name.span;
+    objc_selector(&send.selector, check.selector_span)?;
+    let parameters = &signature.parameters[usize::from(check.receiver)..];
+    let arguments = parameters
+        .iter()
+        .filter(|parameter| **parameter != Type::Unit)
+        .count();
+    if !check.written && arguments > 0 {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcSelectorArity,
+            format!(
+                "member '{}' takes arguments, so it writes its selector before the name, as in \"setTitle:\" set_title :: ref NSString -> unit",
+                send.display
+            ),
+            span,
+        ));
+    }
+    match crate::abi::objc_member_types(parameters, &signature.result, types) {
+        Ok(()) => {}
+        Err(crate::abi::ObjcMemberError::OwnedArgument) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcOwnedObjectArgument,
+                "a message borrows its Objective-C arguments; write the parameter as 'ref C' or 'Maybe<ref C>'",
+                span,
+            ));
+        }
+        Err(crate::abi::ObjcMemberError::Position) => return Err(objc_position(span)),
+        Err(crate::abi::ObjcMemberError::Type) => {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcMemberType,
+                format!(
+                    "member '{}' has a type that a message cannot carry; parameters are scalars, objects as 'ref C', handles, 'ref' and 'ref mut' records and scalars, buffers, callbacks and '@c_layout' records by value, and results are scalars, unit, objects, handles and '@c_layout' records; a record without '@c_layout' and a buffer result are not passed as hidden pointers",
+                    send.display
+                ),
+                span,
+            ));
+        }
+    }
+    let colons = crate::objc::selector_arity(&send.selector);
+    let lowered = crate::abi::objc_c_arguments(parameters);
+    if lowered != colons {
+        if arguments > colons {
+            return Err(Diagnostic::of(
+                DiagnosticKind::ObjcVariadicMethod,
+                format!(
+                    "member '{}' takes {arguments} arguments, but its selector '{}' has {colons} colon(s); arguments beyond the colons would be variadic, which a member cannot declare",
+                    send.display, send.selector
+                ),
+                check.selector_span,
+            ));
+        }
+        let buffers = parameters
+            .iter()
+            .any(|parameter| crate::abi::extern_buffer_parameter(parameter).is_some());
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcSelectorArity,
+            format!(
+                "the selector '{}' of member '{}' has {colons} colon(s), but the member passes {lowered} C argument(s){}; write one colon for each",
+                send.selector,
+                send.display,
+                if buffers {
+                    " (a buffer passes two: its pointer and its length)"
+                } else {
+                    ""
+                }
+            ),
+            check.selector_span,
+        ));
+    }
+    if let Some(attribute) = check.returns
+        && !crate::abi::objc_object_result(&signature.result, types)
+    {
+        return Err(Diagnostic::of(
+            DiagnosticKind::ObjcReturnsRetainedNotObject,
+            "'@returns_retained' and '@returns_not_retained' say who owns an Objective-C object result; this member returns no extern class value, so remove the attribute",
+            attribute,
+        ));
+    }
+    Ok(())
+}
+
+/// M02: the members of an `extern class` or `extern category` of `module`, as declared.
+fn objc_member_infos(
+    members: &[crate::syntax::ObjcMember],
+    module: &str,
+) -> Vec<crate::objc::ObjcMemberInfo> {
+    members
+        .iter()
+        .map(|member| crate::objc::ObjcMemberInfo {
+            name: member.name.text.clone(),
+            selector: member.selector().to_owned(),
+            class_method: member.class_method.is_some(),
+            module: module.to_owned(),
+            span: member.name.span,
+            declaration: member.clone(),
+        })
+        .collect()
 }
 
 fn duplicate(name: &Ident) -> Diagnostic {
@@ -21850,6 +22418,13 @@ impl<'a> Checker<'a> {
             ExprKind::Field(_, field) => field.span,
             _ => expression.span,
         };
+        // M02: `Class.member` and `Category.member` name the function that sends the message.
+        if let Some((owner, member)) = path.rsplit_once('.')
+            && let Some(owner) = self.names.objc_class(self.module, owner, span)
+            && let Some(&id) = self.names.objc_sends.get(&(owner, member.to_owned()))
+        {
+            return Ok(Some(self.function(id)));
+        }
         self.names.check_path(self.module, &path, span)?;
         if let Some(canonical) = self.names.canonical(self.module, &path) {
             let standard = canonical.split_once('.').is_some_and(|(module, _)| {

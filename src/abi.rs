@@ -621,6 +621,70 @@ pub fn objc_object_result(ty: &Type, types: &TypeContext<'_>) -> bool {
     std_maybe_payload(ty, types).unwrap_or(ty).is_objc_object()
 }
 
+/// M02 spec 5: what is wrong with the type of a member of an `extern class`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjcMemberError {
+    /// An owned object as an argument (the receiver of `init` aside).
+    OwnedArgument,
+    /// An Objective-C type in a position that takes none (M01 spec 3).
+    Position,
+    /// A type that a message cannot carry: a record without `@c_layout` by value, a buffer or
+    /// record result, a wide number, or any other aggregate.
+    Type,
+}
+
+/// M02 spec 5: checks the parameters after the receiver and the result of a member. A parameter
+/// is what an `extern def` takes (scalars, handles, `ref` and `ref mut` of records and scalars,
+/// buffers, callbacks, `FnPtr`) or a `@c_layout` record by value; a record without `@c_layout`
+/// by value is refused instead of passed as a pointer. A result is a scalar, `unit`, an object,
+/// a handle, a `Maybe` of those, or a `@c_layout` record by value.
+pub fn objc_member_types(
+    parameters: &[Type],
+    result: &Type,
+    types: &TypeContext<'_>,
+) -> Result<(), ObjcMemberError> {
+    match objc_extern_misuse(parameters, result, types) {
+        Some(ObjcMisuse::OwnedArgument) => return Err(ObjcMemberError::OwnedArgument),
+        Some(ObjcMisuse::Position) => return Err(ObjcMemberError::Position),
+        None => {}
+    }
+    let alone = matches!(parameters, [Type::Unit]);
+    for parameter in parameters {
+        let allowed = match parameter {
+            Type::Unit => alone,
+            Type::Function(..) => callback(parameter, types),
+            Type::FnPtr(_) => fnptr(parameter, types),
+            Type::Record(..) => c_layout_record(parameter, types),
+            _ => extern_parameter(parameter, types),
+        };
+        if !allowed || has_invalid_extern_maybe(std::slice::from_ref(parameter), &Type::Unit, types)
+        {
+            return Err(ObjcMemberError::Type);
+        }
+    }
+    let scalar = result.exportable()
+        || *result == Type::Unit
+        || is_handle(result)
+        || matches!(nullable(result, types), Some(Nullable::Handle(_)));
+    if !scalar && !c_layout_record(result, types) {
+        return Err(ObjcMemberError::Type);
+    }
+    Ok(())
+}
+
+/// M02 spec 2: the C arguments that the parameters after the receiver lower to: none for `unit`,
+/// a pointer and a length for a buffer, one for anything else.
+pub fn objc_c_arguments(parameters: &[Type]) -> usize {
+    parameters
+        .iter()
+        .map(|parameter| match parameter {
+            Type::Unit => 0,
+            _ if extern_buffer_parameter(parameter).is_some() => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
 /// M06: whether `ty` is allowed as the read result `T` of `extern "sym" view def f :: unit -> T`.
 pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> bool {
     match ty {

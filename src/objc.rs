@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::check::Type;
 use crate::diagnostic::Span;
 
 /// The longest chain of base classes from a class to `ObjC.Object` (M01).
@@ -50,41 +49,38 @@ pub struct ObjcCategoryInfo {
     pub members: Vec<ObjcMemberInfo>,
 }
 
-/// Who owns the object that a message returns (M02 spec 4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ResultOwnership {
-    /// +1: the caller owns the reference as it comes.
-    Retained,
-    /// +0: the caller retains the result right after the call.
-    NotRetained,
-}
-
-/// A member of an `extern class` or `extern category` (M02).
+/// A member of an `extern class` or `extern category` (M02), as its declaration writes it. The
+/// types are resolved where a call of the member is checked, with `Self` replaced by the class
+/// that the call names.
 #[derive(Clone, Debug)]
 pub struct ObjcMemberInfo {
     pub name: String,
+    /// The written selector, or the name of a member without arguments.
     pub selector: String,
     pub class_method: bool,
-    /// The Cocoa method family, when it applies to this member.
-    pub family: Option<Family>,
-    /// How an object result is received; meaningless for another result.
-    pub result_ownership: ResultOwnership,
-    /// The parameters after the receiver, with `Self` already rejected there. A lone `unit`
-    /// stands for a method without arguments.
-    pub parameters: Vec<Type>,
-    /// The result, where `SelfResult` marks `Self` and `Maybe<Self>`.
-    pub result: MemberResult,
+    /// The module of the declaration, where the member's types are resolved.
+    pub module: String,
+    /// The span of the name.
     pub span: Span,
+    pub declaration: crate::syntax::ObjcMember,
 }
 
-/// The result of a member: a type, or the class that the member is called on (M02 D3).
+/// How a message send is lowered (M02): what `HostImport::objc` holds for the function that
+/// stands for one member called on one class.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MemberResult {
-    Type(Type),
-    /// `Self`.
-    SelfType,
-    /// `Maybe<Self>`.
-    MaybeSelf,
+pub struct ObjcSend {
+    pub selector: String,
+    /// The runtime name of the class that receives a class method; `None` for an instance
+    /// method, whose receiver is the first argument.
+    pub class: Option<String>,
+    /// The object result is a +1 reference (the alloc, copy, mutableCopy, new and init families,
+    /// or `@returns_retained`); otherwise it is retained right after the send.
+    pub retained: bool,
+    /// The member as source code names it, `Class.member`, for diagnostics and the audit.
+    pub display: String,
+    /// The qualified name of the class or category that the call names, whose audit row counts
+    /// the use.
+    pub owner: String,
 }
 
 /// The method families of Cocoa's naming rules that change ownership (M02 D8).
