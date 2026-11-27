@@ -550,8 +550,8 @@ Phase のないチケットなので、手順 1〜10 のすべてを 1 つのブ
 
 ### 検証
 
-- `cargo test --locked --test objc_classes`: 17 件が通過（受理・拒否の各 kind・性質・clang の参照と同じ形の IR・重複する `declare`・`-g`・TZ08 の包み・target・`@weak`・データシンボル）。期待の IR は clang の参照（「現状」6・8）から手で書いた。
-- `node tests/objc_classes.mjs target/debug/tsuzuri`（arm64 macOS 27.2、Apple clang 21）: 32 検査が通過。`-O0`・`-O3` の 11 case と `nil_trap`、目的ファイルの `__objc_classrefs`・`__objc_selrefs`・`__objc_imageinfo`、`--allocator counting`、同梱のツールチェーン（zig・lld）でのリンクと実行。期待はホスト（`tests/objc_classes_host.m`）の dealloc の数から書いた。`handshake` は pool の pop の前に 0 になった。
+- `cargo test --locked --test objc_classes`: 18 件が通過（受理・拒否の各 kind・性質・clang の参照と同じ形の IR・重複する `declare`・`-g`・TZ08 の包み・target・`--emit bindings-js` の拒否・`@weak`・データシンボル）。期待の IR は clang の参照（「現状」6・8）から手で書いた。
+- `node tests/objc_classes.mjs target/debug/tsuzuri`（arm64 macOS 27.2、Apple clang 21）: 33 検査が通過。`-O0`・`-O3` の 11 case と `nil_trap`、目的ファイルの `__objc_classrefs`・`__objc_selrefs`・`__objc_imageinfo`、`--allocator counting`、同梱のツールチェーン（zig・lld）でのリンクと実行（`-l objc` を明示した場合を含む）。期待はホスト（`tests/objc_classes_host.m`）の dealloc の数から書いた。`handshake` は pool の pop の前に 0 になった。
 - 早見のプログラムは `-O0`・`-O3` で `42 0` を出す。`-l objc` は要らない。
 - T1・T2 の結果は PR の説明にまとめた（M02・W36 と同じ実行）。
 

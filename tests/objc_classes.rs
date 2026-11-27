@@ -1012,6 +1012,45 @@ def main :: unit -> i32 = \\() ->
     );
 }
 
+/// `--emit bindings-js` refuses what the WebAssembly build of the same module refuses: glue for a
+/// module that cannot be built would load nothing.
+#[test]
+fn javascript_bindings_refuse_a_reached_use_of_objc() {
+    let root = temp_project(
+        "bindings",
+        &[(
+            "Main.tz",
+            "\
+@trusted
+extern \"use_sel\" def use_sel :: ObjC.Sel -> i64
+export def f :: i64 = \\() -> use_sel (ObjC.sel \"length\")
+",
+        )],
+    );
+    let build = |emit: &str, output: &str| {
+        Command::new(bin())
+            .arg("build")
+            .arg(&root)
+            .args(["--target", "wasm32", "--emit", emit, "-o"])
+            .arg(root.join(output))
+            .env("TSUZURI_CACHE_DIR", "")
+            .output()
+            .unwrap()
+    };
+    for (emit, output) in [("bindings-js", "out.mjs"), ("llvm", "out.ll")] {
+        let result = build(emit, output);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success(), "{emit}: {stderr}");
+        assert!(stderr.contains("E1008"), "{emit}: {stderr}");
+        assert!(
+            stderr.contains("WebAssembly targets do not have"),
+            "{emit}: {stderr}"
+        );
+        assert!(!root.join(output).exists(), "{emit}");
+    }
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn only_an_apple_target_reaches_objc() {
     let reached = with_classes(

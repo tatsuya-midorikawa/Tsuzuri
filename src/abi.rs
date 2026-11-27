@@ -628,8 +628,8 @@ pub enum ObjcMemberError {
     OwnedArgument,
     /// An Objective-C type in a position that takes none (M01 spec 3).
     Position,
-    /// A type that a message cannot carry: a record without `@c_layout` by value, a buffer or
-    /// record result, a wide number, or any other aggregate.
+    /// A type that a message cannot carry: a record without `@c_layout` by value (as a parameter
+    /// or a result), a buffer result, a wide number, or any other aggregate.
     Type,
 }
 
@@ -904,8 +904,8 @@ pub enum RecordPassing {
 
 /// W36: the passing of `ty` in a parameter or result position of an `extern def`. A `@c_layout`
 /// record without `ref` is the C struct by value; an unmarked record, `ref R` and `ref mut R` are
-/// pointers; anything that is not a record is `None`. `export def` and callbacks do not use this:
-/// their records stay pointers.
+/// pointers; anything that is not a record is `None`. `export def` does not use this: its records
+/// stay pointers. A callback takes no record at all ([`callback`]).
 pub fn extern_record_passing(ty: &Type, types: &TypeContext<'_>) -> Option<RecordPassing> {
     match ty {
         Type::Record(..) if any_zstring(ty, types) => None,

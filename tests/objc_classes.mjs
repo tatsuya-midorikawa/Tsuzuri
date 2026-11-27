@@ -152,6 +152,16 @@ try {
       assert.equal(must(executable, [name], { env }).stdout, `${expected[name]}\n`, `${name} bundled`);
       ran += 1;
     }
+    // `-l objc` on the command line takes libobjc out of the libraries that the driver adds: the
+    // link still needs the SDK to find it.
+    const explicit = join(scratch, "probe-bundled-explicit");
+    must(
+      compiler,
+      ["build", fixture, "-O3", "--link", hostObject, "-l", "objc", "-o", explicit],
+      { env: { ...env, TSUZURI_CLANG: bundledClang } },
+    );
+    assert.equal(must(explicit, ["balance"], { env }).stdout, `${expected.balance}\n`, "explicit -l objc");
+    ran += 1;
   } else {
     console.log(`objc_classes: the bundled toolchain link is skipped (${bundledClang} is missing)`);
   }

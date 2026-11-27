@@ -417,18 +417,36 @@ pub(crate) fn prepare_link_extras(
             ),
         ));
     }
+    macos_sdk_link_args(
+        platform,
+        clang,
+        sdk_dependent_input(links, system_frameworks, system_libraries),
+    )
+}
+
+/// The link input that makes a Mach-O link need the SDK's search paths with the bundled linker:
+/// the first framework by name, or libobjc (M01) when no framework is linked. libobjc counts
+/// wherever it is named: the driver adds it for Objective-C IR, an `@link("objc")` requests it,
+/// and `-l objc` on the command line takes it out of `system_libraries` but not out of the link.
+fn sdk_dependent_input<'a>(
+    links: &'a LinkInputs,
+    system_frameworks: &'a [String],
+    system_libraries: &'a [String],
+) -> Option<&'a str> {
     let first_framework = links
         .frameworks
         .iter()
         .chain(system_frameworks.iter())
         .min()
         .map(String::as_str);
-    // M01: libobjc comes from the SDK too; the bundled linker searches no system path for it.
-    let sdk_library = system_libraries
+    // The bundled linker searches no system path for libobjc: it comes from the SDK too.
+    let sdk_library = links
+        .libraries
         .iter()
-        .find(|library| library.as_str() == "objc")
-        .map(|_| OBJC_SDK_LIBRARY);
-    macos_sdk_link_args(platform, clang, first_framework.or(sdk_library))
+        .chain(system_libraries.iter())
+        .any(|library| library == "objc")
+        .then_some(OBJC_SDK_LIBRARY);
+    first_framework.or(sdk_library)
 }
 
 /// What `prepare_link_extras` names in place of a framework when only libobjc needs the SDK.
@@ -9265,6 +9283,39 @@ mod tests {
                 "-Wl,-rpath,@executable_path/../Frameworks",
             ]
         );
+    }
+
+    #[test]
+    fn libobjc_needs_the_sdk_wherever_the_link_names_it() {
+        let none = LinkInputs::default();
+        let objc = vec!["objc".to_owned()];
+        let z = vec!["z".to_owned()];
+        let app_kit = vec!["AppKit".to_owned()];
+        // The driver or an `@link("objc")` adds it to the system libraries.
+        assert_eq!(
+            sdk_dependent_input(&none, &[], &objc),
+            Some(OBJC_SDK_LIBRARY)
+        );
+        // `-l objc` on the command line: the system libraries no longer list it, the link still does.
+        let explicit = LinkInputs {
+            libraries: objc.clone(),
+            ..LinkInputs::default()
+        };
+        assert_eq!(
+            sdk_dependent_input(&explicit, &[], &[]),
+            Some(OBJC_SDK_LIBRARY)
+        );
+        // A framework names the SDK error; another library needs no SDK.
+        assert_eq!(
+            sdk_dependent_input(&explicit, &app_kit, &[]),
+            Some("AppKit")
+        );
+        assert_eq!(sdk_dependent_input(&none, &[], &z), None);
+        let other = LinkInputs {
+            libraries: z.clone(),
+            ..LinkInputs::default()
+        };
+        assert_eq!(sdk_dependent_input(&other, &[], &[]), None);
     }
 
     #[test]
