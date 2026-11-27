@@ -155,6 +155,14 @@ jobs:
           node tests/macos_link_inputs.mjs target/release/tsuzuri
           node tests/data_symbols.mjs target/release/tsuzuri
           node tests/weak_import.mjs target/release/tsuzuri
+      # M15: application bundles (--emit app). The Info.plist is compared with plutil's canonical form, the ad-hoc
+      # signature with codesign --verify --deep --strict, the dSYM with dwarfdump and lldb, and the bundle is started
+      # through LaunchServices (open), which gives it the working directory /.
+      - name: macOS application bundles (M15)
+        if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          node tests/macos_bundle.mjs target/release/tsuzuri
       # M01, M02: Objective-C classes and typed message sends against ARC hosts that count their objects, with Apple's
       # ld and with the bundled toolchain, and the type of every objc_msgSend call against Apple clang's lowering of
       # the same message (tests/objc_send_reference.m). The window of the AppKit case is never shown.

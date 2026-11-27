@@ -516,6 +516,7 @@ pub fn build_debug_runner(
         sdk: &sdk_link_args,
     };
     let os_version_runtime = text.contains("declare i64 @tsuzuri_os_version(");
+    let executable_path_runtime = text.contains("declare i64 @tsuzuri_os_executable_path(");
     let macos_choice = crate::driver::effective_macos_version(platform, options.macos_min_version)?;
     let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
@@ -570,6 +571,9 @@ pub fn build_debug_runner(
             .args(sdk_args(platform)?);
         if name == "os.c" && os_version_runtime {
             compile.arg("-DTZ_OS_VERSION");
+        }
+        if name == "os.c" && executable_path_runtime {
+            compile.arg("-DTZ_OS_EXECUTABLE_PATH");
         }
         if !platform.windows() {
             compile.arg("-pthread");
@@ -1081,6 +1085,7 @@ fn compile_native_runner(
             .arg(&ir);
     }
     let os_version_runtime = text.contains("declare i64 @tsuzuri_os_version(");
+    let executable_path_runtime = text.contains("declare i64 @tsuzuri_os_executable_path(");
     let macos_choice = crate::driver::effective_macos_version(platform, runner.macos_min_version)?;
     let main = directory.join("main.c");
     clang
@@ -1092,6 +1097,9 @@ fn compile_native_runner(
     clang.args(["-x", "c", "-std=c11"]).args(runner.defines);
     if os_version_runtime {
         clang.arg("-DTZ_OS_VERSION");
+    }
+    if executable_path_runtime {
+        clang.arg("-DTZ_OS_EXECUTABLE_PATH");
     }
     clang.arg(&main).arg("-o").arg(&artifact);
     if !platform.windows() {

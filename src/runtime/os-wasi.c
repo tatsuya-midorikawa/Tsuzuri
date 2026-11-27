@@ -878,6 +878,14 @@ int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
 }
 #endif
 
+// Env.executable_path (M15): a WASI module has no path that the host tells it.
+#ifdef TZ_OS_EXECUTABLE_PATH
+int64_t tsuzuri_os_executable_path(struct tz_os_buffer *output) {
+    tz_clear(output);
+    return tz_status(TZ_OS_OTHER, TZ_WASI_NOSYS);
+}
+#endif
+
 #ifdef TZ_WASI_START
 extern int32_t tsuzuri_main(void);
 

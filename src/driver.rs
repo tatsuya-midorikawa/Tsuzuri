@@ -4833,6 +4833,8 @@ fn build_complete_keyed(
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
     let os_version_runtime = runtime_symbols.contains("tsuzuri_os_version");
+    // M15 D13: the part of the runtime behind `Env.executable_path` is compiled only into the programs that reach it.
+    let executable_path_runtime = runtime_symbols.contains("tsuzuri_os_executable_path");
     let macos_choice = if options.target == Target::Native
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
         && !options.emit.is_kernel()
@@ -5554,6 +5556,9 @@ fn build_complete_keyed(
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");
             }
+            if executable_path_runtime {
+                runtime.arg("-DTZ_OS_EXECUTABLE_PATH");
+            }
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
             // runtime unit at Clang's default (DWARF 5) would otherwise raise when merged (G16).
@@ -5727,6 +5732,9 @@ fn build_complete_keyed(
             }
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");
+            }
+            if executable_path_runtime {
+                runtime.arg("-DTZ_OS_EXECUTABLE_PATH");
             }
             runtime.arg(options.optimization.flag());
             let hint = "the WASI host needs Clang with WebAssembly support";

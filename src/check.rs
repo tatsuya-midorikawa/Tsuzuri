@@ -1715,6 +1715,8 @@ pub enum Builtin {
     OsArgs,
     /// `Os.__os_version :: unit -> (i64 * [ubyte])` (M17): the host operating-system version string.
     OsVersion,
+    /// `Os.__executable_path :: unit -> (i64 * [ubyte])` (M15): the absolute path of the running executable.
+    OsExecutablePath,
     /// `Os.__write :: i32 -> ref utf8string -> ref [ubyte] -> i64`: writes a file, or creates or removes a file or directory.
     OsWrite,
     /// `Os.__random :: i64 -> (i64 * [ubyte])`: operating-system random bytes.
@@ -2398,6 +2400,7 @@ impl Builtin {
         Self::OsRead,
         Self::OsArgs,
         Self::OsVersion,
+        Self::OsExecutablePath,
         Self::OsWrite,
         Self::OsRandom,
         Self::OsClock,
@@ -2791,6 +2794,7 @@ impl Builtin {
             Self::OsRead => "Os.__read",
             Self::OsArgs => "Os.__args",
             Self::OsVersion => "Os.__os_version",
+            Self::OsExecutablePath => "Os.__executable_path",
             Self::OsWrite => "Os.__write",
             Self::OsRandom => "Os.__random",
             Self::OsClock => "Os.__clock",
@@ -3122,7 +3126,11 @@ impl Builtin {
                 Concrete(Type::Integer(32, true)),
                 Vec::new(),
             ),
-            Self::OsRead | Self::OsArgs | Self::OsVersion | Self::OsRandom => {
+            Self::OsRead
+            | Self::OsArgs
+            | Self::OsVersion
+            | Self::OsExecutablePath
+            | Self::OsRandom => {
                 let owned = || {
                     BuiltinType::Tuple(vec![
                         Concrete(Type::I64),
@@ -3134,7 +3142,9 @@ impl Builtin {
                         Concrete(Type::Integer(32, true)),
                         Reference(Box::new(Concrete(Type::Utf8String)), false),
                     ],
-                    Self::OsArgs | Self::OsVersion => vec![Concrete(Type::Unit)],
+                    Self::OsArgs | Self::OsVersion | Self::OsExecutablePath => {
+                        vec![Concrete(Type::Unit)]
+                    }
                     _ => vec![Concrete(Type::I64)],
                 };
                 (parameters, owned(), Vec::new())

@@ -160,6 +160,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "Os.__close",
         "Os.__args",
         "Os.__os_version",
+        "Os.__executable_path",
         "Os.__random",
         "Os.__clock",
         "Os.__sleep",
@@ -220,7 +221,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
             ("Bench.tz", 4),
             ("Debug.tz", 1),
             ("Dir.tz", 3),
-            ("Env.tz", 4),
+            ("Env.tz", 5),
             ("File.tz", 6),
             ("Gpu.tz", 9),
             ("IO.tc", 2),
@@ -236,7 +237,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "a std file reaches the host in a new place; update appendix A of E15, the table of \
          src/capabilities.rs and tests/fixtures/capabilities/std-table.txt"
     );
-    assert_eq!(found.values().sum::<usize>(), 45);
+    assert_eq!(found.values().sum::<usize>(), 46);
 }
 
 /// The projects of the corpus: every fixture and example with a `Main.tz`.
@@ -295,7 +296,7 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 fn std_table_file_lists_the_88_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 89);
+    assert_eq!(lines.len(), 90);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {

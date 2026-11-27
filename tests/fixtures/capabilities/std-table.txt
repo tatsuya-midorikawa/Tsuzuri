@@ -15,6 +15,7 @@ Dir.remove: fs
 Dir.walk: fs
 Env.args: env
 Env.current_dir: env
+Env.executable_path: env
 Env.os_version: env
 Env.var: env
 File.append_text: fs

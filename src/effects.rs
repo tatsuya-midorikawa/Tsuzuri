@@ -479,7 +479,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("host_status"),
         ),
         // B16
-        OsArgs | OsVersion | OsRandom => facts(
+        OsArgs | OsVersion | OsExecutablePath | OsRandom => facts(
             Some(Effect::Os),
             true,
             false,
@@ -4006,10 +4006,10 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 384);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path.
+        assert_eq!(Builtin::ALL.len(), 385);
         // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 173);
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 174);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 211);
     }
 
