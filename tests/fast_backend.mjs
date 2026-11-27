@@ -632,6 +632,15 @@ function projects() {
   return found;
 }
 
+// W36: an `extern def` that passes or returns a `@c_layout` record by value lowers to an aggregate, a vector, `byval`
+// or `sret` wherever the record is not one integer or float, and the translator refuses those forms by design
+// (docs/language.md, 構造体の値渡しと値返し: `--backend llvm` builds them). The projects below hold such externs. Their
+// fast build must either succeed like any other project or be E2002 for exactly this reason; any other failure, and
+// this failure in any other project, is still a difference.
+const BY_VALUE_RECORDS = new Set(["fixtures/c_layout", "fixtures/c_layout_by_value"]);
+const BY_VALUE_REFUSAL = /the fast backend cannot translate (?:the (?:result|parameter) type .+ of an external function|a byval or sret (?:argument of a call|parameter) of an external function)/;
+const refusedByValue = (name, stderr) => BY_VALUE_RECORDS.has(name) && BY_VALUE_REFUSAL.test(stderr.trim().split("\n")[0]);
+
 function programs(compilerArgument) {
   const { compiler, work, execute } = session(compilerArgument);
   // FAST_DEBUG=1 builds every project with -g, so that the line tables are made and the programs still agree.
@@ -645,6 +654,7 @@ function programs(compilerArgument) {
   let libraries = 0;
   const differ = [];
   const skipped = [];
+  const refused = [];
   try {
     for (const { name, directory } of projects()) {
       const label = name.replace("/", "-");
@@ -659,7 +669,9 @@ function programs(compilerArgument) {
           continue;
         }
         const built = execute(compiler, ["build", directory, "-O0", ...debug, "--backend", "fast", "--emit", "object", "-o", join(work, `${label}.fast.o`)]);
-        if (built.status !== 0) {
+        if (built.status !== 0 && refusedByValue(name, built.stderr)) {
+          refused.push(name);
+        } else if (built.status !== 0) {
           differ.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
         } else if (exported(object).join(" ") !== exported(join(work, `${label}.fast.o`)).join(" ")) {
           differ.push(`${name}: the exported symbols differ`);
@@ -669,6 +681,10 @@ function programs(compilerArgument) {
         continue;
       }
       const built = execute(compiler, ["build", directory, "-O0", ...debug, "--backend", "fast", "-o", fast]);
+      if (built.status !== 0 && refusedByValue(name, built.stderr)) {
+        refused.push(name);
+        continue;
+      }
       if (built.status !== 0) {
         differ.push(`${name}: BUILD ${built.stderr.trim().split("\n")[0].slice(0, 300)}`);
         continue;
@@ -689,9 +705,10 @@ function programs(compilerArgument) {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
-  console.log(`same-output=${same} same-exports=${libraries} differ=${differ.length} skipped=${skipped.length}`);
+  console.log(`same-output=${same} same-exports=${libraries} differ=${differ.length} skipped=${skipped.length} refused-by-value=${refused.length}`);
   for (const line of differ) console.log(`DIFFER ${line}`);
   for (const line of skipped) console.log(`skipped ${line}`);
+  for (const line of refused) console.log(`refused ${line}: a record by value in an extern function (E2002, as specified)`);
   process.exit(differ.length === 0 ? 0 : 1);
 }
 
@@ -727,8 +744,10 @@ function inventory(compilerArgument) {
   console.log(`translated=${translated} rejected=${rejected} without-ir=${noIr.length}`);
   for (const [reason, names] of reasons) console.log(`  x${names.length} ${reason}\n    ${names.join(" ")}`);
   // The LLVM IR of a host with the hardware half-precision path has `half`, which the driver
-  // replaces by the software path whenever it translates; every other rejection is a gap.
-  const gaps = [...reasons].filter(([reason]) => !/\bhalf\b/.test(reason));
+  // replaces by the software path whenever it translates, and the records by value of W36 are
+  // refused by design in the projects that hold them; every other rejection is a gap.
+  const gaps = [...reasons].filter(([reason, names]) =>
+    !/\bhalf\b/.test(reason) && !names.every((name) => refusedByValue(name, reason)));
   process.exit(gaps.length === 0 ? 0 : 1);
 }
 
