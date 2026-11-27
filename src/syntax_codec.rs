@@ -3080,6 +3080,14 @@ mod tests {
             )
             .unwrap(),
         );
+        // M01, M02: Objective-C classes, categories, members and the ownership attributes.
+        seen.extend(
+            round_trips(
+                "@trusted @weak\nextern \"NSThing\" class sync Thing : ObjC.Object {\n    /// Makes one.\n    class \"thingWithValue:\" with_value :: i64 -> Maybe<Self>\n    @returns_retained\n    twin :: unit -> Thing\n}\nextern class Plain : ObjC.Object\n@trusted\nextern category Extras : Thing {\n    @returns_not_retained\n    \"otherThing:\" other :: ref Thing -> Thing\n}\n@returns_retained\nextern \"make\" def make :: unit -> Thing\n",
+                0,
+            )
+            .unwrap(),
+        );
         // A24: anonymous union types and type test patterns.
         seen.extend(
             round_trips(
@@ -3183,7 +3191,9 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
-            ("HandleKind", 5),
+            // `ObjcLocal` and `ObjcSync` (tags 3 and 4) are the kinds of the checker's handle types;
+            // an `extern class` declaration writes `sync` as a span, not a `HandleKind` (M01).
+            ("HandleKind", 3),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),
@@ -3433,10 +3443,11 @@ add_one 41
     }
 
     const GOLDEN: &str = concat!(
-        "000000000000000101084120706f696e742e000c0100015014150100000001017818190100000369",
-        "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
-        "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
-        "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000000000000000300224500",
+        "0000000000000000000101084120706f696e742e000c010001501415010000000101781819010000",
+        "036936341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01",
+        "00000003693634323501000e000a01783e3f01003e3f0101000100424301013e4301020000000001",
+        "01664a4d010e050f0a01665051010050510101010001005253010150530102000200575801015058",
+        "010345580100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000",
+        "00000000000000000300224500",
     );
 }

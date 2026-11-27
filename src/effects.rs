@@ -3966,8 +3966,9 @@ mod tests {
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
         assert_eq!(Builtin::ALL.len(), 384);
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 171);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 207);
+        // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 173);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 211);
     }
 
     #[test]
@@ -3991,7 +3992,7 @@ mod tests {
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 59);
+        assert_eq!(count(|facts| facts.trap), 60);
         assert_eq!(count(|facts| facts.exempt_trap.is_some()), 28);
     }
 

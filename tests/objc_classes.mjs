@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const compiler = resolve(process.argv[2] ?? join(root, "target", "debug", "tsuzuri"));
 const clang = process.env.TSUZURI_CLANG ?? "clang";
-const fixture = join(root, "tests", "fixtures", "objc_classes");
+// The program is not under tests/fixtures/: the repository-wide tests build every fixture for
+// their host, and this one reaches Objective-C, which only an Apple target has.
+const fixture = join(root, "tests", "objc", "classes");
 const host = join(root, "tests", "objc_classes_host.m");
 const bundledClang =
   process.env.TSUZURI_BUNDLED_CLANG ?? join(root, "target", "toolchain", "bin", "tsuzuri-clang");
