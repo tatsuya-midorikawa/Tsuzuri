@@ -378,6 +378,9 @@ fn declare_module(
         constants,
         externs,
         extern_types,
+        extern_classes,
+        // M02: a category is a namespace of members, not a type; it has no node.
+        extern_categories: _,
         records,
         unions,
         functions,
@@ -396,6 +399,7 @@ fn declare_module(
         c_layouts: _,
         links: _,
         weaks: _,
+        returns_retained: _,
         noncanonical: _,
         aliases: _,
         declaration_starts: _,
@@ -602,6 +606,22 @@ fn declare_module(
         );
         node.public = handle.visibility == Visibility::Public;
         documented(&mut node, handle.doc.as_ref());
+        builder.push(node);
+    }
+    // M01: an Objective-C class is a handle type, like an `extern type`.
+    for class in extern_classes {
+        let mut node = builder.node(
+            item(&class.name.text),
+            "handle",
+            module,
+            class.name.text.clone(),
+            class.header(),
+            class.name.span,
+            class.name.span,
+            root,
+        );
+        node.public = class.visibility == Visibility::Public;
+        documented(&mut node, class.doc.as_ref());
         builder.push(node);
     }
     for record in records {

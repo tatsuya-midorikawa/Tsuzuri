@@ -278,7 +278,13 @@ unit_enum!(SourceKind {
 });
 unit_enum!(Provenance { User, Generated });
 unit_enum!(Visibility { Public, Private });
-unit_enum!(HandleKind { Owned, Copy, Local });
+unit_enum!(HandleKind {
+    Owned,
+    Copy,
+    Local,
+    ObjcLocal,
+    ObjcSync
+});
 unit_enum!(DataAccess { Read, Address });
 unit_enum!(LinkKind { Library, Framework });
 unit_enum!(ContractKind { Requires, Ensures });
@@ -561,6 +567,8 @@ impl Wire for Program {
             constants,
             externs,
             extern_types,
+            extern_classes,
+            extern_categories,
             records,
             unions,
             functions,
@@ -579,6 +587,7 @@ impl Wire for Program {
             c_layouts,
             links,
             weaks,
+            returns_retained,
             noncanonical,
             aliases,
             declaration_starts,
@@ -590,6 +599,8 @@ impl Wire for Program {
         constants.put(out)?;
         externs.put(out)?;
         extern_types.put(out)?;
+        extern_classes.put(out)?;
+        extern_categories.put(out)?;
         records.put(out)?;
         unions.put(out)?;
         functions.put(out)?;
@@ -612,6 +623,7 @@ impl Wire for Program {
         c_layouts.put(out)?;
         links.put(out)?;
         weaks.put(out)?;
+        returns_retained.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -630,6 +642,8 @@ impl Wire for Program {
             constants: Vec::get(input)?,
             externs: Vec::get(input)?,
             extern_types: Vec::get(input)?,
+            extern_classes: Vec::get(input)?,
+            extern_categories: Vec::get(input)?,
             records: Vec::get(input)?,
             unions: Vec::get(input)?,
             functions: Vec::get(input)?,
@@ -648,6 +662,7 @@ impl Wire for Program {
             c_layouts: Vec::get(input)?,
             links: Vec::get(input)?,
             weaks: Vec::get(input)?,
+            returns_retained: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -1289,6 +1304,132 @@ impl Wire for ExternTypeDecl {
             kind: HandleKind::get(input)?,
             kind_span: Option::get(input)?,
             name: Ident::get(input)?,
+        })
+    }
+}
+
+impl Wire for ExternClassDecl {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ExternClassDecl {
+            doc,
+            visibility,
+            runtime_name,
+            sync,
+            name,
+            base,
+            body,
+            members,
+            trusted,
+            weak,
+        } = self;
+        put_doc(doc, out)?;
+        visibility.put(out)?;
+        runtime_name.put(out)?;
+        sync.put(out)?;
+        name.put(out)?;
+        base.put(out)?;
+        body.put(out)?;
+        members.put(out)?;
+        trusted.put(out)?;
+        weak.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ExternClassDecl {
+            doc: Option::get(input)?,
+            visibility: Visibility::get(input)?,
+            runtime_name: Option::get(input)?,
+            sync: Option::get(input)?,
+            name: Ident::get(input)?,
+            base: TypeExpr::get(input)?,
+            body: bool::get(input)?,
+            members: Vec::get(input)?,
+            trusted: Option::get(input)?,
+            weak: Option::get(input)?,
+        })
+    }
+}
+
+impl Wire for ExternCategoryDecl {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ExternCategoryDecl {
+            doc,
+            visibility,
+            name,
+            class,
+            members,
+            trusted,
+        } = self;
+        put_doc(doc, out)?;
+        visibility.put(out)?;
+        name.put(out)?;
+        class.put(out)?;
+        members.put(out)?;
+        trusted.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ExternCategoryDecl {
+            doc: Option::get(input)?,
+            visibility: Visibility::get(input)?,
+            name: Ident::get(input)?,
+            class: TypeExpr::get(input)?,
+            members: Vec::get(input)?,
+            trusted: Option::get(input)?,
+        })
+    }
+}
+
+impl Wire for ObjcMember {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let ObjcMember {
+            doc,
+            returns,
+            class_method,
+            selector,
+            name,
+            parameters,
+            result,
+        } = self;
+        put_doc(doc, out)?;
+        returns.put(out)?;
+        class_method.put(out)?;
+        selector.put(out)?;
+        name.put(out)?;
+        parameters.put(out)?;
+        result.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(ObjcMember {
+            doc: Option::get(input)?,
+            returns: Option::get(input)?,
+            class_method: Option::get(input)?,
+            selector: Option::get(input)?,
+            name: Ident::get(input)?,
+            parameters: Vec::get(input)?,
+            result: TypeExpr::get(input)?,
+        })
+    }
+}
+
+impl Wire for OwnershipAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let OwnershipAttribute {
+            target,
+            retained,
+            span,
+        } = self;
+        target.put(out)?;
+        retained.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(OwnershipAttribute {
+            target: Ident::get(input)?,
+            retained: bool::get(input)?,
+            span: Span::get(input)?,
         })
     }
 }
@@ -3042,7 +3183,7 @@ mod tests {
             ("SourceKind", 0),
             ("Provenance", 2),
             ("Visibility", 2),
-            ("HandleKind", 3),
+            ("HandleKind", 5),
             ("Recursion", 3),
             ("DeriveClass", 8),
             ("ContractKind", 2),

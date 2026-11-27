@@ -342,6 +342,33 @@ pub(crate) fn system_libraries_from_symbols(
     found.into_iter().collect()
 }
 
+/// M01 D11: the libraries that the IR of an Objective-C image needs at link time. The compiler
+/// calls libobjc (`objc_retain`, `objc_release`, ...) for a program that holds Objective-C
+/// objects, so a Mach-O link of such IR names `objc`; any other IR and any other platform get
+/// nothing.
+pub fn objc_link_libraries(ir: &str, platform: crate::target::Platform) -> Vec<String> {
+    if platform.mach_o() && llvm::uses_objc(ir) {
+        vec!["objc".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Appends the libraries of `objc_link_libraries` to the system libraries of a link, after the
+/// `@link` libraries, unless the command line or an `@link` names them already.
+pub(crate) fn add_objc_libraries(
+    system_libraries: &mut Vec<String>,
+    ir: &str,
+    platform: crate::target::Platform,
+    links: &LinkInputs,
+) {
+    for library in objc_link_libraries(ir, platform) {
+        if !links.libraries.contains(&library) && !system_libraries.contains(&library) {
+            system_libraries.push(library);
+        }
+    }
+}
+
 /// M20 Phase 2: macOS frameworks requested by `@link(framework = "name")` on extern symbols referenced in `ir`,
 /// sorted and excluding frameworks already listed in `links.frameworks`.
 pub fn system_frameworks(module: &CheckedModule, ir: &str, links: &LinkInputs) -> Vec<String> {
@@ -379,6 +406,7 @@ pub(crate) fn prepare_link_extras(
     clang: &OsStr,
     links: &LinkInputs,
     system_frameworks: &[String],
+    system_libraries: &[String],
 ) -> Result<Vec<OsString>, Diagnostic> {
     if !system_frameworks.is_empty() && !platform.mach_o() {
         return Err(driver_error_of(
@@ -395,8 +423,16 @@ pub(crate) fn prepare_link_extras(
         .chain(system_frameworks.iter())
         .min()
         .map(String::as_str);
-    macos_sdk_link_args(platform, clang, first_framework)
+    // M01: libobjc comes from the SDK too; the bundled linker searches no system path for it.
+    let sdk_library = system_libraries
+        .iter()
+        .find(|library| library.as_str() == "objc")
+        .map(|_| OBJC_SDK_LIBRARY);
+    macos_sdk_link_args(platform, clang, first_framework.or(sdk_library))
 }
+
+/// What `prepare_link_extras` names in place of a framework when only libobjc needs the SDK.
+const OBJC_SDK_LIBRARY: &str = "libobjc";
 
 pub(crate) fn macos_sdk_link_args(
     platform: crate::target::Platform,
@@ -463,10 +499,15 @@ fn sdk_flags(sdk: &Path) -> Vec<OsString> {
 }
 
 fn macos_sdk_error(framework_name: &str) -> Diagnostic {
+    let needed = if framework_name == OBJC_SDK_LIBRARY {
+        "linking libobjc for an Objective-C program".to_owned()
+    } else {
+        format!("linking the macOS framework '{framework_name}'")
+    };
     driver_error_of(
         DiagnosticKind::MacosSdkNotFound,
         format!(
-            "linking the macOS framework '{framework_name}' with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; install the Xcode Command Line Tools (xcode-select --install), or set TSUZURI_CLANG to Apple's clang"
+            "{needed} with the bundled toolchain needs the macOS SDK, which 'xcrun --show-sdk-path' did not find; install the Xcode Command Line Tools (xcode-select --install), or set TSUZURI_CLANG to Apple's clang"
         ),
     )
 }
@@ -4676,7 +4717,10 @@ fn build_complete(
     } else {
         MacosChoice::None
     };
-    let sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
+    let mut sys_libraries = system_libraries_from_symbols(module, &runtime_symbols, links);
+    if options.target == Target::Native {
+        add_objc_libraries(&mut sys_libraries, &text, platform, links);
+    }
     let sys_frameworks = system_frameworks_from_symbols(module, &runtime_symbols, links);
     let sdk_link_args = if options.target == Target::Native
         && matches!(options.emit, Emit::Executable | Emit::Shared)
@@ -4686,6 +4730,7 @@ fn build_complete(
             &tool("TSUZURI_CLANG", "clang"),
             links,
             &sys_frameworks,
+            &sys_libraries,
         )?
     } else {
         if !sys_frameworks.is_empty() && options.target == Target::Native && !platform.mach_o() {

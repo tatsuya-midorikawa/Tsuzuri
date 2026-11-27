@@ -1408,6 +1408,12 @@ impl OptInNames {
                     )
                     .chain(
                         program
+                            .extern_classes
+                            .iter()
+                            .map(|class| (&class.name, class.visibility)),
+                    )
+                    .chain(
+                        program
                             .type_aliases
                             .iter()
                             .map(|alias| (&alias.name, alias.visibility)),

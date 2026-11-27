@@ -12,7 +12,7 @@ use crate::diagnostic::Span;
 
 /// The number of built-in functions that have an effect in Level B.
 #[cfg(test)]
-const IMPURE_BUILTINS: usize = 170;
+const IMPURE_BUILTINS: usize = 172;
 
 /// The D-53 effect of a built-in function in Level B, or `None` (every built-in by name).
 pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
@@ -47,6 +47,9 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | TickerReset | ContextWithTimeout | ContextWithDeadline => Some("os"),
         TimeNanosecond | TimeMicrosecond | TimeMillisecond | TimeSecond | TimeMinute | TimeHour
         | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
+        // M01: retaining and the checked cast call the Objective-C runtime.
+        ObjcRetain | ObjcDowncast => Some("extern"),
+        ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")
         }

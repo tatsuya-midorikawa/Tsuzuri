@@ -1452,6 +1452,8 @@ fn add_items(
         constants,
         externs,
         extern_types,
+        extern_classes,
+        extern_categories,
         records,
         unions,
         functions,
@@ -1472,6 +1474,7 @@ fn add_items(
         c_layouts,
         links: _,
         weaks: _,
+        returns_retained,
         noncanonical: _,
         aliases,
         declaration_starts: _,
@@ -1618,6 +1621,16 @@ fn add_items(
             result,
             fresh(),
         );
+        // M01: `@returns_retained` changes who releases the result; `@returns_not_retained` is
+        // the default and normalized out.
+        let header = if returns_retained
+            .iter()
+            .any(|attribute| attribute.retained && attribute.target.text == declaration.name.text)
+        {
+            format!("@returns_retained {header}")
+        } else {
+            header
+        };
         let mut item = Item::new(kind_label, qualified(&declaration.name.text), header)
             .documented(declaration.doc.as_ref());
         item.exported = declaration.exported;
@@ -1643,6 +1656,51 @@ fn add_items(
             .documented(declaration.doc.as_ref());
         item.copy_handle = declaration.kind == HandleKind::Copy;
         item.local_handle = declaration.kind == HandleKind::Local;
+        add(item);
+    }
+    // M01, M02: the header carries the runtime name, `sync` and the base, so a change of any of
+    // them breaks; a member's text carries its selector, attributes and type.
+    let objc_members = |members: &[ObjcMember]| -> Vec<Member> {
+        members
+            .iter()
+            .map(|member| {
+                let text = member.header();
+                Member {
+                    kind: "objc member",
+                    name: member.name.text.clone(),
+                    shown: text.clone(),
+                    text,
+                    default: false,
+                    pure: None,
+                    contract: None,
+                }
+            })
+            .collect()
+    };
+    for declaration in extern_classes {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let mut header = declaration.header();
+        if declaration.weak.is_some() {
+            header.insert_str(0, "@weak ");
+        }
+        let mut item = Item::new("extern class", qualified(&declaration.name.text), header)
+            .documented(declaration.doc.as_ref());
+        item.members = objc_members(&declaration.members);
+        add(item);
+    }
+    for declaration in extern_categories {
+        if declaration.visibility == Visibility::Private {
+            continue;
+        }
+        let mut item = Item::new(
+            "extern category",
+            qualified(&declaration.name.text),
+            declaration.header(),
+        )
+        .documented(declaration.doc.as_ref());
+        item.members = objc_members(&declaration.members);
         add(item);
     }
     for declaration in records {
@@ -2126,6 +2184,8 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
                 "constructions of the record without it stop compiling",
             ),
             "case" => (true, "exhaustive matches over the union stop compiling"),
+            // M02: a member of an extern class or category only adds a method to call.
+            "objc member" => (false, ""),
             _ if member.default => (false, ""),
             _ => (true, "existing instances do not define the method"),
         };
@@ -2165,7 +2225,11 @@ fn compare_members(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         });
     }
     // The order of fields and cases is part of the layout and of derived comparisons.
-    if new.members.iter().all(|member| member.kind != "method") {
+    if new
+        .members
+        .iter()
+        .all(|member| !matches!(member.kind, "method" | "objc member"))
+    {
         let common = |item: &Item, other: &BTreeMap<String, usize>| -> Vec<String> {
             item.members
                 .iter()

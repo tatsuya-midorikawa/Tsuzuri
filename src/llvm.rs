@@ -653,6 +653,10 @@ mod hash;
 pub(crate) mod host_abi;
 #[path = "llvm_imports.rs"]
 mod imports;
+#[path = "llvm_objc.rs"]
+mod objc;
+pub(crate) use objc::class_symbol as objc_class_symbol;
+pub use objc::uses_objc;
 #[path = "llvm_io.rs"]
 mod io;
 #[path = "llvm_list.rs"]
@@ -2008,6 +2012,7 @@ fn emit_program_in(
     } else {
         validate_native_externs(module, &reachable)?;
     }
+    validate_objc_target(module, &reachable, wasm)?;
     let emitted: Vec<bool> = (0..module.functions.len())
         .map(|id| reachable.contains(&id))
         .collect();
@@ -2473,6 +2478,8 @@ entry:\n\
     }
     // TZ09: a WebAssembly program that spawns runs on the tzroutine runtime of JSPI.
     let spawning = globals.spawns;
+    // M01: the Objective-C references, declarations and module flags, once every function exists.
+    objc::finish(&mut globals, &mut output);
     for global in globals.definitions {
         output.push_str(&global);
         output.push('\n');
@@ -3036,6 +3043,8 @@ struct Globals {
     data_symbols: BTreeMap<String, Span>,
     /// M17: explicit function symbols checked against `null` for `@weak` calls.
     weak_checked_symbols: BTreeSet<String>,
+    /// M01: the Objective-C class and selector references and runtime calls of the emitted code.
+    objc: objc::ObjcGlobals,
     /// W12: whether native `Entry::Console` callback wrappers check `@tz.main.done`.
     guard_callbacks_after_main: bool,
     /// The regions that `tsuzuri test --coverage` counts (G18 Phase 2).
@@ -3102,6 +3111,7 @@ impl Default for Globals {
             callbacks: BTreeSet::new(),
             data_symbols: BTreeMap::new(),
             weak_checked_symbols: BTreeSet::new(),
+            objc: objc::ObjcGlobals::default(),
             guard_callbacks_after_main: false,
             coverage: None,
             seed: None,
@@ -4293,6 +4303,84 @@ fn validate_native_externs(
                 function.span,
             ));
         }
+    }
+    Ok(())
+}
+
+/// M01: a reached use of Objective-C needs an Apple target. A use is a call of a function of
+/// the built-in module `ObjC`, a message send (M02), or a call of an extern function (or a read
+/// of a data symbol) whose signature holds an Objective-C object, also behind `ref`, `ref mut`
+/// or `Maybe`; object values come from nowhere else. A declaration that nothing reaches, and
+/// `ObjC.Class` or `ObjC.Sel` alone in a signature, change no output on any target. Does nothing
+/// for a program without an `extern class` and without a use of `ObjC`.
+pub(crate) fn validate_objc_target(
+    module: &CheckedModule,
+    reachable: &BTreeSet<usize>,
+    wasm: bool,
+) -> Result<(), Diagnostic> {
+    if !wasm && crate::target::current_platform().mach_o() {
+        return Ok(());
+    }
+    fn find_use(expression: &TypedExpr) -> Option<Span> {
+        match &expression.kind {
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin.is_objc() =>
+            {
+                return Some(expression.span);
+            }
+            _ => {}
+        }
+        let mut found = None;
+        let _ = expression.try_for_each_child(&mut |child| {
+            if found.is_none() {
+                found = find_use(child);
+            }
+            Ok(())
+        });
+        found
+    }
+    let holds_object = |ty: &Type| {
+        let mut ty = ty;
+        while let Type::Reference(inner, _) = ty {
+            ty = inner;
+        }
+        let types = module.types();
+        let payload = crate::abi::std_maybe_payload(ty, &types).unwrap_or(ty);
+        let payload = match payload {
+            Type::Reference(inner, _) => inner.as_ref(),
+            other => other,
+        };
+        payload.is_objc_object()
+    };
+    for &id in reachable {
+        let function = &module.functions[id];
+        let span = if matches!(function.body.kind, TypedExprKind::HostCall(..)) {
+            function
+                .signature
+                .parameters
+                .iter()
+                .chain(std::iter::once(&function.signature.result))
+                .any(holds_object)
+                .then_some(function.span)
+        } else {
+            find_use(&function.body)
+        };
+        let Some(span) = span else {
+            continue;
+        };
+        return Err(if wasm {
+            Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "Objective-C classes and 'ObjC' need the Objective-C runtime, which WebAssembly targets do not have; build for aarch64-apple-darwin",
+                span,
+            )
+        } else {
+            Diagnostic::of(
+                DiagnosticKind::AbiAppleOnly,
+                "Objective-C classes and 'ObjC' need an Apple target; build for aarch64-apple-darwin",
+                span,
+            )
+        });
     }
     Ok(())
 }
@@ -7047,6 +7135,8 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
                 });
             }
             Type::List(element) => self.list_drop(element, value),
+            // M01: an Objective-C object value owns one strong reference.
+            Type::Handle(_, kind) if kind.objc() => self.objc_release(value),
             _ => {}
         }
     }
@@ -7122,7 +7212,13 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             Type::Shared(shared, kind) => self.clone_shared(shared, *kind, value),
             Type::Once(_) => unreachable!("run-once functions cannot be cloned"),
             Type::Handle(_, HandleKind::Copy) => value.to_owned(),
-            Type::Handle(_, HandleKind::Owned | HandleKind::Local) => {
+            Type::Handle(
+                _,
+                HandleKind::Owned
+                | HandleKind::Local
+                | HandleKind::ObjcLocal
+                | HandleKind::ObjcSync,
+            ) => {
                 unreachable!("extern handles cannot be cloned")
             }
             // A14 Phase 2: only a `Copy` dyn value has a clone slot.
@@ -7825,6 +7921,15 @@ impl<'a, 'b> FunctionEmitter<'a, 'b> {
             && let [value] = arguments
         {
             return self.dyn_of(instance, value);
+        }
+        // M01: the functions of the built-in module `ObjC` lower inline; only a direct call names
+        // one.
+        if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind
+            && instance.builtin.is_objc()
+            && let [argument] = arguments
+        {
+            let result = callee.ty.after_arguments(1);
+            return self.objc_builtin(instance, argument, &result);
         }
         // W22: `FnPtr.of target` produces the static C callback wrapper address of `target`.
         if let TypedExprKind::Function(FunctionRef::Builtin(instance)) = &callee.kind

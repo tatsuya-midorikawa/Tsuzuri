@@ -103,8 +103,14 @@ impl FunctionEmitter<'_, '_> {
 
                     self.begin(&ok_block);
                     let ok_val = match &payload {
-                        Type::Handle(..) => {
+                        Type::Handle(_, kind) => {
                             let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                            // M01: an object that is read is retained; retaining nil is nothing.
+                            let raw = if kind.objc() {
+                                self.objc_retain(&raw)
+                            } else {
+                                raw
+                            };
                             self.nullable_from_c(result, &raw)
                         }
                         Type::Integer(bits, _) => {
@@ -149,15 +155,26 @@ impl FunctionEmitter<'_, '_> {
                 }
                 Type::Binary(32) => self.value(format!("load float, ptr {global}, align 4")),
                 Type::Binary(64) => self.value(format!("load double, ptr {global}, align 8")),
-                Type::Handle(..) => {
+                Type::Handle(_, kind) => {
                     let raw = self.value(format!("load ptr, ptr {global}, align 8"));
                     let valid = self.value(format!("icmp ne ptr {raw}, null"));
                     self.guard(&valid, TrapKind::NullHandle);
-                    raw
+                    // M01: an object that is read is retained, so the value owns a reference.
+                    if kind.objc() {
+                        self.objc_retain(&raw)
+                    } else {
+                        raw
+                    }
                 }
                 Type::Record(..) => self.read_host_record(result, &global),
                 _ => {
                     let raw = self.value(format!("load ptr, ptr {global}, align 8"));
+                    // M01: `Maybe<C>` of an object is retained too; retaining nil is nothing.
+                    let raw = if crate::abi::objc_object_result(result, &self.module.types()) {
+                        self.objc_retain(&raw)
+                    } else {
+                        raw
+                    };
                     self.nullable_from_c(result, &raw)
                 }
             },
@@ -530,8 +547,24 @@ impl FunctionEmitter<'_, '_> {
             self.instruction("unreachable");
             self.begin(&ok_block);
         }
+        // M01: an Objective-C object result comes at +0 unless the declaration says
+        // `@returns_retained`. The attached-call bundle makes the backend retain it right after
+        // the call; a result that the canonical C type lowers to `i64` (W14) cannot carry the
+        // bundle and is retained by a plain call after its `inttoptr`.
+        let objc_result =
+            !self.globals.wasm && crate::abi::objc_object_result(result, &self.module.types());
+        if objc_result {
+            self.globals.objc.used = true;
+        }
+        let retain_result = objc_result && !import.returns_retained;
+        let bundle = if retain_result && !convert_ptr_result {
+            self.globals.objc.attached_call();
+            objc::ATTACHED_CALL
+        } else {
+            ""
+        };
         let call = format!(
-            "call {output} @{}({})",
+            "call {output} @{}({}){bundle}",
             import.native_symbol,
             values.join(", ")
         );
@@ -584,7 +617,12 @@ impl FunctionEmitter<'_, '_> {
         let value = self.value(call);
         finish_copy_outs(self, &copy_outs);
         let value = if convert_ptr_result {
-            self.value(format!("inttoptr i64 {value} to ptr"))
+            let pointer = self.value(format!("inttoptr i64 {value} to ptr"));
+            if retain_result {
+                self.objc_retain_autoreleased(&pointer)
+            } else {
+                pointer
+            }
         } else {
             value
         };

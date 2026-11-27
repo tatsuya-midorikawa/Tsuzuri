@@ -539,18 +539,100 @@ pub fn any_zstring(ty: &Type, types: &TypeContext<'_>) -> bool {
     zstring(ty, types) || zutf8string(ty, types)
 }
 
+/// M01: whether `ty` holds an Objective-C type anywhere: an object (an `extern class` or
+/// `ObjC.Object`), `ObjC.Class` or `ObjC.Sel`, also inside a function or `FnPtr` type.
+pub fn reaches_objc(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let objc = |part: &Type| part.is_objc_object() || part.is_objc_runtime_handle();
+    match ty {
+        Type::Function(parameters, result) => {
+            parameters.iter().any(|ty| reaches_objc(ty, types)) || reaches_objc(result, types)
+        }
+        Type::FnPtr(inner) => reaches_objc(inner, types),
+        Type::Reference(inner, _) => reaches_objc(inner, types),
+        _ => types.reaches(ty, objc),
+    }
+}
+
+/// M01: `ObjC.Class` or `ObjC.Sel`, a shared borrow of one, or a `Maybe` of either: the forms
+/// that an extern function and a static callback take and that an extern function returns.
+fn objc_runtime_value(ty: &Type, types: &TypeContext<'_>) -> bool {
+    let plain = |ty: &Type| {
+        ty.is_objc_runtime_handle()
+            || matches!(ty, Type::Reference(inner, false) if inner.is_objc_runtime_handle())
+    };
+    plain(ty) || std_maybe_payload(ty, types).is_some_and(plain)
+}
+
+/// M01: how an `extern def` signature misuses an Objective-C type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjcMisuse {
+    /// An owned object as an argument: the host borrows its arguments (`ref C`).
+    OwnedArgument,
+    /// A position that takes no Objective-C type.
+    Position,
+}
+
+/// M01 spec 3: the first misuse of an Objective-C type in the signature of an `extern def`.
+/// An object is an argument as `ref C` or `Maybe<ref C>` (+0) and a result as `C` or `Maybe<C>`;
+/// `ObjC.Class` and `ObjC.Sel` are also arguments of a static callback.
+pub fn objc_extern_misuse(
+    parameters: &[Type],
+    result: &Type,
+    types: &TypeContext<'_>,
+) -> Option<ObjcMisuse> {
+    let borrowed_object =
+        |ty: &Type| matches!(ty, Type::Reference(inner, false) if inner.is_objc_object());
+    for parameter in parameters {
+        if !reaches_objc(parameter, types) {
+            continue;
+        }
+        if let Type::Function(callback_parameters, callback_result) = parameter {
+            if reaches_objc(callback_result, types)
+                || callback_parameters
+                    .iter()
+                    .any(|ty| reaches_objc(ty, types) && !objc_runtime_value(ty, types))
+            {
+                return Some(ObjcMisuse::Position);
+            }
+            continue;
+        }
+        let payload = std_maybe_payload(parameter, types).unwrap_or(parameter);
+        if borrowed_object(payload) || objc_runtime_value(parameter, types) {
+            continue;
+        }
+        return Some(if payload.is_objc_object() {
+            ObjcMisuse::OwnedArgument
+        } else {
+            ObjcMisuse::Position
+        });
+    }
+    if reaches_objc(result, types) {
+        let payload = std_maybe_payload(result, types).unwrap_or(result);
+        if !payload.is_objc_object() && !payload.is_objc_runtime_handle() {
+            return Some(ObjcMisuse::Position);
+        }
+    }
+    None
+}
+
+/// M01: whether `ty` is an Objective-C object or a `Maybe` of one: the results that
+/// `@returns_retained` applies to and that a data symbol reads with a retain.
+pub fn objc_object_result(ty: &Type, types: &TypeContext<'_>) -> bool {
+    std_maybe_payload(ty, types).unwrap_or(ty).is_objc_object()
+}
+
 /// M06: whether `ty` is allowed as the read result `T` of `extern "sym" view def f :: unit -> T`.
 pub fn data_symbol_read_type(ty: &Type, types: &TypeContext<'_>, name: &str) -> bool {
     match ty {
         Type::Integer(8 | 16 | 32 | 64, _) | Type::Binary(32 | 64) => true,
         Type::Handle(_, crate::syntax::HandleKind::Copy) => true,
+        // M01: an Objective-C object is read with a retain, so the value owns a reference.
+        Type::Handle(_, kind) if kind.objc() => true,
         Type::Record(..) => view_record(ty, types, name).is_ok(),
         _ => matches!(
             nullable(ty, types),
-            Some(Nullable::Handle(Type::Handle(
-                _,
-                crate::syntax::HandleKind::Copy
-            )))
+            Some(Nullable::Handle(Type::Handle(_, kind)))
+                if kind.copy() || kind.objc()
         ),
     }
 }

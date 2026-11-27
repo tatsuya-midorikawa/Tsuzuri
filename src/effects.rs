@@ -554,6 +554,22 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => {
             facts(None, false, false, false, false, false, None)
         }
+        // M01: `ObjC.retain` and `ObjC.downcast` call the Objective-C runtime; a downcast to a
+        // `@weak` class that is missing traps. The casts, `ObjC.sel` and `ObjC.literal` (M02)
+        // emit no call.
+        ObjcRetain => facts(
+            Some(Effect::Extern),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        ObjcDowncast => facts(Some(Effect::Extern), false, true, false, false, false, None),
+        ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => {
+            facts(None, false, false, false, false, false, None)
+        }
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
         AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
         AnchorRead | AnchorUpdate => {
@@ -1401,6 +1417,14 @@ impl<'s, 'a> Scan<'s, 'a> {
     /// The `Drop` implementations that dropping a value of type `ty` runs: a source of
     /// `user_drop` and an edge to each.
     fn user_drop(&mut self, ty: &Type, span: Span) {
+        // M01: dropping an Objective-C object releases it, which calls the runtime: `extern`,
+        // not `user_drop`.
+        if self.state.module.objc.has_objects() {
+            let types = self.state.module.types();
+            if !types.stored_all(ty, |part| !part.is_objc_object()) {
+                self.source(Effect::Extern, span, "objc-release");
+            }
+        }
         let drops = self.state.drop_functions(ty);
         if drops.is_empty() {
             return;
@@ -3941,7 +3965,7 @@ mod tests {
             );
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 378);
+        assert_eq!(Builtin::ALL.len(), 384);
         assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 171);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 207);
     }

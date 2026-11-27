@@ -473,6 +473,18 @@ fn define_declarations(
                 .handles
                 .insert(format!("{name}.{}", handle.name.text), definition);
         }
+        for class in &program.extern_classes {
+            let definition = index.define(plain(
+                &class.name,
+                SymbolKind::Record,
+                name,
+                class.header_with(&typed(&class.name.text)),
+                class.visibility,
+            ));
+            links
+                .handles
+                .insert(format!("{name}.{}", class.name.text), definition);
+        }
         for constant in &program.constants {
             let detail = resolve_type(&constant.ty, name, names)
                 .map(|ty| {
@@ -711,6 +723,15 @@ pub(super) fn collect(
                 23,
                 handle.name.span,
                 handle.header_with(&typed(&handle.name.text)),
+            );
+        }
+        for class in &program.extern_classes {
+            index.document(&class.name, class.doc.as_ref());
+            index.symbol(
+                &class.name,
+                23,
+                class.name.span,
+                class.header_with(&typed(&class.name.text)),
             );
         }
         for alias in &program.type_aliases {

@@ -7662,6 +7662,7 @@ pub(super) fn specialize(
         link_libraries: module.link_libraries,
         link_frameworks: module.link_frameworks,
         weak_symbols: module.weak_symbols,
+        objc: module.objc,
     })
 }
 
