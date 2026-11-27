@@ -1,6 +1,7 @@
 use super::*;
-use crate::abi::{Buffer, out_result};
+use crate::abi::{Buffer, RecordPassing, extern_record_passing, out_result};
 use crate::check::HostImport;
+use byvalue::{ByValue, CLayoutLeaves, Position};
 
 pub(super) fn header(module: &CheckedModule) -> String {
     let mut output = String::new();
@@ -17,7 +18,12 @@ pub(super) fn header(module: &CheckedModule) -> String {
         let _ = writeln!(
             output,
             "{} {}({parameters});",
-            if out_result(&viewed_result) {
+            if extern_record_passing(&viewed_result, &module.types())
+                == Some(RecordPassing::ByValue)
+            {
+                // W36: the C prototype returns the struct itself, on every target.
+                host_abi::record_name(&viewed_result, module)
+            } else if out_result(&viewed_result) {
                 "void".into()
             } else {
                 c_type(&viewed_result)
@@ -212,7 +218,21 @@ impl FunctionEmitter<'_, '_> {
     ) -> String {
         let mut types = Vec::new();
         let mut values = Vec::new();
-        let out = if out_result(result) {
+        let platform = crate::target::current_platform();
+        // W36: a `@c_layout` record result is the C struct by value. Its class does not depend on
+        // the parameters, and a result in memory has its temporary before any argument is evaluated.
+        let by_value_result =
+            extern_record_passing(result, &self.module.types()) == Some(RecordPassing::ByValue);
+        let result_layout = by_value_result.then(|| self.by_value_layout(result));
+        let result_class = result_layout.as_ref().map(|layout| {
+            byvalue::classify(layout, platform, true)
+                .expect("byvalue::validate checked the by-value records of reachable externs")
+        });
+        let sret = result_layout
+            .as_ref()
+            .filter(|_| result_class == Some(ByValue::Memory))
+            .map(|layout| self.by_value_slot(layout, &ByValue::Memory));
+        let out = if !by_value_result && out_result(result) {
             let slot = self.host_result_slot(result);
             types.push("ptr".into());
             values.push(format!("ptr {slot}"));
@@ -220,6 +240,10 @@ impl FunctionEmitter<'_, '_> {
         } else {
             None
         };
+        // W36: the by-value record arguments: where each stands in `values`, its temporary and its
+        // layout. `types` holds one empty entry for each until the whole call is lowered, because
+        // System V counts the registers of every parameter before it.
+        let mut by_values: Vec<(usize, String, CLayoutLeaves)> = Vec::new();
         // Compact strings that the host reads as UTF-16: where the pointer of each is in `values`,
         // optional `@count` length kind, and its descriptor.
         let mut widen: Vec<(usize, Option<crate::syntax::CountLength>, String)> = Vec::new();
@@ -405,6 +429,21 @@ impl FunctionEmitter<'_, '_> {
             } else {
                 &argument.ty
             };
+            if extern_record_passing(&argument.ty, &self.module.types())
+                == Some(RecordPassing::ByValue)
+            {
+                // A fresh copy for this argument of this call, written as soon as the argument is
+                // evaluated: the callee may write to a copy that it receives in memory.
+                let layout = self.by_value_layout(inner);
+                let alone = byvalue::classify(&layout, platform, false)
+                    .expect("byvalue::validate checked the by-value records of reachable externs");
+                let slot = self.by_value_slot(&layout, &alone);
+                self.write_host_record(inner, &value, &slot);
+                by_values.push((values.len(), slot, layout));
+                types.push(String::new());
+                values.push(String::new());
+                continue;
+            }
             if matches!(inner, Type::Record(..)) {
                 let value = if matches!(argument.ty, Type::Reference(..)) {
                     self.value(format!("load {}, ptr {value}", self.ty(inner)))
@@ -474,7 +513,9 @@ impl FunctionEmitter<'_, '_> {
             values[position] = format!("ptr {converted}");
         }
         let result_nullable = crate::abi::nullable(result, &self.module.types()).is_some();
-        let mut output = if *result == Type::Unit || out.is_some() {
+        let mut output = if let Some(class) = &result_class {
+            class.result_type()
+        } else if *result == Type::Unit || out.is_some() {
             "void".to_owned()
         } else {
             abi_type(&crate::abi::c_view(result, &self.module.types()))
@@ -485,7 +526,11 @@ impl FunctionEmitter<'_, '_> {
             && let Some(canonical) = self.module.extern_abis.get(&import.native_symbol)
         {
             for (index, slot_type) in types.iter_mut().enumerate() {
-                let target = canonical.parameters[index].llvm();
+                // W36: a struct by value has no scalar type to agree on; declarations of one symbol
+                // name the same C shape there (`abi::c_signature`).
+                let Some(target) = canonical.parameters[index].llvm() else {
+                    continue;
+                };
                 if slot_type != target {
                     let raw = values[index]
                         .strip_prefix("ptr ")
@@ -495,12 +540,55 @@ impl FunctionEmitter<'_, '_> {
                     values[index] = format!("{target} {cast}");
                 }
             }
-            let target_result = canonical.result.llvm();
-            if output != target_result {
+            if let Some(target_result) = canonical.result.llvm()
+                && output != target_result
+            {
                 debug_assert_eq!((output.as_str(), target_result), ("ptr", "i64"));
                 output = target_result.to_owned();
                 convert_ptr_result = true;
             }
+        }
+        // W36: every parameter is lowered, so the registers of the call can be counted and each
+        // by-value record becomes the IR values of its class. A result in memory is the first
+        // parameter, with `sret`.
+        if !by_values.is_empty() || sret.is_some() {
+            let positions: Vec<Position<'_>> = types
+                .iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    match by_values.iter().find(|(position, ..)| *position == index) {
+                        Some((_, _, layout)) => Position::Record(layout),
+                        None if matches!(ty.as_str(), "float" | "double") => Position::Sse,
+                        None => Position::Integer,
+                    }
+                })
+                .collect();
+            let classes = byvalue::classify_call(&positions, result_layout.as_ref(), platform)
+                .expect("byvalue::validate checked the by-value records of reachable externs");
+            let mut lowered_types = Vec::new();
+            let mut lowered_values = Vec::new();
+            if let (Some(slot), Some(layout)) = (&sret, &result_layout) {
+                let parameter = ByValue::sret_parameter(layout);
+                lowered_values.push(format!("{parameter} {slot}"));
+                lowered_types.push(parameter);
+            }
+            let mut records = by_values.iter().zip(&classes).peekable();
+            for (index, (ty, value)) in types.into_iter().zip(values).enumerate() {
+                match records.next_if(|((position, ..), _)| *position == index) {
+                    Some(((_, slot, layout), class)) => {
+                        for (ty, value) in self.by_value_to_abi(class, false, slot, layout) {
+                            lowered_values.push(format!("{ty} {value}"));
+                            lowered_types.push(ty);
+                        }
+                    }
+                    None => {
+                        lowered_types.push(ty);
+                        lowered_values.push(value);
+                    }
+                }
+            }
+            types = lowered_types;
+            values = lowered_values;
         }
         self.intrinsics.insert(extern_declare(
             self.module,
@@ -569,12 +657,14 @@ impl FunctionEmitter<'_, '_> {
                 }
             }
         };
-        if *result == Type::Unit || out.is_some() {
+        if *result == Type::Unit || out.is_some() || sret.is_some() {
             self.instruction(call);
             finish_copy_outs(self, &copy_outs);
             self.free_copies(&copies);
             let output = if let Some(slot) = out {
                 self.read_host_result(result, &slot)
+            } else if let Some(slot) = sret {
+                self.read_host_record(result, &slot)
             } else {
                 "0".into()
             };
@@ -583,6 +673,16 @@ impl FunctionEmitter<'_, '_> {
         }
         let value = self.value(call);
         finish_copy_outs(self, &copy_outs);
+        if let (Some(class), Some(layout)) = (&result_class, &result_layout) {
+            // W36: the registers of the result go to a temporary, and the record is read from it
+            // like any `@c_layout` record that the host wrote.
+            self.free_copies(&copies);
+            let slot = self.by_value_slot(layout, class);
+            self.by_value_from_abi(class, &[(output, value)], &slot);
+            let record = self.read_host_record(result, &slot);
+            self.release_operands(operands);
+            return record;
+        }
         let value = if convert_ptr_result {
             self.value(format!("inttoptr i64 {value} to ptr"))
         } else {
@@ -615,6 +715,121 @@ impl FunctionEmitter<'_, '_> {
             let latin1 = self.string_is_latin1(word);
             let target = self.value(format!("select i1 {latin1}, ptr {copy}, ptr null"));
             self.instruction(format!("call void @tz.free(ptr {target})"));
+        }
+    }
+
+    /// W36: the layout that `byvalue::classify` reads of the `@c_layout` record `record`.
+    pub(crate) fn by_value_layout(&self, record: &Type) -> CLayoutLeaves {
+        CLayoutLeaves::of(record, self.module).expect("a by-value record is a '@c_layout' record")
+    }
+
+    /// W36: a zeroed temporary for one by-value record of one call: as large as the record and as
+    /// the IR values of `class` (an AArch64 `i64` argument of a 3-byte record reads 8 bytes), and
+    /// aligned for every type that a class loads or stores. A temporary made for the class that
+    /// `byvalue::classify` gives a record also fits the class that `classify_call` gives it.
+    pub(crate) fn by_value_slot(&mut self, layout: &CLayoutLeaves, class: &ByValue) -> String {
+        let bytes = class.storage(layout);
+        let slot = self.fresh();
+        self.allocas
+            .push(format!("{slot} = alloca [{bytes} x i8], align 16"));
+        self.instruction(format!("store [{bytes} x i8] zeroinitializer, ptr {slot}"));
+        slot
+    }
+
+    /// W36: from the C struct in the temporary `slot` (`write_host_record` wrote it) to the IR
+    /// values of `class`, as `(type with its attributes, value)`. With `result` false they are the
+    /// arguments of a call, to append to its parameter types and values in order; a `Memory`
+    /// argument is `slot` itself, so the temporary must be this argument's alone. With `result`
+    /// true it is the one value that a function returns (W26: a callback that returns the record);
+    /// `Memory` has none, because the callee writes through the `sret` pointer it received.
+    pub(crate) fn by_value_to_abi(
+        &mut self,
+        class: &ByValue,
+        result: bool,
+        slot: &str,
+        layout: &CLayoutLeaves,
+    ) -> Vec<(String, String)> {
+        let types = class.argument_types(layout, crate::target::current_platform());
+        if result {
+            let ty = class.result_type();
+            return match class {
+                ByValue::Memory => Vec::new(),
+                ByValue::Eightbytes(parts) if parts.len() > 1 => {
+                    let mut pair = "zeroinitializer".to_owned();
+                    for (index, part) in types.iter().enumerate() {
+                        let from = self.by_value_part(slot, index);
+                        let loaded = self.value(format!("load {part}, ptr {from}"));
+                        pair = self
+                            .value(format!("insertvalue {ty} {pair}, {part} {loaded}, {index}"));
+                    }
+                    vec![(ty, pair)]
+                }
+                _ => {
+                    let loaded = self.value(format!("load {ty}, ptr {slot}"));
+                    vec![(ty, loaded)]
+                }
+            };
+        }
+        match class {
+            ByValue::Memory => vec![(types[0].clone(), slot.to_owned())],
+            ByValue::Eightbytes(_) => types
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| {
+                    let from = self.by_value_part(slot, index);
+                    let loaded = self.value(format!("load {ty}, ptr {from}"));
+                    (ty, loaded)
+                })
+                .collect(),
+            _ => {
+                // The attribute (`alignstack(8)`) belongs to the parameter, not to the loaded type.
+                let plain = types[0].split(" alignstack").next().unwrap_or(&types[0]);
+                let loaded = self.value(format!("load {plain}, ptr {slot}"));
+                vec![(types[0].clone(), loaded)]
+            }
+        }
+    }
+
+    /// W36: from the IR values of `class` to the C struct in the temporary `slot`, which
+    /// `read_host_record` then reads. `values` are `(plain IR type, value)`: the one value that a
+    /// call returned (`ByValue::result_type`), or the parameters of a callback that receives the
+    /// record (W26). `Memory` stores nothing: the callee wrote through the `sret` pointer, and a
+    /// `Memory` parameter is itself the address of the struct.
+    pub(crate) fn by_value_from_abi(
+        &mut self,
+        class: &ByValue,
+        values: &[(String, String)],
+        slot: &str,
+    ) {
+        match (class, values) {
+            (ByValue::Memory, _) => {}
+            // One `{ a, b }` that a call returned: each eightbyte goes to its offset.
+            (ByValue::Eightbytes(parts), [(pair, value)]) if parts.len() > 1 => {
+                for (index, part) in parts.iter().enumerate() {
+                    let ty = ByValue::Eightbytes(vec![*part]).result_type();
+                    let extracted = self.value(format!("extractvalue {pair} {value}, {index}"));
+                    let to = self.by_value_part(slot, index);
+                    self.instruction(format!("store {ty} {extracted}, ptr {to}"));
+                }
+            }
+            _ => {
+                for (index, (ty, value)) in values.iter().enumerate() {
+                    let to = self.by_value_part(slot, index);
+                    self.instruction(format!("store {ty} {value}, ptr {to}"));
+                }
+            }
+        }
+    }
+
+    /// The address of eightbyte `index` of a by-value temporary.
+    fn by_value_part(&mut self, slot: &str, index: usize) -> String {
+        if index == 0 {
+            slot.to_owned()
+        } else {
+            self.value(format!(
+                "getelementptr inbounds i8, ptr {slot}, i64 {}",
+                index * 8
+            ))
         }
     }
 

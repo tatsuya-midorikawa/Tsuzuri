@@ -747,8 +747,75 @@ pub fn out_result(ty: &Type) -> bool {
     Buffer::of(ty).is_some() || matches!(ty, Type::Record(..))
 }
 
-/// The LLVM / C scalar or pointer type of one lowered host parameter or result (W14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// W36: how a record in an `extern def` parameter or result position crosses the C boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordPassing {
+    /// `const T *` / `T *` for a parameter, the leading out parameter `T *out` for a result (E05, W21).
+    Pointer,
+    /// The C struct itself, passed and returned as the C ABI of the target does it.
+    ByValue,
+}
+
+/// W36: the passing of `ty` in a parameter or result position of an `extern def`. A `@c_layout`
+/// record without `ref` is the C struct by value; an unmarked record, `ref R` and `ref mut R` are
+/// pointers; anything that is not a record is `None`. `export def` and callbacks do not use this:
+/// their records stay pointers.
+pub fn extern_record_passing(ty: &Type, types: &TypeContext<'_>) -> Option<RecordPassing> {
+    match ty {
+        Type::Record(..) if any_zstring(ty, types) => None,
+        Type::Record(..) if c_layout_record(ty, types) => Some(RecordPassing::ByValue),
+        Type::Record(..) => Some(RecordPassing::Pointer),
+        Type::Reference(inner, _) if matches!(inner.as_ref(), Type::Record(..)) => {
+            extern_record_passing(inner, types).map(|_| RecordPassing::Pointer)
+        }
+        _ => None,
+    }
+}
+
+/// W36: the C shape of a `@c_layout` record, independent of the target: its packing and the C types
+/// of its fields in order. Two records of one shape have one layout and pass the same way on every
+/// target, so two declarations of one symbol may name either (W14).
+fn c_layout_shape(ty: &Type, types: &TypeContext<'_>, depth: usize, shape: &mut String) {
+    match ty {
+        Type::Integer(bits, _) => {
+            shape.push('i');
+            shape.push_str(&bits.to_string());
+        }
+        Type::Binary(32) => shape.push_str("float"),
+        Type::Binary(64) => shape.push_str("double"),
+        Type::FixedArray(element, _) => {
+            shape.push('[');
+            shape.push_str(&ty.fixed_length().unwrap_or(0).to_string());
+            shape.push_str(" x ");
+            c_layout_shape(element, types, depth + 1, shape);
+            shape.push(']');
+        }
+        Type::Record(id, arguments)
+            if depth < crate::syntax::MAX_NESTING && types.records[*id].c_layout.is_some() =>
+        {
+            shape.push_str("struct");
+            if let Some(pack) = types.records[*id].c_layout.and_then(|layout| layout.pack) {
+                shape.push_str(" pack(");
+                shape.push_str(&pack.to_string());
+                shape.push(')');
+            }
+            shape.push_str(" { ");
+            for (index, field) in types.record_fields(*id, arguments).iter().enumerate() {
+                if index > 0 {
+                    shape.push_str(", ");
+                }
+                c_layout_shape(field, types, depth + 1, shape);
+            }
+            shape.push_str(" }");
+        }
+        // Handles, `Maybe` of one, `FnPtr` and borrowed NUL-terminated strings are one pointer.
+        _ => shape.push_str("ptr"),
+    }
+}
+
+/// The LLVM / C scalar or pointer type of one lowered host parameter or result (W14), or a
+/// `@c_layout` record by value (W36), whose lowering depends on the target.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CType {
     I32,
     I64,
@@ -756,54 +823,67 @@ pub enum CType {
     F64,
     Ptr,
     Void,
+    /// W36: a C struct by value, named by its target-independent shape (`c_layout_shape`).
+    ByValue(String),
 }
 
 /// The native 64-bit C ABI register/stack class of a `CType` (W14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AbiClass {
     I32,
     Word64,
     F32,
     F64,
     Void,
+    /// W36: a C struct by value. Only a struct of the same shape passes the same way on every target.
+    ByValue(String),
 }
 
 impl CType {
-    pub fn class(self) -> AbiClass {
+    pub fn class(&self) -> AbiClass {
         match self {
             Self::I32 => AbiClass::I32,
             Self::I64 | Self::Ptr => AbiClass::Word64,
             Self::F32 => AbiClass::F32,
             Self::F64 => AbiClass::F64,
             Self::Void => AbiClass::Void,
+            Self::ByValue(shape) => AbiClass::ByValue(shape.clone()),
         }
     }
 
-    pub fn llvm(self) -> &'static str {
+    /// The LLVM type of a scalar or pointer; `None` for a struct by value, which
+    /// `llvm_byvalue::classify` lowers for the target.
+    pub fn llvm(&self) -> Option<&'static str> {
         match self {
-            Self::I32 => "i32",
-            Self::I64 => "i64",
-            Self::F32 => "float",
-            Self::F64 => "double",
-            Self::Ptr => "ptr",
-            Self::Void => "void",
+            Self::I32 => Some("i32"),
+            Self::I64 => Some("i64"),
+            Self::F32 => Some("float"),
+            Self::F64 => Some("double"),
+            Self::Ptr => Some("ptr"),
+            Self::Void => Some("void"),
+            Self::ByValue(_) => None,
         }
     }
 
-    fn canonical(self, other: Self) -> Self {
+    fn canonical(&self, other: &Self) -> Self {
         debug_assert_eq!(self.class(), other.class());
-        if self == other { self } else { Self::I64 }
+        if self == other {
+            self.clone()
+        } else {
+            Self::I64
+        }
     }
 }
 
 impl AbiClass {
-    pub fn description(self) -> &'static str {
+    pub fn description(&self) -> String {
         match self {
-            Self::I32 => "a 32-bit integer",
-            Self::Word64 => "a 64-bit integer or pointer",
-            Self::F32 => "a 32-bit float",
-            Self::F64 => "a 64-bit float",
-            Self::Void => "void",
+            Self::I32 => "a 32-bit integer".into(),
+            Self::Word64 => "a 64-bit integer or pointer".into(),
+            Self::F32 => "a 32-bit float".into(),
+            Self::F64 => "a 64-bit float".into(),
+            Self::Void => "void".into(),
+            Self::ByValue(shape) => format!("the C {shape} by value"),
         }
     }
 }
@@ -820,15 +900,15 @@ impl CSignature {
     /// Returns `true` when any position differed in `CType` (`ptr` vs `i64`).
     pub fn merge_canonical(&mut self, other: &Self) -> bool {
         let mut mixed = false;
-        for (slot, &next) in self.parameters.iter_mut().zip(&other.parameters) {
-            if *slot != next {
+        for (slot, next) in self.parameters.iter_mut().zip(&other.parameters) {
+            if slot != next {
                 mixed = true;
                 *slot = slot.canonical(next);
             }
         }
         if self.result != other.result {
             mixed = true;
-            self.result = self.result.canonical(other.result);
+            self.result = self.result.canonical(&other.result);
         }
         mixed
     }
@@ -886,9 +966,19 @@ pub fn c_signature(
     counts: &[(usize, crate::syntax::CountLength)],
     types: &TypeContext<'_>,
 ) -> CSignature {
+    let by_value = |ty: &Type| {
+        (extern_record_passing(ty, types) == Some(RecordPassing::ByValue)).then(|| {
+            let mut shape = String::new();
+            c_layout_shape(ty, types, 0, &mut shape);
+            CType::ByValue(shape)
+        })
+    };
     let mut lowered = Vec::new();
     let viewed_result = c_view(result, types);
-    if out_result(&viewed_result) {
+    // W36: a `@c_layout` record result is the C struct by value, not the leading out pointer. Where
+    // the target returns it in memory, the `sret` pointer is not a parameter of this signature.
+    let result_by_value = by_value(&viewed_result);
+    if result_by_value.is_none() && out_result(&viewed_result) {
         lowered.push(CType::Ptr);
     }
     for (index, parameter) in parameters.iter().enumerate() {
@@ -920,6 +1010,10 @@ pub fn c_signature(
             lowered.push(CType::Ptr);
             continue;
         }
+        if let Some(record) = by_value(parameter) {
+            lowered.push(record);
+            continue;
+        }
         let viewed = c_view(parameter, types);
         let inner = match viewed.as_ref() {
             Type::Reference(inner, false) => inner.as_ref(),
@@ -933,7 +1027,9 @@ pub fn c_signature(
             lowered.push(c_scalar(&viewed));
         }
     }
-    let lowered_result = if *viewed_result == Type::Unit || out_result(&viewed_result) {
+    let lowered_result = if let Some(record) = result_by_value {
+        record
+    } else if *viewed_result == Type::Unit || out_result(&viewed_result) {
         CType::Void
     } else {
         c_scalar(&viewed_result)

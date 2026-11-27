@@ -309,6 +309,7 @@ diagnostic_kinds! {
         (AbiAppleOnly, "abi_apple_only", "E1008"),
         (AbiNativeOnly, "abi_native_only", "E1008"),
         (AbiNullablePayload, "abi_nullable_payload", "E1008"),
+        (AbiRecordByValueTarget, "abi_record_by_value_target", "E1008"),
         (CLayoutBoolField, "c_layout_bool_field", "E1008"),
         (CLayoutDrop, "c_layout_drop", "E1008"),
         (CLayoutEmpty, "c_layout_empty", "E1008"),
