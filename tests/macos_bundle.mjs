@@ -241,6 +241,10 @@ try {
       must(compiler, ["build", withKeys, "--emit", "app", "-O0"]);
       assert.ok(existsSync(join(withKeys, "Main.app", "Contents", "MacOS", "Main")));
       verified(join(withKeys, "Main.app"));
+      // That bundle is inside the project now: the next build walks over it and replaces it.
+      must(compiler, ["build", withKeys, "--emit", "app", "-O0"]);
+      must(compiler, ["check", withKeys]);
+      verified(join(withKeys, "Main.app"));
     }
 
     // E3: resources are copied by content and mode only; extended attributes stay behind.

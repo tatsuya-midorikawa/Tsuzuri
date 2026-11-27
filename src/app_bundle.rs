@@ -628,7 +628,7 @@ impl Outputs {
         };
         for directory in [
             bundle.then_some(&self.bundle),
-            dsym.then(|| self.dsym.as_ref()).flatten(),
+            self.dsym.as_ref().filter(|_| dsym),
         ]
         .into_iter()
         .flatten()
