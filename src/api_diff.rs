@@ -1472,6 +1472,7 @@ fn add_items(
         c_layouts,
         links: _,
         weaks: _,
+        last_error: _,
         noncanonical: _,
         aliases,
         declaration_starts: _,

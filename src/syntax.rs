@@ -328,6 +328,8 @@ pub struct Program {
     pub links: Vec<LinkAttribute>,
     /// The `@weak` attributes of this module's extern declarations (M17).
     pub weaks: Vec<WeakAttribute>,
+    /// The `@last_error` attributes of this module's extern function declarations (W16).
+    pub last_error: Vec<LastErrorAttribute>,
     /// The spellings that have a canonical form, in parse order (A22).
     pub noncanonical: Vec<Noncanonical>,
     /// The `@alias name` declarations of a `.tc` builder file, in source order: other names for
@@ -546,6 +548,13 @@ pub struct LinkAttribute {
 /// `@weak` before an `extern` declaration with a link name (M17).
 #[derive(Clone, Debug)]
 pub struct WeakAttribute {
+    pub target: Ident,
+    pub span: Span,
+}
+
+/// `@last_error` before an `extern ... def` declaration (W16).
+#[derive(Clone, Debug)]
+pub struct LastErrorAttribute {
     pub target: Ident,
     pub span: Span,
 }

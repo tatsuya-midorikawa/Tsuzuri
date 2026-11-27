@@ -13,7 +13,8 @@ pub(super) fn header(module: &CheckedModule) -> String {
             continue;
         }
         let parameters = host_abi::c_parameters(function, module);
-        let viewed_result = crate::abi::c_view(&function.signature.result, &module.types());
+        let viewed_result =
+            crate::abi::c_view(import.c_result(&function.signature.result), &module.types());
         let _ = writeln!(
             output,
             "{} {}({parameters});",
@@ -208,8 +209,9 @@ impl FunctionEmitter<'_, '_> {
         &mut self,
         import: &HostImport,
         arguments: &[TypedExpr],
-        result: &Type,
+        full_result: &Type,
     ) -> String {
+        let result = import.c_result(full_result);
         let mut types = Vec::new();
         let mut values = Vec::new();
         let out = if out_result(result) {
@@ -530,11 +532,80 @@ impl FunctionEmitter<'_, '_> {
             self.instruction("unreachable");
             self.begin(&ok_block);
         }
+        let mut errno_ptr = None;
+        if import.last_error && !self.globals.wasm {
+            if self.globals.blocking_externs {
+                self.instruction("call void @tsuzuri_tz_blocking_enter()");
+            }
+            match crate::target::current_platform().last_error_access() {
+                crate::target::LastErrorAccess::Win32 => {
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        "SetLastError",
+                        "void",
+                        &[String::from("i32")],
+                    ));
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        "GetLastError",
+                        "i32",
+                        &[],
+                    ));
+                    self.instruction("call void @SetLastError(i32 0)");
+                }
+                crate::target::LastErrorAccess::Errno(sym) => {
+                    self.intrinsics.insert(extern_declare(
+                        self.module,
+                        false,
+                        "",
+                        "",
+                        sym,
+                        "ptr",
+                        &[],
+                    ));
+                    let ptr_val = self.value(format!("call ptr @{sym}()"));
+                    self.instruction(format!("store i32 0, ptr {ptr_val}"));
+                    errno_ptr = Some(ptr_val);
+                }
+            }
+        }
         let call = format!(
             "call {output} @{}({})",
             import.native_symbol,
             values.join(", ")
         );
+        let capture_last_error = |emitter: &mut Self, errno_ptr: Option<&str>| -> Option<String> {
+            if !import.last_error || emitter.globals.wasm {
+                return None;
+            }
+            let err = match errno_ptr {
+                Some(ptr_val) => emitter.value(format!("load i32, ptr {ptr_val}")),
+                None => emitter.value("call i32 @GetLastError()"),
+            };
+            if emitter.globals.blocking_externs {
+                emitter.instruction("call void @tsuzuri_tz_blocking_exit()");
+            }
+            Some(err)
+        };
+        let pack_last_error =
+            |emitter: &mut Self, r_value: String, captured: Option<String>| -> String {
+                if let Some(err) = captured {
+                    let pair_ty = emitter.ty(full_result);
+                    let r_ty = emitter.ty(result);
+                    let first = emitter.value(format!(
+                        "insertvalue {pair_ty} zeroinitializer, {r_ty} {r_value}, 0"
+                    ));
+                    emitter.value(format!("insertvalue {pair_ty} {first}, i32 {err}, 1"))
+                } else {
+                    r_value
+                }
+            };
         let finish_copy_outs = |emitter: &mut Self, copy_outs: &[CopyOut]| {
             for item in copy_outs {
                 match item {
@@ -571,6 +642,7 @@ impl FunctionEmitter<'_, '_> {
         };
         if *result == Type::Unit || out.is_some() {
             self.instruction(call);
+            let captured = capture_last_error(self, errno_ptr.as_deref());
             finish_copy_outs(self, &copy_outs);
             self.free_copies(&copies);
             let output = if let Some(slot) = out {
@@ -579,9 +651,10 @@ impl FunctionEmitter<'_, '_> {
                 "0".into()
             };
             self.release_operands(operands);
-            return output;
+            return pack_last_error(self, output, captured);
         }
         let value = self.value(call);
+        let captured = capture_last_error(self, errno_ptr.as_deref());
         finish_copy_outs(self, &copy_outs);
         let value = if convert_ptr_result {
             self.value(format!("inttoptr i64 {value} to ptr"))
@@ -605,7 +678,7 @@ impl FunctionEmitter<'_, '_> {
             }
         };
         self.release_operands(operands);
-        output
+        pack_last_error(self, output, captured)
     }
 
     /// Frees the widened copies that `host_call` made of Latin-1 strings: a string that was UTF-16 is

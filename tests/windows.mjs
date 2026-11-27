@@ -418,6 +418,45 @@ function runGuiStage(compiler, clang, directory) {
   }
   console.log("Windows GUI: W19 extern type local Hdc (GetDC / GetDeviceCaps / ReleaseDC) passed across P=1 and P=4");
 
+  // W16: `@last_error` captures Win32 GetLastError() and clears stale SetLastError(123) before calls (direct and tzroutine).
+  const w16Dir = join(directory, "w16-last-error");
+  mkdirSync(w16Dir, { recursive: true });
+  writeFileSync(join(w16Dir, "Main.tz"), [
+    "@trusted @last_error",
+    'extern "CloseHandle" def close_raw :: i64 -> bool * i32u',
+    "@trusted @last_error",
+    'extern "GetCurrentProcessId" def current_pid :: unit -> i32u * i32u',
+    "@trusted",
+    'extern "SetLastError" def set_last_error :: i32u -> unit',
+    "def probe_once :: unit -> i32u = \\() ->",
+    "    let (ok, err_bad) = close_raw 0",
+    "    set_last_error 123i32u",
+    "    let (pid, err_cleared) = current_pid ()",
+    "    if !ok && pid > 0i32u && err_cleared == 0i32u then err_bad else 99i32u",
+    "def main :: unit -> i32 = \\() ->",
+    "    let direct = probe_once ()",
+    "    let ch: Channel<i64> = Channel.make 1",
+    "    let out = Channel.share (ref ch)",
+    "    tzroutine { Channel.send (ref out) (probe_once () as i64) }",
+    "    let spawned = (match Channel.recv (ref ch) with | Maybe.Some x -> x | Maybe.None -> 0) as i32u",
+    "    if direct == 6i32u && spawned == 6i32u then 6i32 else 91i32",
+    "",
+  ].join("\n"));
+  execute(compiler, ["check", w16Dir]);
+  for (const wasmTarget of ["wasm32", "wasm64"]) {
+    const wasmRes = execute(compiler, ["build", w16Dir, "--no-cache", "--target", wasmTarget, "-o", join(directory, `w16-${wasmTarget}.wasm`)], false);
+    assert.notEqual(wasmRes.status, 0);
+    assert.match(wasmRes.stderr, /error\[E1008\]/, `W16 ${wasmTarget} must fail with E1008:\n${wasmRes.stderr}`);
+  }
+  for (const optimization of ["-O0", "-O3"]) {
+    const w16Exe = join(directory, `w16-last-error${optimization}.exe`);
+    execute(compiler, ["build", w16Dir, "--no-cache", optimization, "-o", w16Exe]);
+    for (const procs of ["1", "4"]) {
+      assert.equal(execute(w16Exe, [], false, { TSUZURI_MAXPROCS: procs }).status, 6, `W16 ${toolchainLabel} ${optimization} P=${procs}`);
+    }
+  }
+  console.log(`Windows (${toolchainLabel}): W16 @last_error (CloseHandle=6, SetLastError(0) clear, tzroutines, WASM E1008) passed`);
+
   console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
 }
 

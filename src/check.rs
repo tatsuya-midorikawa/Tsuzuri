@@ -5537,6 +5537,8 @@ pub struct HostImport {
     pub framework: Option<String>,
     /// M17: whether this declaration carries `@weak`.
     pub weak: bool,
+    /// W16: whether this declaration carries `@last_error` and returns `R * i32u`.
+    pub last_error: bool,
 }
 
 impl HostImport {
@@ -5544,6 +5546,18 @@ impl HostImport {
         self.counts
             .iter()
             .find_map(|(pos, len)| (*pos == index).then_some(*len))
+    }
+
+    /// W16: the C ABI return type of this extern function (`R` when `last_error` wraps `R * i32u`).
+    pub fn c_result<'a>(&self, result: &'a Type) -> &'a Type {
+        if self.last_error
+            && let Type::Tuple(items) = result
+            && items.len() == 2
+        {
+            &items[0]
+        } else {
+            result
+        }
     }
 
     /// Whether calls lower inline at each call site without a standalone function body or C prototype.
@@ -8851,6 +8865,7 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    last_error: false,
                 }
             } else if external.view {
                 HostImport {
@@ -8865,6 +8880,7 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    last_error: false,
                 }
             } else if let Some(link) = &external.link {
                 if let Some(error) = crate::abi::link_name_error(link) {
@@ -8885,6 +8901,7 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    last_error: false,
                 }
             } else {
                 let native_symbol = format!(
@@ -8907,6 +8924,7 @@ fn check_modules_collect(
                     library: None,
                     framework: None,
                     weak: false,
+                    last_error: false,
                 }
             };
             if !external.constraints.is_empty() || !external.regions.is_empty() {
@@ -8929,6 +8947,12 @@ fn check_modules_collect(
                 };
                 weak_symbols.insert(sym);
                 import.weak = true;
+            }
+            if module.program.last_error.iter().any(|attr| {
+                attr.target.text == external.name.text
+                    && attr.target.span.start == external.name.span.start
+            }) {
+                import.last_error = true;
             }
             if let Some(link_attr) = module.program.links.iter().find(|attr| {
                 attr.target.text == external.name.text
@@ -10001,22 +10025,34 @@ fn check_modules_collect(
                     }
                     external_functions.get_mut(&id).unwrap().view = Some(direction);
                 } else {
-                    if crate::abi::has_invalid_extern_maybe(
-                        &signature.parameters,
-                        &signature.result,
-                        &types,
-                    ) {
+                    let is_last_error = external_functions[&id].last_error;
+                    let c_result: &Type = if is_last_error {
+                        match &signature.result {
+                            Type::Tuple(items)
+                                if items.len() == 2 && items[1] == Type::Integer(32, false) =>
+                            {
+                                &items[0]
+                            }
+                            _ => {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::LastErrorResultShape,
+                                    "'@last_error' externs return the C result paired with the error code; declare the result as 'R * i32u', for example 'bool * i32u'",
+                                    function.name.span,
+                                ));
+                            }
+                        }
+                    } else {
+                        &signature.result
+                    };
+                    if crate::abi::has_invalid_extern_maybe(&signature.parameters, c_result, &types)
+                    {
                         return Err(Diagnostic::of(
                             DiagnosticKind::AbiNullablePayload,
                             "'Maybe' at the C ABI needs an extern type or 'ref' to one (or, as an extern parameter, 'ref' to a scalar record); None passes a null pointer",
                             function.name.span,
                         ));
                     }
-                    for ty in signature
-                        .parameters
-                        .iter()
-                        .chain(std::iter::once(&signature.result))
-                    {
+                    for ty in signature.parameters.iter().chain(std::iter::once(c_result)) {
                         if let Some((outer, fname, inner)) =
                             crate::abi::plain_record_contains_c_layout(ty, &types)
                         {
@@ -10029,7 +10065,7 @@ fn check_modules_collect(
                             ));
                         }
                     }
-                    if crate::abi::reaches_fnptr(&signature.result, &types)
+                    if crate::abi::reaches_fnptr(c_result, &types)
                         || signature.parameters.iter().any(|ty| match ty {
                             Type::Function(..) => crate::abi::reaches_fnptr(ty, &types),
                             Type::Reference(inner, true) => {
@@ -10044,13 +10080,13 @@ fn check_modules_collect(
                             function.name.span,
                         ));
                     }
-                    if crate::abi::c_layout_has_zstring_field(&signature.result, &types)
+                    if crate::abi::c_layout_has_zstring_field(c_result, &types)
                     || signature.parameters.iter().any(|ty| {
                         matches!(ty, Type::Reference(inner, true) if crate::abi::c_layout_has_zstring_field(inner, &types))
                     })
                 {
-                    let bad_rec = if crate::abi::c_layout_has_zstring_field(&signature.result, &types) {
-                        &signature.result
+                    let bad_rec = if crate::abi::c_layout_has_zstring_field(c_result, &types) {
+                        c_result
                     } else {
                         signature
                             .parameters
@@ -10094,11 +10130,18 @@ fn check_modules_collect(
                             function.name.span,
                         ));
                     }
+                    if is_last_error && !crate::abi::extern_result(c_result, &types) {
+                        return Err(Diagnostic::of(
+                            DiagnosticKind::LastErrorResultShape,
+                            "'@last_error' externs return the C result paired with the error code; declare the result as 'R * i32u', for example 'bool * i32u'",
+                            function.name.span,
+                        ));
+                    }
                     if signature.parameters.iter().any(|ty| {
                         !crate::abi::extern_parameter(ty, &types)
                             && *ty != Type::Unit
                             && !matches!(ty, Type::Function(..))
-                    }) || !crate::abi::extern_result(&signature.result, &types)
+                    }) || !crate::abi::extern_result(c_result, &types)
                     {
                         return Err(Diagnostic::of(
                             DiagnosticKind::UnsupportedExternSignature,
@@ -10168,7 +10211,7 @@ fn check_modules_collect(
                         }
                         let declared = crate::abi::c_signature(
                             &signature.parameters,
-                            &signature.result,
+                            c_result,
                             &import.counts,
                             &types,
                         );
@@ -10318,6 +10361,51 @@ fn check_modules_collect(
                 Scheme::poisoned()
             }
         });
+    }
+    if external_functions.values().any(|import| import.last_error) {
+        let helpers = [
+            (
+                "GetLastError",
+                crate::abi::CSignature {
+                    parameters: Vec::new(),
+                    result: crate::abi::CType::I32,
+                },
+                "i32 ()",
+            ),
+            (
+                "SetLastError",
+                crate::abi::CSignature {
+                    parameters: vec![crate::abi::CType::I32],
+                    result: crate::abi::CType::Void,
+                },
+                "void (i32)",
+            ),
+        ];
+        for (symbol, expected, c_sig) in helpers {
+            if let Some((_, span)) = data_symbols.get(symbol) {
+                diagnostics.push(Diagnostic::of(
+                    DiagnosticKind::LastErrorHelperConflict,
+                    format!(
+                        "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with a 32-bit integer"
+                    ),
+                    *span,
+                ));
+                continue;
+            }
+            if let Some((first, canonical, mixed, _, span)) = explicit_symbols.get_mut(symbol) {
+                if weak_symbols.contains(symbol) || first.mismatch(&expected).is_some() {
+                    diagnostics.push(Diagnostic::of(
+                        DiagnosticKind::LastErrorHelperConflict,
+                        format!(
+                            "extern symbol '{symbol}' is also called by '@last_error' as '{c_sig}'; declare it with a 32-bit integer"
+                        ),
+                        *span,
+                    ));
+                } else if canonical.merge_canonical(&expected) || expected != *first {
+                    *mixed = true;
+                }
+            }
+        }
     }
     let mut active_results = BTreeMap::new();
     for &ModuleInput {

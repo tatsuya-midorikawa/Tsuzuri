@@ -580,6 +580,7 @@ impl Wire for Program {
             c_layouts,
             links,
             weaks,
+            last_error,
             noncanonical,
             aliases,
             declaration_starts,
@@ -613,6 +614,7 @@ impl Wire for Program {
         c_layouts.put(out)?;
         links.put(out)?;
         weaks.put(out)?;
+        last_error.put(out)?;
         aliases.put(out)?;
         // Positions, like spans: only in `Mode::Full` (the REPL splits inputs with them, G13).
         if out.full() {
@@ -649,6 +651,7 @@ impl Wire for Program {
             c_layouts: Vec::get(input)?,
             links: Vec::get(input)?,
             weaks: Vec::get(input)?,
+            last_error: Vec::get(input)?,
             aliases: Vec::get(input)?,
             declaration_starts: Vec::get(input)?,
             noncanonical: Vec::get(input)?,
@@ -839,6 +842,21 @@ impl Wire for WeakAttribute {
 
     fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
         Ok(WeakAttribute {
+            target: Ident::get(input)?,
+            span: Span::get(input)?,
+        })
+    }
+}
+
+impl Wire for LastErrorAttribute {
+    fn put(&self, out: &mut Writer) -> Result<(), Invalid> {
+        let LastErrorAttribute { target, span } = self;
+        target.put(out)?;
+        span.put(out)
+    }
+
+    fn get(input: &mut Reader<'_>) -> Result<Self, Invalid> {
+        Ok(LastErrorAttribute {
             target: Ident::get(input)?,
             span: Span::get(input)?,
         })
@@ -3021,6 +3039,13 @@ mod tests {
             )
             .unwrap(),
         );
+        seen.extend(
+            round_trips(
+                "@last_error\nextern \"CloseHandle\" def close_raw :: i64 -> bool * i32u\n",
+                0,
+            )
+            .unwrap(),
+        );
         // Only the checker, the computation expansion and `Bits.ushr` make these variants.
         let mut program = parse_with_source_all("def f :: i64 = 1\n", 0).unwrap();
         let body = program.functions[0].body.clone();
@@ -3360,6 +3385,6 @@ add_one 41
         "36341b1e01000000000100016626270100000000000000010178393a010000036936342b2e01000000",
         "03693634323501000e000a01783e3f01003e3f0101000100424301013e430102000000000101664a4d",
         "010e050f0a0166505101005051010101000100525301015053010200020057580101505801034558",
-        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d0103000000000000000000000300224500",
+        "0100011c000f0a01665a5b01005a5b0101010002005c5d01015a5d01025a5d010300000000000000000000000300224500",
     );
 }

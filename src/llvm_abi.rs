@@ -25,6 +25,14 @@ fn host_function(function: &CheckedFunction) -> bool {
         || matches!(&function.body.kind, TypedExprKind::HostCall(import, _) if !import.lowers_inline())
 }
 
+fn function_c_result(function: &CheckedFunction) -> &Type {
+    if let TypedExprKind::HostCall(import, _) = &function.body.kind {
+        import.c_result(&function.signature.result)
+    } else {
+        &function.signature.result
+    }
+}
+
 pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
     let types = module.types();
     module.functions.iter().any(|function| {
@@ -34,7 +42,7 @@ pub(crate) fn uses_host_abi(module: &CheckedModule) -> bool {
                     !crate::abi::extern_scalar(ty, &types)
                         && *ty != Type::Unit
                         && !matches!(ty, Type::Function(..) | Type::FnPtr(_))
-                }) || out_result(&function.signature.result)))
+                }) || out_result(function_c_result(function))))
     })
 }
 
@@ -94,7 +102,7 @@ pub(super) fn handle_typedefs(module: &CheckedModule) -> String {
             .signature
             .parameters
             .iter()
-            .chain([&function.signature.result])
+            .chain([function_c_result(function)])
         {
             visit(ty, module, &types, &mut names, &mut seen_records);
         }
@@ -177,7 +185,7 @@ fn record_types_for(module: &CheckedModule, include_views: bool) -> Vec<Type> {
             .signature
             .parameters
             .iter()
-            .chain([&function.signature.result])
+            .chain([function_c_result(function)])
         {
             visit(ty, module, &mut seen, &mut result);
         }
@@ -557,7 +565,7 @@ pub(super) fn c_parameters(function: &CheckedFunction, module: &CheckedModule) -
         _ => None,
     };
     let mut parameters = Vec::new();
-    let result = &function.signature.result;
+    let result = function_c_result(function);
     if let Some(buffer) = Buffer::of(result) {
         parameters.push(format!("tsuzuri_{}_buffer *out", buffer.name()));
     } else if matches!(result, Type::Record(..)) {

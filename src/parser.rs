@@ -39,6 +39,7 @@ struct Attributes {
     c_layout: Option<CLayoutMark>,
     link: Option<LinkMark>,
     weak: Option<Span>,
+    last_error: Option<Span>,
 }
 
 struct LinkMark {
@@ -67,6 +68,7 @@ struct TrustedMark {
     span: Span,
     at: Span,
     first: Option<Span>,
+    pure_span: Option<Span>,
 }
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -638,6 +640,7 @@ impl Parser<'_> {
             c_layouts: Vec::new(),
             links: Vec::new(),
             weaks: Vec::new(),
+            last_error: Vec::new(),
             noncanonical: Vec::new(),
             aliases: Vec::new(),
             declaration_starts: Vec::new(),
@@ -706,6 +709,7 @@ impl Parser<'_> {
                     c_layout,
                     link,
                     weak,
+                    last_error,
                 } = self.attributes()?;
                 let column = self.column(self.current().span);
                 let visibility = self.visibility()?;
@@ -734,6 +738,15 @@ impl Parser<'_> {
                         DiagnosticKind::MisplacedWeakAttribute,
                         "'@weak' applies to an extern function with a link name, an extern class, or a data symbol",
                         weak_span,
+                    ));
+                }
+                if let Some(last_error_span) = last_error
+                    && !self.at(&TokenKind::Extern)
+                {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::MisplacedLastErrorAttribute,
+                        "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                        last_error_span,
                     ));
                 }
                 if let Some(mark) = &trusted
@@ -853,6 +866,13 @@ impl Parser<'_> {
                                 weak_span,
                             ));
                         }
+                        if let Some(last_error_span) = last_error {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::MisplacedLastErrorAttribute,
+                                "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                last_error_span,
+                            ));
+                        }
                         if let Some(count) = counts.first() {
                             return Err(Diagnostic::of(
                                 DiagnosticKind::MisplacedCountAttribute,
@@ -878,6 +898,13 @@ impl Parser<'_> {
                     }
                     ExternDeclaration::Function(signature) => {
                         if let Some(_access) = signature.data {
+                            if let Some(last_error_span) = last_error {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLastErrorAttribute,
+                                    "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                    last_error_span,
+                                ));
+                            }
                             if let Some(count) = counts.first() {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedCountAttribute,
@@ -895,6 +922,13 @@ impl Parser<'_> {
                                 ));
                             }
                         } else if signature.view {
+                            if let Some(last_error_span) = last_error {
+                                return Err(Diagnostic::of(
+                                    DiagnosticKind::MisplacedLastErrorAttribute,
+                                    "'@last_error' applies to an extern function declaration; remove it or declare the function with 'extern'",
+                                    last_error_span,
+                                ));
+                            }
                             if let Some(mark) = &link {
                                 return Err(Diagnostic::of(
                                     DiagnosticKind::MisplacedLinkAttribute,
@@ -937,6 +971,16 @@ impl Parser<'_> {
                                 weak_span,
                             ));
                         }
+                        if let Some(mark) = &trusted
+                            && last_error.is_some()
+                            && let Some(pure_span) = mark.pure_span
+                        {
+                            return Err(Diagnostic::of(
+                                DiagnosticKind::TrustedPureLastError,
+                                "'@last_error' reads the calling thread's error state, so the extern cannot be '@trusted pure'; remove 'pure'",
+                                pure_span,
+                            ));
+                        }
                         if let Some(mark) = trusted {
                             program.trusted.push(TrustedAttribute {
                                 target: signature.name.clone(),
@@ -969,6 +1013,12 @@ impl Parser<'_> {
                             program.weaks.push(WeakAttribute {
                                 target: signature.name.clone(),
                                 span: weak_span,
+                            });
+                        }
+                        if let Some(last_error_span) = last_error {
+                            program.last_error.push(LastErrorAttribute {
+                                target: signature.name.clone(),
+                                span: last_error_span,
                             });
                         }
                         defined_names.insert(signature.name.text.clone());
@@ -1631,6 +1681,15 @@ impl Parser<'_> {
                     ));
                 }
                 attributes.weak = Some(weak_span);
+            } else if let Some(last_error_span) = self.last_error_attribute()? {
+                if attributes.last_error.is_some() {
+                    return Err(Diagnostic::of(
+                        DiagnosticKind::LastErrorRepeated,
+                        "'@last_error' appears twice on one declaration; remove one",
+                        last_error_span,
+                    ));
+                }
+                attributes.last_error = Some(last_error_span);
             } else if attributes.cpu.is_none()
                 && let Some(levels) = self.cpu_attribute()?
             {
@@ -1656,6 +1715,7 @@ impl Parser<'_> {
         let mut span = at.through(self.take().span);
         let mut properties = 0u8;
         let mut first = None;
+        let mut pure_span = None;
         while !self.newline_before_current()
             && let TokenKind::Ident(name) = &self.current().kind
         {
@@ -1676,6 +1736,9 @@ impl Parser<'_> {
                     property,
                 ));
             }
+            if name == "pure" {
+                pure_span = Some(property);
+            }
             properties |= bit;
             first.get_or_insert(property);
             span = span.through(property);
@@ -1686,6 +1749,7 @@ impl Parser<'_> {
             span,
             at,
             first,
+            pure_span,
         }))
     }
 
@@ -1822,6 +1886,36 @@ impl Parser<'_> {
                 DiagnosticKind::WeakAttributeSyntax,
                 "'@weak' takes no arguments",
                 span,
+            ));
+        }
+        Ok(Some(span))
+    }
+
+    fn last_error_attribute(&mut self) -> Result<Option<Span>, Diagnostic> {
+        if !self.at(&TokenKind::At)
+            || !matches!(
+                self.tokens.get(self.position + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(name)) if name == "last_error"
+            )
+        {
+            return Ok(None);
+        }
+        let at = self.current().span;
+        self.take();
+        let span = at.through(self.take().span);
+        if !self.newline_before_current() && self.at(&TokenKind::LeftParen) {
+            let paren = self.current().span;
+            self.take();
+            while !self.at(&TokenKind::RightParen) && !self.at(&TokenKind::End) {
+                self.take();
+            }
+            if self.at(&TokenKind::RightParen) {
+                self.take();
+            }
+            return Err(Diagnostic::of(
+                DiagnosticKind::LastErrorArguments,
+                "'@last_error' takes no arguments; write '@last_error' before the extern declaration",
+                paren,
             ));
         }
         Ok(Some(span))

@@ -341,6 +341,40 @@ try {
   writeFileSync(join(w17NoLink, "Main.tz"), '@trusted\nextern "w17_answer" def answer :: unit -> i64\nanswer ()\n');
   rejected(["build", w17NoLink, "-L", w17LibDir, "-o", join(root, "w17-fail")], "E2002");
 
+  // W16: `@last_error` atomically clears and reads POSIX `errno` around the call, including inside tzroutines.
+  const w16Posix = join(root, "w16-posix");
+  mkdirSync(w16Posix);
+  writeFileSync(join(w16Posix, "Main.tz"), [
+    "@trusted @last_error",
+    'extern "close" def close_fd :: i32 -> i32 * i32u',
+    "@trusted @last_error",
+    'extern "getpid" def pid_checked :: unit -> i32 * i32u',
+    "@trusted",
+    'extern "close" def close_plain :: i32 -> i32',
+    "def check_once :: unit -> bool = \\() ->",
+    "    let (rc, err1) = close_fd (-1i32)",
+    "    let _ = close_plain (-1i32)",
+    "    let (p, err2) = pid_checked ()",
+    "    rc == -1i32 && err1 == 9i32u && p > 0i32 && err2 == 0i32u",
+    "def main :: unit -> i32 = \\() ->",
+    "    let direct = check_once ()",
+    "    let ch: Channel<i64> = Channel.make 1",
+    "    let out = Channel.share (ref ch)",
+    "    tzroutine { Channel.send (ref out) (if check_once () then 1 else 0) }",
+    "    let spawned = match Channel.recv (ref ch) with | Maybe.Some x -> x | Maybe.None -> 0",
+    "    if direct && spawned == 1 then 0i32 else 1i32",
+    "",
+  ].join("\n"));
+  execute(compiler, ["check", w16Posix]);
+  rejected(["build", w16Posix, "--target", "wasm32", "-o", join(root, "w16.wasm")], "E1008");
+  rejected(["build", w16Posix, "--target", "wasm64", "-o", join(root, "w16-64.wasm")], "E1008");
+  for (const optimization of ["-O0", "-O3"]) {
+    const w16Bin = join(root, `w16${optimization}`);
+    execute(compiler, ["build", w16Posix, "--no-cache", "--allocator", "counting", optimization, "-l", "pthread", "-o", w16Bin]);
+    const res = execute(w16Bin, [], true, { TSUZURI_MAXPROCS: "2" });
+    assert.equal(res.status, 0);
+  }
+
   console.log("ffi extensions: run passed");
 
   const expectedImports = [

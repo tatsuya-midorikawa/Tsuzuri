@@ -1657,7 +1657,7 @@ fn emit_program(
         output
     };
     // TZ08: on WebAssembly the tzroutines of JSPI share one thread, and a call holds no P there.
-    let output = if spawning && !wasm {
+    let output = if blocking_externs(module, wasm) {
         with_blocking_externs(output, &extern_symbols(module), &tzroutine_exports(module))
     } else {
         output
@@ -1797,6 +1797,11 @@ pub(crate) fn with_tzroutine_scopes(ir: String, boundaries: &BTreeSet<String>) -
     output
 }
 
+/// Whether native extern calls must bracket with `tsuzuri_tz_blocking_enter`/`_exit` (TZ08, W16).
+fn blocking_externs(module: &CheckedModule, wasm: bool) -> bool {
+    !wasm && (spawns(module) || scheduler_parallel(module))
+}
+
 /// The C symbols of the extern functions of the program (TZ08).
 fn extern_symbols(module: &CheckedModule) -> BTreeSet<String> {
     module
@@ -1849,9 +1854,13 @@ pub(crate) fn with_blocking_externs(
     let mut calls = false;
     let mut callbacks = false;
     let mut callback_scopes = false;
+    let mut bracket_depth = 0usize;
     let mut lines = ir.split_inclusive('\n');
     while let Some(line) = lines.next() {
         let header = line.trim_end();
+        if header.starts_with("define ") {
+            bracket_depth = 0;
+        }
         let is_callback =
             header.contains(" @tz.callback.") && !header.contains(" @tz.callback.after_main(");
         if header.starts_with("define ")
@@ -1889,14 +1898,28 @@ pub(crate) fn with_blocking_externs(
             continue;
         }
         let body = line.trim_start();
-        if !body.starts_with("declare ")
-            && direct_callee(body).is_some_and(|callee| symbols.contains(callee))
-        {
-            calls = true;
-            output.push_str("  call void @tsuzuri_tz_blocking_enter()\n");
-            output.push_str(line);
-            output.push_str("  call void @tsuzuri_tz_blocking_exit()\n");
-            continue;
+        if !body.starts_with("declare ") {
+            match direct_callee(body) {
+                Some("tsuzuri_tz_blocking_enter") => {
+                    calls = true;
+                    bracket_depth += 1;
+                    output.push_str(line);
+                    continue;
+                }
+                Some("tsuzuri_tz_blocking_exit") => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    output.push_str(line);
+                    continue;
+                }
+                Some(callee) if bracket_depth == 0 && symbols.contains(callee) => {
+                    calls = true;
+                    output.push_str("  call void @tsuzuri_tz_blocking_enter()\n");
+                    output.push_str(line);
+                    output.push_str("  call void @tsuzuri_tz_blocking_exit()\n");
+                    continue;
+                }
+                _ => {}
+            }
         }
         output.push_str(line);
     }
@@ -2109,6 +2132,7 @@ fn emit_program_in(
         spawns: spawns(module),
         waits: waits(module),
         tzroutine: uses_tzroutine(module),
+        blocking_externs: blocking_externs(module, wasm),
         memory64: instrumentation.memory64,
         // WASM has no `half` instructions: LLVM would call `__extendhfsf2` and `__truncsfhf2`.
         f16: if wasm {
@@ -3011,6 +3035,8 @@ struct Globals {
     /// The program uses the waits of the tzroutine runtime (`uses_tzroutine`, TZ06):
     /// `Mutex.with_lock` takes the runtime's lock.
     tzroutine: bool,
+    /// Native extern calls bracket with `tsuzuri_tz_blocking_enter`/`_exit` (TZ08, W16).
+    blocking_externs: bool,
     definitions: Vec<String>,
     next_metadata: usize,
     facts: facts::Metadata,
@@ -3084,6 +3110,7 @@ impl Default for Globals {
             spawns: false,
             waits: false,
             tzroutine: false,
+            blocking_externs: false,
             definitions: Vec::new(),
             next_metadata,
             facts: facts::Metadata::default(),
@@ -4334,11 +4361,15 @@ pub(crate) fn validate_wasm_externs(
             ));
         }
         if function.exported || matches!(function.body.kind, TypedExprKind::HostCall(..)) {
+            let sig_result = match &function.body.kind {
+                TypedExprKind::HostCall(import, _) => import.c_result(&function.signature.result),
+                _ => &function.signature.result,
+            };
             for ty in function
                 .signature
                 .parameters
                 .iter()
-                .chain(std::iter::once(&function.signature.result))
+                .chain(std::iter::once(sig_result))
             {
                 let viewed = crate::abi::c_view(ty, &types);
                 let rec = match viewed.as_ref() {
@@ -4357,6 +4388,13 @@ pub(crate) fn validate_wasm_externs(
         let TypedExprKind::HostCall(import, _) = &function.body.kind else {
             continue;
         };
+        if import.last_error {
+            return Err(Diagnostic::of(
+                DiagnosticKind::AbiNativeOnly,
+                "'@last_error' reads GetLastError or errno, which only native targets have; build for a native target",
+                function.span,
+            ));
+        }
         if import.weak
             || import
                 .explicit_c_symbol()
@@ -8985,6 +9023,7 @@ fn emit_typed_builtin(
         spawns: shared_globals.spawns,
         waits: shared_globals.waits,
         tzroutine: shared_globals.tzroutine,
+        blocking_externs: shared_globals.blocking_externs,
         user_drops: std::rc::Rc::clone(&shared_globals.user_drops),
         ..Globals::default()
     };
