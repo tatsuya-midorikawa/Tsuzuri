@@ -665,3 +665,64 @@ def main :: unit -> i32 = \() ->
 | D11 | `icon` は `.icns` だけを受ける | 変換は `iconutil` と `.iconset` の形に頼り、道具なしの経路にならない。`.icns` は `iconutil -c icns` で作れる（文書に書く）。採らない案: `.png` を受けてビルドのたびに `iconutil`・`sips` で変換する（道具に頼り、決定的な出力を確かめにくい） | 既定案（実装者はこの案に従う） |
 | D12 | M15 はリンク行に rpath を足さない。`embed` の `@rpath` の dylib には M20 の `--rpath` を使う | リンク行を変えない（S1）。リンクの後には rpath を足せない（再現 6）。M20 の前は、`Env.executable_path` から作ったパスで読む形だけが使える（文書に書く）。採らない案: `--emit app` のときだけリンク行に `-rpath @executable_path/../Frameworks` を足す（`--emit exe` とキャッシュの項目を共有できず、実行ファイルのバイト列も変わる） | 既定案（実装者はこの案に従う） |
 | D13 | `Env.executable_path` のランタイムは、独立した入口 `tsuzuri_os_executable_path` と内部の組み込み `Os.__executable_path` にし、到達したプログラムでだけ `-DTZ_OS_EXECUTABLE_PATH` でコンパイルする（driver の native と WASI、`src/test_runner.rs`）。退けた案: `Os.__read` の操作 6（新しい組み込みは要らないが、OS API に到達するすべてのプログラムのランタイムの object（`--emit object` の出力と実行ファイル）が変わり、D-67 の「新しい機能を使わないプログラムは 1 byte も変えない」に例外を足すことになる）、ランタイムを使わず std だけで書く（実行ファイルのパスを得る OS の API は C からしか呼べない） | 前例（`-DTZ_TRAP_BOUNDARY`・`-DTZ_STACK_GUARD`・`-DTZ_ASYNC_PREEMPT` は `src/driver.rs:4915-4923`、WASI の `-DTZ_WASI_START` は 5089-5094 行）と同じ門で、ランタイムのキャッシュの鍵は引数を含む（`src/driver.rs:6851`）。prebuilt のランタイムは `os.c` を含む単位を持たないので、照合に影響しない。守るのは object で、`os.c` の文字列が変わる分のランタイムのキャッシュの作り直しは 1 回だけ起きる（落とし穴）。費用は、組み込みの名前 1 つと、define を付ける分岐 3 つである | 既定案（実装者はこの案に従う。D4 の承認の後） |
+
+## 実装と検証（2026-11-28）
+
+実装手順 1〜8 をすべて実装した。D1・D3・D4 と D-55 の登録は、利用者の委任（GUIDE D-67 の「委任による決定（2026-11-28、M15）」）で、チケットの案のとおりに決めた。macOS 27.2（arm64）、Apple clang、Apple ld、`target/debug/tsuzuri`（dev profile）で確かめた。
+
+### 実装したこと（手順ごと）
+
+1. 調査: 基準（`tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1` の native・wasm32 と `check --json`、`Env.current_dir` だけのプログラムの object・実行ファイル・`--wasm-host wasi` の `.wasm`）を main（`faa091b2`）のバイナリで保存した。行番号と数は HEAD の値から数え直した（`[macos]` の節・`MacosSettings`・`invalid_macos_setting`・`Env.os_version` の門は M17 が先に入れていたので、それに足した）。
+2. `src/plist.rs`: `Value`・`Key`（UTF-16 の符号単位の順）・`write`・`read`・`read_dictionary`。`tests/fixtures/macos_bundle/` の `Info.plist`・`Extra.plist`・`Dsym.plist` は、手で書いた `*.source.plist` を `plutil -convert xml1` に通したもの。
+3. `src/package.rs`: `MacosSettings` に 10 個のフィールドと、仕様 2 の検査・誤りの文。`Line::string_array_of`（kind を選べる配列の読み手）。
+4. `src/main.rs`・`src/driver.rs`: `Emit::App`、`output_path`、`BuildOptions::validate_app`（ホストと target）・`bundle_executable`、`app_output_error`・`app_executable_name`、`links_apply`、`--help`。
+5. `src/app_bundle.rs`: `build_app`（入力の検査 → 持ち主の検査 → 一時ディレクトリでの実行ファイルのビルド → `LSMinimumSystemVersion` → `Info.plist`・`PkgInfo`・資源・`embed` → `.dSYM` → 署名 → 入れ替え）、`SignPlan`・`sign`（M16 の継ぎ目）、`info_plist`・`dsym_info_plist`・`mach_o_min_version`・`valid_icns`・`mach_o_magic`。`driver::build_complete_keyed` が「鍵に入れる出力のパス」を受ける（ほかの呼び出しは `output` をそのまま渡す）。kind は 4 つ（`macos_bundle_id_missing`・`macos_bundle_conflict`・`macos_bundle_input_invalid`・`app_output_not_owned`）。
+6. `tests/macos_bundle.mjs`: E1〜E10（`--stage bundle|cache|open`）。
+7. `Env.executable_path`: `Builtin::OsExecutablePath`（`Os.__executable_path`）、`tsuzuri_os_executable_path`（`os.c` の macOS と Linux、`os-windows.h`、`os-wasi.c`。どれも `TZ_OS_EXECUTABLE_PATH` の中）、driver の native・WASI と `src/test_runner.rs` の 2 か所の `-DTZ_OS_EXECUTABLE_PATH`、`std/Env.tz` の `executable_file`・`executable_path`。
+8. 文書（下）と `.github/workflows/targets.yml` の macOS の段。
+
+### チケットから外した判断
+
+- **実行ファイルは staging の bundle の外で作る**: 設計は一時の `…/Contents/MacOS/Name` へ直接リンクする形だったが、`-g` の `.dwarf` と `--trap-info` の `.trap.json` は出力の横に出るので、`Contents/MacOS` に入ると署名が壊れる（再現 4 と同じ）。`<一時>/build/program` に作ってから `Contents/MacOS/Name` へ移す。鍵に入れるパスは設計どおり最終の `<出力>/Contents/MacOS/Name`。
+- **`--trap-info` の表は `Name.app.trap.json`**: チケットに記述がなかった。bundle の中には置けないので、`--emit exe` の `<出力>.trap.json` と同じ規則で bundle の横に置き、bundle・dSYM と同じ入れ替え（退避と復元）に含めた。
+- **`data` の値は bytes で持つ**: `Value::Data(Vec<u8>)`。base64 を検査して復号し、書くときは Core Foundation と同じ折り返し（1 行は `76 - 8 × 字下げ` 文字）で書く。値は変わらず、`plutil` の出力とバイト単位で一致する（golden に 3 段の字下げ・空・1 行ちょうどの例がある）。`integer`・`real`・`date` は仕様どおり、形を検査して書かれたまま写す（前後の空白だけ除く）。`integer` は 10 進と `-` だけ（`+5`・`0x10` は拒む）。
+- **Apple Computer の DOCTYPE も読み飛ばす**: `dsymutil` や古い道具が書く `-//Apple Computer//DTD PLIST 1.0//EN` を、Apple の DOCTYPE として受ける（内部サブセット `[` を持つものと、ほかの DOCTYPE は誤り）。UTF-8 の BOM も読み飛ばす。
+- **生成するキーとの重なりの文を 3 通りにした**: `[macos]` で設定済みなら仕様の文（`comes from both [macos] bundle_id and 'Extra.plist'; remove one`）、未設定なら `belongs to [macos] name; set it there and remove it from …`、`[macos]` のキーのない 5 つは `is written by '--emit app'; remove it from …`。
+- **名前の重なりは ASCII の大文字小文字を無視して比べる**: 既定の macOS のボリュームは `help` と `HELP` を同じファイルにするため。
+- **`embed`・`resources` の最上位のパスがシンボリックリンクなら、その先を写す**: 仕様は木の中のリンクだけを定めていた。木の深さは 64 段まで（超えると `E2001`）。
+- **bundle が `[macos]` の入力を含むときも `output_overwrites_input`**: ソース・manifest と同じ扱いにした（入れ替えで入力が消えるため）。
+- **`LC_VERSION_MIN_MACOSX` も読む**: 古いリンカーの出力のため。どちらもなければ `E2002`（`toolchain_missing_feature`）。
+- **`tests/os-wasi-host.mjs` に段は足していない**: これは `tests/os.mjs` が呼ぶ WASI のホストで、WASI の検査は `os.mjs` の中にある。Linux の CI で `os.mjs` は走らないので、どのホストの CI でも走る `tests/e2e.mjs` に `Env.executable_path` の 1 段を足した。
+- **`emit_exe_ignores_macos_bundle_keys` は object と節の中身で比べる**: 同じプログラムの 2 回のリンクは `LC_UUID` と署名が違う（main のバイナリでも同じ）ので、実行ファイルのバイト列は比べられない。`--emit object` はバイト単位、実行ファイルは `otool -t -d` で比べる。
+
+### 見つけた制限（報告）
+
+- **プロジェクトの中の `.framework`**: モジュール探索（`collect_sources`）はプロジェクトのディレクトリをすべてたどり、ディレクトリへのシンボリックリンクを `E1011` で拒む。`Versions/Current` を持つ `.framework` をプロジェクトの中に置くと、`embed` より前に `check` が落ちる。それを埋め込んだ bundle を既定の出力先（プロジェクトの中の `Main.app`）に作ると、次のビルドが同じ理由で落ちる。M15 は探索の規則を変えず（`--emit app` を使わないビルドの診断を変えないため）、文書に「プロジェクトの外に置き、`embed = ["../vendor/Foo.framework"]` と `-o` で外に出す」と書いた。E4 の fixture もプロジェクトの横に置いた。探索が `*.app`・`*.framework`・`*.dSYM` を飛ばす規則は、別のチケットで決めるのがよい。資源だけの bundle は、既定の出力先でも繰り返しビルドできる（E2E にある）。
+- **基準との一致は関数の番号を除いて**: std に関数を足すと、後ろの関数と intrinsic の通し番号（`@tz.fn.$intrinsic.Display.display.882` の `882`）がずれる（M17 の `Env.os_version` と同じ）。`std/Env.tz` の 2 つの関数で 2 ずれるので、基準の 829 個の出力のうち 630 個はバイト単位で一致し、199 個（`.ll`）は番号だけが違い、ほかの違いは 0 個だった。診断は全部一致した。`Env.current_dir` だけのプログラムは、`-O3` の object と `--wasm-host wasi` の `.wasm`（`-O0`・`-O3`）がバイト単位で一致し、`-O0` の object はコードとデータの節が一致して、局所シンボルの番号だけが違う。ランタイムに `executable_path` のシンボルはない。
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 通過。
+- `cargo test --locked --test macos_bundle`: 12 件。`--test packages`: 24 件（`manifest_macos_bundle_keys_parse` を含む）。`--test explain`: 17 件。`--test capabilities`・`std_argument_order`・`effects_alloc_conservative`・`std_examples`・`macos_min_version`: 通過。
+- `node tests/macos_bundle.mjs target/debug/tsuzuri`（`bundle`・`cache`・`open` の全段。`-O0`・`-O3`）: 通過。`open` の段は LaunchServices から起動し、`cwd=/` と bundle の中の `exe=` を確かめ、残ったプロセスがない。
+- `node tests/os.mjs target/debug/tsuzuri`: 通過（native の絶対パス・シンボリックリンク経由・相対パスでの起動、WASI の `other (os error 52)`、`tsuzuri run`・`tsuzuri test`、既定の wasm32 の `E2000`、`TSUZURI_CLANG` のラッパーで `-DTZ_OS_EXECUTABLE_PATH` が到達したプログラムの 1 回のコンパイルにだけ付くこと）。
+- `node tests/e2e.mjs target/debug/tsuzuri`、`cargo nextest run --locked`（T1）: 下の「T1 と e2e」。
+- `node scripts/gen-docs.mjs --check`（11 ブロック、stale 0）、`node scripts/check-cli-docs.mjs`（4 検査、失敗 0）、`sh scripts/check-runtime-includes.sh`（64 ファイル）、`node scripts/check-guide-lite.mjs`: 通過。
+- 同梱ツールチェーン（`tsuzuri-clang`）で、`Env.executable_path` を呼ぶプログラムを `x86_64`・`aarch64` の `linux-gnu`・`linux-musl`・`windows-gnu` の 6 target に `-O0`・`-O3` でクロスリンク: 12 個とも成功（実行はしていない）。rustup の stable で `cargo check --all-targets --target x86_64-pc-windows-msvc`: 警告なし。
+
+### この機械で確かめていないこと
+
+- `Env.executable_path` の Linux（`/proc/self/exe`）と Windows（`GetModuleFileNameW`）の実行。コンパイルとリンクまで確かめた。実行は CI の `tests/e2e.mjs`（Linux・macOS）と `windows.yml` の `tests/os.mjs`（Windows の「9. Env」に足した検査）が受け持つ。
+- macOS 以外のホストでの `'--emit app' needs a macOS host` の誤り（`validate_app(false)` の単体テストはある）。
+- 同梱ツールチェーンでの `tests/macos_bundle.mjs`、CI の runner での `open`（S4。動かなければ `TSUZURI_MACOS_BUNDLE_NO_OPEN=1` でその段だけを飛ばせる）。
+
+### 更新した文書
+
+- このリポジトリ: `docs/language.md`（`Env.executable_path`、WASI、新しい節「macOS のアプリケーションバンドル（`--emit app`）」、生成した kind の表）、`docs/architecture.md`（OS の組み込みの段、ドライバーの出力の段）、`README.md`（機能一覧、`--emit` の行、DWARF、変更の種類別の表、検証コマンド）、`src/explain/codes/E2003.md`、`_features/GUIDE.md`（D-55 の表と D-67 の委任の記録）。
+- Tsuzuri-Reference: `docs/compiler/macos-app-bundle.md`（新規）、`docs/stdlib/sys/env.md`、`docs/modules/packages.md`、`docs/compiler/directives.md`、`docs/compiler/options.md`、`docs/compiler/platforms.md`、`docs/compiler/debugging.md`、`docs/compiler/cli.md`、`docs/index.md`。`check-docs.mjs` はこの 9 ページで通過した。`gen-docs.mjs` の生成ブロック（`diagnostics.md` の kind の表）は、3 つのチケットを統合したバイナリで作り直す。
+
+### 変更したファイル
+
+`src/app_bundle.rs`（新規）、`src/plist.rs`（新規）、`src/lib.rs`、`src/main.rs`、`src/driver.rs`、`src/package.rs`、`src/diagnostic_kinds.rs`、`src/check.rs`、`src/llvm.rs`、`src/llvm_io.rs`、`src/polymorph.rs`、`src/pinned_rules.rs`、`src/pure_rules.rs`、`src/effects.rs`、`src/kg/effects.rs`、`src/capabilities.rs`、`src/test_runner.rs`、`src/runtime/os.c`、`src/runtime/os-windows.h`、`src/runtime/os-wasi.c`、`src/explain/codes/E2003.md`、`std/Env.tz`、`tests/macos_bundle.rs`（新規）、`tests/macos_bundle.mjs`（新規）、`tests/fixtures/macos_bundle/`（新規）、`tests/packages.rs`、`tests/capabilities.rs`、`tests/std_examples.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/fixtures/effects_sweep/Main.tz`、`tests/os.mjs`、`tests/e2e.mjs`、`tests/bindings.mjs`、`.github/workflows/targets.yml`、`README.md`、`docs/language.md`、`docs/architecture.md`、`_features/GUIDE.md`。`src/cache.rs` は変えていない（鍵に入れるパスは呼び出し側で渡す）。
+
+共有の数: `Builtin::ALL` は 384 から 385、効果を持つ組み込みは 173 から 174、ホストに届く私的な組み込みは 32 から 33、`tests/capabilities.rs` の `Env.tz` は 4 から 5・合計 45 から 46・std-table 89 から 90、`tests/std_examples.rs` の `Env` の床は 4 から 5、診断の kind は 4 つ増えた。`RESERVED_MODULES`・`FRONTEND_FORMAT`・`Os.__read` の操作は変えていない。
