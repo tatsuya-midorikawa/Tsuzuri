@@ -387,41 +387,108 @@ pub(crate) fn with_exported_allocator(ir: String) -> String {
     output
 }
 
-/// W39: LLVM writes a `weak` definition for COFF as a weak external whose default is named after the
-/// object (`.weak.<name>.default.<first symbol>`), and lld-link and link.exe reject a second one. The
-/// same definition in a `comdat any` (selectany) section is kept once, as ELF and Mach-O keep one weak
-/// definition. The linkage stays `weak`: `linkonce_odr` lets the optimizer drop what only the host or a
-/// libcall reaches (`tsuzuri_free`, `__divti3`), and `weak_odr` would call different bodies equal.
+fn extract_llvm_type(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let bytes = trimmed.as_bytes();
+    let Some(&first) = bytes.first() else {
+        return "";
+    };
+    let (open, close) = match first {
+        b'<' => (b'<', b'>'),
+        b'[' => (b'[', b']'),
+        b'{' => (b'{', b'}'),
+        _ => return trimmed.split_whitespace().next().unwrap_or(""),
+    };
+    let mut depth = 0i32;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte == open {
+            depth += 1;
+        } else if byte == close {
+            depth -= 1;
+            if depth == 0 {
+                return &trimmed[..=index];
+            }
+        }
+    }
+    trimmed
+}
+
+fn extract_param_types(params: &str) -> String {
+    let trimmed = params.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, byte) in trimmed.bytes().enumerate() {
+        match byte {
+            b'<' | b'[' | b'{' | b'(' => depth += 1,
+            b'>' | b']' | b'}' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(&trimmed[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&trimmed[start..]);
+    parts
+        .into_iter()
+        .map(|part| {
+            let before_name = part.rsplit_once(" %").map_or(part, |(ty, _)| ty);
+            extract_llvm_type(before_name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// W39: LLVM writes a bare `weak` definition for COFF as a weak external whose default is named
+/// after the object (`.weak.<name>.default.<first symbol>`), which `lld-link` and `link.exe` reject
+/// when a second Tsuzuri object is linked. Putting the public symbol itself in `comdat any` turns it
+/// into an ordinary external symbol and prevents a strong definition in the host from overriding it.
+/// Instead, each weak function or global body becomes a `hidden` fallback `@tz.weak.<name>` in
+/// `$tz.weak.<name> = comdat any`, and `@<name>` becomes a `weak` alias to `@tz.weak.<name>`: every
+/// Tsuzuri object names the same coalesced fallback `tz.weak.<name>`, while a strong host definition
+/// still overrides `@<name>`.
 fn with_coff_comdats(ir: &str) -> String {
-    let mut output = String::with_capacity(ir.len() + 512);
+    let mut output = String::with_capacity(ir.len() + 1024);
     let mut comdats = Vec::new();
+    let mut aliases = Vec::new();
     let mut seen = BTreeSet::new();
     for line in ir.lines() {
-        if line.starts_with("define weak ")
-            && let Some((prefix, suffix)) = line.split_once('@')
-            && let Some((name, _)) = suffix.split_once('(')
+        if let Some(after_weak) = line.strip_prefix("define weak ")
+            && let (visibility, after_vis) = after_weak
+                .strip_prefix("hidden ")
+                .map_or(("", after_weak), |rest| ("hidden ", rest))
+            && let Some((ret_ty, after_at)) = after_vis.split_once(" @")
+            && let Some((name, _)) = after_at.split_once('(')
             && !name.is_empty()
         {
             debug_assert!(
                 !name.starts_with('"'),
                 "unexpected quoted weak function name: {line}"
             );
-            let params_open = prefix.len() + 1 + name.len();
+            let ret_ty = ret_ty.trim();
+            let at_index = line.len() - after_at.len() - 1;
+            let params_open = at_index + 1 + name.len();
             let mut depth = 0i32;
-            let mut after_params = params_open;
+            let mut params_close = params_open;
             for (offset, byte) in line[params_open..].bytes().enumerate() {
                 match byte {
                     b'(' => depth += 1,
                     b')' => {
                         depth -= 1;
                         if depth == 0 {
-                            after_params = params_open + offset + 1;
+                            params_close = params_open + offset;
                             break;
                         }
                     }
                     _ => {}
                 }
             }
+            let after_params = params_close + 1;
+            let param_types = extract_param_types(&line[params_open + 1..params_close]);
             let rest = &line[after_params..];
             let insert_at = [
                 rest.find(" align "),
@@ -441,48 +508,66 @@ fn with_coff_comdats(ir: &str) -> String {
                 "unexpected weak function header without '{{': {line}"
             );
             if let Some(index) = insert_at {
+                let fallback = format!("tz.weak.{name}");
+                let _ = write!(
+                    output,
+                    "define hidden {ret_ty} @{fallback}{}",
+                    &line[params_open..index]
+                );
                 if !line[after_params..index].contains(" comdat") {
-                    output.push_str(&line[..index]);
                     output.push_str(" comdat");
-                    let _ = writeln!(output, "{}", &line[index..]);
-                } else {
-                    let _ = writeln!(output, "{line}");
                 }
+                let _ = writeln!(output, "{}", &line[index..]);
                 if seen.insert(name.to_owned()) {
-                    comdats.push(name.to_owned());
+                    aliases.push(format!(
+                        "@{name} = weak {visibility}alias {ret_ty} ({param_types}), ptr @{fallback}"
+                    ));
+                    comdats.push(fallback);
                 }
                 continue;
             }
         } else if let Some((lhs, rhs)) = line.split_once(" = ")
             && let Some(name) = lhs.strip_prefix('@')
             && !name.is_empty()
-            && rhs.starts_with("weak ")
+            && let Some((visibility, after_global)) = rhs
+                .strip_prefix("weak hidden global ")
+                .map(|rest| ("hidden ", rest))
+                .or_else(|| rhs.strip_prefix("weak global ").map(|rest| ("", rest)))
         {
             debug_assert!(
                 !name.starts_with('"'),
                 "unexpected quoted weak global name: {line}"
             );
-            if !rhs.contains(", comdat") {
-                let insert_at = [line.find(", align "), line.find(", !")]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .unwrap_or(line.len());
-                output.push_str(&line[..insert_at]);
+            let ty = extract_llvm_type(after_global);
+            let fallback = format!("tz.weak.{name}");
+            let insert_at = [after_global.find(", align "), after_global.find(", !")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(after_global.len());
+            output.push_str(&format!(
+                "@{fallback} = hidden global {}",
+                &after_global[..insert_at]
+            ));
+            if !after_global.contains(", comdat") {
                 output.push_str(", comdat");
-                let _ = writeln!(output, "{}", &line[insert_at..]);
-            } else {
-                let _ = writeln!(output, "{line}");
             }
+            let _ = writeln!(output, "{}", &after_global[insert_at..]);
             if seen.insert(name.to_owned()) {
-                comdats.push(name.to_owned());
+                aliases.push(format!(
+                    "@{name} = weak {visibility}alias {ty}, ptr @{fallback}"
+                ));
+                comdats.push(fallback);
             }
             continue;
         }
         let _ = writeln!(output, "{line}");
     }
-    for name in comdats {
-        let _ = writeln!(output, "${name} = comdat any");
+    for alias in aliases {
+        let _ = writeln!(output, "{alias}");
+    }
+    for comdat in comdats {
+        let _ = writeln!(output, "${comdat} = comdat any");
     }
     output
 }
@@ -12111,30 +12196,38 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             allocator: Allocator::Small,
             f16: F16Path::Soft,
         };
-        let win_obj = emit_with_export_style(&module, options, ExportStyle::Dllexport).unwrap();
+        let base = emit_with_options(&module, options).unwrap();
+        let win_obj = windows_abi(base.clone(), &module, false);
+        assert!(win_obj.contains(
+            "define hidden ptr @tz.weak.tsuzuri_alloc(i64 %size) nounwind uwtable comdat {"
+        ));
         assert!(
-            win_obj.contains("define weak ptr @tsuzuri_alloc(i64 %size) nounwind uwtable comdat {")
+            win_obj.contains("@tsuzuri_alloc = weak alias ptr (i64), ptr @tz.weak.tsuzuri_alloc")
+        );
+        assert!(win_obj.contains(
+            "define hidden void @tz.weak.tsuzuri_free(ptr %value) nounwind uwtable comdat {"
+        ));
+        assert!(
+            win_obj.contains("@tsuzuri_free = weak alias void (ptr), ptr @tz.weak.tsuzuri_free")
+        );
+        let win_dll = windows_abi(with_exported_allocator(base), &module, false);
+        assert!(
+            win_dll.contains("define dllexport ptr @tsuzuri_alloc(i64 %size) nounwind uwtable {")
         );
         assert!(
-            win_obj
-                .contains("define weak void @tsuzuri_free(ptr %value) nounwind uwtable comdat {")
+            win_dll.contains("define dllexport void @tsuzuri_free(ptr %value) nounwind uwtable {")
         );
-        let win_dll = with_exported_allocator(win_obj);
+        assert!(!win_dll.contains("@tz.weak.tsuzuri_alloc"));
+        assert!(!win_dll.contains("@tz.weak.tsuzuri_free"));
+        assert!(win_dll.contains("define hidden void @tz.weak.tz_small_stats("));
+        assert!(win_dll.contains(
+            "@tz_small_stats = weak hidden alias void (ptr), ptr @tz.weak.tz_small_stats"
+        ));
+        assert!(win_dll.contains("@tz.weak.tz_small_shared = hidden global"));
         assert!(
-            win_dll.contains(
-                "define dllexport ptr @tsuzuri_alloc(i64 %size) nounwind uwtable comdat {"
-            )
+            win_dll
+                .contains("@tz_small_shared = weak hidden alias ptr, ptr @tz.weak.tz_small_shared")
         );
-        assert!(
-            win_dll.contains(
-                "define dllexport void @tsuzuri_free(ptr %value) nounwind uwtable comdat {"
-            )
-        );
-        assert!(win_dll.contains("define weak hidden void @tz_small_stats("));
-        assert!(win_dll.contains("@tz_small_shared = weak hidden global"));
-        assert!(win_dll.contains("@__multi3("));
-        for line in win_dll.lines().filter(|line| line.contains("@__multi3(")) {
-            assert!(line.starts_with("define weak hidden "), "{line}");
-        }
+        assert!(win_dll.contains("@__multi3 = weak hidden alias "));
     }
 }

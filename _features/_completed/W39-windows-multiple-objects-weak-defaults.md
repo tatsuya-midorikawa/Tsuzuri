@@ -216,7 +216,7 @@ fn with_coff_comdats(ir: &str) -> String
 ## 実装と検証（2026-11-28）
 
 - **実装した手順**: 手順 1〜3 をすべて完了。
-  - `src/llvm.rs`: `windows_abi` の末尾（`traps::with_unwind_tables` の後）に `with_coff_comdats` を追加し、IR 内のすべての `define weak` 関数と `@<name> = weak` 大域変数に linkage を `weak` のまま `comdat` を付与し、出現順に `$<name> = comdat any` を末尾へ出力。
+  - `src/llvm.rs`: `windows_abi` の末尾（`traps::with_unwind_tables` の後）に `with_coff_comdats` を追加し、IR 内のすべての `define weak` 関数と `@<name> = weak` 大域変数の実体を `comdat any` の `hidden` 定義 `@tz.weak.<name>`（`$tz.weak.<name> = comdat any`）へ移し、元の `@<name>` を `@tz.weak.<name>` への `weak`（または `weak hidden`）alias として出力（複数 object 間の統合とホスト側の強い定義による上書きを両立）。
   - `src/backend/module.rs`: 関数属性の解析（`parse_func_attrs`）で大域変数と同様に `comdat`（および任意の括弧引数）を読み飛ばすよう対応（D6）。
   - `tests/windows.rs`: `windows_weak_definitions_are_comdat_any` を追加（`x86_64-pc-windows-msvc`・`x86_64-pc-windows-gnu`・`aarch64-pc-windows-msvc`、`system`・`small` アロケーター、`tz_soft_*` を含む IR の決定性と `comdat` 一致、POSIX・wasm32 不変を検証）。
   - `tests/windows.mjs`: スカラー＋`i128` 除算の 2 オブジェクト組と、所有バッファを返す 2 オブジェクト組（`system`・`small` アロケーター）を `-O0`・`-O3` × `lld-link`・`link.exe` でリンク・実行し、`llvm-nm` に `.weak.` が現れないことと実行結果（`84`、`3333333333333`、`ABCab`）を検証。同梱の `tsuzuri-clang`（MinGW）でも `-O0`・`-O3` で `ABCab` を確認。

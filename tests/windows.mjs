@@ -548,7 +548,7 @@ if (isMain) {
   const msvcLinkFlags = nativeFlags.map((flag) => (flag === "-fuse-ld=lld" ? "-fuse-ld=link" : flag));
   const llvmNm = join(dirname(clang), process.platform === "win32" ? "llvm-nm.exe" : "llvm-nm");
   const nmTool = existsSync(llvmNm) ? llvmNm : "llvm-nm";
-  assert.doesNotMatch(execute(nmTool, [object]).stdout, /\.weak\./, "COFF object must not emit .weak. default symbols");
+  assert.doesNotMatch(execute(nmTool, [object]).stdout, /\.weak\.\S+\.default\./, "COFF object must not emit object-specific .weak.*.default.* symbols");
   const multiTwice = join(directory, "multi-twice");
   const multiTag = join(directory, "multi-tag");
   const multiPad = join(directory, "multi-pad");
@@ -621,7 +621,7 @@ if (isMain) {
     const objB = join(directory, `multi-b${optimization}.obj`);
     cli(["build", library, "--no-cache", optimization, "--emit", "object", "-o", objA]);
     cli(["build", multiTwice, "--no-cache", optimization, "--emit", "object", "-o", objB]);
-    assert.doesNotMatch(execute(nmTool, [objB]).stdout, /\.weak\./);
+    assert.doesNotMatch(execute(nmTool, [objB]).stdout, /\.weak\.\S+\.default\./);
     for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
       const abExe = join(directory, `multi-ab-${label}${optimization}.exe`);
       execute(clang, [...linkFlags, optimization, multiScalarHost, objA, objB, "-o", abExe]);
@@ -632,12 +632,48 @@ if (isMain) {
       const objD = join(directory, `multi-d-${allocLabel}${optimization}.obj`);
       cli(["build", multiTag, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objC]);
       cli(["build", multiPad, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objD]);
-      assert.doesNotMatch(execute(nmTool, [objC]).stdout, /\.weak\./);
-      assert.doesNotMatch(execute(nmTool, [objD]).stdout, /\.weak\./);
+      assert.doesNotMatch(execute(nmTool, [objC]).stdout, /\.weak\.\S+\.default\./);
+      assert.doesNotMatch(execute(nmTool, [objD]).stdout, /\.weak\.\S+\.default\./);
       for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
         const cdExe = join(directory, `multi-cd-${allocLabel}-${label}${optimization}.exe`);
         execute(clang, [...linkFlags, optimization, "-I", directory, multiOwnedHost, objC, objD, "-o", cdExe]);
         assert.equal(execute(cdExe, []).stdout, "ABCab");
+      }
+      if (allocLabel === "system") {
+        // Strong host definitions override the weak aliases even when multiple Tsuzuri objects are linked.
+        const strongHost = join(directory, `multi_strong_host${optimization}.c`);
+        writeFileSync(
+          strongHost,
+          [
+            "#undef NDEBUG",
+            "#include <assert.h>",
+            "#include <stdio.h>",
+            "#include <stdlib.h>",
+            "#include <string.h>",
+            '#include "multi_tag.h"',
+            '#include "multi_pad.h"',
+            "static int host_frees = 0;",
+            "void tsuzuri_free(void *ptr) { host_frees++; free(ptr); }",
+            "int main(void) {",
+            "  tsuzuri_ubyte_buffer tag = {0, 0}, pad = {0, 0};",
+            "  tz_make_tag(&tag, 3);",
+            "  tz_make_pad(&pad, 2);",
+            "  assert(tag.len == 3 && memcmp(tag.ptr, \"ABC\", 3) == 0);",
+            "  assert(pad.len == 2 && memcmp(pad.ptr, \"ab\", 2) == 0);",
+            "  tsuzuri_free(tag.ptr);",
+            "  tsuzuri_free(pad.ptr);",
+            "  assert(host_frees == 2);",
+            "  fwrite(\"OK\", 1, 2, stdout);",
+            "  return 0;",
+            "}",
+            "",
+          ].join("\n"),
+        );
+        for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+          const strongExe = join(directory, `multi-strong-${label}${optimization}.exe`);
+          execute(clang, [...linkFlags, optimization, "-I", directory, strongHost, objC, objD, "-o", strongExe]);
+          assert.equal(execute(strongExe, []).stdout, "OK");
+        }
       }
     }
   }

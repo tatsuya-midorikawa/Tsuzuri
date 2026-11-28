@@ -4707,10 +4707,10 @@ fn build_complete(
         && options.target == Target::Native
         && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
-        text = llvm::windows_abi(text, module, options.emit == Emit::Executable);
         if options.emit == Emit::Shared {
             text = llvm::with_exported_allocator(text);
         }
+        text = llvm::windows_abi(text, module, options.emit == Emit::Executable);
         if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
@@ -6372,8 +6372,12 @@ fn link_shared(
     let platform = options.platform();
     let clang_program = tool("TSUZURI_CLANG", "clang");
     let mut linker = Command::new(&clang_program);
+    if platform.windows() {
+        linker.args(compile_args(platform, macos_choice));
+    } else {
+        linker.args(target_args(platform, macos_choice));
+    }
     linker
-        .args(target_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(final_link_args(platform)?);
     if platform.windows() {
@@ -7619,11 +7623,13 @@ fn run_tool_untimed(command: &mut Command, hint: &str) -> Result<String, Diagnos
 }
 
 fn is_wasm_ld_name(name: &str) -> bool {
-    let Some(stem) = Path::new(name).file_stem().and_then(OsStr::to_str) else {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    if base.is_empty() {
         return false;
-    };
-    let lower = stem.to_ascii_lowercase();
-    lower == "wasm-ld" || lower.starts_with("wasm-ld-")
+    }
+    let lower = base.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    stem == "wasm-ld" || stem.starts_with("wasm-ld-")
 }
 
 /// W03: the symbols that a failed link reports as undefined, in the order the linker printed them,
