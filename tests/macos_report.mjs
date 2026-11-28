@@ -393,6 +393,37 @@ try {
     cases += 2;
   }
 
+  // ---------------------------------------------------------------- an application that LaunchServices starts
+  // M15 and M19 together: `open` gives the executable of a bundle /dev/null as its standard error, which is the
+  // case that the log is for. The process ID of the application is not known here, so its entry is found by its
+  // message (the project has a name of its own) and by the path of the image inside the bundle.
+  // TSUZURI_MACOS_BUNDLE_NO_OPEN=1 skips the stage on a machine without LaunchServices, as in macos_bundle.mjs.
+  if (readable && !process.env.TSUZURI_MACOS_BUNDLE_NO_OPEN) {
+    const name = project("appdivz", "def divide :: i64 -> i64 = \\x -> 10 / x\n\ndef main :: Array<string> -> i32 = \\args ->\n    (divide args.length) as i32\n");
+    writeFileSync(join(root, name, "tsuzuri.toml"), '[package]\nname = "appdivz"\nversion = "0.1.0"\n\n[macos]\nbundle_id = "dev.tsuzuri.test.appdivz"\nui_element = true\n');
+    execute(compiler, ["build", name, "-O0", "--trap-info", "--emit", "app", "-o", "AppDivz.app"]);
+    // `open -W` waits for the application, which traps at once; perl's alarm ends an `open` that never returns.
+    const opened = spawnSync("perl", ["-e", "alarm 60; exec @ARGV", "open", "-W", "-n", join(root, "AppDivz.app")], { encoding: "utf8", timeout: 90_000 });
+    assert.ifError(opened.error);
+    assert.equal(opened.status, 0, `open AppDivz.app\n${opened.stdout}\n${opened.stderr}`);
+    const message = "trap: integer division by zero at appdivz/Main.tz:1:34";
+    const image = "/AppDivz.app/Contents/MacOS/AppDivz";
+    const deadline = Date.now() + 60_000;
+    let found = [];
+    for (;;) {
+      const entries = logged();
+      assert.ok(entries, "`log show` failed after it had worked");
+      found = [...entries.values()].flat().filter((entry) => entry.eventMessage === message);
+      if (found.length > 0 || Date.now() > deadline) break;
+      sleep(500);
+    }
+    assert.equal(found.length, 1, `the trap of an application started by open: one entry\n${JSON.stringify(found)}`);
+    assert.equal(found[0].category, "trap");
+    assert.equal(found[0].messageType, "Error");
+    assert.ok(String(found[0].processImagePath).endsWith(image), `the entry's image: ${found[0].processImagePath}`);
+    cases++;
+  }
+
   // ---------------------------------------------------------------- the entries
   if (readable) {
     const expected = new Map(expectations.filter((entry) => entry.count > 0).map((entry) => [entry.pid, entry.count]));

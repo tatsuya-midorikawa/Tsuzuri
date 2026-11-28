@@ -5,20 +5,20 @@
 | ID | M15 |
 | 優先度 | P2（配布の土台。今は `.app`・`Info.plist`・`.dSYM` を手で組み、署名をやり直し、実行ファイルのパスは `extern` で引くしかない） |
 | 規模 | L |
-| 依存 | ([M17](_completed/M17-macos-min-version-and-weak-import.md)), ([M20](_completed/M20-macos-framework-link-inputs.md))（M17 は `LSMinimumSystemVersion`、M20 は `embed` した dylib の rpath） |
-| 後続 | [M16](M16-macos-signing-notarization-hardening.md)（弱い後続: [M12](M12-gpu-presentation-to-window.md), [M13](M13-desktop-os-services-package.md)） |
-| 状態 | todo |
+| 依存 | ([M17](M17-macos-min-version-and-weak-import.md)), ([M20](M20-macos-framework-link-inputs.md))（M17 は `LSMinimumSystemVersion`、M20 は `embed` した dylib の rpath） |
+| 後続 | [M16](../M16-macos-signing-notarization-hardening.md)（弱い後続: [M12](../M12-gpu-presentation-to-window.md), [M13](../M13-desktop-os-services-package.md)） |
+| 状態 | done（2026-11-28。`--emit app`（`Info.plist`・`PkgInfo`・`Resources`・`Frameworks`、内側からの ad-hoc 署名と `bundle_id` の Identifier）、`-g` の `Name.app.dSYM`、`[macos]` の `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、`Env.executable_path`（macOS・Linux・Windows。WASI は `ENOSYS`）。Developer ID の署名と公証は M16。「実装と検証（2026-11-28）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 1（.app・Info.plist・アイコン・資源・.dSYM を作る支援がない。実行ファイルのパスを得る std の API もない）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 承認済み（D-67 の委任で決定、2026-11-28。D1・D3・D4 と D-55 の登録）。起票時の記述: 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の D-55 の登録（`--emit app`、`[macos]` のキー `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、std の `Env.executable_path`）。決定事項 D1（`--emit app`）・D3（`[macos]` のキー）・D4（`Env.executable_path`）が要承認、ほかは既定案 |
+| 承認 | 承認済み（D-67 の委任で決定、2026-11-28。D1・D3・D4 と D-55 の登録）。起票時の記述: 要承認: [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の D-55 の登録（`--emit app`、`[macos]` のキー `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、std の `Env.executable_path`）。決定事項 D1（`--emit app`）・D3（`[macos]` のキー）・D4（`Env.executable_path`）が要承認、ほかは既定案 |
 | 改善する劣位 | Swift と Xcode は `.app`・`Info.plist`・`.dSYM` を作り、`Bundle.main.executablePath` を持つ。Go の `os.Executable`、Rust の `std::env::current_exe`、.NET の `Environment.ProcessPath` も実行ファイルのパスを返す。Tsuzuri は平らな実行ファイルと `<出力>.dwarf` しか作らず、bundle に入れると署名が壊れ、`-g` の `.dwarf` は bundle の署名を失敗させる。実行ファイルのパスを得る std の関数もない |
-| 手本にする既存実装 | [W09](_completed/W09-windows-gui-subsystem.md) の `[windows]`（`src/package.rs` の `WindowsSettings`・`"windows"` の腕・`relative_path`・`Line::string_array`、`src/driver.rs` の `with_manifest_windows`）、[W10](W10-windows-resources.md) の資源の書き手（Rust で決定的なバイト列を書き、参照の道具の出力と照合する）、`src/driver.rs` の `protect_documentation`・`document` の公開（既存の出力の持ち主の検査と、一時ディレクトリからの入れ替えと復元）、`publish_outputs`・`TemporaryDirectory`、`-g` の `dsymutil --flat` の段（`src/driver.rs:5409-5483`）、`std/Env.tz` の `args` と内部の組み込み `Os.__args`（`unit` を取り、結果の置き場だけを渡す。`src/check.rs:3037-3051`、`src/llvm_io.rs:84・121-125`、`src/runtime/os.c:411` の `tsuzuri_os_args`）、`src/runtime/os.c` の `tz_os_current_directory`（長さを倍にして取り直す形）、使うときだけ付ける define（`src/driver.rs:4915-4923` の `-DTZ_TRAP_BOUNDARY`、5089-5094 行の WASI の `-DTZ_WASI_START`） |
+| 手本にする既存実装 | [W09](W09-windows-gui-subsystem.md) の `[windows]`（`src/package.rs` の `WindowsSettings`・`"windows"` の腕・`relative_path`・`Line::string_array`、`src/driver.rs` の `with_manifest_windows`）、[W10](../W10-windows-resources.md) の資源の書き手（Rust で決定的なバイト列を書き、参照の道具の出力と照合する）、`src/driver.rs` の `protect_documentation`・`document` の公開（既存の出力の持ち主の検査と、一時ディレクトリからの入れ替えと復元）、`publish_outputs`・`TemporaryDirectory`、`-g` の `dsymutil --flat` の段（`src/driver.rs:5409-5483`）、`std/Env.tz` の `args` と内部の組み込み `Os.__args`（`unit` を取り、結果の置き場だけを渡す。`src/check.rs:3037-3051`、`src/llvm_io.rs:84・121-125`、`src/runtime/os.c:411` の `tsuzuri_os_args`）、`src/runtime/os.c` の `tz_os_current_directory`（長さを倍にして取り直す形）、使うときだけ付ける define（`src/driver.rs:4915-4923` の `-DTZ_TRAP_BOUNDARY`、5089-5094 行の WASI の `-DTZ_WASI_START`） |
 | 主な影響ファイル | `src/main.rs`, `src/driver.rs`, `src/package.rs`, `src/cache.rs`, `src/plist.rs`（新規）, `src/app_bundle.rs`（新規）, `src/lib.rs`, `src/diagnostic_kinds.rs`, `src/runtime/os.c`, `src/runtime/os-windows.h`, `src/runtime/os-wasi.c`, `src/check.rs`, `src/llvm_io.rs`, `src/llvm.rs`, `src/polymorph.rs`, `src/pinned_rules.rs`, `src/capabilities.rs`, `src/test_runner.rs`, `std/Env.tz`, `tests/macos_bundle.rs`（新規）, `tests/macos_bundle.mjs`（新規）, `tests/fixtures/macos_bundle/`（新規）, `tests/packages.rs`, `tests/os.mjs`, `tests/os-wasi-host.mjs`, `tests/capabilities.rs`, `tests/fixtures/capabilities/std-table.txt`, `tests/fixtures/effects_sweep/Main.tz`, `.github/workflows/targets.yml`, `_tsuzuri/language-reference/organizing-tsuzuri/packages.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/compiler/debugging.md`, `_tsuzuri/language-reference/compiler/usage.md`, `_tsuzuri/language-reference/built-in-types-and-modules/env.md`, `_tsuzuri/language-reference/compiler/diagnostics.md`（生成）, `README.md`, `docs/language.md`, `docs/architecture.md` |
 
 ## 実装者向け早見
 
 - 範囲:
   - `tsuzuri build --emit app -o Name.app`。実行ファイルを `Name.app/Contents/MacOS/Name` に置き、`Contents/Info.plist`（決定的な XML）、`Contents/PkgInfo`、`Contents/Resources`（`icon` と `resources`）、`Contents/Frameworks`（`embed`）を作る。
-  - 最後に bundle を内側（`Contents/Frameworks`）から ad-hoc で署名し直す。署名の Identifier は `bundle_id` になる。Developer ID の署名は [M16](M16-macos-signing-notarization-hardening.md) が足す。
+  - 最後に bundle を内側（`Contents/Frameworks`）から ad-hoc で署名し直す。署名の Identifier は `bundle_id` になる。Developer ID の署名は [M16](../M16-macos-signing-notarization-hardening.md) が足す。
   - `-g` では `Name.app.dSYM/Contents/Resources/DWARF/Name` と、その `Info.plist` を作る。今の平らな `.dwarf` を bundle の外へ移す。
   - `[macos]` に `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element` を足す。節は M17 が先に作っていればキーを足し、なければ作る。
   - `Env.executable_path :: own unit -> IO<Result<string, Os.Error>>`。macOS は `_NSGetExecutablePath` と `realpath`、Linux は `/proc/self/exe`、Windows は `GetModuleFileNameW`。
@@ -47,7 +47,7 @@ macOS のデスクトップアプリは `.app` の bundle で配る。Finder・D
 
 Finder から起動すると作業ディレクトリは `/` になる。資源を探すには実行ファイルのパスが要るが、std にそれを返す関数がない。
 
-このチケットは、bundle の組み立て・ad-hoc の署名・`.dSYM` をコンパイラの 1 つの出力の種類にし、実行ファイルのパスを std に足す。Developer ID の署名と公証（[M16](M16-macos-signing-notarization-hardening.md)）、bundle の中の GPU ランタイムの探索（[M12](M12-gpu-presentation-to-window.md)）、通知の bundle の識別子（[M13](M13-desktop-os-services-package.md)）が、この bundle の上に立つ。
+このチケットは、bundle の組み立て・ad-hoc の署名・`.dSYM` をコンパイラの 1 つの出力の種類にし、実行ファイルのパスを std に足す。Developer ID の署名と公証（[M16](../M16-macos-signing-notarization-hardening.md)）、bundle の中の GPU ランタイムの探索（[M12](../M12-gpu-presentation-to-window.md)）、通知の bundle の識別子（[M13](../M13-desktop-os-services-package.md)）が、この bundle の上に立つ。
 
 ## 着手条件と停止条件
 
@@ -55,8 +55,8 @@ Finder から起動すると作業ディレクトリは `/` になる。資源�
 
 - `node scripts/repo-kb.mjs brief M15` を読む。
 - 承認が記録されるまで、該当する段に着手しない。手順 3（`[macos]` のキー）は D3、手順 4〜6（`--emit app`）は D1、手順 7（`Env.executable_path`）は D4 の承認が要る。手順 1・2（調査と plist の読み書き）は承認なしで進めてよい。
-- [M17](_completed/M17-macos-min-version-and-weak-import.md) が done なら、その `MacosSettings`・`Project::macos`・`invalid_macos_setting` にキーを足す。done でなければ、M17 の仕様 1 と同じ名前で `[macos]` の節を作る（後に入るチケットがキーを足す）。確認: `grep -nE "^\| (M17|M20) " _features/README.md`。
-- [M20](_completed/M20-macos-framework-link-inputs.md) が done でなくても着手してよい。`embed` の dylib を rpath で読ませる E2E の段（テスト計画の E7）だけを、M20 の後に足す。
+- [M17](M17-macos-min-version-and-weak-import.md) が done なら、その `MacosSettings`・`Project::macos`・`invalid_macos_setting` にキーを足す。done でなければ、M17 の仕様 1 と同じ名前で `[macos]` の節を作る（後に入るチケットがキーを足す）。確認: `grep -nE "^\| (M17|M20) " _features/README.md`。
+- [M20](M20-macos-framework-link-inputs.md) が done でなくても着手してよい。`embed` の dylib を rpath で読ませる E2E の段（テスト計画の E7）だけを、M20 の後に足す。
 - macOS の挙動を変えるので、PR に `ci:full` を付ける。
 - 基準の保存: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm -O1`（native と `--target wasm32`）と診断、`tests/packages.rs` の manifest の誤りの文を `target/scratch/m15/base/` に保存する。D13 の確かめのために、`Env.current_dir` だけを使うプログラム（仕様 7 の `Main.tz` から `executable` を作る行と出す行を除いたもの）の `--emit object` と実行ファイル（native の `-O0`・`-O3`）と、`--target wasm32 --wasm-host wasi` の `.wasm` も同じ所に保存する。
 
@@ -275,7 +275,7 @@ $ install_name_tool -add_rpath @executable_path/../Frameworks App.app/Contents/M
 error: …/install_name_tool: changing install names or rpaths can't be redone for: App.app/Contents/MacOS/App (for architecture arm64) because larger updated load commands do not fit (the program must be relinked, and you may need to use -headerpad or -headerpad_max_install_names)
 ```
 
-rpath はリンクのときにしか足せない。それは [M20](_completed/M20-macos-framework-link-inputs.md) の `--rpath` の範囲である。
+rpath はリンクのときにしか足せない。それは [M20](M20-macos-framework-link-inputs.md) の `--rpath` の範囲である。
 
 ### 再現 7: `plutil` の正準形
 
@@ -295,11 +295,11 @@ $ otool -l hello12 | grep -A4 LC_BUILD_VERSION | grep minos        # --target aa
     minos 12.0
 ```
 
-既定の版は、D-67 の分岐 6 で 12.0 に固定すると決めた（2026-11-26）。実装は [M17](_completed/M17-macos-min-version-and-weak-import.md) の D1 で、M17 が入るまではビルド機の版のままである。
+既定の版は、D-67 の分岐 6 で 12.0 に固定すると決めた（2026-11-26）。実装は [M17](M17-macos-min-version-and-weak-import.md) の D1 で、M17 が入るまではビルド機の版のままである。
 
 ## 変えてはいけない意味
 
-- `--emit app` を使わないビルド: IR・object・実行ファイル・リンク行・キャッシュの鍵・診断は変えない。例外は、受け付ける綴りを並べる既存の 2 つの誤りの文だけである。manifest の順序の誤りの文に `[macos]` が加わる（M17 と共有。先に入ったほうが変える）。`--emit` の種類の誤りの文（`src/main.rs:1222`、テストは 6487 行）に `app` が加わる（[M11](M11-swift-bindings.md) も同じ文に `bindings-swift` を足す）。
+- `--emit app` を使わないビルド: IR・object・実行ファイル・リンク行・キャッシュの鍵・診断は変えない。例外は、受け付ける綴りを並べる既存の 2 つの誤りの文だけである。manifest の順序の誤りの文に `[macos]` が加わる（M17 と共有。先に入ったほうが変える）。`--emit` の種類の誤りの文（`src/main.rs:1222`、テストは 6487 行）に `app` が加わる（[M11](../M11-swift-bindings.md) も同じ文に `bindings-swift` を足す）。
   - 手順 7（`Env.executable_path`）もこの例外にしない。本体は `os.c`・`os-windows.h`・`os-wasi.c` の `#if defined(TZ_OS_EXECUTABLE_PATH)` の中に置き、driver と `src/test_runner.rs` は IR が `tsuzuri_os_executable_path` を参照するときだけ `-DTZ_OS_EXECUTABLE_PATH` を付ける（仕様 6、D13）。`Env.executable_path` に到達しないプログラムのランタイムの部分（実行ファイル、`--emit object`、`--wasm-host wasi` の `.wasm`）は、OS API を使っていても 1 byte も変わらない。ランタイムのキャッシュの鍵は単位の文字列を含むので、`os.c` に節を足すと、OS API に到達するプログラムのランタイムの object が 1 回だけ作り直される。できる object は同じである（落とし穴）。
 - `[macos]` の bundle のキーは、`--emit exe`・`run`・`test`・`bench` と Apple でない target では使わない。キーがあること自体は誤りにしない（`[windows]` と同じ）。値の形の検査（仕様 2）は、`[windows]` の `subsystem` と同じく manifest を読むときに常に行う（`subsystem = "bogus"` は macOS の `--emit exe` でも `E0002` になった）。
 - `--emit app` の中の実行ファイルは、同じ options の `--emit exe` と同じキャッシュの項目を使い、署名し直す前は同じバイト列である（`-g` はビルドごとに UUID が変わるので、同じ項目に当たったときだけ）。違うのは `codesign` が書き換える署名だけである。
@@ -494,12 +494,12 @@ def main :: unit -> i32 = \() ->
 | `src/plist.rs`（新規） | `enum Value { String, Integer(String), Real(String), Bool, Date(String), Data(String), Array(Vec<Value>), Dict(BTreeMap<Utf16Key, Value>) }`、`fn write(&Value) -> Vec<u8>`、`fn read(&[u8]) -> Result<Value, String>`。`Utf16Key` は UTF-16 の符号単位の列で順序を決める |
 | `src/app_bundle.rs`（新規） | `build_app`: 入力の検査 → 出力の持ち主の検査 → 一時ディレクトリでの実行ファイルのビルド → `.dSYM` → `Info.plist`・`PkgInfo`・資源・`embed` → 署名 → 入れ替え。`fn sign(plan: &SignPlan, bundle: &Path, nested: &[PathBuf])`（M16 が `SignPlan` に identity などを足す）。`fn mach_o_min_version(&[u8]) -> Option<(u32, u32, u32)>` |
 | `src/diagnostic_kinds.rs` | 新しい kind 4 つ（`macos_bundle_id_missing`・`macos_bundle_conflict`・`macos_bundle_input_invalid`・`app_output_not_owned`）。`invalid_macos_setting` は M17 が先なら既にある |
-| `src/runtime/os.c`・`os-windows.h`・`os-wasi.c` | `#if defined(TZ_OS_EXECUTABLE_PATH)` の中の `tsuzuri_os_executable_path`（`tsuzuri_os_args` と同じく `struct tz_os_buffer *output` だけを取り、status を返す。`src/runtime/os.c:411`、`os-wasi.c:539`）。`os.c` は `__APPLE__` で `<mach-o/dyld.h>` の `_NSGetExecutablePath`、ほかは `/proc/self/exe`。[M12](M12-gpu-presentation-to-window.md) の Phase 1 の補助（`gpu-vulkan.c`・`gpu.c`）も同じ求め方をするので、`realpath` を通してから使う規則をそろえる（後に入るチケットが合わせる）。失敗したときは、M15 は `Os.Error` を返し、M12 は bundle の候補を飛ばす。`Os.__read` の操作の一覧（0〜5）は変えない |
+| `src/runtime/os.c`・`os-windows.h`・`os-wasi.c` | `#if defined(TZ_OS_EXECUTABLE_PATH)` の中の `tsuzuri_os_executable_path`（`tsuzuri_os_args` と同じく `struct tz_os_buffer *output` だけを取り、status を返す。`src/runtime/os.c:411`、`os-wasi.c:539`）。`os.c` は `__APPLE__` で `<mach-o/dyld.h>` の `_NSGetExecutablePath`、ほかは `/proc/self/exe`。[M12](../M12-gpu-presentation-to-window.md) の Phase 1 の補助（`gpu-vulkan.c`・`gpu.c`）も同じ求め方をするので、`realpath` を通してから使う規則をそろえる（後に入るチケットが合わせる）。失敗したときは、M15 は `Os.Error` を返し、M12 は bundle の候補を飛ばす。`Os.__read` の操作の一覧（0〜5）は変えない |
 | `src/check.rs`・`src/llvm_io.rs` | 内部の組み込み `Os.__executable_path`（`Builtin::name` の一覧と scheme は `Os.__args` の腕と同じ `unit -> (i64 * [ubyte])`。下げ方は `src/llvm_io.rs:84` の `("args", "ptr")` と同じ形で、`tsuzuri_os_set_args` は宣言しない）。名前は `__` で始まり、`std/Env.tz` だけが呼ぶ |
 | `src/llvm.rs`・`src/polymorph.rs`・`src/pinned_rules.rs`・`src/capabilities.rs` | `Builtin::OsArgs` を並べる一覧に足す（`src/llvm.rs:8510・8816`、`src/polymorph.rs:4436`、`src/pinned_rules.rs:133`。漏れは `rg -n 'Builtin::OsArgs' src` で確かめる）。`primitive` に `"Os.__executable_path" => Env`、`every_private_builtin_is_classified` の 31 を 1 増やす（M17 の `Os.__os_version` も増やす） |
 | `src/driver.rs` | `runtime_symbols.contains("tsuzuri_os_executable_path")` のときだけ、native のランタイムのコンパイル（`trap_runtime` の `-DTZ_TRAP_BOUNDARY` の隣、4915-4923 行）と WASI のランタイムのコンパイル（`-DTZ_WASI_START` の隣、5089-5094 行）に `-DTZ_OS_EXECUTABLE_PATH` を足す |
 | `src/test_runner.rs` | `native_runtime_sources`（656 行）と `compile_native_runner`（1053-1059 行）でも、IR が `tsuzuri_os_executable_path` を宣言するときだけ `os.c` のコンパイルに `-DTZ_OS_EXECUTABLE_PATH` を足す |
-| `tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt`・`tests/fixtures/effects_sweep/Main.tz` | ホストに届く名前の一覧に `Os.__executable_path`、`Env.tz` の 3 を 4、合計 44 を 45、std-table に `Env.executable_path: env`（88 を 89）。公開の std の関数はどれもコーパスに実体が要る（`tests/effects_alloc_conservative.rs` の F.4）ので、sweep の fixture に `Env.executable_path ()` を足す。[M17](_completed/M17-macos-min-version-and-weak-import.md) の `Env.os_version` と同じ数を直すので、後に入るほうが足す |
+| `tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt`・`tests/fixtures/effects_sweep/Main.tz` | ホストに届く名前の一覧に `Os.__executable_path`、`Env.tz` の 3 を 4、合計 44 を 45、std-table に `Env.executable_path: env`（88 を 89）。公開の std の関数はどれもコーパスに実体が要る（`tests/effects_alloc_conservative.rs` の F.4）ので、sweep の fixture に `Env.executable_path ()` を足す。[M17](M17-macos-min-version-and-weak-import.md) の `Env.os_version` と同じ数を直すので、後に入るほうが足す |
 | `std/Env.tz` | `private def executable_file` と `def executable_path`（`current_dir` と同じ形で、`Os.__read 2i32` の代わりに `Os.__executable_path ()` を呼ぶ。`///` の例を付ける） |
 
 ### 組み立ての流れ（`build_app`）
@@ -530,18 +530,18 @@ def main :: unit -> i32 = \() ->
 
 ## 前提とする他チケットのインターフェース
 
-- [M17](_completed/M17-macos-min-version-and-weak-import.md)（弱い依存）: `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`、kind `invalid_macos_setting`。M15 は `LSMinimumSystemVersion` を実行ファイルの `minos` から作るので、M17 の関数を呼ばない。M17 の後は、`[macos] min_version` の値が `minos` を通って `Info.plist` に届くことをテストで確かめる。
-- [M20](_completed/M20-macos-framework-link-inputs.md)（弱い依存）: `--rpath`・`[native] rpath`。`embed` した `@rpath` の dylib を読ませるには、`--rpath @executable_path/../Frameworks` が要る（再現 6）。M15 はリンク行を変えない。
-- [W09](_completed/W09-windows-gui-subsystem.md): ルートの節だけを読む規則と `with_manifest_windows` の形。
+- [M17](M17-macos-min-version-and-weak-import.md)（弱い依存）: `MacosSettings`・`Project::macos`・`MacosVersion`・`effective_macos_version`、kind `invalid_macos_setting`。M15 は `LSMinimumSystemVersion` を実行ファイルの `minos` から作るので、M17 の関数を呼ばない。M17 の後は、`[macos] min_version` の値が `minos` を通って `Info.plist` に届くことをテストで確かめる。
+- [M20](M20-macos-framework-link-inputs.md)（弱い依存）: `--rpath`・`[native] rpath`。`embed` した `@rpath` の dylib を読ませるには、`--rpath @executable_path/../Frameworks` が要る（再現 6）。M15 はリンク行を変えない。
+- [W09](W09-windows-gui-subsystem.md): ルートの節だけを読む規則と `with_manifest_windows` の形。
 
 ## 他チケットへ提供するインターフェース
 
-- `crate::plist`（`Value`・`read`・`write`）。[M16](M16-macos-signing-notarization-hardening.md) が entitlements のファイルの検査に使う。
+- `crate::plist`（`Value`・`read`・`write`）。[M16](../M16-macos-signing-notarization-hardening.md) が entitlements のファイルの検査に使う。
 - `crate::app_bundle::build_app` と `SignPlan`。M16 が identity・entitlements・hardened runtime・timestamp を足し、同じ内側からの順で署名する。
 - `MacosSettings` の bundle のキー。M16 は同じ節に `sign_identity`・`entitlements`・`hardened_runtime`・`timestamp` を足す。
-- bundle の形（`Contents/Frameworks`・`Contents/Resources`）。[M12](M12-gpu-presentation-to-window.md) の Phase 1 が bundle の中の GPU ランタイムを探す場所、[M13](M13-desktop-os-services-package.md) が通知に使う `bundle_id` と資源の場所。
+- bundle の形（`Contents/Frameworks`・`Contents/Resources`）。[M12](../M12-gpu-presentation-to-window.md) の Phase 1 が bundle の中の GPU ランタイムを探す場所、[M13](../M13-desktop-os-services-package.md) が通知に使う `bundle_id` と資源の場所。
 - `Env.executable_path`。M13 の資源の探索、bundle を使わないアプリの設定ファイルの探索。
-- ランタイムに OS の操作を足す形（独立した入口、std だけが呼ぶ内部の組み込み、到達したときだけの `-D`。D13）。[M17](_completed/M17-macos-min-version-and-weak-import.md) の `Env.os_version`（`tsuzuri_os_version`・`Os.__os_version`・`-DTZ_OS_VERSION`）が同じ形を使う。
+- ランタイムに OS の操作を足す形（独立した入口、std だけが呼ぶ内部の組み込み、到達したときだけの `-D`。D13）。[M17](M17-macos-min-version-and-weak-import.md) の `Env.os_version`（`tsuzuri_os_version`・`Os.__os_version`・`-DTZ_OS_VERSION`）が同じ形を使う。
 
 ## 実装手順
 
@@ -639,11 +639,11 @@ def main :: unit -> i32 = \() ->
 
 ## 対象外
 
-- Developer ID の署名・hardened runtime・entitlements・公証（[M16](M16-macos-signing-notarization-hardening.md)）。
+- Developer ID の署名・hardened runtime・entitlements・公証（[M16](../M16-macos-signing-notarization-hardening.md)）。
 - App Sandbox と Mac App Store の提出。
 - `.png` から `.icns` への変換（`iconutil` には `.iconset` の形が要る。D11）。
 - NIB・storyboard・asset catalog（`.xcassets`）のコンパイル。
-- Universal 2 と Intel Mac（[M18](M18-intel-mac-and-universal2.md)。D-67 の分岐 3 で方針を改めないと決めたので、M18 は blocked）。
+- Universal 2 と Intel Mac（[M18](../M18-intel-mac-and-universal2.md)。D-67 の分岐 3 で方針を改めないと決めたので、M18 は blocked）。
 - rpath と `-sectcreate __TEXT __info_plist` のリンクの引数（M20。D12）。
 - `tsuzuri new` のアプリのひな型。
 - `--emit shared` の dylib を `.framework` にすること。

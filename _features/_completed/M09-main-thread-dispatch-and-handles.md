@@ -5,11 +5,11 @@
 | ID | M09 |
 | 優先度 | P2（回避策はある: `dlsym` で `_dispatch_main_q` を引いて `dispatch_async_f` を呼ぶ。型の保護はなく、ABI の知識に頼る） |
 | 規模 | L（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | ([M01](_completed/M01-objc-class-types.md)), ([M08](_completed/M08-macos-main-thread-docs-and-e1013.md))（M01 は Phase 2 の `extern class main` の段だけ） |
-| 後続 | [M14](M14-tls-http-packages.md)（弱い後続: [M03](M03-objc-classes-defined-in-tsuzuri.md), [M04](M04-objc-blocks.md), [M07](M07-apple-sdk-bindgen-and-package.md), [M13](M13-desktop-os-services-package.md)） |
-| 状態 | todo |
+| 依存 | ([M01](M01-objc-class-types.md)), ([M08](M08-macos-main-thread-docs-and-e1013.md))（M01 は Phase 2 の `extern class main` の段だけ） |
+| 後続 | [M14](../M14-tls-http-packages.md)（弱い後続: [M03](../M03-objc-classes-defined-in-tsuzuri.md), [M04](../M04-objc-blocks.md), [M07](../M07-apple-sdk-bindgen-and-package.md), [M13](../M13-desktop-os-services-package.md)） |
+| 状態 | done（2026-11-28。Phase 1〜3。`MainThread.post`・`after`・`is_current`（macOS。境界の終わりに残った投入は呼ばずに drop、ほかの native は `E2002`、wasm は `E2000` `wasm_main_thread_unsupported`）、`extern type main`・`extern class main` と効果 `main_thread`（`E1013` の `main_thread_code_spawned`・`main_thread_function_value`、`E1008` の `objc_class_main_base`、コールバック・export・test・bench の入口の検査）、どのスレッドからでも読める `Anchor.Shared`（`create_shared`・`shared_token`・`read_shared`・`detach_shared`・`release_shared`）。「実装と検証（2026-11-28）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 3（メインスレッドへ戻す API がなく、メインスレッド専用を型で強制できない。run loop と tzroutine の待ち、terminate: の exit、GCD のスレッドからの Anchor の WrongThread、Time.after_func がワーカーで発火）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | 要承認: Phase 1 は D-55（組み込みのモジュール `MainThread`）。Phase 2 は D-55（`extern type`・`extern class` の後の文脈キーワード `main`）と D-53 の改訂（効果 `main_thread`。語彙が 15 から 16）。Phase 3（別のスレッドから引ける預け先）は別に承認する。決定事項の D1・D11・D12・D16。D-67 の分岐 1 には依らない。分岐 1 は X′ で承認済み（2026-11-26）なので、Phase 2 の `extern class main` の段も M01 の後に実装する。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
+| 承認 | 要承認: Phase 1 は D-55（組み込みのモジュール `MainThread`）。Phase 2 は D-55（`extern type`・`extern class` の後の文脈キーワード `main`）と D-53 の改訂（効果 `main_thread`。語彙が 15 から 16）。Phase 3（別のスレッドから引ける預け先）は別に承認する。決定事項の D1・D11・D12・D16。D-67 の分岐 1 には依らない。分岐 1 は X′ で承認済み（2026-11-26）なので、Phase 2 の `extern class main` の段も M01 の後に実装する。台帳は [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
 | 改善する劣位 | Swift の `DispatchQueue.main.async`・`@MainActor`、Kotlin の `Dispatchers.Main` 比: tzroutine や GCD のスレッドから UI のスレッドへ処理を戻す API がない。メインスレッドでしか呼べない API を型で表せず、`Routine.with_locked_thread` の誤用が実行時の例外になる（M08 の「現状」4） |
 | 手本にする既存実装 | TZ05 の `Time.after_func`（`src/llvm_timer.rs` の `Builtin::TimeAfterFunc` の腕、`@tz.tzroutine.owned`・`@tz.tzroutine.owned.drop`、境界で呼ばずに drop する規則）、W19（`HandleKind::Local`、`src/pinned_rules.rs` の `builtin_position`・`visit_spawned_arg`、`src/effects.rs` の `pinning_argument_mask`、`E1013` の 2 つの kind）、W12（`src/llvm.rs` の `with_blocking_externs`、`@tz.callback.after_main`）、driver の `os_runtime`・`net_runtime` と `PlatformUnsupportedApi` の判定 |
 | 主な影響ファイル | Phase 1: `src/check.rs`、`src/stdlib.rs`、`src/effects.rs`、`src/pure_rules.rs`、`src/kg/effects.rs`、`src/pinned_rules.rs`、`src/llvm.rs`、`src/llvm_mainthread.rs`（新規）、`src/driver.rs`、`src/diagnostic_kinds.rs`、`src/runtime/mainthread-darwin.c`（新規）、`tests/main_thread.rs`（新規）、`tests/main_thread.mjs`（新規）、`tests/fixtures/main_thread/Main.tz`（新規）、`_tsuzuri/language-reference/built-in-types-and-modules/mainthread.md`（新規）、`_tsuzuri/language-reference/built-in-types-and-modules/routine.md`、`_tsuzuri/language-reference/compiler/native-interop.md`、`_tsuzuri/language-reference/index.md`、`docs/language.md`、`.github/workflows/targets.yml`、`README.md`。Phase 2: `src/syntax.rs`、`src/parser.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/llvm_abi.rs`、`tests/thread_bound_handles.rs`、`tests/fixtures/main_thread/host.c`（新規） |
@@ -36,8 +36,8 @@ Phase 1 は戻す API を足す。M08 が文書に置いた「計画は M09」�
 ### 着手条件
 
 - 人間が求めない限り Phase 1 だけを実装する（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない。
-- Phase 1: D1（D-55 の `MainThread`）が承認済み。[M08](_completed/M08-macos-main-thread-docs-and-e1013.md) が done であることが望ましい（M08 の注記を置き換える。M08 が後なら、M08 が文書に API の説明を書く）。確認: `grep -nE '^\| M0[89] ' _features/README.md`。
-- Phase 2: D11・D12 が承認済み。`extern class main` の段は [M01](_completed/M01-objc-class-types.md) が done のときだけ。Phase 3: D16 が承認済み（M14 の着手より前に決める）。
+- Phase 1: D1（D-55 の `MainThread`）が承認済み。[M08](M08-macos-main-thread-docs-and-e1013.md) が done であることが望ましい（M08 の注記を置き換える。M08 が後なら、M08 が文書に API の説明を書く）。確認: `grep -nE '^\| M0[89] ' _features/README.md`。
+- Phase 2: D11・D12 が承認済み。`extern class main` の段は [M01](M01-objc-class-types.md) が done のときだけ。Phase 3: D16 が承認済み（M14 の着手より前に決める）。
 - 共通: `node scripts/repo-kb.mjs brief M09`。P2 なので、着手前にその時点のコードと台帳でこのチケットをレビューする（GUIDE §0 の 2）。macOS（arm64）の開発機。ベースライン（`tests/fixtures/*`・`examples/*` の `--emit llvm`（native と `--target wasm32`）・`--emit header`・`check --json`）を `target/scratch/m09/before/` に保存する。
 
 ### 停止条件
@@ -401,15 +401,15 @@ void tsuzuri_mainthread_boundary_done(void);
 
 ## 前提とする他チケットのインターフェース
 
-- [M08](_completed/M08-macos-main-thread-docs-and-e1013.md): 2 つのページの 2 段落と「メインスレッドへ戻す API は今はない（計画は M09）」の注記（Phase 1 が置き換える）、定数 `MAIN_THREAD_ADVICE`（Phase 2 の文の言い回しをそろえる）。
-- [M01](_completed/M01-objc-class-types.md)（Phase 2 の `extern class main` の段だけ）: `extern class` の修飾の読み取りとクラスの性質の表現。名前が違えば M01 に合わせる。
+- [M08](M08-macos-main-thread-docs-and-e1013.md): 2 つのページの 2 段落と「メインスレッドへ戻す API は今はない（計画は M09）」の注記（Phase 1 が置き換える）、定数 `MAIN_THREAD_ADVICE`（Phase 2 の文の言い回しをそろえる）。
+- [M01](M01-objc-class-types.md)（Phase 2 の `extern class main` の段だけ）: `extern class` の修飾の読み取りとクラスの性質の表現。名前が違えば M01 に合わせる。
 - W19・W12・TZ05 の既存の仕組み（「現状」7）。
 
 ## 他チケットへ提供するインターフェース
 
-- [M14](M14-tls-http-packages.md): `MainThread.post`（Phase 1）と預け先（Phase 3）。M14 は、項目を作った関数が戻った後も項目を生かし、鍵で解放する操作も求める（M14 の D5・S1）。D16 の案（所有者 `Anchor.Shared` の drop で解放する）にはこの操作がないので、D16 の承認の議題に含める。
-- [M03](M03-objc-classes-defined-in-tsuzuri.md): `extern class export main` の `main` と、IMP の包みの入口の検査（Phase 2）。[M04](M04-objc-blocks.md): Block の invoke の包みの入口の検査（Phase 2）。
-- [M07](M07-apple-sdk-bindgen-and-package.md): `NS_SWIFT_UI_ACTOR` のクラスを `extern class main` に写す（Phase 2 がなければ `local`）。[M13](M13-desktop-os-services-package.md): ダイアログの完了を UI へ戻す `post`。
+- [M14](../M14-tls-http-packages.md): `MainThread.post`（Phase 1）と預け先（Phase 3）。M14 は、項目を作った関数が戻った後も項目を生かし、鍵で解放する操作も求める（M14 の D5・S1）。D16 の案（所有者 `Anchor.Shared` の drop で解放する）にはこの操作がないので、D16 の承認の議題に含める。
+- [M03](../M03-objc-classes-defined-in-tsuzuri.md): `extern class export main` の `main` と、IMP の包みの入口の検査（Phase 2）。[M04](../M04-objc-blocks.md): Block の invoke の包みの入口の検査（Phase 2）。
+- [M07](../M07-apple-sdk-bindgen-and-package.md): `NS_SWIFT_UI_ACTOR` のクラスを `extern class main` に写す（Phase 2 がなければ `local`）。[M13](../M13-desktop-os-services-package.md): ダイアログの完了を UI へ戻す `post`。
 - 名前: `tsuzuri_mainthread_post`・`_is_current`・`_boundary_open`・`_boundary_done`、`@tz.mainthread.run`、`Position::Posted`、`Effect::MainThread`、`HandleKind::Main`（M01 があれば `HandleKind::ObjcMain` も）、kind `wasm_main_thread_unsupported`・`main_thread_code_spawned`・`main_thread_function_value`。
 
 ## 実装手順

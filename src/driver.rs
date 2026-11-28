@@ -5047,7 +5047,8 @@ fn build_complete_keyed(
         && (runtime_symbols.prefix("tsuzuri_report_")
             || tzroutine_runtime
             || stack_runtime
-            || cpu_runtime);
+            || cpu_runtime
+            || main_thread_runtime);
     if async_preempt {
         text = llvm::preempt::with_generated_section(
             text,
@@ -5634,9 +5635,9 @@ fn build_complete_keyed(
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
             }
-            // M19: only a unit with a C runtime that reports (tzroutine.c, cpu.c). A unit of io.c alone keeps
-            // its arguments, which are the ones of the prebuilt object.
-            if report_runtime && (tzroutine_runtime || cpu_runtime) {
+            // M19: only a unit with a C runtime that reports (tzroutine.c, cpu.c, mainthread-darwin.c). A unit
+            // of io.c alone keeps its arguments, which are the ones of the prebuilt object.
+            if report_runtime && (tzroutine_runtime || cpu_runtime || main_thread_runtime) {
                 runtime.arg("-DTZ_REPORT_OSLOG");
             }
             if async_preempt {

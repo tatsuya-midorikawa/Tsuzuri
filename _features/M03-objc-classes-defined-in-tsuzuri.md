@@ -5,7 +5,7 @@
 | ID | M03 |
 | 優先度 | P2 |
 | 規模 | XL（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M02](_completed/M02-objc-typed-message-send.md), ([W36](_completed/W36-c-layout-by-value.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（Phase 2 は W36 の Phase 2。`main` のクラスは M09 の Phase 2） |
+| 依存 | [M02](_completed/M02-objc-typed-message-send.md), ([W36](_completed/W36-c-layout-by-value.md)), ([M09](_completed/M09-main-thread-dispatch-and-handles.md))（Phase 2 は W36 の Phase 2。`main` のクラスは M09 の Phase 2） |
 | 後続 | –（弱い後続: [M04](M04-objc-blocks.md), [M07](M07-apple-sdk-bindgen-and-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（実行時のクラス定義・delegate・オーバーライドは、class_addMethod に FnPtr の IMP を渡す生アドレスの書き方。構造体を返す IMP は _objc_msgForward と forwardInvocation: の回避策。super は ObjcSuper record と上位形）」に当たる。HEAD `804b7970` で確認） |
@@ -85,7 +85,7 @@ AppKit のアプリは、Cocoa のクラスを継承したクラス（`NSView` �
 - [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（M01 も含む）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - D-67 の分岐 1 は X′ で承認済み（2026-11-26）。決定事項の D1〜D3 と D-55 の登録（D4）が承認済みであること。**承認が記録されるまで、該当する Phase に着手しない。**
 - **人間が求めない限り Phase 1 だけを実装する。** D-67 の分岐 4 は (a) で承認済み（2026-11-26）。人間が求めたのは W36 を Phase 2 まで実装することで、M03 の Phase 2 そのものではない。Phase 2 は、決定事項 D11 の承認と W36 の停止条件 S1 の選択（未決）が記録され、[W36](_completed/W36-c-layout-by-value.md) の Phase 2（AAPCS64 と呼ばれる側の `by_value_from_abi`・`by_value_to_abi`）が done で、人間が求めたときだけ。分岐 4 の (b)（HFA だけを先に扱い、M02 の Phase 2 の HFA の分類を使う）は選ばれなかった。
-- `main` のクラス（`extern class export main`）の段は [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 が done のときだけ。なければ `main` の修飾子は足さず、export のクラスは `local` と `sync` だけ。
+- `main` のクラス（`extern class export main`）の段は [M09](_completed/M09-main-thread-dispatch-and-handles.md) の Phase 2 が done のときだけ。なければ `main` の修飾子は足さず、export のクラスは `local` と `sync` だけ。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）と `check --json`、コールバックを使う fixture（`tests/fixtures/ffi_extensions`）と M01・M02 の fixture の IR を `target/scratch/m03/before/` に保存する。
 - macOS（arm64）の機械と Xcode の Command Line Tools（clang・SDK）。node のテストの段は macOS だけで走る。
 
@@ -628,7 +628,7 @@ entry:
 - [W12](_completed/W12-static-callback-lifetime.md)・[W22](_completed/W22-fnptr-values.md): `llvm_abi::wrapper`、`WrapperKind::Callback`、`@tz.main.done`、`with_blocking_externs`、静的コールバックの関数の規則。
 - [W23](_completed/W23-anchor-state.md): `Anchor.create`・`token`・`read`・`update`、`Anchor.Error`、鍵 0 の `Stale`。
 - [W19](_completed/W19-thread-bound-handles.md): `local` の性質、固定された文脈、`pinned_rules::builtin_position`。
-- [M09](M09-main-thread-dispatch-and-handles.md)（Phase 2）: `main` の文脈キーワード、効果 `main_thread`、`pthread_main_np` の検査とその報告の文。
+- [M09](_completed/M09-main-thread-dispatch-and-handles.md)（Phase 2）: `main` の文脈キーワード、効果 `main_thread`、`pthread_main_np` の検査とその報告の文。
 - [W36](_completed/W36-c-layout-by-value.md)（Phase 2）: `llvm_byvalue::{ByValue, classify}`（AAPCS64）、`FunctionEmitter::{by_value_slot, by_value_from_abi, by_value_to_abi}`、kind `abi_record_by_value_target`。
 - [W26](W26-com-objects-in-tsuzuri.md)（あれば）: 仕様 4 のコールバックの `ref mut T` の変換。
 - [M04](M04-objc-blocks.md)（Phase 2）: `ObjC.Block<F>` の引数の受け取り（+0 の `ref ObjC.Block<F>`）。
@@ -637,7 +637,7 @@ entry:
 
 - [M04](M04-objc-blocks.md): `src/objc_encoding.rs`（`signature` の `Receiver::Block`）。M03 が先に入れば M04 は表に `@?` の行を足すだけ。IMP の包みの `WrapperKind` と `ref mut bool` の 1 バイトの変換。
 - [M07](M07-apple-sdk-bindgen-and-package.md): `extern protocol`（`optional` を含む）と `with` の構文。生成器は ObjCProtocolDecl を `extern protocol` に、`@interface C : B <P, Q>` を `with P, Q` に写す。export のクラスは生成しない（利用者が書く）。
-- [M09](M09-main-thread-dispatch-and-handles.md)（Phase 2）: IMP の包みの入口（`main` の検査を置く所）。
+- [M09](_completed/M09-main-thread-dispatch-and-handles.md)（Phase 2）: IMP の包みの入口（`main` の検査を置く所）。
 
 ## 実装手順
 

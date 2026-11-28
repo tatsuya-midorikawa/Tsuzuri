@@ -7,11 +7,11 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-28。Apple の実行ファイル（`build --emit exe`・`--emit app`・`run`）は、標準エラーが閉じているか `/dev/null` のときだけ、トラップとランタイムの報告を unified logging（subsystem `dev.tsuzuri.runtime`、category `trap`・`runtime`）へ送る。端末・パイプ・ファイルへ書くバイト列と、ほかの OS・object・shared の出力は変わらない。「実装と検証（2026-11-28）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 4（Finder から起動すると stderr は /dev/null で、トラップ・デッドロック・スタックのあふれの理由が消える。W04・W32 は POSIX の代替の送り先を退けている）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）は承認済み（2026-11-26）。要承認: subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。D2 は 2026-11-28 に D-67 の委任（利用者の指示「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）で推奨の案に決めた。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
-| 改善する劣位 | Objective-C・Swift（`NSLog`・`os_log` の文は、Finder から起動しても unified logging に残り、Console.app と `log show` で読める）比と、Windows の Tsuzuri（[W04](_completed/W04-windows-trap-report-lost.md) が標準エラーに書けない報告を `OutputDebugStringW` へ送る）比: Finder・Dock・`open` から起動した Tsuzuri のアプリでは、標準エラーが `/dev/null` で、トラップ・デッドロック・スタックのあふれの理由の文が消える。クラッシュレポートには `EXC_BREAKPOINT`（SIGTRAP）しか残らない |
-| 手本にする既存実装 | [W04](_completed/W04-windows-trap-report-lost.md)（`src/llvm_traps.rs` の `TRAP_WRITE_WINDOWS`、`src/llvm.rs` の `windows_abi` の置き換えと宣言の重複の防止、`src/runtime/tzroutine-windows.h` の `tzr_report`）、`src/driver.rs` の `stack_runtime`・`backtrace_runtime`（実行ファイルにだけ C のランタイムを足す。`backtrace_runtime` は IR の宣言を見る）と `compile_runtime_object`（ランタイムの object のキャッシュ）、`src/runtime/stack.c` の `tsuzuri_stack_scheduler_thread`（`hidden` の内部の `tsuzuri_` symbol）、`tests/stack_overflow.mjs`（実行ファイルを作って標準エラーを調べる E2E） |
+| 承認 | D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）は承認済み（2026-11-26）。要承認: subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。D2 は 2026-11-28 に D-67 の委任（利用者の指示「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）で推奨の案に決めた。台帳は [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
+| 改善する劣位 | Objective-C・Swift（`NSLog`・`os_log` の文は、Finder から起動しても unified logging に残り、Console.app と `log show` で読める）比と、Windows の Tsuzuri（[W04](W04-windows-trap-report-lost.md) が標準エラーに書けない報告を `OutputDebugStringW` へ送る）比: Finder・Dock・`open` から起動した Tsuzuri のアプリでは、標準エラーが `/dev/null` で、トラップ・デッドロック・スタックのあふれの理由の文が消える。クラッシュレポートには `EXC_BREAKPOINT`（SIGTRAP）しか残らない |
+| 手本にする既存実装 | [W04](W04-windows-trap-report-lost.md)（`src/llvm_traps.rs` の `TRAP_WRITE_WINDOWS`、`src/llvm.rs` の `windows_abi` の置き換えと宣言の重複の防止、`src/runtime/tzroutine-windows.h` の `tzr_report`）、`src/driver.rs` の `stack_runtime`・`backtrace_runtime`（実行ファイルにだけ C のランタイムを足す。`backtrace_runtime` は IR の宣言を見る）と `compile_runtime_object`（ランタイムの object のキャッシュ）、`src/runtime/stack.c` の `tsuzuri_stack_scheduler_thread`（`hidden` の内部の `tsuzuri_` symbol）、`tests/stack_overflow.mjs`（実行ファイルを作って標準エラーを調べる E2E） |
 | 主な影響ファイル | `src/runtime/oslog-darwin.c`（新規）、`src/runtime/tzroutine.c`、`src/runtime/stack.c`、`src/runtime/cpu.c`、`src/llvm_traps.rs`、`src/llvm.rs`、`src/driver.rs`、`scripts/toolchain/runtime.mjs`、`tests/macos_report.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/debugging.md`、`_tsuzuri/language-reference/compiler/native-interop.md` |
 
 ## 実装者向け早見
@@ -41,13 +41,13 @@ macOS の標準の記録先は unified logging（`os_log`）である。Objectiv
 
 ### 着手条件
 
-- D-67 の分岐 7（D1）は承認済みで、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている（2026-11-26）。subsystem の名前（D2）の承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
+- D-67 の分岐 7（D1）は承認済みで、[GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている（2026-11-26）。subsystem の名前（D2）の承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
 - `node scripts/repo-kb.mjs brief M19`。P2 のチケットなので、着手前にその時点のコードと台帳に対してレビューを行い、指摘を反映してから実装する（GUIDE §0 の 2）。
 - 「現状」の再現を HEAD で繰り返し、同じ結果になることを確かめる。行番号は `grep -n` で取り直す。
 - macOS（arm64）の開発機で、`/usr/bin/log show` が sudo なしで自分のプロセスの記録を読める（起票時の機械では読めた）。
 - CI の macOS のランナー（`targets.yml` の `macos-15`）で `log show` が使えるかを、最初の PR の試しの段で確かめる。使えなければ、テスト計画の「差し替えの口」で判定を確かめ、`log show` の段は手元の確認にする（S4）。
 - 同梱の zig のツールチェーン（macOS のホストと、Linux のホストからの `--target aarch64-apple-darwin`）が `<os/log.h>` を含めて `src/runtime/oslog-darwin.c` をコンパイルできるかを確かめる。起票時は確かめていない（この機械に同梱のツールチェーンがなかった）。できなければ S3。
-- [W32](W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
+- [W32](../W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
 
 ### 停止条件
 
@@ -433,5 +433,10 @@ Phase のないチケットなので、手順 1〜6 のすべてを 1 つのブ�
 ### 残っていること
 
 - CI の `macos-15` のランナーで `log show` が読めるか（S4）と、束の事前ビルドの object（45 個）が実際に照合されるかは、PR の `ci:full` の `targets.yml`・`vscode.yml` で確かめる。
-- `--emit app`（M15）の実行ファイルは、`src/driver.rs` の `report_to_os_log` の条件（今は `Emit::Executable` だけ）に入れる必要がある（M15 と合わせるときに足す）。
+- `--emit app`（M15）の実行ファイル: 統合で確かめて済んだ（下の「統合時の追記」）。
 - Linux のホストからの `--target aarch64-apple-darwin` のリンクは、手元では確かめていない（`oslog-darwin.c` は SDK のヘッダーのうち C の標準のものと `<sys/stat.h>` だけを使う）。
+
+### 統合時の追記（2026-11-28、M09・M15 との統合）
+
+- **`--emit app`（M15）**: M15 の `build_app` はバンドルの実行ファイルを `Emit::Executable` の `build_complete_keyed` で作るので、`report_to_os_log` の条件を変えずに対象に入る。`[macos] bundle_id`・`ui_element = true` のプロジェクトを `--emit app --trap-info` で作り、`open -W` で起動すると、`[dev.tsuzuri.runtime:trap] trap: integer division by zero at …/Main.tz:1:34` の 1 件が残り、`codesign --verify --deep --strict` も通ることを確かめた。`tests/macos_report.mjs` に、この組み合わせの段（`open` で起動したバンドルの記録を、文とバンドルの中の実行ファイルのパスで探す。`TSUZURI_MACOS_BUNDLE_NO_OPEN=1` で飛ばせる）を足した。
+- **`MainThread`（M09）のランタイム**: `src/runtime/mainthread-darwin.c` の確保の失敗の報告（`Tsuzuri runtime: out of memory`）も、`TZ_REPORT_OSLOG` の下で同じ判定を通るようにした（category `runtime`）。`report_runtime` と C の単位の `-DTZ_REPORT_OSLOG` の条件に `main_thread_runtime` を足した。`MainThread` を使わないプログラムの単位の文字列と引数は変わらない。

@@ -28,6 +28,14 @@ extern void dispatch_after_f(dispatch_time_t when, dispatch_queue_t queue, void 
 /* Declared here too: the feature macros of another part of the unit may hide it in <pthread.h>. */
 extern int pthread_main_np(void);
 
+#if defined(TZ_REPORT_OSLOG)
+/* M19, src/runtime/oslog-darwin.c: an executable whose standard error is closed or /dev/null (an
+ * application that Finder started) sends its reports to unified logging. Only the driver's unit of an
+ * executable defines the macro. */
+int32_t tsuzuri_report_to_log(void);
+void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
+#endif
+
 /* As the tzroutine runtime's functions: two Tsuzuri objects in one host share one definition. */
 #define TZ_MAINTHREAD_API __attribute__((weak, visibility("hidden")))
 
@@ -87,6 +95,12 @@ TZ_MAINTHREAD_API void tsuzuri_mainthread_post(int64_t nanoseconds, void (*run)(
     struct tz_mainthread_record *record = calloc(1, sizeof *record);
     if (record == NULL) {
         static const char message[] = "Tsuzuri runtime: out of memory\n";
+#if defined(TZ_REPORT_OSLOG)
+        if (tsuzuri_report_to_log()) {
+            tsuzuri_report_log(1, message, (int64_t)(sizeof message - 1));
+            abort();
+        }
+#endif
         (void)!write(2, message, sizeof message - 1);
         abort();
     }

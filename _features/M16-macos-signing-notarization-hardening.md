@@ -5,13 +5,13 @@
 | ID | M16 |
 | 優先度 | P2（Gatekeeper の下で配るアプリには Developer ID の署名・hardened runtime・公証が要る。今はすべて外部の手順で、何が有効かの記録もない） |
 | 規模 | M |
-| 依存 | [M15](M15-macos-app-bundle.md) |
+| 依存 | [M15](_completed/M15-macos-app-bundle.md) |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 1（署名と公証は外部の手順。生成コードに ssp がない。ad-hoc の dylib は hardened runtime のホストで拒まれる）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | 要承認: [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の D-55 の登録（`[macos]` の `sign_identity`・`entitlements`・`hardened_runtime`・`timestamp`、サブコマンド `tsuzuri notarize`、環境変数 `TSUZURI_CODESIGN`・`TSUZURI_NOTARYTOOL`）。生成コードへの `ssp` の D3（測定の後）。決定事項 D3・D4 が要承認、ほかは既定案 |
 | 改善する劣位 | Xcode は「Signing & Capabilities」で Developer ID の署名・hardened runtime・entitlements を付け、Organizer か `xcrun notarytool` で公証する。Go・Rust は外部の道具（`gon`・`rcodesign` など）に頼る。Tsuzuri の出力はリンカーの ad-hoc の署名（Identifier は `artifact`）だけで、hardened runtime・entitlements・公証の口がない。生成コードには `ssp` がなく、ランタイムの C だけが Apple clang の既定の `ssp` を持つ。どれも記録も検査もされていない |
-| 手本にする既存実装 | [W30](W30-windows-hardening.md)（硬化の状態の記録・固定のテスト・既定の変更を要承認にする書き方）、[M15](M15-macos-app-bundle.md) の `app_bundle::build_app` と `SignPlan`（内側からの署名）、`src/driver.rs` の `resolve_tool`・`tool`（環境変数 → 配布物 → PATH。`src/driver.rs:6918-6940`）・`run_tool`、`src/llvm_traps.rs` の `with_function_attribute`（関数の属性を IR に足す。`src/llvm_traps.rs:449`）、`tsuzuri audit`・`publish` のサブコマンドの解析（`src/main.rs:4033・4045`） |
+| 手本にする既存実装 | [W30](W30-windows-hardening.md)（硬化の状態の記録・固定のテスト・既定の変更を要承認にする書き方）、[M15](_completed/M15-macos-app-bundle.md) の `app_bundle::build_app` と `SignPlan`（内側からの署名）、`src/driver.rs` の `resolve_tool`・`tool`（環境変数 → 配布物 → PATH。`src/driver.rs:6918-6940`）・`run_tool`、`src/llvm_traps.rs` の `with_function_attribute`（関数の属性を IR に足す。`src/llvm_traps.rs:449`）、`tsuzuri audit`・`publish` のサブコマンドの解析（`src/main.rs:4033・4045`） |
 | 主な影響ファイル | `src/app_bundle.rs`, `src/package.rs`, `src/driver.rs`, `src/main.rs`, `src/notarize.rs`（新規）, `src/lib.rs`, `src/diagnostic_kinds.rs`, `src/llvm_traps.rs`（D3 の承認の後だけ）, `tests/macos_signing.rs`（新規）, `tests/macos_hardening.mjs`（新規）, `tests/macos_bundle.mjs`, `.github/workflows/targets.yml`, `_tsuzuri/language-reference/compiler/platforms.md`, `_tsuzuri/language-reference/organizing-tsuzuri/packages.md`, `_tsuzuri/language-reference/compiler/usage.md`, `_tsuzuri/language-reference/compiler/option.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `_tsuzuri/language-reference/compiler/diagnostics.md`（生成）, `README.md`, `docs/architecture.md`, `docs/benchmarks.md`（D3 の測定） |
 
 ## 実装者向け早見
@@ -37,7 +37,7 @@
 
 Gatekeeper は、インターネットから取得したアプリに Developer ID の署名と公証を求める。公証の条件は、hardened runtime、安全なタイムスタンプ、Developer ID の署名である。M15 の bundle は ad-hoc の署名なので、作ったマシンでは動くが、配った先では開けない。
 
-今は利用者が `codesign` と `notarytool` を自分で順に走らせる。内側から署名しないと署名そのものが失敗する（[M15](M15-macos-app-bundle.md) の再現 5）。hardened runtime と署名の組み合わせを誤ると、署名が通っても起動しない（「現状」の再現 3）。
+今は利用者が `codesign` と `notarytool` を自分で順に走らせる。内側から署名しないと署名そのものが失敗する（[M15](_completed/M15-macos-app-bundle.md) の再現 5）。hardened runtime と署名の組み合わせを誤ると、署名が通っても起動しない（「現状」の再現 3）。
 
 硬化の状態も記録がない。`nm -u` に `___stack_chk_*` が出るので生成コードも stack protector を持つと読み違えやすいが、実際に持つのはランタイムの C だけである（再現 1）。W30 は Windows だけを扱い、POSIX は対象外である（W30:19・22・154）。
 
@@ -47,7 +47,7 @@ Gatekeeper は、インターネットから取得したアプリに Developer I
 
 ### 着手条件
 
-- [M15](M15-macos-app-bundle.md) が done（`--emit app`、`[macos]` の節、`crate::plist`、`app_bundle::SignPlan` がある）。
+- [M15](_completed/M15-macos-app-bundle.md) が done（`--emit app`、`[macos]` の節、`crate::plist`、`app_bundle::SignPlan` がある）。
 - 承認が記録されるまで、該当する段に着手しない。手順 3〜5（キー・サブコマンド・環境変数）は D4、手順 7（生成コードの `ssp`）は D3 の承認が要る。手順 1・2・6（硬化の記録とテスト）は承認なしで進めてよい。
 - `node scripts/repo-kb.mjs brief M16` を読む。
 - 本物の Developer ID と公証は、CI でもこのチケットの作業でも使わない。手で確かめる手順を書き、確かめていなければ「未確認」と記録する。
@@ -312,7 +312,7 @@ tsuzuri notarize Name.app --keychain-profile <名前>
 
 ## 前提とする他チケットのインターフェース
 
-- [M15](M15-macos-app-bundle.md): `--emit app`、`MacosSettings`、`crate::plist::read`、`app_bundle::build_app` の署名の段と `SignPlan`、内側からの署名の順、kind `macos_bundle_input_invalid`。
+- [M15](_completed/M15-macos-app-bundle.md): `--emit app`、`MacosSettings`、`crate::plist::read`、`app_bundle::build_app` の署名の段と `SignPlan`、内側からの署名の順、kind `macos_bundle_input_invalid`。
 - [W30](W30-windows-hardening.md): 硬化の状態を表にして固定し、既定の変更を要承認にする書き方（Windows の旗は扱わない）。
 
 ## 他チケットへ提供するインターフェース

@@ -338,7 +338,7 @@ void objc_autoreleasePoolPop(void *pool);
 ## 他チケットへ提供するインターフェース
 
 - [M05](M05-objc-exception-boundary.md): 例外の物体の多くは autorelease されてから投げられる。tzroutine で境界を繰り返し呼ぶ処理は `ObjC.with_autorelease_pool` で包む（M05 の文書が参照する）。
-- [M04](M04-objc-blocks.md)・[M09](M09-main-thread-dispatch-and-handles.md): GCD のスレッドで呼ばれる Block とコールバックは擬似 G で、固定は何もせず push と pop だけが走る。
+- [M04](M04-objc-blocks.md)・[M09](_completed/M09-main-thread-dispatch-and-handles.md): GCD のスレッドで呼ばれる Block とコールバックは擬似 G で、固定は何もせず push と pop だけが走る。
 - [M08](_completed/M08-macos-main-thread-docs-and-e1013.md)・W28: routine.md:130 と native-interop.md:630 の同じ段落に触れる。後に入るほうが文を合わせる。
 
 ## 実装手順

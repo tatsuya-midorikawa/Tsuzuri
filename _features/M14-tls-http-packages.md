@@ -5,7 +5,7 @@
 | ID | M14 |
 | 優先度 | P3（HTTPS が要るアプリは今、ハイブリッド構成かシムで URLSession を呼べる。M07 の後は URLSession の宣言を利用者が直接使える。std の外の公式パッケージで、言語とコンパイラを変えない） |
 | 規模 | XL（Phase 1〜3。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M04](M04-objc-blocks.md), [M09](M09-main-thread-dispatch-and-handles.md), [M20](_completed/M20-macos-framework-link-inputs.md), ([W17](_completed/W17-link-attribute-dllimport.md)), ([M07](M07-apple-sdk-bindgen-and-package.md))（M09 は Phase 3 の預け先まで要る） |
+| 依存 | [M04](M04-objc-blocks.md), [M09](_completed/M09-main-thread-dispatch-and-handles.md), [M20](_completed/M20-macos-framework-link-inputs.md), ([W17](_completed/W17-link-attribute-dllimport.md)), ([M07](M07-apple-sdk-bindgen-and-package.md))（M09 は Phase 3 の預け先まで要る） |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（TLS と HTTP が std にもチケットにもない。E09 D13 は公式パッケージにする方針）」に当たる。HEAD `804b7970` で確認） |
@@ -331,7 +331,7 @@ main (main=1): Anchor.read -> Ok 42
 GCD worker (main=0): Anchor.read -> WrongThread
 ```
 
-`Anchor` は作ったスレッド以外を `WrongThread` にする（anchor.md:84）。別のスレッドから引ける預け先は W23 の対象外（`_features/_completed/W23-anchor-state.md:240`）で、M09 の Phase 3 の案（`Anchor.create_shared`・`shared_token`・`read_shared`。M09 の D16）がそれを足す。
+`Anchor` は作ったスレッド以外を `WrongThread` にする（anchor.md:84）。別のスレッドから引ける預け先は W23 の対象外（`_features/_completed/W23-anchor-state.md:240`）で、M09 の Phase 3（`Anchor.create_shared`・`shared_token`・`read_shared` と、項目を作った関数の外で生かして鍵で解放する `detach_shared`・`release_shared`。M09 の D16・D18。2026-11-28 に実装済み）がそれを足した。
 2. **Block は 1 つの鍵しか捕捉しない**（M04 の仕様 2 の `ObjC.block f token`）。ハンドラーが接続の状態と結果の行き先に届くには、鍵からどのスレッドでも引ける預け先が要る（上の 1）。
 3. **検証の Block は受け取った Block を呼ぶ**（現状 2）。M04 の仕様 5 の `F` の表に Block の型の引数はなく、受け取った Block を呼ぶ `ObjC.call_block` は M04 の Phase 2 で、M04 の D5（D-59 の資源のハンドルの例外）の承認を待つ。今は手作りの Block（M04 の現状）でしか書けない。
 4. **framework のリンク**: HEAD の W17:247 は macOS の framework を対象外にしている。git のパッケージは `[native]` を書けない（`_tsuzuri/language-reference/organizing-tsuzuri/packages.md:121`）。公式パッケージから Network・Security・CoreFoundation をリンクするには M20 の Phase 2 の `@link(framework = "...")` が要る。
@@ -544,7 +544,7 @@ sequenceDiagram
 ## 前提とする他チケットのインターフェース
 
 - [M04](M04-objc-blocks.md): Phase 1 の `ObjC.Block<F>`・`ObjC.block f token`（`f` は型引数のないトップレベルの関数で、最初の引数は鍵の `i64`）、`extern def` の引数 `ref ObjC.Block<F>`、`F` の型の表（`Maybe<H>`・`bool`・整数）、invoke の包みが W12 の入口と出口を通ること。Phase 2 の `ObjC.call_block`（M04 の D5）。加えて、Block の `F` の引数の `ref ObjC.Block<G>`（+0 の借用。M04 の Phase 2 の IMP の引数と同じ扱い）。M04 は「他チケットへ提供するインターフェース」で M14 の `nw_*` のハンドラーを挙げているが、引数の Block は挙げていない（D10）。
-- [M09](M09-main-thread-dispatch-and-handles.md)（Phase 3）: どのスレッドからでも引ける預け先（案 `Anchor.create_shared`・`Anchor.shared_token`・`Anchor.read_shared`。名前は M09 の D16 の承認で決まる）。M14 はさらに、項目を作った関数の外で生かし、鍵で解放する操作を求める（D5。M09 の D16 に足すことを提案する）。GCD のスレッドから `read_shared` で得た `Channel` に送れること（M09 の Phase 3 の E2E）。
+- [M09](_completed/M09-main-thread-dispatch-and-handles.md)（Phase 3）: どのスレッドからでも引ける預け先（案 `Anchor.create_shared`・`Anchor.shared_token`・`Anchor.read_shared`。名前は M09 の D16 の承認で決まる）。M14 はさらに、項目を作った関数の外で生かし、鍵で解放する操作を求める（D5。M09 の D16 に足すことを提案する）。GCD のスレッドから `read_shared` で得た `Channel` に送れること（M09 の Phase 3 の E2E）。
 - [M20](_completed/M20-macos-framework-link-inputs.md)（Phase 2）: `@link(framework = "Network")`・`"Security"`・`"CoreFoundation"` を `extern def` に付け、git のパッケージからリンクできること。
 - [W17](_completed/W17-link-attribute-dllimport.md)（M20 の Phase 2 を通して、と Phase 3）: `@link("ssl")`・`@link("secur32")`。
 - [M07](M07-apple-sdk-bindgen-and-package.md)（弱い）: Network.framework の宣言の生成。手書きの宣言と比べる参照。M07 の「他チケットへ提供するインターフェース」は、ObjC のモードでは `nw_*` の型が ObjC の物体になると書いている（M14 は C のモードで書く。D13）。
