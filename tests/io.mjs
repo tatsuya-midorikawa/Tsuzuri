@@ -422,7 +422,48 @@ IO {
 
   // W32: top-level expression display writes directly through `write(1, ...)` and exits with status 1
   // (without trapping or writing to stderr) when stdout is unwritable or closed, while non-displaying
-  // entry forms keep their exit codes.
+  // entry forms keep their exit codes. On POSIX, default SIGPIPE terminates by SIGPIPE as required by
+  // W32, whereas an ignored SIGPIPE (`EPIPE`) returns status 1.
+  let brokenPipeRunner = null;
+  if (process.platform !== "win32") {
+    const runnerSrc = join(probeRoot, "broken_pipe.c");
+    brokenPipeRunner = join(probeRoot, "broken_pipe");
+    writeFileSync(
+      runnerSrc,
+      [
+        "#include <signal.h>",
+        "#include <stdio.h>",
+        "#include <string.h>",
+        "#include <sys/wait.h>",
+        "#include <unistd.h>",
+        "int main(int argc, char **argv) {",
+        "  if (argc != 3) return 2;",
+        "  int fds[2];",
+        "  if (pipe(fds) != 0) return 2;",
+        "  close(fds[0]);",
+        "  pid_t pid = fork();",
+        "  if (pid < 0) return 2;",
+        "  if (pid == 0) {",
+        "    if (dup2(fds[1], STDOUT_FILENO) < 0) _exit(2);",
+        "    close(fds[1]);",
+        "    if (strcmp(argv[1], \"ignore\") == 0) signal(SIGPIPE, SIG_IGN);",
+        "    else signal(SIGPIPE, SIG_DFL);",
+        "    char *args[] = { argv[2], NULL };",
+        "    execv(argv[2], args);",
+        "    _exit(2);",
+        "  }",
+        "  close(fds[1]);",
+        "  int status = 0;",
+        "  if (waitpid(pid, &status, 0) != pid) return 2;",
+        "  if (WIFEXITED(status)) printf(\"exit:%d\\n\", WEXITSTATUS(status));",
+        "  else if (WIFSIGNALED(status)) printf(\"sig:%d:%d\\n\", WTERMSIG(status), SIGPIPE);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    execute(clang, ["-O1", runnerSrc, "-o", brokenPipeRunner]);
+  }
   for (const optimization of ["-O0", "-O3"]) {
     for (const [index, expr, expectedStdout] of [
       [0, "42", "42\n"],
@@ -452,6 +493,12 @@ IO {
         assert.equal(closed.status, 1, `42 >&- ${optimization}`);
         assert.equal(closed.signal, null, `42 >&- signal ${optimization}`);
         assert.equal(closed.stderr, "", `42 >&- stderr ${optimization}`);
+
+        assert.equal(execute(brokenPipeRunner, ["ignore", topExe]).stdout.trim(), "exit:1", `42 EPIPE ${optimization}`);
+        const sigOut = execute(brokenPipeRunner, ["default", topExe]).stdout.trim();
+        const sigParts = sigOut.split(":");
+        assert.equal(sigParts[0], "sig", `42 SIGPIPE ${optimization}: ${sigOut}`);
+        assert.equal(sigParts[1], sigParts[2], `42 SIGPIPE number ${optimization}: ${sigOut}`);
       }
     }
     for (const [index, code, expectedStatus] of [

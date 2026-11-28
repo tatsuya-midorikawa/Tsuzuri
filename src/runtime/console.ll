@@ -1,3 +1,6 @@
+; Writes top-level expression output directly to fd 1 without stdio buffering (W32).
+; On POSIX, default SIGPIPE terminates the process by signal as before; when SIGPIPE is ignored
+; (`EPIPE`), or when fd 1 is missing/closed/unwritable, `write` returns <= 0 and `@main` exits 1.
 declare i64 @write(i32, ptr, i64)
 
 define internal i32 @tz.console.write(ptr %data, i64 %length) {

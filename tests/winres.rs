@@ -193,4 +193,23 @@ fn invalid_inputs() {
     let huge_input = vec![0u8; winres::MAX_INPUT_BYTES + 1];
     assert!(winres::icon(&huge_input).is_err());
     assert!(winres::read(&huge_input).is_err());
+
+    // Repeated ICONDIRENTRY offsets referencing the same payload cannot amplify memory beyond 64 MiB.
+    let count = 100u16;
+    let payload_len = 1024 * 1024usize; // 1 MiB payload, 100 entries => 100 MiB > 64 MiB
+    let header_len = 6 + usize::from(count) * 16;
+    let mut bomb_ico = Vec::with_capacity(header_len + payload_len);
+    bomb_ico.extend_from_slice(&0u16.to_le_bytes());
+    bomb_ico.extend_from_slice(&1u16.to_le_bytes());
+    bomb_ico.extend_from_slice(&count.to_le_bytes());
+    for _ in 0..count {
+        bomb_ico.extend_from_slice(&[16, 16, 0, 0]);
+        bomb_ico.extend_from_slice(&1u16.to_le_bytes());
+        bomb_ico.extend_from_slice(&32u16.to_le_bytes());
+        bomb_ico.extend_from_slice(&(payload_len as u32).to_le_bytes());
+        bomb_ico.extend_from_slice(&(header_len as u32).to_le_bytes());
+    }
+    bomb_ico.resize(header_len + payload_len, 0xAB);
+    let bomb_err = winres::icon(&bomb_ico).unwrap_err();
+    assert!(bomb_err.contains("exceeds the 64 MiB limit"), "{bomb_err}");
 }

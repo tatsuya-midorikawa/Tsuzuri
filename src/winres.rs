@@ -134,11 +134,12 @@ pub fn icon(bytes: &[u8]) -> Result<Vec<Resource>, String> {
         return Err("not an icon file: truncated ICONDIRENTRY table".to_owned());
     }
 
-    let mut out = Vec::with_capacity(usize::from(count) + 1);
-    let mut group_data = Vec::with_capacity(6 + usize::from(count) * 14);
+    let mut out = Vec::with_capacity(usize::from(count).min(1024) + 1);
+    let mut group_data = Vec::with_capacity(6 + usize::from(count).min(1024) * 14);
     group_data.extend_from_slice(&0u16.to_le_bytes());
     group_data.extend_from_slice(&1u16.to_le_bytes());
     group_data.extend_from_slice(&count.to_le_bytes());
+    let mut total_image_bytes = 0usize;
 
     for index in 0..usize::from(count) {
         let entry_offset = 6 + index * 16;
@@ -152,6 +153,13 @@ pub fn icon(bytes: &[u8]) -> Result<Vec<Resource>, String> {
         if image_size == 0 || image_offset < entries_end || image_end > bytes.len() {
             return Err("not an icon file: ICONDIRENTRY image range is out of bounds".to_owned());
         }
+        total_image_bytes = total_image_bytes
+            .checked_add(image_size)
+            .filter(|&sum| sum <= MAX_INPUT_BYTES)
+            .ok_or_else(|| {
+                "not an icon file: cumulative ICONDIR image data exceeds the 64 MiB limit"
+                    .to_owned()
+            })?;
         let id = 1 + index as u16;
         out.push(Resource {
             kind: Name::Id(RT_ICON),
@@ -389,12 +397,19 @@ pub fn merge(inputs: Vec<(String, Vec<Resource>)>) -> Result<Vec<Resource>, Stri
     let mut max_cursor_id: u16 = 0;
     let mut seen: BTreeMap<(NameKey, NameKey, u16), String> = BTreeMap::new();
     let mut merged = Vec::new();
+    let mut total_data_bytes = 0usize;
 
     for (label, mut resources) in inputs {
         let icon_map = assign_ids(&resources, RT_ICON, &mut max_icon_id, &label)?;
         let cursor_map = assign_ids(&resources, RT_CURSOR, &mut max_cursor_id, &label)?;
 
         for res in &mut resources {
+            total_data_bytes = total_data_bytes
+                .checked_add(res.data.len())
+                .filter(|&sum| sum <= MAX_INPUT_BYTES)
+                .ok_or_else(|| {
+                    format!("merged Windows resources exceed the 64 MiB limit at {label}")
+                })?;
             if res.kind == Name::Id(RT_ICON)
                 && let Name::Id(old_id) = res.name
             {
