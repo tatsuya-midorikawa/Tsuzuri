@@ -1,0 +1,24 @@
+// M10: the exchange of the `pingpong` case of tests/objc/pools without Objective-C, so that the
+// scheduler of this program runs no autorelease pool. tests/objc_pools.mjs compares the times of
+// the two programs and prints them; they are no pass or fail.
+
+def pingpong :: unit -> string = \() ->
+    let ping: Channel<i64> = Channel.make 0
+    let pong: Channel<i64> = Channel.make 0
+    let ping_end = Channel.share ping
+    let pong_end = Channel.share pong
+    tzroutine {
+        for _ in 1 ..= 200000 do
+            match Channel.recv ping_end with
+            | Maybe.Some value -> Channel.send pong_end (value + 1)
+            | Maybe.None -> ()
+    }
+    let mut value = 0
+    for _ in 1 ..= 200000 do
+        Channel.send ping value
+        value = match Channel.recv pong with | Maybe.Some next -> next | Maybe.None -> -1
+    $"{value}"
+
+def main :: unit -> i32 = \() ->
+    do! IO.writeln (pingpong ())
+    0

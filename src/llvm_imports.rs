@@ -915,6 +915,15 @@ impl FunctionEmitter<'_, '_> {
             self.release_operands(operands);
             return pack_last_error(self, output, captured);
         }
+        // M10: the plain retain of a +0 result is part of the blocking call. Between the call and
+        // the retain the object is held by the autorelease pool alone, and the scheduler of an
+        // Objective-C image pops the pool of a tzroutine that gives its thread back: inside the
+        // blocking call the tzroutine is not preempted and stays on its thread. (A call with the
+        // bundle retains in the same instruction, which the pass brackets as one line.)
+        let bracket_retain = retain_result && convert_ptr_result && self.globals.blocking_externs;
+        if bracket_retain {
+            self.instruction("call void @tsuzuri_tz_blocking_enter()");
+        }
         let value = self.value(call);
         let captured = capture_last_error(self, errno_ptr.as_deref());
         finish_copy_outs(self, &copy_outs);
@@ -931,7 +940,11 @@ impl FunctionEmitter<'_, '_> {
         let value = if convert_ptr_result {
             let pointer = self.value(format!("inttoptr i64 {value} to ptr"));
             if retain_result {
-                self.objc_retain_autoreleased(&pointer)
+                let retained = self.objc_retain_autoreleased(&pointer);
+                if bracket_retain {
+                    self.instruction("call void @tsuzuri_tz_blocking_exit()");
+                }
+                retained
             } else {
                 pointer
             }

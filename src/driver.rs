@@ -354,6 +354,17 @@ pub fn objc_link_libraries(ir: &str, platform: crate::target::Platform) -> Vec<S
     }
 }
 
+/// M10: whether the tzroutine runtime that is linked with `ir` runs an autorelease pool around
+/// each run of a tzroutine: the IR is an Objective-C image of an Apple target. Every build that
+/// compiles `tzroutine.c` for a native program asks this (the driver, and the runners of `test`
+/// and `bench`), so that a tzroutine releases what it autoreleased wherever it runs.
+pub(crate) fn objc_pools_runtime(ir: &str, platform: crate::target::Platform) -> bool {
+    platform.mach_o() && llvm::uses_objc(ir)
+}
+
+/// The macro that builds `src/runtime/tzroutine.c` with the pools of `objc_pools_runtime`.
+pub(crate) const OBJC_POOLS_DEFINE: &str = "-DTZR_OBJC_POOLS";
+
 /// Appends the libraries of `objc_link_libraries` to the system libraries of a link, after the
 /// `@link` libraries, unless the command line or an `@link` names them already.
 pub(crate) fn add_objc_libraries(
@@ -4572,6 +4583,14 @@ fn build_complete_keyed(
             "--trap-mode return cannot be combined with MainThread: a posted function runs outside the call that posted it",
         ));
     }
+    // M10: a trap that returns to the host skips the pop (and the unlock of the thread), and the
+    // pool would stay on the host's thread with what it holds.
+    if options.trap_return && llvm::uses_autorelease_pool(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with ObjC.with_autorelease_pool: a trap would leave the pool and its objects on the host's thread; put the host's own autorelease pool around the call instead",
+        ));
+    }
     // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
     if options.trap_return && llvm::spawns(module) {
         return Err(driver_error_of(
@@ -5112,6 +5131,12 @@ fn build_complete_keyed(
     // and libraries leave the host's signals alone (as stack.c does), and the fast backend cannot place
     // a function in a section: both keep the checks of Phase 1 only.
     let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
+    // M10: the scheduler of an Objective-C image runs each tzroutine inside an autorelease pool of
+    // the thread that runs it. Only the compiler writes the module flag that `uses_objc` reads, so
+    // the runtime of every other program is the object that it was.
+    let objc_pools = tzroutine_runtime
+        && options.target == Target::Native
+        && objc_pools_runtime(&text, platform);
     // M19: src/runtime/oslog-darwin.c decides where the reports of an Apple executable go. It is linked when
     // the IR's own writer asks it (`@tz.trap.write`) or when a C runtime that reports is linked; those C
     // runtimes are then built with TZ_REPORT_OSLOG, so that they ask it too.
@@ -5757,6 +5782,9 @@ fn build_complete_keyed(
             }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
+            }
+            if objc_pools {
+                runtime.arg(OBJC_POOLS_DEFINE);
             }
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");

@@ -6,7 +6,7 @@
 | 優先度 | P1 |
 | 規模 | XL（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
 | 依存 | [M01](M01-objc-class-types.md), ([W36](W36-c-layout-by-value.md))（Phase 2 は W36 の Phase 2 と、W36 の停止条件 S1 の選択と、決定事項 D14 の承認が要る。D-67 の分岐 4 は承認済み） |
-| 後続 | [M03](../M03-objc-classes-defined-in-tsuzuri.md), [M05](../M05-objc-exception-boundary.md), [M07](../M07-apple-sdk-bindgen-and-package.md), [M23](../M23-objc-out-parameters-and-weak-references.md)（弱い後続: [M04](../M04-objc-blocks.md), [M10](../M10-objc-autorelease-pools.md), [M12](../M12-gpu-presentation-to-window.md), [M18](../M18-intel-mac-and-universal2.md)） |
+| 後続 | [M03](../M03-objc-classes-defined-in-tsuzuri.md), [M05](../M05-objc-exception-boundary.md), [M07](../M07-apple-sdk-bindgen-and-package.md), [M23](../M23-objc-out-parameters-and-weak-references.md)（弱い後続: [M04](../M04-objc-blocks.md), [M10](M10-objc-autorelease-pools.md), [M12](../M12-gpu-presentation-to-window.md), [M18](../M18-intel-mac-and-universal2.md)） |
 | 状態 | done（2026-11-27。Phase 1・2: メンバー・カテゴリー・`Self`・族・`ObjC.literal`・`@c_layout` の値渡しと値返し。「実装と検証（2026-11-27）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（objc_msgSend を上位形と 0 埋めで呼ぶしかない。f64・構造体の結果は method_invoke か NSInvocation。NSRect は f64 4 個に分解。BOOL の幅の誤り）」に当たる。HEAD `804b7970` で確認） |
 | 承認 | [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）と分岐 4（(a)。W36 を Phase 2 まで実装することを人間が求めた）は承認済み（2026-11-26）。要承認: D-55（`extern category` の文脈キーワード `category`、メンバーの先頭の予約語 `class`、型の文脈キーワード `Self`、`ObjC.literal`）。決定事項 D1〜D4 が要承認（Phase 2 は D14 も要承認。W36 の停止条件 S1 の選択も未決）、ほかは既定案。**D1〜D4・D14 と Phase 2 の実装は 2026-11-27 に承認済み（D-67 の委任で決定）**: 利用者の依頼「実装完了までに複数フェーズある場合には、すべてのフェーズを完了させること」「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」に基づき、どれもチケットの推奨の案で決めた。W36 の S1 は A（`ref` のない `@c_layout` record を値渡しにする互換を破る変更）で、メンバーの値渡しも同じ綴り（[GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「委任による決定（2026-11-27）」） |
@@ -414,7 +414,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 %v = call zeroext i1 @objc_msgSend(ptr %recv, ptr %sel2)
 ```
 
-- 速い経路（`objc_alloc` など、`mov fp, fp` の印、`nonlazybind`）は使わない（D6）。+0 の結果の `clang.arc.attachedcall` の bundle は速い経路ではなく、M01 の D6 の受け取り方そのものである。bundle でハンドシェイクが効いても、呼ばれた側の中で autorelease された物体は pool に入るので、tzroutine では [M10](../M10-objc-autorelease-pools.md) の pool が要る。スタブ `objc_msgSend$<sel>` は使わない（D5）。
+- 速い経路（`objc_alloc` など、`mov fp, fp` の印、`nonlazybind`）は使わない（D6）。+0 の結果の `clang.arc.attachedcall` の bundle は速い経路ではなく、M01 の D6 の受け取り方そのものである。bundle でハンドシェイクが効いても、呼ばれた側の中で autorelease された物体は pool に入るので、tzroutine では [M10](M10-objc-autorelease-pools.md) の pool が要る。スタブ `objc_msgSend$<sel>` は使わない（D5）。
 
 #### 7. 定数の NSString（`ObjC.literal`、D13）
 
@@ -492,7 +492,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 - [M05](../M05-objc-exception-boundary.md): `call` を出す 1 か所（`ObjcCallSite`）。`Result<R, ObjC.Exception>` のメンバーをそこで `invoke` にする。
 - [M23](../M23-objc-out-parameters-and-weak-references.md): `abi::objc_parameter`（`ref mut Maybe<C>` を `ptr` 1 つにする）、セレクターの数の `c`（同じく 1 つ）、`host_call` の分割（引数の共通の部分が物体の出力引数の写し込みと書き戻しを持つ）、`ObjcCallSite`。
 - [M07](../M07-apple-sdk-bindgen-and-package.md): 宣言の文法（`[class] "sel" name :: T`、`extern category`、`@returns_*`、`Self`）、同じ名前は `E1001` なので生成器が名前を変える、buffer は 2 つの C の引数、可変長は書けない、Phase 2 の前は構造体のメソッドを飛ばす。
-- [M04](../M04-objc-blocks.md)（弱い）: `objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口。[M10](../M10-objc-autorelease-pools.md)（弱い）: +0 の結果は M01 の D6 の bundle で retain する（返された物体はハンドシェイクが効けば pool を経ないが、呼ばれた側の中で autorelease された物体は pool に入る）。[M12](../M12-gpu-presentation-to-window.md)（弱い）: CAMetalLayer への送信。[M18](../M18-intel-mac-and-universal2.md)（弱い）: 仕様 5 の表を target ごとの表にし、x86_64 の行（`BOOL` は `i8 signext`、`objc_msgSend_stret`）を足せる形にする。
+- [M04](../M04-objc-blocks.md)（弱い）: `objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口。[M10](M10-objc-autorelease-pools.md)（弱い）: +0 の結果は M01 の D6 の bundle で retain する（返された物体はハンドシェイクが効けば pool を経ないが、呼ばれた側の中で autorelease された物体は pool に入る）。[M12](../M12-gpu-presentation-to-window.md)（弱い）: CAMetalLayer への送信。[M18](../M18-intel-mac-and-universal2.md)（弱い）: 仕様 5 の表を target ごとの表にし、x86_64 の行（`BOOL` は `i8 signext`、`objc_msgSend_stret`）を足せる形にする。
 - [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2: `main` の型への送信の包みを省く印。[M17](M17-macos-min-version-and-weak-import.md): クラスの受け手の classref の load に NULL の検査を差し込む所。
 
 ## 実装手順

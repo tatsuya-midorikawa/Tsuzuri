@@ -2405,6 +2405,7 @@ fn emit_program_in(
     let mut globals = Globals {
         wasm,
         spawns: spawns(module),
+        scheduler: !wasm && (spawns(module) || scheduler_parallel(module)),
         waits: waits(module),
         tzroutine: uses_tzroutine(module),
         blocking_externs: blocking_externs(module, wasm),
@@ -2747,6 +2748,12 @@ entry:\n\
             &mut globals,
         ));
     }
+    // M10: the `@main` of an Objective-C image runs its entry inside an autorelease pool. Every
+    // function body exists by now, so whether the image is one is settled.
+    let main_pool = entry == Entry::Console && globals.objc.used();
+    if main_pool {
+        globals.objc.pool();
+    }
     if entry == Entry::Console {
         output.push_str(&debug::wrapper(
             console_main(
@@ -2755,6 +2762,7 @@ entry:\n\
                 spawns(module),
                 mark_main_done,
                 main_thread_boundary,
+                main_pool,
             ),
             module,
             &module.functions[module.entry.unwrap()],
@@ -2870,6 +2878,10 @@ entry:\n\
     }
     // TZ09: a WebAssembly program that spawns runs on the tzroutine runtime of JSPI.
     let spawning = globals.spawns;
+    debug_assert!(
+        entry != Entry::Console || main_pool == globals.objc.used(),
+        "a body emitted after @main made the program an Objective-C image without the pool of M10"
+    );
     // M01: the Objective-C references, declarations and module flags, once every function exists.
     objc::finish(&mut globals, &mut output);
     for global in globals.definitions {
@@ -3406,6 +3418,10 @@ fn header_full(module: &CheckedModule, trap_return: bool, allocator: Allocator) 
 struct Globals {
     /// The program can start a tzroutine (TZ02).
     spawns: bool,
+    /// Code of this native program can run on a tzroutine of the scheduler: it spawns, or it
+    /// calls `Parallel.*`, whose chunks run on helper tzroutines (the `spawning` of `emit`).
+    /// `ObjC.with_autorelease_pool` keeps the thread only then (M10 D1).
+    scheduler: bool,
     /// The program can start a tzroutine or wait for a `Channel` (`waits`, TZ03).
     waits: bool,
     /// The program uses the waits of the tzroutine runtime (`uses_tzroutine`, TZ06):
@@ -3490,6 +3506,7 @@ impl Default for Globals {
         });
         Self {
             spawns: false,
+            scheduler: false,
             waits: false,
             tzroutine: false,
             blocking_externs: false,
@@ -4726,7 +4743,7 @@ pub(crate) fn validate_objc_target(
     fn find_use(expression: &TypedExpr) -> Option<Span> {
         match &expression.kind {
             TypedExprKind::Function(FunctionRef::Builtin(instance))
-                if instance.builtin.is_objc() =>
+                if instance.builtin.needs_objc_runtime() =>
             {
                 return Some(expression.span);
             }
@@ -5551,6 +5568,22 @@ pub fn uses_main_thread(module: &CheckedModule) -> bool {
             &expression.kind,
             TypedExprKind::Function(FunctionRef::Builtin(instance))
                 if instance.builtin.is_main_thread()
+        ) || expression.children().into_iter().any(mentions)
+    }
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && mentions(&function.body)
+    })
+}
+
+/// M10: whether the program reaches `ObjC.with_autorelease_pool`.
+pub fn uses_autorelease_pool(module: &CheckedModule) -> bool {
+    fn mentions(expression: &TypedExpr) -> bool {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ObjcWithAutoreleasePool
         ) || expression.children().into_iter().any(mentions)
     }
     let reachable = reachable_functions(module, None, true);
@@ -9451,7 +9484,8 @@ fn emit_builtin(
                 || builtin.is_timer()
                 || builtin.is_wait()
                 || builtin.is_context()
-                || builtin.is_anchor() =>
+                || builtin.is_anchor()
+                || builtin == Builtin::ObjcWithAutoreleasePool =>
         {
             emit_typed_builtin(instance, ty, module, intrinsics, globals)
         }
@@ -9535,6 +9569,7 @@ fn emit_typed_builtin(
             if matches!(&callee.kind, TypedExprKind::Function(FunctionRef::Builtin(found)) if serves(found)))
     }).expect("a builtin has its checked function wrapper");
     let mut builtins = Builtins::new();
+    let separate = shared_globals.traps.is_none();
     let mut local_globals = Globals {
         wasm: shared_globals.wasm,
         memory64: shared_globals.memory64,
@@ -9542,13 +9577,20 @@ fn emit_typed_builtin(
         range_flags: shared_globals.range_flags,
         strings: shared_globals.strings,
         spawns: shared_globals.spawns,
+        scheduler: shared_globals.scheduler,
         waits: shared_globals.waits,
         tzroutine: shared_globals.tzroutine,
         blocking_externs: shared_globals.blocking_externs,
         user_drops: std::rc::Rc::clone(&shared_globals.user_drops),
+        // M10: a builtin body that calls the Objective-C runtime (the pool, the release of a
+        // dropped object) records it in the program's one table, which comes back below.
+        objc: if separate {
+            std::mem::take(&mut shared_globals.objc)
+        } else {
+            objc::ObjcGlobals::default()
+        },
         ..Globals::default()
     };
-    let separate = shared_globals.traps.is_none();
     let globals = if separate {
         &mut local_globals
     } else {
@@ -9602,6 +9644,8 @@ fn emit_typed_builtin(
         emitter.value("xor i1 %arg0, 1")
     } else if instance.builtin.is_routine() {
         emitter.routine_builtin(instance.builtin, ty)
+    } else if instance.builtin == Builtin::ObjcWithAutoreleasePool {
+        emitter.objc_with_autorelease_pool(ty)
     } else if instance.builtin.is_main_thread() {
         emitter.main_thread_builtin(instance.builtin, ty)
     } else if instance.builtin.is_channel() {
@@ -9848,6 +9892,7 @@ fn emit_typed_builtin(
         shared_globals
             .anchor_types
             .append(&mut local_globals.anchor_types);
+        shared_globals.objc = std::mem::take(&mut local_globals.objc);
     }
     definition
 }
@@ -10810,6 +10855,7 @@ fn console_def_main(
     spawns: bool,
     mark_main_done: bool,
     main_thread_boundary: bool,
+    objc_pool: bool,
 ) -> String {
     let main = &module.functions[module.entry.unwrap()];
     let mut body = String::new();
@@ -10848,9 +10894,14 @@ fn console_def_main(
     } else {
         ""
     };
+    let (push, pop) = if objc_pool {
+        (objc::MAIN_POOL_PUSH, objc::MAIN_POOL_POP)
+    } else {
+        ("", "")
+    };
     let _ = write!(
         output,
-        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}  %code = call i32 @tz.fn.{}({argument})\n{posted}{leave}{done}  ret i32 %code\n}}\n",
+        "define i32 @main({parameters}) {{\nentry:\n{enter}{body}{push}  %code = call i32 @tz.fn.{}({argument})\n{posted}{leave}{pop}{done}  ret i32 %code\n}}\n",
         main.qualified_name()
     );
     if spawns {
@@ -10902,17 +10953,28 @@ fn library_def_main(module: &CheckedModule, wasm: bool, main_thread_check: bool)
     output
 }
 
+/// The console `@main`. With `objc_pool` (M10: the program is an Objective-C image), the entry
+/// runs inside an autorelease pool, as the `main` of an Xcode project does: the push is right
+/// before the call of the entry, and the pop is after the wait for the tzroutines, which keeps
+/// what `main` autoreleased alive for them, and before `@tz.main.done`, so that a callback that a
+/// `dealloc` of the pop makes is not one after `main`.
 fn console_main(
     module: &CheckedModule,
     uses_args: bool,
     spawns: bool,
     mark_main_done: bool,
     main_thread_boundary: bool,
+    objc_pool: bool,
 ) -> String {
     let done = if mark_main_done {
         "  store atomic i32 1, ptr @tz.main.done release, align 4\n"
     } else {
         ""
+    };
+    let (push, pop) = if objc_pool {
+        (objc::MAIN_POOL_PUSH, objc::MAIN_POOL_POP)
+    } else {
+        ("", "")
     };
     if main_entry(module) {
         return console_def_main(
@@ -10921,16 +10983,18 @@ fn console_main(
             spawns,
             mark_main_done,
             main_thread_boundary,
+            objc_pool,
         );
     }
     if io_entry(module) {
+        // The wait for the tzroutines is inside `tsuzuri_main`.
         if uses_args {
             return format!(
-                "define i32 @main(i32 %argc, ptr %argv) {{\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+                "define i32 @main(i32 %argc, ptr %argv) {{\nentry:\n  call void @tsuzuri_os_set_args(i32 %argc, ptr %argv)\n{push}  %result = call i32 @tsuzuri_main()\n{pop}{done}  ret i32 %result\n}}\n"
             );
         }
         return format!(
-            "define i32 @main() {{\nentry:\n  %result = call i32 @tsuzuri_main()\n{done}  ret i32 %result\n}}\n"
+            "define i32 @main() {{\nentry:\n{push}  %result = call i32 @tsuzuri_main()\n{pop}{done}  ret i32 %result\n}}\n"
         );
     }
     let main = &module.functions[module.entry.unwrap()];
@@ -10953,7 +11017,7 @@ fn console_main(
     };
     let _ = writeln!(
         output,
-        "define i32 @main() {{\nentry:\n{enter}  %result = call {} @tz.fn.{}()",
+        "define i32 @main() {{\nentry:\n{enter}{push}  %result = call {} @tz.fn.{}()",
         llvm_type(ty, module),
         main.qualified_name()
     );
@@ -10963,6 +11027,7 @@ fn console_main(
     if spawns {
         output.push_str(TZROUTINE_SCOPE_LEAVE);
     }
+    output.push_str(pop);
     output.push_str(done);
     match ty {
         Type::Char | Type::Utf8Char => {

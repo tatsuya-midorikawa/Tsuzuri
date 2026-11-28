@@ -325,7 +325,8 @@ const UNRESOLVED: usize = 17;
 const VALUE_CALL: usize = 18;
 
 /// What an edge to a function carries to the function that refers to it (W19, M09). The edge of a
-/// function value that goes straight to `Routine.with_locked_thread` does not carry `pinned`: the
+/// function value that goes straight to `Routine.with_locked_thread` (or to
+/// `ObjC.with_autorelease_pool`, which keeps the thread too; M10) does not carry `pinned`: the
 /// thread is fixed there, but it is whichever thread the tzroutine runs on, so `main_thread` goes
 /// on. The edge of one that goes to a callback `extern`, to `FnPtr.of` or to `MainThread.post`
 /// carries neither: the thread is fixed, and it is the main thread or the wrapper checks that it
@@ -340,7 +341,7 @@ enum Boundary {
     /// Anywhere else: the function's effects are those of whoever refers to it.
     #[default]
     None,
-    /// `Routine.with_locked_thread`: some one thread.
+    /// `Routine.with_locked_thread`, `ObjC.with_autorelease_pool`: some one thread.
     Locked,
     /// A callback `extern`, `FnPtr.of`, `MainThread.post` or `MainThread.after`: one thread, and
     /// the main thread where the function needs it.
@@ -613,6 +614,11 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ObjcDowncast => facts(Some(Effect::Extern), false, true, false, false, false, None),
         ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => {
             facts(None, false, false, false, false, false, None)
+        }
+        // M10: the pool is two calls of the Objective-C runtime around the function, which runs
+        // on the calling thread.
+        ObjcWithAutoreleasePool => {
+            facts(Some(Effect::Extern), false, false, false, true, false, None)
         }
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
         AnchorCreate | AnchorCreateShared => {
@@ -2490,7 +2496,9 @@ pub(crate) fn pinning_argument_mask(
             if arg_count == 1
                 && matches!(
                     instance.builtin,
-                    Builtin::RoutineWithLockedThread | Builtin::FnPtrOf
+                    Builtin::RoutineWithLockedThread
+                        | Builtin::ObjcWithAutoreleasePool
+                        | Builtin::FnPtrOf
                 ) =>
         {
             1
@@ -2502,7 +2510,10 @@ pub(crate) fn pinning_argument_mask(
             let function = &module.functions[*id];
             if function.module == "$builtin"
                 && arg_count == 1
-                && wrapper_builtin(function) == Some(Builtin::RoutineWithLockedThread)
+                && matches!(
+                    wrapper_builtin(function),
+                    Some(Builtin::RoutineWithLockedThread | Builtin::ObjcWithAutoreleasePool)
+                )
             {
                 return 1;
             }
@@ -2544,7 +2555,8 @@ fn posted_argument_mask(builtin: Builtin, arg_count: usize) -> u64 {
 }
 
 /// W19, M09: which boundary the positions of `pinning_argument_mask` of `callee` are.
-/// `Routine.with_locked_thread` fixes the thread without saying which one it is.
+/// `Routine.with_locked_thread` and `ObjC.with_autorelease_pool` fix the thread without saying
+/// which one it is.
 fn boundary_of(module: &CheckedModule, mut callee: &TypedExpr) -> Boundary {
     while let TypedExprKind::Cast(inner)
     | TypedExprKind::BorrowOperand(inner)
@@ -2558,7 +2570,10 @@ fn boundary_of(module: &CheckedModule, mut callee: &TypedExpr) -> Boundary {
         TypedExprKind::Function(FunctionRef::User(id)) => wrapper_builtin(&module.functions[*id]),
         _ => None,
     };
-    if builtin == Some(Builtin::RoutineWithLockedThread) {
+    if matches!(
+        builtin,
+        Some(Builtin::RoutineWithLockedThread | Builtin::ObjcWithAutoreleasePool)
+    ) {
         Boundary::Locked
     } else {
         Boundary::Entry
@@ -4208,12 +4223,13 @@ mod tests {
             );
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path; NC11 added Os.__map, Os.__unmap, 2 TensorCodec builtins and TensorIO.__mmap_slice.
-        assert_eq!(Builtin::ALL.len(), 397);
+        assert_eq!(Builtin::ALL.len(), 398);
         // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
         // M09 added 3 MainThread builtins, all of the effect `task`.
         // M09 Phase 3 added 4 Anchor builtins of the shared anchors.
         // NC11 added 2 Os builtins of the mappings and 3 pure ones.
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 183);
+        // M10 added `ObjC.with_autorelease_pool`, of the effect `extern`.
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 184);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 214);
     }
 
@@ -4249,7 +4265,8 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 34);
+        // M10: `ObjC.with_autorelease_pool` calls the function that it takes.
+        assert_eq!(count(|facts| facts.callbacks), 35);
     }
 
     fn checked(source: &str) -> CheckedModule {

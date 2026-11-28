@@ -166,13 +166,16 @@ jobs:
       # M01, M02: Objective-C classes and typed message sends against ARC hosts that count their objects, with Apple's
       # ld and with the bundled toolchain, and the type of every objc_msgSend call against Apple clang's lowering of
       # the same message (tests/objc_send_reference.m). The window of the AppKit case is never shown.
-      - name: Objective-C classes and message sends (M01, M02)
+      # M10: ObjC.with_autorelease_pool, the pool of @main and the scheduler's pools against a host without ARC that
+      # counts its objects (tests/objc_pools_host.m), and the peak resident size of two million autoreleased objects.
+      - name: Objective-C classes, message sends and autorelease pools (M01, M02, M10)
         if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
           node tests/objc_classes.mjs target/release/tsuzuri
           node tests/objc_send.mjs target/release/tsuzuri
+          node tests/objc_pools.mjs target/release/tsuzuri
       # M19: an executable whose standard error is closed or /dev/null (as under Finder, the Dock, `open` and launchd)
       # sends its trap and runtime reports to unified logging, with Apple's ld and with the bundled toolchain; a pipe
       # and a file get the bytes they got before. The entries are read back with `log show` by process ID; where the

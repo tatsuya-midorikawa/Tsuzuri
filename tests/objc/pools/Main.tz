@@ -1,0 +1,268 @@
+// M10: `ObjC.with_autorelease_pool`, the pool of `@main`, and the pools that the scheduler runs
+// around each run of a tzroutine. tests/objc_pools.mjs links this program with
+// tests/objc_pools_host.m and Foundation and runs one case for each argument. The host counts its
+// objects between init and dealloc (`tzpool_live`), so the expected output of every case comes
+// from the host, not from this compiler.
+
+@trusted
+extern class NSObject : ObjC.Object
+
+@trusted
+extern class sync TzPooled : NSObject
+
+@trusted
+extern class NSMutableArray : NSObject {
+    class array :: unit -> Self
+}
+
+@trusted
+extern "tzpool_autorelease" def autorelease :: i64 -> unit
+
+@trusted
+extern "tzpool_live" def live :: unit -> i64
+
+@trusted
+extern "tzpool_make" def make :: unit -> TzPooled
+
+@trusted
+extern "tzpool_tag" def tag :: ref TzPooled -> i64
+
+@trusted
+extern "tzpool_thread" def thread :: unit -> i64
+
+@trusted
+extern "tzpool_report_at_exit" def report_at_exit :: unit -> unit
+
+@trusted
+extern "tzpool_stack_base" def stack_base :: unit -> unit
+
+@trusted
+extern "tzpool_stack_used" def stack_used :: unit -> i64
+
+@trusted
+extern "tzpool_foundation_work" def foundation_work :: i64 -> i64
+
+def discard :: own TzPooled -> unit = \_pooled -> ()
+
+// Runs `body` on a tzroutine and returns what it returns.
+def on_routine :: own Owned.Function<unit, string> -> string = \body ->
+    let finished: Channel<string> = Channel.make 1
+    let signal = Channel.share finished
+    tzroutine {
+        Channel.send signal (Owned.call (ref body) ())
+    }
+    match Channel.recv finished with
+    | Maybe.Some text -> text
+    | Maybe.None -> "closed"
+
+// Waits until the host counts no object, for at most `rounds` milliseconds; the count at the end.
+def rec wait_for_zero :: i64 -> i64 = \rounds ->
+    if live () == 0 || rounds == 0 then live ()
+    else
+        Time.sleep (Time.millisecond())
+        wait_for_zero (rounds - 1)
+
+// Ten objects are alive inside the pool and none after it.
+def explicit :: unit -> string = \() ->
+    let inside = ObjC.with_autorelease_pool (\() ->
+        autorelease 10
+        live ())
+    $"{inside} {live ()}"
+
+// Pools nest: the inner one releases its four objects, the outer one its three. An object that
+// the function returns is owned by the caller and outlives the pool.
+def nested :: unit -> string = \() ->
+    let counts = ObjC.with_autorelease_pool (\() ->
+        autorelease 3
+        let both = ObjC.with_autorelease_pool (\() ->
+            autorelease 4
+            live ())
+        $"{both} {live ()}")
+    let none = live ()
+    let kept = ObjC.with_autorelease_pool (\() -> make ())
+    let one = live ()
+    let value = tag (ref kept)
+    discard kept
+    $"{counts} {none} {one} {value} {live ()}"
+
+// One worker of `migrate`: every round is a pool around a sleep, which may move a tzroutine that
+// is not kept on its thread. Returns the rounds whose pop was on another thread than their push.
+def migrate_worker :: unit -> i64 = \() ->
+    let mut moved = 0
+    for _ in 1 ..= 50 do
+        let changed = ObjC.with_autorelease_pool (\() ->
+            let before = thread ()
+            autorelease 1
+            Time.sleep (Time.millisecond())
+            if thread () == before then 0 else 1)
+        moved = moved + changed
+    moved
+
+def migrate :: unit -> string = \() ->
+    let results: Channel<i64> = Channel.make 8
+    for _ in 1 ..= 8 do
+        let result = Channel.share results
+        tzroutine {
+            Channel.send result (migrate_worker ())
+        }
+    let mut moved = 0
+    for _ in 1 ..= 8 do
+        moved = moved + (match Channel.recv results with | Maybe.Some count -> count | Maybe.None -> 1000)
+    $"{moved} {wait_for_zero 2000}"
+
+// Every element is handled inside a pool of its own, on whichever thread runs its chunk.
+def parallel :: unit -> string = \() ->
+    let squares = Parallel.map (\(n: i64) ->
+        ObjC.with_autorelease_pool (\() ->
+            autorelease n
+            n * n)) (Array.init 64 (\i -> i + 1))
+    let total = Array.fold (\sum n -> sum + n) 0 squares
+    $"{total} {wait_for_zero 2000}"
+
+// Two million objects autoreleased on a tzroutine, a pool for each thousand. The typed +0 result
+// of `NSMutableArray.array` is taken over without the pool (clang's attached call), so the objects
+// that do go into the pool are the host's. The class is bound to its thread, which the pool keeps.
+def churn :: i64 -> unit = \count ->
+    for _ in 1 ..= count / 1000 do
+        ObjC.with_autorelease_pool (\() ->
+            NSMutableArray.array () |> ignore
+            autorelease 1000)
+
+def leak :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    churn 2000000
+    $"{live ()}"))
+
+// The same count of objects autoreleased by the host on the main thread without a pool of their
+// own: the pool of `@main` holds all of them until `main` returns.
+def held_by_main :: unit -> string = \() ->
+    autorelease 2000000
+    $"{live ()}"
+
+// Foundation's formatting on the stack of a tzroutine of the default size.
+def stack :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    let report = ObjC.with_autorelease_pool (\() ->
+        stack_base ()
+        let total = foundation_work 10000
+        $"{total > 0} {stack_used ()}")
+    $"{report} {live ()}"))
+
+// A tzroutine that waits gives its thread back, and the scheduler pops the pool of that run.
+def auto_yield :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    autorelease 1000
+    let before = live ()
+    Routine.yield ()
+    $"{before} {live ()}"))
+
+// After a wait, whoever wakes the tzroutine may be faster than the pop, so the count is polled.
+def auto_sleep :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    autorelease 1000
+    let before = live ()
+    Time.sleep (Time.millisecond())
+    $"{before} {wait_for_zero 2000}"))
+
+// The end of a tzroutine ends its last run.
+def auto_exit :: unit -> string = \() ->
+    let inside = on_routine (Owned.function (\() ->
+        autorelease 7
+        $"{live ()}"))
+    $"{inside} {wait_for_zero 2000}"
+
+// A tzroutine that is kept on its thread does not give it back: a pool of its own lasts over a
+// wait, and what `Routine.with_locked_thread` autoreleases lasts until the tzroutine next gives
+// its thread back.
+def locked :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    let pooled = ObjC.with_autorelease_pool (\() ->
+        autorelease 5
+        Time.sleep (Time.millisecond())
+        Routine.yield ()
+        live ())
+    let after_pool = live ()
+    let kept = Routine.with_locked_thread (\() ->
+        autorelease 6
+        Routine.yield ()
+        Time.sleep (Time.millisecond())
+        live ())
+    let after_unlock = live ()
+    Routine.yield ()
+    $"{pooled} {after_pool} {kept} {after_unlock} {live ()}"))
+
+// An object that the program holds is owned, so the pops of the scheduler leave it alone.
+def owned :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    let pooled = make ()
+    Routine.yield ()
+    Time.sleep (Time.millisecond())
+    let value = tag (ref pooled)
+    let held = live ()
+    discard pooled
+    $"{value} {held} {live ()}"))
+
+// Two million objects autoreleased without a pool in the program: the tzroutine yields after each
+// thousand, and the scheduler pops the pool of each run.
+def auto_leak :: unit -> string = \() -> on_routine (Owned.function (\() ->
+    for _ in 1 ..= 2000 do
+        autorelease 1000
+        Routine.yield ()
+    $"{live ()}"))
+
+// tests/objc/pingpong without Objective-C runs the same exchange: the suite compares their times.
+def pingpong :: unit -> string = \() ->
+    let ping: Channel<i64> = Channel.make 0
+    let pong: Channel<i64> = Channel.make 0
+    let ping_end = Channel.share ping
+    let pong_end = Channel.share pong
+    tzroutine {
+        for _ in 1 ..= 200000 do
+            match Channel.recv ping_end with
+            | Maybe.Some value -> Channel.send pong_end (value + 1)
+            | Maybe.None -> ()
+    }
+    let mut value = 0
+    for _ in 1 ..= 200000 do
+        Channel.send ping value
+        value = match Channel.recv pong with | Maybe.Some next -> next | Maybe.None -> -1
+    $"{value}"
+
+// `tsuzuri test` builds its runner with the scheduler of an Objective-C image too: a tzroutine that
+// a test starts releases what it autoreleased when it gives its thread back and when it ends.
+test "a tzroutine of a test releases what it autoreleased" =
+    assert (auto_yield () == "1000 0")
+    assert (auto_exit () == "7 0")
+    assert (locked () == "5 0 6 6 0")
+
+def main :: Array<string> -> i32 = \arguments ->
+    let given = arguments.length > 0
+    // `main_pool` and `main_wait` use the pool of `@main` alone.
+    if given && arguments[0] == "main_pool" then
+        report_at_exit ()
+        autorelease 5
+        do! IO.writeln $"{live ()}"
+        0
+    elif given && arguments[0] == "main_wait" then
+        report_at_exit ()
+        autorelease 1
+        tzroutine {
+            Time.sleep (20 * Time.millisecond())
+            do! IO.writeln $"{live ()}"
+        }
+        0
+    else
+        let text =
+            if given && arguments[0] == "explicit" then explicit ()
+            elif given && arguments[0] == "explicit_routine" then on_routine (Owned.function explicit)
+            elif given && arguments[0] == "nested" then nested ()
+            elif given && arguments[0] == "nested_routine" then on_routine (Owned.function nested)
+            elif given && arguments[0] == "migrate" then migrate ()
+            elif given && arguments[0] == "parallel" then parallel ()
+            elif given && arguments[0] == "leak" then leak ()
+            elif given && arguments[0] == "held_by_main" then held_by_main ()
+            elif given && arguments[0] == "stack" then stack ()
+            elif given && arguments[0] == "auto_yield" then auto_yield ()
+            elif given && arguments[0] == "auto_sleep" then auto_sleep ()
+            elif given && arguments[0] == "auto_exit" then auto_exit ()
+            elif given && arguments[0] == "locked" then locked ()
+            elif given && arguments[0] == "owned" then owned ()
+            elif given && arguments[0] == "auto_leak" then auto_leak ()
+            elif given && arguments[0] == "pingpong" then pingpong ()
+            else "unknown case"
+        do! IO.writeln text
+        0

@@ -266,6 +266,22 @@ static void tzr_fatal(const char *message);
 #define TZR_STACK_CACHE 1024
 #endif
 #define TZR_P_GFREE 64
+
+/* M10: the autorelease pools of an Objective-C image. The driver defines TZR_OBJC_POOLS for the
+ * runtime of a program that the compiler made an Objective-C image, and for no other: an M then
+ * runs each G inside a pool of its own thread (tzr_execute), so that what a tzroutine autoreleases
+ * is released when the tzroutine gives its thread back (a wait, a yield, a preemption, its end)
+ * and not never, as on a thread without a pool. The two functions are the ABI of clang's
+ * `@autoreleasepool`, which no SDK header declares.
+ *
+ * The pop runs the `dealloc` of those objects on g0, so g0 gets the stack of a G for them. */
+#if defined(TZR_OBJC_POOLS)
+void *objc_autoreleasePoolPush(void);
+void objc_autoreleasePoolPop(void *pool);
+#define TZR_G0_STACK TZR_DEFAULT_STACK
+#else
+#define TZR_G0_STACK (256u * 1024u) /* g0 runs only the scheduler */
+#endif
 #define TZR_LOCAL_CACHE 256 /* finished Gs kept untrimmed in all the Ps' lists together */
 #define TZR_RUNNEXT_TURNS 61 /* takes from runnext in a row before the local ring gets a turn */
 
@@ -1086,7 +1102,7 @@ static void tzr_startm(tzr_p *p, int spinning) {
     m->rand = 0x9E3779B97F4A7C15ULL ^ (uint64_t)(uintptr_t)m;
     tzr_sched.mcount++;
     tzr_mutex_unlock(&tzr_sched.lock);
-    tzr_thread_start(tzr_mstart, m, 256 * 1024, "cannot start a scheduler thread"); /* g0 runs only the scheduler */
+    tzr_thread_start(tzr_mstart, m, TZR_G0_STACK, "cannot start a scheduler thread");
 }
 
 static void tzr_wakep(void) {
@@ -1229,8 +1245,19 @@ static void tzr_p_running(tzr_p *p, tzr_m *m, tzr_g *g) {
 
 /* ---------------------------------------------------------------- scheduling */
 
+#if defined(TZR_OBJC_POOLS)
+static void tzr_after_yield(tzr_m *m, tzr_g *g);
+static void tzr_after_exit(tzr_m *m, tzr_g *g);
+#endif
+
 static void tzr_execute(tzr_m *m, tzr_g *g) {
     tzr_p *p = m->p;
+#if defined(TZR_OBJC_POOLS)
+    /* M10: on g0, on this M's thread, where the G runs until it comes back here. A G that is locked
+     * to its M waits and yields on its own stack (tzr_park_locked, tzr_yield_locked), so a pool that
+     * it pushed itself (ObjC.with_autorelease_pool) is above this one for as long as it lasts. */
+    void *pool = objc_autoreleasePoolPush();
+#endif
     m->curg = g;
     atomic_store_explicit(&p->schedtick, atomic_load_explicit(&p->schedtick, memory_order_relaxed) + 1,
                           memory_order_relaxed);
@@ -1254,7 +1281,22 @@ static void tzr_execute(tzr_m *m, tzr_g *g) {
     m->curg = NULL;
     void (*after)(tzr_m *, tzr_g *) = m->after;
     m->after = NULL;
+#if defined(TZR_OBJC_POOLS)
+    /* The pop frees only what the G does not own: the generated code retains a +0 result before
+     * the G can give its thread back (inside the blocking call of the extern function or the
+     * message). The M has no current G here, so code that a `dealloc` calls runs as on a thread of
+     * the host. A G that yielded or ended cannot run again before `after`, so its objects are gone
+     * when it goes on, and when the boundary that waits for it is told that it ended. A G that
+     * waits holds the locks of its wait until `after` (R1), and no `dealloc` may run under a lock of
+     * the runtime: its pop is after them, and whoever wakes the G at once may run it before the
+     * pop is over. */
+    int early = after == tzr_after_yield || after == tzr_after_exit;
+    if (early) objc_autoreleasePoolPop(pool);
+#endif
     if (after) after(m, prev);
+#if defined(TZR_OBJC_POOLS)
+    if (!early) objc_autoreleasePoolPop(pool);
+#endif
 }
 
 static tzr_g *tzr_findrunnable(tzr_m *m) {

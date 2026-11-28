@@ -4,7 +4,8 @@
 // adds a ThreadSanitizer build and TSUZURI_ASAN=1 an AddressSanitizer and UBSan build (each case
 // once, with 4 Ps). On an Apple silicon Mac with Rosetta it also runs the x86-64 build. A build with
 // src/runtime/stack.c and -DTZ_STACK_GUARD checks that a tzroutine's overflow is reported. On Windows
-// (TZ01 Phase 2) TSUZURI_CLANG is the MSVC ABI clang and the builds link with lld.
+// (TZ01 Phase 2) TSUZURI_CLANG is the MSVC ABI clang and the builds link with lld. On macOS a build with
+// -DTZR_OBJC_POOLS (M10) runs every case with the scheduler's autorelease pools.
 //
 // usage: node tests/tzroutine_runtime.mjs        (TSUZURI_CLANG names clang, default `clang`)
 import assert from "node:assert/strict";
@@ -107,6 +108,20 @@ try {
     for (const name of cases) {
       execute("arch", ["-x86_64", binary, name], { TSUZURI_MAXPROCS: "4" });
       runs++;
+    }
+  }
+  if (process.platform === "darwin") {
+    // M10: the runtime of an Objective-C image, whose scheduler runs each tzroutine inside an
+    // autorelease pool of its thread. Every case runs with the pools too, and `objc_pools` checks
+    // them against libobjc.
+    for (const optimization of ["-O0", "-O3"]) {
+      const binary = build(`tzroutine-objc${optimization}`, [optimization, "-DTZR_OBJC_POOLS"], ["-lobjc"]);
+      for (const procs of ["1", "4"]) {
+        for (const name of [...cases, "objc_pools"]) {
+          execute(binary, [name], { TSUZURI_MAXPROCS: procs });
+          runs++;
+        }
+      }
     }
   }
   const sanitizers = [];

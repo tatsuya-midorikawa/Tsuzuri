@@ -28,7 +28,8 @@ pub(crate) const MAIN_THREAD_ADVICE: &str = "an API that needs the process main 
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Position {
-    /// Pins the OS thread before running its callback (`Routine.with_locked_thread`, `FnPtr.of`).
+    /// Pins the OS thread before running its callback (`Routine.with_locked_thread`,
+    /// `ObjC.with_autorelease_pool`, `FnPtr.of`).
     Pinning,
     /// Calls its callback synchronously on the calling tzroutine before returning and never retains
     /// or forwards it.
@@ -46,7 +47,10 @@ pub(crate) enum Position {
 /// Classifies every `Builtin` without a wildcard arm so new built-ins must choose explicitly (W19).
 pub(crate) fn builtin_position(builtin: Builtin) -> Position {
     match builtin {
-        Builtin::RoutineWithLockedThread | Builtin::FnPtrOf => Position::Pinning,
+        // M10: `ObjC.with_autorelease_pool` keeps the thread from its push to its pop.
+        Builtin::RoutineWithLockedThread | Builtin::ObjcWithAutoreleasePool | Builtin::FnPtrOf => {
+            Position::Pinning
+        }
 
         Builtin::MutexWith
         | Builtin::RwMutexWithRead

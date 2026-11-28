@@ -714,6 +714,7 @@ entry:
 
 ## 落とし穴
 
+- **区間のプールから呼ばれる IMP**（[M10](_completed/M10-objc-autorelease-pools.md) の後。2026-11-29）: Objective-C のイメージの tzroutine のランタイムは、tzroutine がスレッドを手放した時に実行区間のプールを pop する。その pop が走らせる `dealloc` から IMP が呼ばれると、IMP はスケジューラーのスタック（g0。このランタイムでは 1 MiB）の上で、現在の G のない擬似 G として走る。そこで待つと、その M は P を持ったまま眠る。IMP の包みの入口（W12・M09 の検査）は擬似 G で動く形のままにし、`dealloc` の上書きを足すチケットは「`dealloc` の本体は待たない」を文書に書く。
 - **`main` の後に呼ばれる**: `NSApp` の delegate や `NSTimer` の target が残ったまま `main` が返ると、W12 のトラップになる。`[NSApp setDelegate:nil]` とタイマーの `invalidate` を `main` が返る前に呼ぶ手順を文書に書く。`[NSApp terminate:]` は `exit()` で終わり、`main` に戻らない（D-61 の待ちと Drop が走らない。M09 の文書と同じ）。
 - **`@tz.main.done` の出し忘れ**: 今は `globals.callbacks` が空でないときだけ、`@tz.main.done` の大域と `main` の終わりの `store` を出す（`src/llvm.rs:2238` の `mark_main_done`、`src/llvm.rs:9999-10003`）。IMP の包みも入口で `@tz.main.done` を読むので、`FnPtr` を使わず export のクラスだけを持つ実行ファイルでも出るように、この条件に IMP の包みを足す。足さないと、IR が定義のない大域を参照して clang が拒む。
 - **delegate は weak**: AppKit の `delegate` の多くは weak。export のクラスのオブジェクトの所有値を `main` が持ち続けないと、解放されて delegate が nil になる。
