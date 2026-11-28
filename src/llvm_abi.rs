@@ -926,6 +926,12 @@ pub(super) fn wrapper(
         emitter.instruction("unreachable");
         emitter.begin(&ready_label);
     }
+    // M09: the host chooses the thread that calls an export or a callback; a body that uses
+    // handles of the main thread runs only there.
+    if emitter.globals.main_thread.contains(&id) {
+        emitter.globals.main_thread_checked = true;
+        emitter.instruction("call void @tz.main_thread.check()");
+    }
     let result = &function.signature.result;
     let mut parameters = Vec::new();
     if out_result(result) {

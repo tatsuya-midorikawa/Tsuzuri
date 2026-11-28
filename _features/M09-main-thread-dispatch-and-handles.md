@@ -504,7 +504,7 @@ void tsuzuri_mainthread_boundary_done(void);
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | 組み込みのモジュール `MainThread`（`post`・`after`・`is_current`）を足し、名前を予約する（78 → 79）。採らない案: std のファイル（ランタイムの部品と生成の口が要る）、`Routine` に足す（投入した関数は tzroutine で走らない） | D-55 の登録。利用者の `MainThread.tz` を壊す（`docs/stability.md` 123 行） | 要承認（承認前は Phase 1 に着手しない） |
+| D1 | 組み込みのモジュール `MainThread`（`post`・`after`・`is_current`）を足し、名前を予約する（78 → 79）。採らない案: std のファイル（ランタイムの部品と生成の口が要る）、`Routine` に足す（投入した関数は tzroutine で走らない） | D-55 の登録。利用者の `MainThread.tz` を壊す（`docs/stability.md` 123 行） | 委任による決定（2026-11-28。利用者の指示「判断が必要なものは最高の選択肢で実装することを常に許可」に基づき、チケットの既定案を採用） |
 | D2 | 型は `Routine.go`・`Time.after_func` と同じ形にし、D-59 の例外を足さない。採らない案: 遅延を最後に取る `after f d` | `post`・`is_current` は対象のない関数、`after` は `Time.after_func` と同じく期間の後に関数を取る。同じ形の 2 つの関数の引数の順をそろえる | 既定案（実装者はこの案に従う） |
 | D3 | Phase 1 は macOS だけ。ほかの native は `E2002`、wasm は `E2000` の新しい kind `wasm_main_thread_unsupported`。`is_current` も macOS だけ。採らない案: wasm を `E1008` `abi_native_only` にする（ABI の形ではない）、Linux に `is_current` だけを先に足す | 使えないことを `build` で明示する（AGENTS.md）。`check` は target に依らない。コードは足さず kind だけ（D-51） | 既定案（実装者はこの案に従う） |
 | D4 | ランタイムの C が `dispatch_async_f`・`dispatch_after_f` でメインのディスパッチキューに積む。採らない案: `performSelectorOnMainThread:`・`CFRunLoopPerformBlock`（採らない案の節） | NSApp・CFRunLoop・`dispatch_main` のどれでも処理され、C の関数ポインターで書ける。データシンボルの構文（M06）は要らない | 既定案（実装者はこの案に従う） |
@@ -514,10 +514,55 @@ void tsuzuri_mainthread_boundary_done(void);
 | D8 | 待ちと run loop を統合せず、待たない規律と、tzroutine で処理して `post` で戻す形を文書にする。採らない案: 統合（採らない案の節） | D-61 の擬似 G の意味を保つ（S3） | 既定案（実装者はこの案に従う） |
 | D9 | 終了は文書の手順（`applicationShouldTerminate:` で取り消し、`stop:` と自前のイベントで `-run` を戻す。tzroutine は `Context` で止める）で扱い、`exit()` は変えない。採らない案: `atexit` で境界を待つ | 調査で `main` が正常に返ることを確かめた。`exit` の中で境界を待つのは安全でない | 既定案（実装者はこの案に従う） |
 | D10 | ライブラリ出力では投入をプロセスの寿命の間残す。採らない案: export の境界の終わりで drop する | W12 の D7 と同じ。export が返った後もホストの run loop が回り、投入はそこで走る | 既定案（実装者はこの案に従う） |
-| D11 | Phase 2: 効果 `main_thread`（D-53 の語彙 15 → 16）。`pinned` とは別のビットで、`main` のハンドルは `pinned` も持つ。`with_locked_thread` は境界にしない（辺が効果を運ぶ）。コールバック・`FnPtr`・export・`test`・`bench` は入口の検査つき、`post`・`after` は検査なしで使える文脈。採らない案: `with_locked_thread` への引数そのものを拒む（`main` の中の無害な使い方まで拒む）、`pinned` の意味を広げる（Windows の GDI の `local` まで縛る） | 語彙は閉じているので改訂が要る。辺で効果を運べば、tzroutine の中の誤りは起動の位置で `E1013` になる。呼ばれるスレッドを静的に知れない入口だけを実行時に守る | 要承認（承認前は Phase 2 に着手しない） |
-| D12 | Phase 2: `main` を `extern type`・`extern class` の直後だけの文脈キーワードにし、`copy`・`local`・`sync` との併用は `E0002`。採らない案: 属性（`@main_thread extern type H`） | D-55 の登録。予約語は足さない。修飾の語は W18・W19・M01 と同じ位置にそろえる | 要承認（承認前は Phase 2 に着手しない） |
+| D11 | Phase 2: 効果 `main_thread`（D-53 の語彙 15 → 16）。`pinned` とは別のビットで、`main` のハンドルは `pinned` も持つ。`with_locked_thread` は境界にしない（辺が効果を運ぶ）。コールバック・`FnPtr`・export・`test`・`bench` は入口の検査つき、`post`・`after` は検査なしで使える文脈。採らない案: `with_locked_thread` への引数そのものを拒む（`main` の中の無害な使い方まで拒む）、`pinned` の意味を広げる（Windows の GDI の `local` まで縛る） | 語彙は閉じているので改訂が要る。辺で効果を運べば、tzroutine の中の誤りは起動の位置で `E1013` になる。呼ばれるスレッドを静的に知れない入口だけを実行時に守る | 委任による決定（2026-11-28。利用者の指示「判断が必要なものは最高の選択肢で実装することを常に許可」に基づき、チケットの既定案を採用） |
+| D12 | Phase 2: `main` を `extern type`・`extern class` の直後だけの文脈キーワードにし、`copy`・`local`・`sync` との併用は `E0002`。採らない案: 属性（`@main_thread extern type H`） | D-55 の登録。予約語は足さない。修飾の語は W18・W19・M01 と同じ位置にそろえる | 委任による決定（2026-11-28。利用者の指示「判断が必要なものは最高の選択肢で実装することを常に許可」に基づき、チケットの既定案を採用） |
 | D13 | Phase 2: 入口の検査は `main_thread` を持つ本体の包みだけに入れ、Apple の target で `pthread_main_np` に下げる。ほかの target で要れば `E2002`（wasm は `E2000`）。費用は測って記録する。採らない案: すべての包みに入れる | ほかの包みの IR を変えない。Linux は `gettid() == getpid()` で書けるが、`post` のない target に先に足さない | 既定案（実装者はこの案に従う） |
 | D14 | Phase 2: `E1013` に `main_thread_code_spawned`・`main_thread_function_value`。同じ関数値に `pinned_*` を重ねない。採らない案: 両方を出す | 1 つの誤りに 1 つの診断。メインスレッドの文のほうが直し方が具体的 | 既定案（実装者はこの案に従う） |
 | D15 | Phase 2: `main` の型への M02 の送信だけ、行末の印でブロッキングの包みを省く。採らない案: `main_thread` の関数の中のすべての `extern` 呼び出しから外す（測ってから決める） | メインスレッドは M にならず、包みは何もしない。受け手の型が根拠になる呼び出しに限る | 既定案（実装者はこの案に従う） |
-| D16 | Phase 3: Send・Sync の値の預け先（案 `Anchor.create_shared`・`shared_token`・`read_shared`）の名前と意味は承認で決め、書き換えを持たせない案を既定にする。採らない案: `Anchor.update` をどのスレッドからでも呼べるようにする（`Busy` と再入の規則が変わる） | D-55 の登録と W23 の対象外の解除。M14 の完了ハンドラーが要る | 要承認（承認前は Phase 3 に着手しない） |
+| D16 | Phase 3: Send・Sync の値の預け先（案 `Anchor.create_shared`・`shared_token`・`read_shared`）の名前と意味は承認で決め、書き換えを持たせない案を既定にする。採らない案: `Anchor.update` をどのスレッドからでも呼べるようにする（`Busy` と再入の規則が変わる） | D-55 の登録と W23 の対象外の解除。M14 の完了ハンドラーが要る | 委任による決定（2026-11-28）: 名前は案のとおり `Anchor.Shared`・`Anchor.create_shared`・`Anchor.shared_token`・`Anchor.read_shared`。M14 の D5・S1 のために `Anchor.detach_shared :: own Anchor.Shared<'a> -> i64` と `Anchor.release_shared :: i64 -> bool` を足した（D18） |
 | D17 | `--trap-mode return` と `--freestanding` は `MainThread` と組み合わせられない（`E2000` `option_conflict`）。採らない案: 投入した関数のトラップだけをプロセスの終了にする | 投入した関数は投入した呼び出しの外で走り、トラップを返す先がない。部品には C のライブラリと libdispatch が要る | 既定案（実装者はこの案に従う） |
+| D18 | Phase 3: 所有者を手放す `Anchor.detach_shared` と、鍵で解放する `Anchor.release_shared` を足す。`release_shared` は手放された預け先だけを解放し、所有者のある預け先には `false` を返す。採らない案: 鍵だけで所有者のある預け先も解放できるようにする（所有者の drop と鍵の解放のどちらが値を捨てるかが曖昧になる） | M14 の S1（項目を作った関数の外で生かし、鍵で解放する操作がないと M14 は止まる）。所有は「所有者の値」か「鍵」のどちらか一方にある | 委任による決定（2026-11-28） |
+| D19 | Phase 3: 所有者の drop と `release_shared` は読み取りの終わりを待たない。以後の読み取りを `Stale` にし、値は最後の読み取りの終わりにそのスレッドで drop する（W23 の DYING と同じ仕組み）。採らない案: 仕様の案の「読み終わりを待ってから drop する」 | 待つ形は、読み取りのコールバックの中で所有者を drop する（または `release_shared` を呼ぶ）と自分を待って止まる。値は Send なので別のスレッドで drop してよい | 委任による決定（2026-11-28。仕様の Phase 3 の文から外れる） |
+| D20 | Phase 2: 入口の検査は `@tz.main_thread.check` に下げ、ランタイムの `tsuzuri_mainthread_is_current`（中身は `pthread_main_np`）を呼ぶ。採らない案: IR で `pthread_main_np` をじかに宣言する（利用者の同じ symbol の `extern` と型が違うと LLVM が 2 つ目の `declare` を拒む） | driver の Phase 1 の判定（Apple でない native は `E2002`、wasm は `E2000`）がそのまま検査にも効き、D13 の診断が 1 か所で決まる。`TrapKind` は増やさない（実行時の種類は `Assert`） | 委任による決定（2026-11-28。D13 の「`pthread_main_np` に下げる」の形だけが違う） |
+| D21 | Phase 2: `main` の基底を持つクラスは `main` でなければならない（`E1008` の新しい kind `objc_class_main_base`）。`main` のクラスへのメッセージ送信は、型に物体が現れないクラスメソッドも `main_thread` の源にする。採らない案: 型が届く関数だけを源にする（仕様の文のとおり） | 基底のクラスの物体をメインスレッドの外で使える穴と、D15 の「送信はメインスレッドで行われる」の前提が崩れる穴を塞ぐ | 委任による決定（2026-11-28。D-55 に kind を足した） |
+| D22 | Phase 2: D15 の印は行末のコメントではなく、呼び出しの属性 `"tz-main-thread"` にする | `!tz.site`・`!dbg` を行末から読む後工程の pass を壊さない | 委任による決定（2026-11-28） |
+
+## 実装と検証（2026-11-28）
+
+ブランチ `feat/m09-main-thread-post`（`main` = `faa091b2` から）。Phase 1・2・3 をすべて実装した。承認の要る決定（D1・D11・D12・D16）は、利用者の委任（「判断が必要なものは最高の選択肢で実装することを常に許可」）で決めた（決定事項の表）。
+
+### 実装した範囲
+
+- **Phase 1**: `Builtin::MainThreadPost`・`MainThreadAfter`・`MainThreadIsCurrent`（`Builtin::ALL` 384 → 387）、`RESERVED_MODULES` に `MainThread`（82 → 83）、効果の分類（`task`。`post`・`after` は `alloc` と callbacks）、`Position::Posted`（`pinned` を運ばない辺。`Owned.function` の直接の呼び出しを剥がす。パイプラインの 2 つの形も）、`src/runtime/mainthread-darwin.c`（未実行の記録の FIFO、`boundary_done`・`boundary_open`、飽和した期限は積まない）、`src/llvm_mainthread.rs`（`@tz.mainthread.run`。spawn するプログラムでは `tsuzuri_tz_callback_scope_enter`・`_leave` で挟む）、`@main`・`tsuzuri_main`（IO の entry）・`tsuzuri_test_run`・`tsuzuri_bench_sample` の境界の drop、driver と test・bench の runner（C の単位へは使うときだけ、いちばん後ろに足す。wasm は `E2000` `wasm_main_thread_unsupported`、Apple でない native は `E2002`、`--trap-mode return`・`--freestanding` は `E2000` `option_conflict`）。
+- **Phase 2**: `HandleKind::Main`・`ObjcMain`、`extern type main H`・`extern class main C : Base`（`ExternClassDecl::main`、`FRONTEND_FORMAT` 37 → 38）、`CheckedModule::main_bound`、`Effect::MainThread`（`Effect::ALL` 15 → 16、`EffectSet::ALL` は `u16::MAX`、内部の `BITS` 18 → 19）、辺が運ぶ効果を `Boundary`（`None`・`Locked`・`Entry`）で表す形への整理、kind `main_thread_code_spawned`・`main_thread_function_value`（`E1013`）と `objc_class_main_base`（`E1008`）、入口の検査（コールバック・`FnPtr`・export の 2 種類の包み・`test`・`bench`・ライブラリの `tsuzuri_main`）、`main` のクラスへの送信の `"tz-main-thread"`（D15）、`api-diff` の束縛の強さの順序。
+- **Phase 3**: `Builtin::AnchorCreateShared`・`AnchorReadShared`・`AnchorDetach`・`AnchorReleaseShared`（`Builtin::ALL` 387 → 391）、`std/Anchor.tz` の `Shared<'a>`・`shared_token`・`detach_shared`、ランタイムの `tsuzuri_tz_anchor_create_shared`・`_begin_shared`・`_detach`・`_release_shared`（W23 の表を共有し、所有スレッド 0 が共有の預け先）。
+
+### チケットから外れた判断
+
+1. E2E の fixture は `tests/fixtures/main_thread/` ではなく `tests/main_thread/app/`・`tests/main_thread/handles/` と `tests/main_thread_host.c` に置いた。`tests/fixtures/` の下はリポジトリ全体のテストがホストの target で build するので、Apple だけの機能の fixture は置けない（M01 の `tests/objc/` と同じ）。
+2. `E2002`・`E2000` の文に直し方を足した（`MainThread is available only on macOS targets; build for aarch64-apple-darwin or on a Mac`、`MainThread is not available on WebAssembly; build for a macOS target`）。入口の検査だけが理由のときは、検査を名指しする別の文にした。
+3. 境界の終わりの drop は投入の順にした（仕様は順序を決めていない）。
+4. `extern type` の修飾の衝突の文は、`copy`・`local` だけのときは W19 の文のままにし、`main` が関わるときだけ 3 つを挙げる（`tests/thread_bound_handles.rs` の期待値を変えない）。
+5. `HandleKind::Main` は `Local` の次に置いた（宣言が書く tag を 0〜3 に連ねる。既存の 5 つの順序は変わらない）。
+6. D18〜D22（決定事項の表）。
+7. `docs/language.md` の効果の語彙は 14 個（`pinned` が抜けていた）と書かれていたので、16 個に直した。
+8. D13 の「費用は測って記録する」は未実施（数字は書いていない）。
+
+### 実行したコマンドと結果
+
+- `cargo test --locked --test main_thread`（r1〜r12）: 13 passed。`--test main_thread_handles`（Phase 2）: 10 passed。`--test shared_anchor`（Phase 3）: 4 passed。`--test thread_bound_handles`: 変更なしで通過。
+- `node tests/main_thread.mjs target/debug/tsuzuri`（`TSUZURI_BUNDLED_CLANG` に同梱の `tsuzuri-clang`）: 51 checks passed（7 場面 × `-O0`・`-O3` × `TSUZURI_MAXPROCS=1`・`4`、`tsuzuri test`・`bench`、Phase 2 の 3 場面、Phase 3 の 1 場面、`--allocator counting`、同梱の zig でのリンク）。
+- `node tests/features.mjs target/debug/tsuzuri anchor`: native・WASM の `-O0`・`-O3` で 13 cases（共有の 4 件を含む）。
+- S1: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target wasm32`）・`--emit header`・`check --json` の 1,269 ファイルを、変更前のバイナリと Phase 1・Phase 2 の後のバイナリで `diff -rq` し、差分なし。S2: C の単位へは `MainThread` を使うプログラムでだけ、既存の部品の後ろに足す。 Phase 3 の後のバイナリでは、`Anchor` を読み込む 2 つの fixture だけが変わる: `tests/fixtures/anchor`（共有の預け先の export を足した）と `tests/fixtures/callback_lifetime`（native の IR の内部の名前の通し番号 `$instance.850` → `$instance.852` など。`std/Anchor.tz` に定義が 2 つ増えたためで、命令は同じ）。`Anchor` を読み込まないプログラムの出力は変わらない。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（65 files）、`node scripts/gen-docs.mjs --check`（11 blocks, 0 stale）、`node scripts/check-cli-docs.mjs`（4 checks, 0 failed）、`node scripts/check-guide-lite.mjs`（87 references, 0 failed）: 通過。
+- `cargo nextest run --locked`（T1。Phase 3 までの木）: 3780 passed、4 skipped。`node tests/tzroutine_runtime.mjs`: 595 runs passed。
+- Linux・Windows と release build の実行は手元では行っていない（PR に `ci:full` を付けて CI で確かめる）。
+
+### 更新した文書
+
+- `docs/language.md`（不透明ハンドル、Objective-C、`MainThread` と共有の `Anchor`、効果の語彙、予約モジュール、生成した診断の表）、`README.md`（機能の一覧と検証の表）、`_features/GUIDE.md`（D-53・D-67）。
+- Tsuzuri-Reference: `docs/stdlib/sync/mainthread.md`（新規）、`docs/index.md`、`docs/stdlib/sync/routine.md`、`docs/stdlib/sys/time.md`、`docs/stdlib/memory/anchor.md`、`docs/compiler/native-interop.md`、`docs/compiler/objective-c.md`、`docs/compiler/platforms.md`、`docs/compiler/diagnostics.md`（生成）。
+
+### 変更したファイル
+
+`src/check.rs`、`src/stdlib.rs`、`src/effects.rs`、`src/pure_rules.rs`、`src/kg/effects.rs`、`src/pinned_rules.rs`、`src/ownership.rs`、`src/polymorph.rs`、`src/capabilities.rs`、`src/syntax.rs`、`src/parser.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/formatter.rs`、`src/api_diff.rs`、`src/objc.rs`、`src/diagnostic_kinds.rs`、`src/llvm.rs`、`src/llvm_mainthread.rs`（新規）、`src/llvm_abi.rs`、`src/llvm_anchor.rs`、`src/llvm_imports.rs`、`src/llvm_traps.rs`、`src/driver.rs`、`src/test_runner.rs`、`src/cache.rs`、`src/runtime/mainthread-darwin.c`（新規）、`src/runtime/tzroutine.c`、`std/Anchor.tz`、`tests/main_thread.rs`・`tests/main_thread_handles.rs`・`tests/shared_anchor.rs`・`tests/main_thread.mjs`・`tests/main_thread/app/Main.tz`・`tests/main_thread/handles/Main.tz`・`tests/main_thread_host.c`（新規）、`tests/fixtures/anchor/Main.tz`、`tests/features.mjs`、`tests/std_argument_order.rs`、`.github/workflows/targets.yml`、`README.md`、`docs/language.md`、`_features/GUIDE.md`。

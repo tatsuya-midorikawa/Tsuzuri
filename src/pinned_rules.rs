@@ -5,11 +5,19 @@
 //! thread-pinning boundary (`Routine.with_locked_thread`, `FnPtr.of`, or a callback `extern`), or
 //! passed to a synchronous lock/cell helper that runs it on the calling tzroutine before returning
 //! (`Mutex.with_lock`, `RwMutex.with_read`, `RwMutex.with_write`, `OnceValue.get`,
-//! `Cond.wait_with`, `Anchor.read`, `Anchor.update`). Spawning it onto another tzroutine/worker
+//! `Cond.wait_with`, `Anchor.read`, `Anchor.update`), or handed to the process main thread
+//! (`MainThread.post`, `MainThread.after`; M09). Spawning it onto another tzroutine/worker
 //! (`E1013` `pinned_code_spawned`) or turning it into a general function / `dyn` value (`E1013`
 //! `pinned_function_value`) is rejected at compile time.
 //!
-//! Programs that declare no `extern type local` return immediately before starting a timing phase
+//! M09: a function whose `Effect::MainThread` bit is set touches a handle of the process main thread
+//! (`extern type main`, `extern class main`). The same positions are checked for it, with two
+//! differences: `Routine.with_locked_thread` pins a tzroutine to a worker thread, not to the main
+//! thread, so the effect goes on through it to whoever calls it, and a function that is spawned or
+//! turned into a function value is reported as `main_thread_code_spawned` or
+//! `main_thread_function_value` (never as both that and the `pinned_*` kind).
+//!
+//! Programs that declare no thread-bound handle return immediately before starting a timing phase
 //! or computing any summary.
 
 use super::effects::{self, Effect, EffectSet, FunctionEffects};
@@ -27,6 +35,10 @@ pub(crate) enum Position {
     Inline,
     /// Starts its callback on another tzroutine or worker thread (`pinned_code_spawned`).
     Spawned,
+    /// Queues its owned function for the process main thread (`MainThread.post`, `MainThread.after`;
+    /// M09): one fixed thread runs it, so the function may be `pinned`, and the edge does not carry
+    /// `pinned` to the caller. The argument is `Owned.function` applied to the function directly.
+    Posted,
     /// Any other built-in: a `pinned` function value passed to it may escape (`pinned_function_value`).
     Escaping,
 }
@@ -42,6 +54,7 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::OnceValueGet
         | Builtin::CondWaitWith
         | Builtin::AnchorRead
+        | Builtin::AnchorReadShared
         | Builtin::AnchorUpdate
         | Builtin::DomainRun => Position::Inline,
 
@@ -56,6 +69,8 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::ParallelReduce
         | Builtin::ParallelForEachChunk
         | Builtin::ParallelForEachChunkWith => Position::Spawned,
+
+        Builtin::MainThreadPost | Builtin::MainThreadAfter => Position::Posted,
 
         Builtin::Sqrt
         | Builtin::Floor
@@ -169,6 +184,9 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::DynOf
         | Builtin::AnchorCreate
         | Builtin::AnchorRelease
+        | Builtin::AnchorCreateShared
+        | Builtin::AnchorDetach
+        | Builtin::AnchorReleaseShared
         | Builtin::ZStringLiteral
         | Builtin::ZUtf8StringLiteral
         | Builtin::ObjcRetain
@@ -335,6 +353,7 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::RoutineCount
         | Builtin::RoutineMaxProcs
         | Builtin::RoutineCpuCount
+        | Builtin::MainThreadIsCurrent
         | Builtin::ChannelMake
         | Builtin::ChannelSend
         | Builtin::ChannelRecv
@@ -429,7 +448,12 @@ pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
         return Vec::new();
     }
     let _phase = crate::timings::Phase::start("pinned");
-    let options = effects::Options::new(effects::Scope::All, EffectSet::of(&[Effect::Pinned]));
+    let computed = if module.main_bound {
+        EffectSet::of(&[Effect::Pinned, Effect::MainThread])
+    } else {
+        EffectSet::of(&[Effect::Pinned])
+    };
+    let options = effects::Options::new(effects::Scope::All, computed);
     let effects = match effects::summarize(module, options) {
         Ok(summary) => summary,
         Err(error) => return vec![error],
@@ -458,6 +482,23 @@ pub(super) fn validate(module: &CheckedModule) -> Vec<Diagnostic> {
         checker.visit(&function.body);
     }
     checker.diagnostics
+}
+
+/// M09: the functions whose code may run only on the process main thread (the effect
+/// `main_thread`). The wrappers that a host calls on a thread of its choice check the thread before
+/// they call one of them. A program that declares no main-thread handle has none.
+pub(crate) fn main_thread_functions(module: &CheckedModule) -> BTreeSet<usize> {
+    if !module.main_bound {
+        return BTreeSet::new();
+    }
+    let options = effects::Options::new(effects::Scope::All, EffectSet::of(&[Effect::MainThread]));
+    match effects::summarize(module, options) {
+        Ok(summary) => (0..module.functions.len())
+            .filter(|&id| summary.summary(id).effects.contains(Effect::MainThread))
+            .collect(),
+        // `validate` reported the limit; without a summary every wrapper checks.
+        Err(_) => (0..module.functions.len()).collect(),
+    }
 }
 
 /// For each specialized `Std` function reachable from non-`Std` code, the source span of the first
@@ -515,8 +556,17 @@ struct Checker<'a> {
 }
 
 impl<'a> Checker<'a> {
-    fn is_pinned(&self, id: usize) -> bool {
-        self.effects.summary(id).effects.contains(Effect::Pinned)
+    /// The effect that confines the function `id` to a thread: `main_thread` before `pinned`,
+    /// which every function with `main_thread` has too unless a pinning boundary stopped it.
+    fn confined(&self, id: usize) -> Option<Effect> {
+        let effects = self.effects.summary(id).effects;
+        if effects.contains(Effect::MainThread) {
+            Some(Effect::MainThread)
+        } else if effects.contains(Effect::Pinned) {
+            Some(Effect::Pinned)
+        } else {
+            None
+        }
     }
 
     fn visit(&mut self, expression: &TypedExpr) {
@@ -528,8 +578,8 @@ impl<'a> Checker<'a> {
                     for capture in captures {
                         self.visit(capture);
                     }
-                    if self.is_pinned(id) {
-                        self.report_spawned(id, expression.span);
+                    if let Some(effect) = self.confined(id) {
+                        self.report_spawned(id, expression.span, effect);
                     }
                 } else {
                     self.visit(body);
@@ -572,14 +622,14 @@ impl<'a> Checker<'a> {
                 for capture in captures {
                     self.visit(capture);
                 }
-                if self.is_pinned(*id) {
-                    self.report_function_value(*id, expression.span);
+                if let Some(effect) = self.confined(*id) {
+                    self.report_function_value(*id, expression.span, effect);
                 }
             }
 
             K::Function(FunctionRef::User(id)) => {
-                if self.is_pinned(*id) {
-                    self.report_function_value(*id, expression.span);
+                if let Some(effect) = self.confined(*id) {
+                    self.report_function_value(*id, expression.span, effect);
                 }
             }
 
@@ -604,9 +654,11 @@ impl<'a> Checker<'a> {
                     .module
                     .vtables
                     .get(&(target.vtable_key(), stored_ty.clone()))
-                && let Some(&pinned_slot) = slots.iter().find(|&&slot| self.is_pinned(slot))
+                && let Some((pinned_slot, effect)) = slots
+                    .iter()
+                    .find_map(|&slot| self.confined(slot).map(|effect| (slot, effect)))
             {
-                self.report_function_value(pinned_slot, call_span);
+                self.report_function_value(pinned_slot, call_span, effect);
             }
             return;
         }
@@ -620,6 +672,7 @@ impl<'a> Checker<'a> {
                 match pos {
                     Position::Pinning | Position::Inline => self.visit_allowed_callback(arg),
                     Position::Spawned => self.visit_spawned_arg(arg, call_span),
+                    Position::Posted => self.visit_posted_arg(arg),
                     Position::Escaping => self.visit(arg),
                 }
             }
@@ -648,8 +701,8 @@ impl<'a> Checker<'a> {
                 for arg in arguments {
                     self.visit(arg);
                 }
-                if self.is_pinned(id) {
-                    self.report_function_value(id, call_span);
+                if let Some(effect) = self.confined(id) {
+                    self.report_function_value(id, call_span, effect);
                 }
                 return;
             }
@@ -694,6 +747,25 @@ impl<'a> Checker<'a> {
         self.visit(arg);
     }
 
+    /// Visits an argument of `MainThread.post` or `MainThread.after` (M09): the function inside a
+    /// direct `Owned.function (...)` runs on the process main thread, one fixed thread, so it may be
+    /// `pinned`. Anything else (the delay, an owned function made elsewhere) is checked normally.
+    fn visit_posted_arg(&mut self, arg: &TypedExpr) {
+        let peeled = peel(arg);
+        if let TypedExprKind::Call(inner_callee, inner_args) = &peeled.kind
+            && let Some((Builtin::OwnedFunction, _, 1)) =
+                builtin_of_callee(self.module, peel(inner_callee))
+            && inner_args.len() == 1
+            && let Some((_, captures)) = direct_callable(self.module, peel(&inner_args[0]))
+        {
+            for capture in captures {
+                self.visit(capture);
+            }
+            return;
+        }
+        self.visit(arg);
+    }
+
     /// Visits an argument to a tzroutine/worker spawn (`Routine.go`, `WaitGroup.go`, `ErrGroup.go`,
     /// `Time.after_func`, `Context.after_func`, `Routine.scope`, `Parallel.*`), unwrapping
     /// `Owned.function (\() -> ...)` so the spawn reports `pinned_code_spawned`.
@@ -711,47 +783,79 @@ impl<'a> Checker<'a> {
             for capture in captures {
                 self.visit(capture);
             }
-            if self.is_pinned(id) {
-                self.report_spawned(id, spawn_span);
+            if let Some(effect) = self.confined(id) {
+                self.report_spawned(id, spawn_span, effect);
             }
             return;
         }
         self.visit(arg);
     }
 
-    fn report_spawned(&mut self, target_id: usize, span: Span) {
+    fn report_spawned(&mut self, target_id: usize, span: Span, effect: Effect) {
         let span = self.override_span.unwrap_or(span);
-        let handle = self.source_handle_name(target_id);
-        let message = format!(
-            "this starts code that uses the thread-bound extern type '{handle}' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread; {MAIN_THREAD_ADVICE}"
-        );
+        let handle = self.source_handle_name(target_id, effect);
+        let (kind, message) = if effect == Effect::MainThread {
+            (
+                DiagnosticKind::MainThreadCodeSpawned,
+                format!(
+                    "this starts code that uses the main-thread extern type '{handle}' on another tzroutine or thread; 'Routine.with_locked_thread' pins a tzroutine to a worker thread, not to the main thread; run it in 'main' or in a callback that the main thread calls, or pass it to 'MainThread.post'"
+                ),
+            )
+        } else {
+            (
+                DiagnosticKind::PinnedCodeSpawned,
+                format!(
+                    "this starts code that uses the thread-bound extern type '{handle}' on another tzroutine or thread, which may run on any OS thread; do that work inside 'Routine.with_locked_thread' in the new tzroutine, or run it on the calling thread; {MAIN_THREAD_ADVICE}"
+                ),
+            )
+        };
         let diagnostic = self.attach_witness(
-            Diagnostic::of(DiagnosticKind::PinnedCodeSpawned, message, span),
+            Diagnostic::of(kind, message, span),
             target_id,
             &handle,
+            effect,
         );
         self.diagnostics.push(diagnostic);
     }
 
-    fn report_function_value(&mut self, target_id: usize, span: Span) {
+    fn report_function_value(&mut self, target_id: usize, span: Span, effect: Effect) {
         let span = self.override_span.unwrap_or(span);
-        let handle = self.source_handle_name(target_id);
-        let message = format!(
-            "this function value runs code that uses the thread-bound extern type '{handle}', and a function value may reach another tzroutine or thread; call the function directly, pass it straight to 'Routine.with_locked_thread', or use 'for' or 'match' instead of a callback"
-        );
+        let handle = self.source_handle_name(target_id, effect);
+        let (kind, message) = if effect == Effect::MainThread {
+            (
+                DiagnosticKind::MainThreadFunctionValue,
+                format!(
+                    "this function value runs code that uses the main-thread extern type '{handle}', and a function value may reach another thread; call the function directly, or pass it straight to 'MainThread.post' or to a callback 'extern'"
+                ),
+            )
+        } else {
+            (
+                DiagnosticKind::PinnedFunctionValue,
+                format!(
+                    "this function value runs code that uses the thread-bound extern type '{handle}', and a function value may reach another tzroutine or thread; call the function directly, pass it straight to 'Routine.with_locked_thread', or use 'for' or 'match' instead of a callback"
+                ),
+            )
+        };
         let diagnostic = self.attach_witness(
-            Diagnostic::of(DiagnosticKind::PinnedFunctionValue, message, span),
+            Diagnostic::of(kind, message, span),
             target_id,
             &handle,
+            effect,
         );
         self.diagnostics.push(diagnostic);
     }
 
-    fn source_handle_name(&self, target_id: usize) -> String {
-        let chain = self.effects.chain(target_id, Effect::Pinned);
+    fn source_handle_name(&self, target_id: usize, effect: Effect) -> String {
+        let chain = self.effects.chain(target_id, effect);
         let leaf_id = chain.last().map_or(target_id, |(id, _)| *id);
-        function_local_handle(&self.module.functions[leaf_id], self.types)
-            .unwrap_or_else(|| "local".into())
+        let function = &self.module.functions[leaf_id];
+        if effect == Effect::MainThread {
+            function_handle(function, |ty| ty.first_main_handle_name(self.types))
+                .unwrap_or_else(|| "main".into())
+        } else {
+            function_handle(function, |ty| ty.first_local_handle_name(self.types))
+                .unwrap_or_else(|| "local".into())
+        }
     }
 
     fn attach_witness(
@@ -759,8 +863,14 @@ impl<'a> Checker<'a> {
         mut diagnostic: Diagnostic,
         target_id: usize,
         handle: &str,
+        effect: Effect,
     ) -> Diagnostic {
-        let chain = self.effects.chain(target_id, Effect::Pinned);
+        let bound = if effect == Effect::MainThread {
+            "main-thread"
+        } else {
+            "thread-bound"
+        };
+        let chain = self.effects.chain(target_id, effect);
         if chain.is_empty() {
             return diagnostic;
         }
@@ -790,7 +900,7 @@ impl<'a> Checker<'a> {
         {
             diagnostic = diagnostic.related(
                 RelatedRole::Note,
-                format!("uses thread-bound extern type '{handle}' here"),
+                format!("uses {bound} extern type '{handle}' here"),
                 direct_span,
             );
         }
@@ -868,18 +978,23 @@ fn is_std_spawn_wrapper(function: &CheckedFunction, supplied: usize) -> bool {
         || name.starts_with("Context.after_func")
 }
 
-fn function_local_handle(function: &CheckedFunction, types: &TypeContext<'_>) -> Option<String> {
+/// The first handle that `named` finds in the types of `function`: its parameters, its result,
+/// then its body in source order.
+fn function_handle(
+    function: &CheckedFunction,
+    named: impl Fn(&Type) -> Option<String>,
+) -> Option<String> {
     for parameter in &function.parameters {
-        if let Some(name) = parameter.ty.first_local_handle_name(types) {
+        if let Some(name) = named(&parameter.ty) {
             return Some(name);
         }
     }
-    if let Some(name) = function.signature.result.first_local_handle_name(types) {
+    if let Some(name) = named(&function.signature.result) {
         return Some(name);
     }
     let mut stack = vec![&function.body];
     while let Some(expr) = stack.pop() {
-        if let Some(name) = expr.ty.first_local_handle_name(types) {
+        if let Some(name) = named(&expr.ty) {
             return Some(name);
         }
         for child in expr.children().into_iter().rev() {

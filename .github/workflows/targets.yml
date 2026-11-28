@@ -183,6 +183,15 @@ jobs:
           export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
           export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
           node tests/macos_report.mjs target/release/tsuzuri
+      # M09: MainThread.post/after on a CFRunLoop of the main thread (posts in order, the drop at the end of main, a
+      # callback of a libdispatch worker), the entry check of extern type main with a C host's pthread, and a shared
+      # anchor read on that thread, with Apple's ld and with the bundled toolchain.
+      - name: MainThread and main-thread handles (M09)
+        if: ${{ !cancelled() && runner.os == 'macOS' && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
+        run: |
+          export TSUZURI_CLANG="$LLVM_PREFIX/bin/clang"
+          export TSUZURI_BUNDLED_CLANG="$PWD/target/toolchain/bin/tsuzuri-clang"
+          node tests/main_thread.mjs target/release/tsuzuri
       - name: End-to-end compiler tests
         if: ${{ !cancelled() && matrix.group == 'suites' && steps.bundle.outcome == 'success' }}
         run: |
