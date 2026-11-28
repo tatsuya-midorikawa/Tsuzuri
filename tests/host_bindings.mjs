@@ -109,7 +109,7 @@ try {
 
   const rawPythonVersion = available(python, ["--version"]);
   const pythonArch = rawPythonVersion && isWindows
-    ? available(python, ["-c", "import platform; m = platform.machine().lower(); print('arm64' if m in ('arm64', 'aarch64') else 'x64' if m in ('amd64', 'x86_64') else m)"])
+    ? available(python, ["-c", "import sysconfig; p = sysconfig.get_platform(); print('arm64' if p == 'win-arm64' else 'x64' if p == 'win-amd64' else p)"])
     : process.arch;
   const pythonVersion = rawPythonVersion && pythonArch === process.arch ? rawPythonVersion : null;
   const clangxxVersion = available(clangxx, ["--version"])?.split("\n")[0];

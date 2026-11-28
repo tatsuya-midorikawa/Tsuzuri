@@ -7618,20 +7618,33 @@ fn run_tool_untimed(command: &mut Command, hint: &str) -> Result<String, Diagnos
     tool_output(&name, command.output(), hint)
 }
 
+fn is_wasm_ld_name(name: &str) -> bool {
+    let Some(stem) = Path::new(name).file_stem().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let lower = stem.to_ascii_lowercase();
+    lower == "wasm-ld" || lower.starts_with("wasm-ld-")
+}
+
 /// W03: the symbols that a failed link reports as undefined, in the order the linker printed them,
 /// each once. Empty when the output shows another failure.
 fn undefined_symbols(output: &str) -> Vec<String> {
     let mut symbols = Vec::new();
     let mut seen = BTreeSet::new();
     let mut push = |raw: &str, strip_macho_underscore: bool| {
-        let trimmed = raw
-            .trim()
-            .trim_end_matches('\r')
-            .trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | '‘' | '’'));
+        let trimmed = raw.trim().trim_end_matches('\r');
+        let unquoted = [("\"", "\""), ("'", "'"), ("`", "'"), ("‘", "’")]
+            .into_iter()
+            .find_map(|(open, close)| {
+                trimmed
+                    .strip_prefix(open)
+                    .and_then(|rest| rest.strip_suffix(close))
+            })
+            .unwrap_or(trimmed);
         let name = if strip_macho_underscore {
-            trimmed.strip_prefix('_').unwrap_or(trimmed)
+            unquoted.strip_prefix('_').unwrap_or(unquoted)
         } else {
-            trimmed
+            unquoted
         };
         if !name.is_empty() && seen.insert(name.to_owned()) {
             symbols.push(name.to_owned());
@@ -7641,7 +7654,10 @@ fn undefined_symbols(output: &str) -> Vec<String> {
     for raw_line in output.lines() {
         let line = raw_line.trim_end_matches('\r');
         let trimmed = line.trim_start();
-        if trimmed.starts_with("wasm-ld:") {
+        if trimmed
+            .split_once(": ")
+            .is_some_and(|(tool_prefix, _)| is_wasm_ld_name(tool_prefix.trim()))
+        {
             continue;
         }
         if trimmed.starts_with("Undefined symbols for architecture ") {
@@ -7661,22 +7677,28 @@ fn undefined_symbols(output: &str) -> Vec<String> {
             }
         }
         if let Some((_, rest)) = line.split_once("undefined symbol: ") {
-            let rest = rest.strip_prefix("__declspec(dllimport) ").unwrap_or(rest);
-            if let Some(token) = rest.split_whitespace().next() {
-                push(token, trimmed.starts_with("ld64.lld:"));
-            }
+            let symbol = rest
+                .trim()
+                .strip_prefix("__declspec(dllimport) ")
+                .unwrap_or_else(|| rest.trim());
+            push(symbol, trimmed.starts_with("ld64.lld:"));
             continue;
         }
         if (line.contains("error LNK2001:") || line.contains("error LNK2019:"))
             && let Some((_, rest)) = line.split_once("unresolved external symbol ")
         {
-            let rest = rest
-                .trim_start_matches('"')
+            let before_ref = rest
+                .split_once(" referenced in function ")
+                .map_or(rest, |(sym, _)| sym)
+                .trim();
+            let unquoted = before_ref
+                .strip_prefix('"')
+                .and_then(|inner| inner.strip_suffix('"'))
+                .unwrap_or(before_ref);
+            let symbol = unquoted
                 .strip_prefix("__declspec(dllimport) ")
-                .unwrap_or(rest);
-            if let Some(token) = rest.split_whitespace().next() {
-                push(token, false);
-            }
+                .unwrap_or(unquoted);
+            push(symbol, false);
             continue;
         }
         for open in [
@@ -7724,11 +7746,7 @@ fn tool_output(
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() {
-        let is_wasm_ld = Path::new(name)
-            .file_stem()
-            .and_then(OsStr::to_str)
-            .is_some_and(|stem| stem.eq_ignore_ascii_case("wasm-ld"));
-        let unresolved = if is_wasm_ld {
+        let unresolved = if is_wasm_ld_name(name) {
             Vec::new()
         } else {
             undefined_symbols(&text)
@@ -8893,6 +8911,23 @@ mod tests {
         );
         assert_eq!(
             undefined_symbols(
+                "lld-link: error: undefined symbol: int __cdecl foo(void)\r\n\
+                 lld-link: error: undefined symbol: int __cdecl bar(int)\r\n"
+            ),
+            ["int __cdecl foo(void)", "int __cdecl bar(int)"]
+        );
+        assert_eq!(
+            undefined_symbols(
+                "host.obj : error LNK2019: unresolved external symbol \"int __cdecl foo(void)\" (?foo@@YAHXZ) referenced in function main\r\n\
+                 host.obj : error LNK2001: unresolved external symbol \"int __cdecl bar(int)\" (?bar@@YAHH@Z)\r\n"
+            ),
+            [
+                "\"int __cdecl foo(void)\" (?foo@@YAHXZ)",
+                "\"int __cdecl bar(int)\" (?bar@@YAHH@Z)"
+            ]
+        );
+        assert_eq!(
+            undefined_symbols(
                 "tag.obj : error LNK2019: unresolved external symbol malloc referenced in function tz.string.to_well_formed\r\n\
                  tag.obj : error LNK2019: unresolved external symbol free referenced in function tz.free\r\n\
                  tag.obj : error LNK2019: unresolved external symbol realloc referenced in function tz.realloc\r\n\
@@ -8943,12 +8978,19 @@ mod tests {
             "ld.lld: error: unable to find library -lfoo\n",
             "clang: error: no such file or directory: 'missing.o'\n",
             "wasm-ld: error: module.o: undefined symbol: tsuzuri_io_write\n",
+            "wasm-ld-21: error: module.o: undefined symbol: tsuzuri_io_write\n",
+            "/usr/bin/wasm-ld-21: error: module.o: undefined symbol: tsuzuri_io_write\n",
+            "C:\\llvm\\bin\\wasm-ld-21.exe: error: module.o: undefined symbol: tsuzuri_io_write\r\n",
         ] {
             assert!(
                 undefined_symbols(non_undefined).is_empty(),
                 "unexpected match for: {non_undefined}"
             );
         }
+        assert!(is_wasm_ld_name("wasm-ld"));
+        assert!(is_wasm_ld_name("/usr/bin/wasm-ld-21"));
+        assert!(is_wasm_ld_name(r"C:\llvm\bin\wasm-ld.exe"));
+        assert!(!is_wasm_ld_name("clang"));
     }
 
     #[test]
