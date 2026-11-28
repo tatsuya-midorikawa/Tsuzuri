@@ -38,7 +38,7 @@ _Atomic(int32_t (*)(uintptr_t)) tsuzuri_stack_guard_hook;
 /* M19, src/runtime/oslog-darwin.c: an Apple executable whose standard error is closed or /dev/null
    sends the report to unified logging. Only the driver's build of an executable defines the macro. */
 int32_t tsuzuri_report_to_log(void);
-void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
+void tsuzuri_report_whole(int32_t category, const char *text, int64_t length);
 #endif
 
 /* The report is written before anything can end the process, by every thread that overflows, so
@@ -51,7 +51,7 @@ static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
         static const char message[] = "trap: stack overflow\n";
 #if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
         if (tsuzuri_report_to_log()) {
-            tsuzuri_report_log(0, message, (int64_t)(sizeof message - 1));
+            tsuzuri_report_whole(0, message, (int64_t)(sizeof message - 1));
             abort();
         }
 #endif
@@ -67,7 +67,7 @@ static void tz_stack_fault(int signal, siginfo_t *info, void *context) {
             static const char message[] = "trap: stack overflow\n";
 #if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
             if (tsuzuri_report_to_log()) {
-                tsuzuri_report_log(0, message, (int64_t)(sizeof message - 1));
+                tsuzuri_report_whole(0, message, (int64_t)(sizeof message - 1));
                 abort();
             }
 #endif

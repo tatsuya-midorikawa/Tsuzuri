@@ -146,6 +146,25 @@ try {
   must(compiler, ["bench", project, "--samples", "3"], { env, timeout: 120_000 });
   ran += 1;
 
+  // The runtime itself (src/runtime/mainthread-darwin.c), driven from C on a run loop of the main
+  // thread: the order of posts and deadlines, a function that posts again, posts of another thread,
+  // the end of a boundary whose drop serves the main queue, and a hundred thousand posts that the
+  // main thread never serves, three times over, which must not keep memory per post. A second
+  // build runs the same scenes under the address and undefined-behaviour sanitizers.
+  const runtimeTest = join(root, "tests", "main_thread_runtime.c");
+  const cFlags = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1", "-mmacosx-version-min=12.0"];
+  for (const [name, flags] of [
+    ["runtime", []],
+    ["runtime-sanitized", ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-DTZ_TEST_NO_MALLOC_STATS"]],
+  ]) {
+    const executable = join(scratch, name);
+    must("clang", [...cFlags, ...flags, runtimeTest, "-framework", "CoreFoundation", "-o", executable]);
+    const result = must(executable, [], { timeout: 120_000 });
+    assert.match(result.stdout, /main_thread_runtime: all passed\n$/, name);
+    assert.equal(result.stderr, "", name);
+    ran += 1;
+  }
+
   // Phase 2: a callback whose body uses an `extern type main` handle checks its thread on entry.
   // The C host calls the callbacks on the main thread and on a thread of its own.
   // - `callback_on_main`: the body runs (one window while it does, none after).

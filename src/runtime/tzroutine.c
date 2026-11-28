@@ -275,14 +275,14 @@ static void tzr_fatal(const char *message);
 /* M19, src/runtime/oslog-darwin.c: an Apple executable whose standard error is closed or /dev/null
  * sends its reports to unified logging. Only the driver's unit of an executable defines the macro. */
 int32_t tsuzuri_report_to_log(void);
-void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
+void tsuzuri_report_whole(int32_t category, const char *text, int64_t length);
 #endif
 
 #if !defined(_WIN32)
 static void tzr_report(const char *text, size_t length) {
 #if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
     if (tsuzuri_report_to_log()) {
-        tsuzuri_report_log(1, text, (int64_t)length);
+        tsuzuri_report_whole(1, text, (int64_t)length);
         return;
     }
 #endif
@@ -2532,7 +2532,7 @@ __attribute__((noreturn)) static void tzr_async_lost(void) {
     static const char message[] = "Tsuzuri runtime: a preempted tzroutine cannot be resumed\n";
 #if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
     if (tsuzuri_report_to_log()) {
-        tsuzuri_report_log(1, message, (int64_t)(sizeof message - 1));
+        tsuzuri_report_whole(1, message, (int64_t)(sizeof message - 1));
         abort();
     }
 #endif

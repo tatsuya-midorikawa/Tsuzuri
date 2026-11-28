@@ -7,6 +7,7 @@
    Console.app and `log show` read. Every other destination keeps the bytes it got before. */
 #if defined(__APPLE__)
 #include <errno.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -79,14 +80,26 @@ static void tz_report_send(int32_t category, const char *text, int64_t length) {
 #endif
 }
 
-/* A report is one entry: its text without the newline that ends it. One that arrives in pieces (the
-   weak-symbol report writes a prefix, a name and a suffix) is held until the piece that ends with the
-   newline. The holder is taken without waiting, so a signal handler that interrupts it, or a second
-   thread, sends its own text at once. */
+/* A whole report of the C runtime (one call, one entry): its text without the newline that ends it.
+   It never meets the pieces below, so a report that a signal handler writes (a stack overflow), or
+   that another thread writes, is an entry of its own whatever was being written when it came. */
+__attribute__((visibility("hidden"), cold))
+void tsuzuri_report_whole(int32_t category, const char *text, int64_t length) {
+    if (length <= 0) return;
+    if (text[length - 1] == '\n') length--;
+    tz_report_send(category, text, length);
+}
+
+/* A report of the generated code (`@tz.trap.write`) is one entry too, but it may arrive in pieces (the
+   weak-symbol report writes a prefix, a name and a suffix): the pieces are held until the one that ends
+   with the newline. The pieces that are held belong to one thread. A piece of another thread goes out
+   by itself, and so does one that finds the holder taken (a second thread, or a signal handler that
+   interrupted the copy): two reports are never joined into one entry. */
 enum { TZ_REPORT_HELD = 512 };
 static atomic_flag tz_report_holding = ATOMIC_FLAG_INIT;
 static char tz_report_held[TZ_REPORT_HELD];
 static size_t tz_report_held_length;
+static pthread_t tz_report_holder; /* the thread of the held pieces, while there are any */
 
 __attribute__((visibility("hidden"), cold))
 void tsuzuri_report_log(int32_t category, const char *text, int64_t length) {
@@ -97,7 +110,13 @@ void tsuzuri_report_log(int32_t category, const char *text, int64_t length) {
         tz_report_send(category, text, length);
         return;
     }
+    if (tz_report_held_length != 0 && !pthread_equal(tz_report_holder, pthread_self())) {
+        atomic_flag_clear_explicit(&tz_report_holding, memory_order_release);
+        tz_report_send(category, text, length);
+        return;
+    }
     if (!complete || tz_report_held_length != 0) {
+        if (tz_report_held_length == 0) tz_report_holder = pthread_self();
         size_t room = TZ_REPORT_HELD - tz_report_held_length;
         size_t count = (uint64_t)length < room ? (size_t)length : room;
         memcpy(tz_report_held + tz_report_held_length, text, count);

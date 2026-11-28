@@ -16,10 +16,18 @@ int main(void) {
 }
 #else
 #include "../src/runtime/oslog-darwin.c"
+#include <pthread.h>
 #include <stdio.h>
 
 static void piece(int32_t category, const char *text) {
     tsuzuri_report_log(category, text, (int64_t)strlen(text));
+}
+
+/* A report of generated code on another thread, written while this thread's report is in pieces. */
+static void *other_thread(void *argument) {
+    (void)argument;
+    piece(0, "trap: integer overflow at Main.tz:2:5\n");
+    return NULL;
 }
 
 int main(void) {
@@ -31,7 +39,7 @@ int main(void) {
     if (null < 0 || file < 0 || dup2(first ? file : null, 2) < 0) return 2;
     printf("%d %d\n", first, tsuzuri_report_to_log());
     /* A whole report, a report in three pieces, a runtime report, a report longer than the holder,
-       and a piece that no newline ends (never sent). */
+       reports that arrive between the pieces of another, and a piece that no newline ends (never sent). */
     piece(0, "trap: integer division by zero at Main.tz:1:34\n");
     piece(0, "Tsuzuri runtime: the weak symbol '");
     piece(0, "tz_missing");
@@ -40,6 +48,16 @@ int main(void) {
     memset(wide, 'x', sizeof wide - 1);
     piece(1, wide);
     piece(1, "\n");
+    /* Independent reports are never joined: while this thread's report is in pieces, a whole report
+       of the C runtime (as the handler of a signal writes on the same thread) and a report of another
+       thread are entries of their own, and the pieces still make one entry. */
+    piece(0, "Tsuzuri runtime: the weak symbol '");
+    static const char lost[] = "Tsuzuri runtime: a preempted tzroutine cannot be resumed\n";
+    tsuzuri_report_whole(1, lost, (int64_t)(sizeof lost - 1));
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, other_thread, NULL) != 0 || pthread_join(thread, NULL) != 0) return 3;
+    piece(0, "tz_other");
+    piece(0, "' is not available on this system\n");
     piece(0, "left");
     return 0;
 }

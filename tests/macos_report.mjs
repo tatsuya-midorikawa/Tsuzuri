@@ -134,6 +134,10 @@ try {
       "trap\tTsuzuri runtime: the weak symbol 'tz_missing' is not available on this system",
       "runtime\tTsuzuri runtime: negative WaitGroup counter",
       `runtime\t${wide}`,
+      // Written between the pieces of the report that follows them: each is an entry of its own.
+      "runtime\tTsuzuri runtime: a preempted tzroutine cannot be resumed",
+      "trap\ttrap: integer overflow at Main.tz:2:5",
+      "trap\tTsuzuri runtime: the weak symbol 'tz_other' is not available on this system",
       "",
     ].join("\n");
     const zero = openSync("/dev/zero", "w");

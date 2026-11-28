@@ -440,3 +440,9 @@ Phase のないチケットなので、手順 1〜6 のすべてを 1 つのブ�
 
 - **`--emit app`（M15）**: M15 の `build_app` はバンドルの実行ファイルを `Emit::Executable` の `build_complete_keyed` で作るので、`report_to_os_log` の条件を変えずに対象に入る。`[macos] bundle_id`・`ui_element = true` のプロジェクトを `--emit app --trap-info` で作り、`open -W` で起動すると、`[dev.tsuzuri.runtime:trap] trap: integer division by zero at …/Main.tz:1:34` の 1 件が残り、`codesign --verify --deep --strict` も通ることを確かめた。`tests/macos_report.mjs` に、この組み合わせの段（`open` で起動したバンドルの記録を、文とバンドルの中の実行ファイルのパスで探す。`TSUZURI_MACOS_BUNDLE_NO_OPEN=1` で飛ばせる）を足した。
 - **`MainThread`（M09）のランタイム**: `src/runtime/mainthread-darwin.c` の確保の失敗の報告（`Tsuzuri runtime: out of memory`）も、`TZ_REPORT_OSLOG` の下で同じ判定を通るようにした（category `runtime`）。`report_runtime` と C の単位の `-DTZ_REPORT_OSLOG` の条件に `main_thread_runtime` を足した。`MainThread` を使わないプログラムの単位の文字列と引数は変わらない。
+
+### レビュー対応（2026-11-28、PR #152 の Copilot レビュー）
+
+- **独立した報告が 1 件に混ざる**（`src/runtime/oslog-darwin.c`、D11 の改訂）: 断片を貯める領域がプロセスに 1 つで、断片の間に別のスレッドの報告やシグナルのハンドラーの報告が来ると、先の断片に続けて 1 件になり、後の呼び出しの category で送られた。C のランタイムの報告（`tzr_report`・`tzr_async_lost`・`stack.c`・`cpu.c`・`mainthread-darwin.c`）は、貯めた断片に触れない `tsuzuri_report_whole(category, text, length)` を呼ぶようにした（いつも 1 回の呼び出しで 1 件）。生成コードの `tsuzuri_report_log` は、貯めた断片を書いたスレッドを覚え、別のスレッドの断片は貯めずにその場で送る。
+- **テスト**: `tests/macos_report_host.c` に、断片の間に C のランタイムの報告と別のスレッドの報告が来る段を足した（3 件が別々の記録になる。直す前の実装では 1 件目と 2 件目が先の断片と混ざることを確かめた）。
+

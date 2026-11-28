@@ -566,3 +566,11 @@ void tsuzuri_mainthread_boundary_done(void);
 ### 変更したファイル
 
 `src/check.rs`、`src/stdlib.rs`、`src/effects.rs`、`src/pure_rules.rs`、`src/kg/effects.rs`、`src/pinned_rules.rs`、`src/ownership.rs`、`src/polymorph.rs`、`src/capabilities.rs`、`src/syntax.rs`、`src/parser.rs`、`src/syntax_codec.rs`、`src/frontend_cache.rs`、`src/formatter.rs`、`src/api_diff.rs`、`src/objc.rs`、`src/diagnostic_kinds.rs`、`src/llvm.rs`、`src/llvm_mainthread.rs`（新規）、`src/llvm_abi.rs`、`src/llvm_anchor.rs`、`src/llvm_imports.rs`、`src/llvm_traps.rs`、`src/driver.rs`、`src/test_runner.rs`、`src/cache.rs`、`src/runtime/mainthread-darwin.c`（新規）、`src/runtime/tzroutine.c`、`std/Anchor.tz`、`tests/main_thread.rs`・`tests/main_thread_handles.rs`・`tests/shared_anchor.rs`・`tests/main_thread.mjs`・`tests/main_thread/app/Main.tz`・`tests/main_thread/handles/Main.tz`・`tests/main_thread_host.c`（新規）、`tests/fixtures/anchor/Main.tz`、`tests/features.mjs`、`tests/std_argument_order.rs`、`.github/workflows/targets.yml`、`README.md`、`docs/language.md`、`_features/GUIDE.md`。
+
+### レビュー対応（2026-11-28、PR #152 の Copilot レビュー）
+
+- **境界の終わりの後に関数が呼ばれうる窓**（`src/runtime/mainthread-darwin.c`）: 境界の drop が実行する `Drop` がメインのキューを処理すると、まだ drop していない投入が呼ばれえた。キューから呼ばれる側が、境界の終わりの印を見て何も呼ばないようにした。
+- **処理されないキューに記録が残る**: 投入ごとに `dispatch_async_f`・`dispatch_after_f` へ記録のポインターを渡していたので、メインスレッドがキューを処理しないプログラム（投入する `bench`）では、境界で drop した後も記録と libdispatch の項目が投入の数だけ残った。設計の「Phase 1: ランタイム」から外し、投入した関数を自前の待ち行列（投入の順の全体の列、投入の列、期限の順の列）に置いて、メインのキューには行列を処理する呼び出しだけを積む形にした（投入には多くて 1 つ、期限にはいちばん早い期限のためのタイマー。タイマーは記録でなく期限の値を運ぶ）。境界の終わりは残った記録をすべて解放する。投入はまとめて順に呼び、呼ばれている関数が新しく投入したものは次の回に回す。メインのキューに直接積まれたほかの仕事との前後は決めない（仕様は投入どうしの順だけを決めている）。期限の時計は `CLOCK_MONOTONIC` で、libdispatch のタイマーは期限かそれより後に来る。
+- **テスト**: `tests/main_thread_runtime.c`（新規。`tests/main_thread.mjs` が通常のビルドと ASan・UBSan のビルドで走らせる）。投入と期限の順、投入し直す関数、別のスレッドからの 2,000 件の投入、drop がキューを処理する境界の終わり、処理されない 10 万件の投入を 3 回繰り返して `malloc_zone_statistics` の使用量が増えないこと（増分 64 KiB 以下）。直す前のランタイムでは、メモリの検査と境界の終わりの検査がそれぞれ失敗することを確かめた。
+- **共有アンカーのスレッド間の寿命**: `tests/tzroutine_runtime.c` の `anchor_shared`（`tests/tzroutine_runtime.mjs` に登録）。ランタイムに参加していない 2 つのスレッドが読み取りを保持している間に、別のスレッドが持ち主の drop で、または切り離した後の `release_shared` で退かせる。新しい読み取りは `Stale`、保持中の読み取りは値を読め、drop は最後の読み取りの終わりの後に 1 回だけで、確保の数が 0 に戻る。ThreadSanitizer のビルドでも通る。
+
