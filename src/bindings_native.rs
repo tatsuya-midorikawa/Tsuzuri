@@ -1782,18 +1782,103 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 )
             })
     });
+    let mut taken: BTreeSet<String> = [
+        "buffer",
+        "string_buffer",
+        "utf8string_buffer",
+        "trap_error",
+        "detail",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let exported_functions: Vec<(&CheckedFunction, String)> = exports(module)
+        .into_iter()
+        .map(|function| {
+            let function_name = cpp_name(&function.name, &taken);
+            taken.insert(function_name.clone());
+            (function, function_name)
+        })
+        .collect();
+    let mut shielded = BTreeSet::new();
+    let mut add_shield = |ident: &str| {
+        if !ident.is_empty()
+            && !CPP_KEYWORDS.contains(&ident)
+            && !matches!(ident, "GetModuleHandleW" | "GetProcAddress")
+        {
+            shielded.insert(ident.to_owned());
+        }
+    };
+    for builtin_macro in ["near", "far", "cdecl", "pascal"] {
+        add_shield(builtin_macro);
+    }
+    add_shield(&namespace);
+    for (function, function_name) in &exported_functions {
+        add_shield(function_name);
+        add_shield(&format!("tz_{}", function.name));
+        if trap_return {
+            add_shield(&format!("tsuzuri_try_{}", function.name));
+        }
+    }
+    for (rname, record_ty) in records(module) {
+        add_shield(&rname);
+        for (fname, _, _) in fields(&record_ty, module) {
+            add_shield(&crate::abi::field_name(&fname));
+        }
+    }
+    for handle in handles(module) {
+        add_shield(&handle_c_name(&handle));
+    }
+    let push_macros: String = shielded
+        .iter()
+        .map(|ident| format!("#pragma push_macro(\"{ident}\")\n"))
+        .collect();
+    let undef_macros: String = shielded
+        .iter()
+        .map(|ident| format!("#undef {ident}\n"))
+        .collect();
+    let pop_macros: String = shielded
+        .iter()
+        .rev()
+        .map(|ident| format!("#pragma pop_macro(\"{ident}\")\n"))
+        .collect();
     let mut output = banner("//");
     let win32_loader = if owned {
         "#ifdef _WIN32\n\
          #pragma push_macro(\"WIN32_LEAN_AND_MEAN\")\n\
          #pragma push_macro(\"NOMINMAX\")\n\
+         #pragma push_macro(\"NOGDI\")\n\
+         #pragma push_macro(\"NOUSER\")\n\
+         #pragma push_macro(\"NOSERVICE\")\n\
+         #pragma push_macro(\"NOMCX\")\n\
+         #pragma push_macro(\"NOIME\")\n\
          #ifndef WIN32_LEAN_AND_MEAN\n\
          #define WIN32_LEAN_AND_MEAN\n\
          #endif\n\
          #ifndef NOMINMAX\n\
          #define NOMINMAX\n\
          #endif\n\
+         #ifndef NOGDI\n\
+         #define NOGDI\n\
+         #endif\n\
+         #ifndef NOUSER\n\
+         #define NOUSER\n\
+         #endif\n\
+         #ifndef NOSERVICE\n\
+         #define NOSERVICE\n\
+         #endif\n\
+         #ifndef NOMCX\n\
+         #define NOMCX\n\
+         #endif\n\
+         #ifndef NOIME\n\
+         #define NOIME\n\
+         #endif\n\
          #include <windows.h>\n\
+         #pragma pop_macro(\"NOIME\")\n\
+         #pragma pop_macro(\"NOMCX\")\n\
+         #pragma pop_macro(\"NOSERVICE\")\n\
+         #pragma pop_macro(\"NOUSER\")\n\
+         #pragma pop_macro(\"NOGDI\")\n\
          #pragma pop_macro(\"NOMINMAX\")\n\
          #pragma pop_macro(\"WIN32_LEAN_AND_MEAN\")\n\
          #endif\n"
@@ -1806,13 +1891,9 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
          // tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n\
          #pragma once\n\
          #ifdef _WIN32\n\
-         #pragma push_macro(\"near\")\n\
-         #pragma push_macro(\"far\")\n\
-         #endif\n\
+         {push_macros}#endif\n\
          {win32_loader}#ifdef _WIN32\n\
-         #undef near\n\
-         #undef far\n\
-         #endif\n\
+         {undef_macros}#endif\n\
          #include \"{name}.h\"\n\n\
          #include <cstddef>\n\
          #include <cstdint>\n\
@@ -1834,16 +1915,6 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             ""
         }
     );
-    let mut taken: BTreeSet<String> = [
-        "buffer",
-        "string_buffer",
-        "utf8string_buffer",
-        "trap_error",
-        "detail",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
     if owned {
         let escaped_dll = format!("{name}.dll")
             .replace('\\', "\\\\")
@@ -1892,18 +1963,14 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
         }
         output.push_str("} // namespace detail\n\n");
     }
-    for function in exports(module) {
-        let function_name = cpp_name(&function.name, &taken);
-        taken.insert(function_name.clone());
-        cpp_export(&mut output, function, module, &function_name, trap_return);
+    for (function, function_name) in &exported_functions {
+        cpp_export(&mut output, function, module, function_name, trap_return);
     }
     let _ = writeln!(
         output,
         "}} // namespace tsuzuri::{namespace}\n\
          #ifdef _WIN32\n\
-         #pragma pop_macro(\"far\")\n\
-         #pragma pop_macro(\"near\")\n\
-         #endif"
+         {pop_macros}#endif"
     );
     output
 }

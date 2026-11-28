@@ -207,65 +207,85 @@ try {
     assert.match(execute(program, []).stdout, /^two libraries passed\r?$/m, label);
   }
   if (isWindows && clangxxVersion) {
-    // Windows SDK <minwindef.h> defines empty `near` and `far` macros; generated C++ headers must
-    // shield both namespace `tsuzuri::near` (`near.hpp`) and owned-result exports `near` / `far`.
-    const nearDir = join(root, "near-macro");
-    const nearOut = join(nearDir, "out");
-    mkdirSync(nearOut, { recursive: true });
+    // Windows SDK headers define macros such as `near`, `far`, `cdecl`, `pascal`, and `ERROR`;
+    // generated C++ headers must shield their namespace, export, and field identifiers while
+    // preserving the caller's macro state.
+    const macroDir = join(root, "win-macros");
+    const macroOut = join(macroDir, "out");
+    mkdirSync(macroOut, { recursive: true });
     writeFileSync(
-      join(nearDir, "Main.tz"),
+      join(macroDir, "Main.tz"),
       [
-        "record Span { near: i64, far: i64 }",
+        "record Span { near: i64, far: i64, cdecl: i64, pascal: i64 }",
         "export def near :: i64 -> [ubyte]",
         "fn near n = Array.init n (\\i -> (65 + i) as ubyte)",
         "export def far :: ref Span -> [ubyte]",
         "fn far s = Array.init (s.far - s.near) (\\i -> (97 + i) as ubyte)",
+        "export def cdecl :: i64 -> [ubyte]",
+        "fn cdecl n = Array.init n (\\i -> (48 + i) as ubyte)",
+        "export def pascal :: ref Span -> [ubyte]",
+        "fn pascal s = Array.init (s.pascal - s.cdecl) (\\i -> (65 + i) as ubyte)",
         "",
       ].join("\n"),
     );
-    execute(compiler, ["build", nearDir, "--emit", "header", "-o", join(nearOut, "near.h")]);
-    execute(compiler, ["build", nearDir, "--emit", "bindings-cpp", "-o", join(nearOut, "near.hpp")]);
-    execute(compiler, ["build", nearDir, "--emit", "shared", "-o", join(nearOut, "near.dll")]);
-    const nearPlainCpp = join(nearDir, "near_plain.cpp");
+    for (const stem of ["near", "cdecl", "ERROR"]) {
+      execute(compiler, ["build", macroDir, "--emit", "header", "-o", join(macroOut, `${stem}.h`)]);
+      execute(compiler, ["build", macroDir, "--emit", "bindings-cpp", "-o", join(macroOut, `${stem}.hpp`)]);
+      execute(compiler, ["build", macroDir, "--emit", "shared", "-o", join(macroOut, `${stem}.dll`)]);
+    }
+    const macroPlainCpp = join(macroDir, "macro_plain.cpp");
     writeFileSync(
-      nearPlainCpp,
+      macroPlainCpp,
       [
         "#undef NDEBUG",
         "#include <cassert>",
         '#include "near.hpp"',
+        '#include "cdecl.hpp"',
+        '#include "ERROR.hpp"',
         "int main() {",
+        "  tz_record_4Main_4Span s{1, 3, 2, 5};",
         "  auto a = tsuzuri::near::near(3);",
-        "  tz_record_4Main_4Span s{1, 3};",
         "  auto b = tsuzuri::near::far(s);",
-        "  assert(a.size() == 3 && a[0] == 65 && b.size() == 2 && b[0] == 97);",
+        "  auto c = tsuzuri::cdecl::cdecl(2);",
+        "  auto d = tsuzuri::cdecl::pascal(s);",
+        "  auto e = tsuzuri::ERROR::near(4);",
+        "  assert(a.size() == 3 && b.size() == 2 && c.size() == 2 && d.size() == 3 && e.size() == 4);",
         "  return 0;",
         "}",
         "",
       ].join("\n"),
     );
-    const nearWithWinCpp = join(nearDir, "near_with_win.cpp");
+    const macroWithWinCpp = join(macroDir, "macro_with_win.cpp");
     writeFileSync(
-      nearWithWinCpp,
+      macroWithWinCpp,
       [
         "#undef NDEBUG",
         "#include <windows.h>",
         "#include <cassert>",
         '#include "near.hpp"',
+        '#include "cdecl.hpp"',
+        '#include "ERROR.hpp"',
+        "static_assert(ERROR == 0, \"caller ERROR macro preserved\");",
         "#undef near",
         "#undef far",
+        "#undef cdecl",
+        "#undef pascal",
+        "#undef ERROR",
         "int main() {",
+        "  tz_record_4Main_4Span s{0, 2, 1, 3};",
         "  auto a = tsuzuri::near::near(2);",
-        "  tz_record_4Main_4Span s{0, 2};",
-        "  auto b = tsuzuri::near::far(s);",
-        "  assert(a.size() == 2 && b.size() == 2);",
+        "  auto b = tsuzuri::cdecl::pascal(s);",
+        "  auto c = tsuzuri::ERROR::far(s);",
+        "  assert(a.size() == 2 && b.size() == 2 && c.size() == 2);",
         "  return 0;",
         "}",
         "",
       ].join("\n"),
     );
-    for (const [tag, src] of [["plain", nearPlainCpp], ["with_win", nearWithWinCpp]]) {
-      const exe = join(nearOut, `near_${tag}.exe`);
-      execute(clangxx, [...winTargetArgs, "-std=c++20", "-Wall", "-Wextra", "-pedantic", "-Werror", "-I", nearOut, src, join(nearOut, "near.lib"), "-o", exe]);
+    const macroLibs = [join(macroOut, "near.lib"), join(macroOut, "cdecl.lib"), join(macroOut, "ERROR.lib")];
+    for (const [tag, src] of [["plain", macroPlainCpp], ["with_win", macroWithWinCpp]]) {
+      const exe = join(macroOut, `macro_${tag}.exe`);
+      execute(clangxx, [...winTargetArgs, "-std=c++20", "-Wall", "-Wextra", "-pedantic", "-Werror", "-I", macroOut, src, ...macroLibs, "-o", exe]);
       execute(exe, []);
     }
   }
