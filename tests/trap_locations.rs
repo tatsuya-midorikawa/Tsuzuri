@@ -615,3 +615,67 @@ fn trap_aware_ir_executes_on_native_and_wasm_at_both_levels() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+// M19: only an executable for an Apple target asks where its reports go (unified logging when standard error is
+// closed or /dev/null). The IR that `--emit llvm` writes is for a host that owns its standard error, so on every
+// target its writer is the one it was (the loop of `write(2, ...)` on the POSIX targets), and it never names the
+// report runtime.
+#[test]
+fn emitted_ir_keeps_the_plain_report_writer_on_every_target() {
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let root = std::env::temp_dir().join(format!(
+        "tsuzuri-trap-writer-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&root).unwrap();
+    let source = root.join("Main.tz");
+    fs::write(
+        &source,
+        "def divide :: i64 -> i64 = \\x -> 10 / x\n\ndef main :: Array<string> -> i32 = \\args ->\n    (divide args.length) as i32\n",
+    )
+    .unwrap();
+    let writer = "define internal void @tz.trap.write(ptr %data, i64 %length) cold nounwind {\nentry:\n  br label %loop\nloop:\n";
+    for target in [
+        None,
+        Some("aarch64-apple-darwin"),
+        Some("x86_64-unknown-linux-gnu"),
+        Some("x86_64-pc-windows-msvc"),
+        Some("wasm32"),
+    ] {
+        for optimization in ["-O0", "-O3"] {
+            let output = root.join("module.ll");
+            let mut command = Command::new(env!("CARGO_BIN_EXE_tsuzuri"));
+            command
+                .arg("build")
+                .arg(&source)
+                .args(["--emit", "llvm", "--trap-info", optimization, "-o"])
+                .arg(&output);
+            if let Some(target) = target {
+                command.args(["--target", target]);
+            }
+            let result = command.output().unwrap();
+            assert!(
+                result.status.success(),
+                "{target:?} {optimization}: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let ir = fs::read_to_string(&output).unwrap();
+            assert!(!ir.contains("tsuzuri_report_"), "{target:?} {optimization}");
+            // The POSIX targets write through `write`; Windows has its own writer (W04) and WebAssembly a getter.
+            let posix = match target {
+                None => cfg!(unix),
+                Some(target) => !target.contains("windows") && target != "wasm32",
+            };
+            assert_eq!(ir.contains(writer), posix, "{target:?} {optimization}");
+        }
+    }
+    fs::remove_dir_all(root).unwrap();
+}
