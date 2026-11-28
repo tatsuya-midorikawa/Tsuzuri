@@ -220,6 +220,21 @@ try {
     ran += 1;
   }
 
+  // The runners of `tsuzuri test` compile the scheduler themselves: the test of the fixture (a
+  // tzroutine that yields, one that ends, and one kept on its thread) finds the host's counts at
+  // zero where the scheduler's pools make them so, at both levels, and so does the runner that
+  // `test --index N -g -o PATH` writes for a debugger.
+  for (const optimization of ["-O0", "-O3"]) {
+    const tested = must(compiler, ["test", fixture, optimization, ...link], { env });
+    assert.match(tested.stdout, /^1 passed; 0 failed; 0 ignored$/m, `test at ${optimization}:\n${tested.stdout}`);
+    ran += 1;
+  }
+  const debugRunner = join(scratch, "debug-runner");
+  must(compiler, ["test", fixture, "--index", "0", "-g", "-O0", "-o", debugRunner, ...link], { env });
+  must(debugRunner, ["0"], { env });
+  assert.match(must("nm", ["-u", debugRunner]).stdout, /_objc_autoreleasePoolPush/, "the debug runner");
+  ran += 1;
+
   // A program without Objective-C keeps the runtime that it had: nothing of libobjc is referenced.
   const plain = join(scratch, "pingpong");
   must(compiler, ["build", plainPingpong, "-O3", "-o", plain], { env });

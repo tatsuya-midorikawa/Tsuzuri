@@ -504,3 +504,11 @@ Phase 1・2 を 1 つのブランチ（`feat/m10-objc-autorelease-pools`）で�
 ### 変更したファイル
 
 `src/check.rs`、`src/effects.rs`、`src/pure_rules.rs`、`src/kg/effects.rs`、`src/pinned_rules.rs`、`src/capabilities.rs`、`src/llvm.rs`、`src/llvm_objc.rs`、`src/llvm_imports.rs`、`src/driver.rs`、`src/runtime/tzroutine.c`、`tests/objc_pools.rs`（新規）、`tests/objc_pools.mjs`（新規）、`tests/objc_pools_host.m`（新規）、`tests/objc/pools/Main.tz`（新規）、`tests/objc/pingpong/Main.tz`（新規）、`tests/objc/classes/Main.tz`（コメント）、`tests/tzroutine_runtime.c`、`tests/tzroutine_runtime.mjs`、`.github/workflows/targets.yml`、`docs/language.md`、`docs/architecture.md`、`README.md`、`_features/README.md`、`_features/GUIDE.md`、`_features/M03-objc-classes-defined-in-tsuzuri.md`、`_features/M05-objc-exception-boundary.md`、`_features/M23-objc-out-parameters-and-weak-references.md`、`_features/_completed/M01-objc-class-types.md`・`M02-objc-typed-message-send.md`（リンク）、このチケット。
+
+### Copilot のレビューへの対応（PR #156、2026-11-29）
+
+指摘は 2 件で、どちらも直した。
+
+- **`test`・`bench` のランナーが区間のプールを持たない**: `tzroutine.c` をコンパイルする所は driver のほかに `src/test_runner.rs` の 2 か所（`compile_native_runner` と `build_debug_runner`）があり、どちらも `-DTZR_OBJC_POOLS` を渡していなかった。判定を `driver::objc_pools_runtime`（Mach-O の target で `llvm::uses_objc`）とマクロの名前 `driver::OBJC_POOLS_DEFINE` にまとめ、3 か所が同じものを使う。fixture に `test` を 1 つ足し（yield する tzroutine、終わる tzroutine、固定された tzroutine）、E2E が `tsuzuri test` を `-O0`・`-O3` で通し、`test --index 0 -g -o` のランナーを実行して `nm -u` に `_objc_autoreleasePoolPush` があることを確かめる。直す前の形（Phase 1 だけ）では、同じ case が `1000 1000` を返していた。
+- **`--trap-mode return` でトラップが pop を飛ばす**: 境界へ戻る `siglongjmp` は、pop と `tsuzuri_tz_unlock_thread` を飛ばし、プールがホストのスレッドに残る。`MainThread`・`Anchor` と同じ並びで、`llvm::uses_autorelease_pool` のプログラムを `E2000` `option_conflict` で拒否する（文: `--trap-mode return cannot be combined with ObjC.with_autorelease_pool: …`）。`Domain.run` の本体は純粋でなければならない（`domain_body_not_pure`）ので、効果 `extern` のこの関数は失敗の領域の中には書けない。Rust の `trap_mode_return_excludes_the_pool` が、直接の呼び出しと関数値の両方で確かめる。
+- 対応の後: `cargo test --locked --test objc_pools` が 11 件、`node tests/objc_pools.mjs target/debug/tsuzuri` が `objc_pools: ok (89 checks)`、`main_thread`・`objc_classes`・`objc_send`・`test_runner`・`bench` の Rust のテストと `trap_boundary.mjs`（20 cases）が通過。`docs/language.md`・`docs/architecture.md` と Tsuzuri-Reference の `objective-c.md` に、ランナーの区間のプールと `--trap-mode return` の拒否を書いた。

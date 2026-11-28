@@ -656,3 +656,35 @@ export def work :: i64 = \\() ->
     );
     assert!(!library.contains("tsuzuri_tz_blocking"), "{library}");
 }
+
+#[test]
+fn trap_mode_return_excludes_the_pool() {
+    // A trap that returns to the host would skip the pop and leave the pool, with what it holds,
+    // on the host's thread. The driver refuses the combination before it looks at the target.
+    for source in [
+        POOL_ONLY,
+        "export def run :: own i64 -> i64\nfn run n =\n    let pool = ObjC.with_autorelease_pool\n    pool (\\() -> n + 1)\n",
+    ] {
+        let root = temp_project("trap-return", &[("Main.tz", source)]);
+        let output = Command::new(bin())
+            .arg("build")
+            .arg(&root)
+            .args(["--trap-mode", "return", "--emit", "object", "--json", "-o"])
+            .arg(root.join("out.o"))
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.status.success(), "{text}");
+        assert!(text.contains("\"code\":\"E2000\""), "{text}");
+        assert!(text.contains("\"kind\":\"option_conflict\""), "{text}");
+        assert!(
+            text.contains("--trap-mode return cannot be combined with ObjC.with_autorelease_pool"),
+            "{text}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+}

@@ -222,6 +222,13 @@ def pingpong :: unit -> string = \() ->
         value = match Channel.recv pong with | Maybe.Some next -> next | Maybe.None -> -1
     $"{value}"
 
+// `tsuzuri test` builds its runner with the scheduler of an Objective-C image too: a tzroutine that
+// a test starts releases what it autoreleased when it gives its thread back and when it ends.
+test "a tzroutine of a test releases what it autoreleased" =
+    assert (auto_yield () == "1000 0")
+    assert (auto_exit () == "7 0")
+    assert (locked () == "5 0 6 6 0")
+
 def main :: Array<string> -> i32 = \arguments ->
     let given = arguments.length > 0
     // `main_pool` and `main_wait` use the pool of `@main` alone.

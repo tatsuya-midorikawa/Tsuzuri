@@ -5567,6 +5567,22 @@ pub fn uses_main_thread(module: &CheckedModule) -> bool {
     })
 }
 
+/// M10: whether the program reaches `ObjC.with_autorelease_pool`.
+pub fn uses_autorelease_pool(module: &CheckedModule) -> bool {
+    fn mentions(expression: &TypedExpr) -> bool {
+        matches!(
+            &expression.kind,
+            TypedExprKind::Function(FunctionRef::Builtin(instance))
+                if instance.builtin == Builtin::ObjcWithAutoreleasePool
+        ) || expression.children().into_iter().any(mentions)
+    }
+    let reachable = reachable_functions(module, None, true);
+    module.functions.iter().enumerate().any(|(id, function)| {
+        (function.origin.module == ModuleOrigin::User || reachable.contains(&id))
+            && mentions(&function.body)
+    })
+}
+
 /// W23: whether the program reaches any `Anchor` builtin.
 pub fn uses_anchor(module: &CheckedModule) -> bool {
     let reachable = reachable_functions(module, None, true);

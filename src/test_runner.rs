@@ -519,6 +519,8 @@ pub fn build_debug_runner(
     let executable_path_runtime = text.contains("declare i64 @tsuzuri_os_executable_path(");
     let map_runtime = text.contains("declare i64 @tsuzuri_os_map(")
         || text.contains("declare i64 @tsuzuri_os_unmap(");
+    // M10: the scheduler of an Objective-C image runs each tzroutine inside an autorelease pool.
+    let objc_pools = crate::driver::objc_pools_runtime(&text, platform);
     let macos_choice = crate::driver::effective_macos_version(platform, options.macos_min_version)?;
     let sources = native_runtime_sources(&text, platform)?;
     let ir = temporary.path.join("tests.ll");
@@ -579,6 +581,9 @@ pub fn build_debug_runner(
         }
         if name == "os.c" && map_runtime {
             compile.arg("-DTZ_OS_MAP");
+        }
+        if name == "tzroutine.c" && objc_pools {
+            compile.arg(crate::driver::OBJC_POOLS_DEFINE);
         }
         if !platform.windows() {
             compile.arg("-pthread");
@@ -1142,6 +1147,11 @@ fn compile_native_runner(
     }
     if map_runtime {
         clang.arg("-DTZ_OS_MAP");
+    }
+    // M10: the scheduler of an Objective-C image runs each tzroutine inside an autorelease pool
+    // (only tzroutine.c reads the macro).
+    if tzroutine_runtime && crate::driver::objc_pools_runtime(&text, platform) {
+        clang.arg(crate::driver::OBJC_POOLS_DEFINE);
     }
     clang.arg(&main).arg("-o").arg(&artifact);
     if !platform.windows() {
