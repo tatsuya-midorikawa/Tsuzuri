@@ -2099,6 +2099,117 @@ static void test_locked_yielders(void) {
     printf("locked yielders: ok\n");
 }
 
+#if defined(TZR_OBJC_POOLS)
+/* M10: the pools that the scheduler of an Objective-C image runs around each run of a G. The class
+ * is made with the runtime's C functions and counts its objects between its allocation and its
+ * dealloc; `pool_autorelease` puts new objects into the pool of the calling thread. */
+#include <objc/message.h>
+#include <objc/runtime.h>
+static _Atomic long pool_live;
+static _Atomic int pool_deep_ran;
+static Class pool_class;
+static Class pool_deep_class;
+static void pool_dealloc(id self, SEL command) {
+    atomic_fetch_sub(&pool_live, 1);
+    struct objc_super super = {self, class_getSuperclass(pool_class)};
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&super, command);
+}
+/* A dealloc that needs more stack than the 256 KiB that g0 has in a runtime without the pools. */
+static TZR_NOINLINE long pool_deep(volatile char *below, int depth) {
+    volatile char frame[4096];
+    frame[0] = (char)depth;
+    frame[sizeof frame - 1] = below ? below[0] : 0;
+    if (depth == 0) return frame[0] + frame[sizeof frame - 1];
+    return pool_deep(frame, depth - 1) + frame[0];
+}
+static void pool_deep_dealloc(id self, SEL command) {
+    (void)pool_deep(NULL, 100); /* more than 400 KiB */
+    atomic_store(&pool_deep_ran, 1);
+    atomic_fetch_sub(&pool_live, 1);
+    struct objc_super super = {self, class_getSuperclass(pool_deep_class)};
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&super, command);
+}
+static Class pool_make_class(const char *name, IMP dealloc) {
+    Class made = objc_allocateClassPair(objc_getClass("NSObject"), name, 0);
+    CHECK(made != Nil);
+    CHECK(class_addMethod(made, sel_registerName("dealloc"), dealloc, "v@:"));
+    objc_registerClassPair(made);
+    return made;
+}
+static void pool_autorelease(Class of, long count) {
+    for (long i = 0; i < count; i++) {
+        id object = ((id (*)(id, SEL))objc_msgSend)((id)of, sel_registerName("new"));
+        atomic_fetch_add(&pool_live, 1);
+        ((id (*)(id, SEL))objc_msgSend)(object, sel_registerName("autorelease"));
+    }
+}
+static void pool_wait_for_zero(void) {
+    double t = seconds();
+    while (atomic_load(&pool_live) != 0) {
+        CHECK(seconds() - t < 60.0);
+        tzr_os_yield();
+    }
+}
+/* What a G autoreleased is released when it gives its thread back: before it goes on after a yield,
+ * right after it began to wait (whoever wakes it may be faster than the pop), and before the
+ * boundary that waits for it learns that it ended. */
+static void pool_yielder(void *env) {
+    (void)env;
+    pool_autorelease(pool_class, 100);
+    CHECK(atomic_load(&pool_live) == 100);
+    tsuzuri_tz_yield();
+    CHECK(atomic_load(&pool_live) == 0);
+    pool_autorelease(pool_class, 50);
+    CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    pool_wait_for_zero();
+    pool_autorelease(pool_class, 7); /* the end of the G pops these */
+}
+/* A locked G keeps its thread, and with it the pool of its run and a pool of its own above it. */
+static void pool_locked(void *env) {
+    (void)env;
+    tsuzuri_tz_lock_thread();
+    void *own = objc_autoreleasePoolPush();
+    pool_autorelease(pool_class, 5);
+    tsuzuri_tz_yield();
+    CHECK(tsuzuri_tz_sleep(1000000) == 0);
+    CHECK(atomic_load(&pool_live) == 5);
+    objc_autoreleasePoolPop(own);
+    CHECK(atomic_load(&pool_live) == 0);
+    pool_autorelease(pool_class, 6);
+    tsuzuri_tz_yield();
+    CHECK(atomic_load(&pool_live) == 6);
+    tsuzuri_tz_unlock_thread();
+    tsuzuri_tz_yield();
+    CHECK(atomic_load(&pool_live) == 0);
+}
+static void pool_deep_owner(void *env) {
+    (void)env;
+    pool_autorelease(pool_deep_class, 1);
+}
+static void test_objc_pools(void) {
+    if (pool_class == Nil) {
+        pool_class = pool_make_class("TzrPoolProbe", (IMP)pool_dealloc);
+        pool_deep_class = pool_make_class("TzrPoolDeepProbe", (IMP)pool_deep_dealloc);
+    }
+    for (int round = 0; round < 20; round++) {
+        void *scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(pool_yielder, NULL);
+        join(scope);
+        CHECK(atomic_load(&pool_live) == 0); /* popped before the boundary was told */
+        scope = tsuzuri_tz_scope_enter();
+        tsuzuri_tz_go(pool_locked, NULL);
+        join(scope);
+        CHECK(atomic_load(&pool_live) == 0);
+    }
+    atomic_store(&pool_deep_ran, 0);
+    void *scope = tsuzuri_tz_scope_enter();
+    tsuzuri_tz_go(pool_deep_owner, NULL);
+    join(scope);
+    CHECK(atomic_load(&pool_deep_ran) && atomic_load(&pool_live) == 0);
+    printf("objc pools: ok\n");
+}
+#endif
+
 static void test_locked_thread(void) {
     atomic_store(&locked_moves, 0);
     tzr_chan *c[3];
@@ -3793,6 +3904,9 @@ int main(int argc, char **argv) {
     RUN("blocking_callback", test_blocking_callback());
     RUN("locked_thread", test_locked_thread());
     RUN("locked_yield", test_locked_yield());
+#if defined(TZR_OBJC_POOLS)
+    RUN("objc_pools", test_objc_pools());
+#endif
     RUN("locked_yielders", test_locked_yielders());
     RUN("dchan_ring", test_dchan_ring());
     RUN("dchan_waits", test_dchan_waits());

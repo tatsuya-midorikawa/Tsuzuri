@@ -565,3 +565,94 @@ fn only_an_apple_target_reaches_the_pool() {
         }
     }
 }
+
+#[test]
+fn a_plain_retain_is_inside_the_blocking_call() {
+    // One symbol declared with an `i64` result and with a class result (W14): the canonical C
+    // result is `i64`, which cannot carry the attached-call bundle, so the +0 result is retained
+    // by a plain call after its `inttoptr`. Until that retain the autorelease pool alone holds
+    // the object, and the scheduler of an Objective-C image pops the pool of a tzroutine that
+    // gives its thread back: the retain is inside the blocking call, where the tzroutine is not
+    // preempted and keeps its thread.
+    let source = with_classes(
+        "\
+@trusted
+extern \"tzobjc_raw\" def raw :: unit -> i64
+
+@trusted
+extern \"tzobjc_raw\" def typed :: unit -> TzShared
+
+def work :: unit -> i64 = \\() ->
+    let object = typed ()
+    raw () + shared_tag (ref object)
+
+def main :: unit -> i32 = \\() ->
+    tzroutine {
+        let _n = work ()
+    }
+    0
+",
+    );
+    let ir = apple(&accepts(&source), llvm::Entry::Console);
+    let lines: Vec<&str> = ir.lines().collect();
+    let retain = at(&lines, "call ptr @objc_retainAutoreleasedReturnValue(ptr %");
+    // enter, the call, its `inttoptr`, the retain, exit: one blocking call.
+    assert!(
+        lines[retain - 3].contains("call void @tsuzuri_tz_blocking_enter()"),
+        "{}",
+        lines[retain - 3..=retain + 1].join("\n")
+    );
+    assert!(
+        lines[retain - 2].contains("call i64 @tzobjc_raw()"),
+        "{}",
+        lines[retain - 2]
+    );
+    assert!(
+        lines[retain - 1].contains("inttoptr i64 "),
+        "{}",
+        lines[retain - 1]
+    );
+    assert!(
+        lines[retain + 1].contains("call void @tsuzuri_tz_blocking_exit()"),
+        "{}",
+        lines[retain + 1]
+    );
+    // The pass that brackets extern calls did not bracket the call a second time.
+    assert!(
+        !lines[retain - 4].contains("@tsuzuri_tz_blocking_enter"),
+        "{}",
+        lines[retain - 4]
+    );
+    for declaration in [
+        "declare void @tsuzuri_tz_blocking_enter()",
+        "declare void @tsuzuri_tz_blocking_exit()",
+    ] {
+        assert_eq!(
+            ir.lines().filter(|line| *line == declaration).count(),
+            1,
+            "{declaration}"
+        );
+    }
+    // A program whose code never runs on a tzroutine of the scheduler has no bracket at all.
+    let library = apple(
+        &accepts(&with_classes(
+            "\
+@trusted
+extern \"tzobjc_raw\" def raw :: unit -> i64
+
+@trusted
+extern \"tzobjc_raw\" def typed :: unit -> TzShared
+
+export def work :: i64 = \\() ->
+    let object = typed ()
+    raw () + shared_tag (ref object)
+",
+        )),
+        llvm::Entry::Library,
+    );
+    assert!(
+        library.contains("call ptr @objc_retainAutoreleasedReturnValue(ptr %"),
+        "{library}"
+    );
+    assert!(!library.contains("tsuzuri_tz_blocking"), "{library}");
+}

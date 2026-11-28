@@ -5075,6 +5075,13 @@ fn build_complete_keyed(
     // and libraries leave the host's signals alone (as stack.c does), and the fast backend cannot place
     // a function in a section: both keep the checks of Phase 1 only.
     let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
+    // M10: the scheduler of an Objective-C image runs each tzroutine inside an autorelease pool of
+    // the thread that runs it. Only the compiler writes the module flag that `uses_objc` reads, so
+    // the runtime of every other program is the object that it was.
+    let objc_pools = tzroutine_runtime
+        && options.target == Target::Native
+        && platform.mach_o()
+        && llvm::uses_objc(&text);
     // M19: src/runtime/oslog-darwin.c decides where the reports of an Apple executable go. It is linked when
     // the IR's own writer asks it (`@tz.trap.write`) or when a C runtime that reports is linked; those C
     // runtimes are then built with TZ_REPORT_OSLOG, so that they ask it too.
@@ -5701,6 +5708,9 @@ fn build_complete_keyed(
             }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
+            }
+            if objc_pools {
+                runtime.arg("-DTZR_OBJC_POOLS");
             }
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");
