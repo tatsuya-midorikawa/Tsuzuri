@@ -1705,3 +1705,31 @@ TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
     return tz_os_deliver(output, (const unsigned char *)buf, n);
 }
 #endif
+
+// Env.executable_path (M15): the path of the module of the process as the system reports it; it is not
+// normalized. The driver defines the macro only for a program that reaches the function.
+#if defined(TZ_OS_EXECUTABLE_PATH)
+TZ_OS_API int64_t tsuzuri_os_executable_path(struct tz_os_buffer *output) {
+    tz_os_clear(output);
+    DWORD cap = 512;
+    for (;;) {
+        wchar_t *buffer = (wchar_t *)malloc((size_t)cap * sizeof(wchar_t));
+        if (buffer == NULL) return tz_os_status(TZ_OS_OTHER, ERROR_NOT_ENOUGH_MEMORY);
+        DWORD got = GetModuleFileNameW(NULL, buffer, cap);
+        if (got == 0) {
+            DWORD err = GetLastError();
+            free(buffer);
+            return tz_os_win_error(err);
+        }
+        // A path that was cut fills the buffer (and sets ERROR_INSUFFICIENT_BUFFER): the length says it.
+        if (got < cap) {
+            int64_t status = tz_os_narrow(buffer, (size_t)got, output);
+            free(buffer);
+            return status;
+        }
+        free(buffer);
+        if (cap >= TZ_OS_MAX_CURRENT_DIR) return tz_os_status(TZ_OS_OTHER, ERROR_INSUFFICIENT_BUFFER);
+        cap *= 2;
+    }
+}
+#endif

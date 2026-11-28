@@ -186,9 +186,9 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
     use Category::*;
     match builtin {
         DebugPrintString | AllocCounter => Some(Debug),
-        IOReadLine | IOWrite | OsRead | OsArgs | OsVersion | OsWrite | OsRandom | OsClock
-        | OsSleep | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve | NetOpen | NetAccept
-        | NetRead | NetWrite | NetClose | NetClassify => Some(Outside),
+        IOReadLine | IOWrite | OsRead | OsArgs | OsVersion | OsExecutablePath | OsWrite
+        | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve
+        | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
         RoutineScope
         | ParallelInit
@@ -1597,7 +1597,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            173
+            174
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
         assert!(!builtin_impure(Builtin::ZUtf8StringLiteral));

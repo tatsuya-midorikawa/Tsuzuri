@@ -7317,6 +7317,7 @@ impl Checker<'_> {
             Builtin::OsRead
                 | Builtin::OsArgs
                 | Builtin::OsVersion
+                | Builtin::OsExecutablePath
                 | Builtin::OsWrite
                 | Builtin::OsRandom
                 | Builtin::OsClock

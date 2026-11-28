@@ -1865,6 +1865,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI・manifest | `--subsystem console\|windows`・`[windows] subsystem` | W09 | Windows の実行ファイルの PE サブシステム |
 | CLI・manifest | `--framework`・`-F`・`--rpath`・`[native] frameworks`/`framework_search`/`rpath`・`[macos] min_version` | M20・M17 | macOS の framework リンク入力・rpath・最低 OS 版（既定 `12.0`） |
 | std・型 | `FnPtr`・`Anchor`・`ZString`・`ZUtf8String`・`Linalg`、`Env.os_version`、`IO.Error.Unavailable` | W08・W20・W22・W23・M06・M17・NC08 | 静的 C ABI 関数ポインタ、コールバック状態アンカー、NUL 終端 UTF-16/UTF-8 文字列、線形代数・縮約、実行時 OS 版問い合わせ、欠落ストリームの IO エラー |
+| CLI・manifest・std | `--emit app`、`[macos]` の `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、`Env.executable_path` | M15 | macOS のアプリケーションバンドル（ad-hoc の署名、`.app.dSYM`）と、実行ファイルの絶対パス。kind は `macos_bundle_id_missing`・`macos_bundle_conflict`（`E2000`）、`macos_bundle_input_invalid`（`E2001`）、`app_output_not_owned`（`E2003`） |
 | 予約語 | なし | — | 第3期は予約語を足さない（文脈キーワードと属性だけ） |
 
 **D-55 の追補（各チケットの確定。2026-10-18）**: 次は、チケットを書く間に決まった名前。**診断コードの kind・`E2000` の kind はチケットが G23 の登録簿へ足す**（コード自体は上の表だけ）。同じサブコマンドのフラグの名前が衝突しないように、ここに集める。
@@ -2225,6 +2226,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 
   実装で設計から外した点（各チケットの「実装と検証」に理由がある）: 送信は新しい式の種類 `TypedExprKind::ObjcSend` でなく、呼び出し地点で下がる extern 関数（`HostImport::objc`）で表した。Objective-C に到達する E2E のプログラムは `tests/fixtures/` でなく `tests/objc/` に置いた。後続のチケット（M03・M05・M23 など）は、`HostImport::objc`（`objc::ObjcSend`）と `FunctionEmitter::host_call` を送信の 1 か所として読む。
 - **委任による決定（2026-11-28、M19）**: 利用者は優先順位の高い 3 件（M09・M15・M19）の実装を依頼し、同じ委任（「すべてのフェーズを完了させること」「あなたが考える最高の選択肢で実装することを常に許可します」）を与えた。M19 では D2 を推奨の案のとおり決めた: unified logging の subsystem は `dev.tsuzuri.runtime`、category は `trap`（生成コードの報告とスタックのあふれ）と `runtime`（tzroutine と CPU のランタイム）。D-55 の外の文字列だが、利用者が `log show` と Console.app で引く名前なので、変えるときは互換を破る変更として扱う。逆 DNS の元のドメインの持ち主は確かめていない（記録の識別子で、名前の解決には使われない）。実装で設計から外した点は M19 の「実装と検証」にある: `<os/log.h>` を include せずに `os_log_with_type` の展開を自前で書き（同梱の zig のヘッダーに無い。停止条件 S3）、送り元の image に `_mh_execute_header` を渡し（zig のリンカーの `__dso_handle` は Mach-O のヘッダーを指さない）、改行で終わらない断片（M17 の `@tz.weak.missing`）を 1 件にまとめる。後続のランタイムの報告（M09 のメインスレッドの検査など）は、`@tz.trap.write` か `tsuzuri_report_to_log`・`tsuzuri_report_log` を通せば記録へ届く。`--emit app`（M15）の実行ファイルは、`driver.rs` の `report_to_os_log` の条件に入れる。
+- **委任による決定（2026-11-28、M15）**: 同じ委任（「あなたが考える最高の選択肢で実装することを常に許可します」）に基づき、M15 の D1（`--emit app`）・D3（`[macos]` のバンドルのキー）・D4（`Env.executable_path`）を、どれもチケットの案のとおりに決め、上の D-55 の表に登録した。kind は案のとおり 4 つ（`macos_bundle_id_missing`・`macos_bundle_conflict`・`macos_bundle_input_invalid`・`app_output_not_owned`）。設計から外した点（実行ファイルを staging の bundle の外で作ること、`--trap-info` の表を `Name.app.trap.json` に置くこと、`data` の値を bytes で持つこと、プロジェクトの中の `.framework` の制限）は M15 の「実装と検証」にある。
 
 ## 10. 完了の定義（全チケット共通）
 

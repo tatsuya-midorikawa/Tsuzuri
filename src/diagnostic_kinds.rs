@@ -868,6 +868,8 @@ diagnostic_kinds! {
         (LinkAttributeWasm, "link_attribute_wasm", "E2000"),
         (LinkFrameworkTarget, "link_framework_target", "E2000"),
         (LinkInputLimit, "link_input_limit", "E2000"),
+        (MacosBundleConflict, "macos_bundle_conflict", "E2000"),
+        (MacosBundleIdMissing, "macos_bundle_id_missing", "E2000"),
         (McpBadArguments, "mcp_bad_arguments", "E2000"),
         (MissingInput, "missing_input", "E2000"),
         (NativeLinkSettingNotAllowed, "native_link_setting_not_allowed", "E2000"),
@@ -908,6 +910,7 @@ diagnostic_kinds! {
         (InputTooLarge, "input_too_large", "E2001"),
         (IoFailure, "io_failure", "E2001"),
         (LinkInputUnreadable, "link_input_unreadable", "E2001"),
+        (MacosBundleInputInvalid, "macos_bundle_input_invalid", "E2001"),
         (ReplStreamFailure, "repl_stream_failure", "E2001"),
         (TempDirectoryFailed, "temp_directory_failed", "E2001"),
         // E2002
@@ -927,6 +930,7 @@ diagnostic_kinds! {
         (TargetAttributesUnreadable, "target_attributes_unreadable", "E2002"),
         (ToolchainMissingFeature, "toolchain_missing_feature", "E2002"),
         // E2003
+        (AppOutputNotOwned, "app_output_not_owned", "E2003"),
         (BindgenOutputNotGenerated, "bindgen_output_not_generated", "E2003"),
         (DocFilenameCollision, "doc_filename_collision", "E2003"),
         (DocOutputChanged, "doc_output_changed", "E2003"),

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The hand-written input of the M15 tests. Extra.plist is `plutil -convert xml1 -o Extra.plist Extra.source.plist`. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>b</key><string>a &amp; b &lt; c &gt; d &quot;q&quot; &apos;s&apos; &#65;&#x42;	tab</string>
+  <!-- a comment between a value and the next key -->
+  <key>a</key>
+  <array>
+    <integer>-5</integer>
+    <real>1.5</real>
+    <true/>
+    <false/>
+    <dict/>
+    <array/>
+    <string></string>
+    <string/>
+    <date>2026-11-28T01:02:03Z</date>
+  </array>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Example &amp; Sons &lt;dev@example.invalid&gt;</string>
+  <key>Z</key><date>2024-02-29T23:59:59Z</date>
+  <key>_x</key><data>
+    AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2
+    Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4A=
+  </data>
+  <key>1</key>
+  <dict>
+    <key>deep</key>
+    <dict>
+      <key>blob</key><data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4A=</data>
+      <key>empty</key><data></data>
+      <key>one</key><data>AQ==</data>
+      <key>two</key><data>AQI=</data>
+      <!-- 39 bytes are 52 characters: exactly one line at this depth -->
+      <key>line</key><data>AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUm</data>
+    </dict>
+  </dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
+  <key>é</key><string>a key that is not ASCII</string>
+  <key>😀</key><string>a key outside the BMP: its surrogates sort before U+FF61</string>
+  <key>｡</key><string>U+FF61</string>
+  <key>B</key><integer>18446744073709551615</integer>
+  <key>ws</key><string>  two leading spaces
+ and a second line  </string>
+</dict>
+</plist>

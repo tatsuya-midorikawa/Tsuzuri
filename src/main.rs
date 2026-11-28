@@ -233,7 +233,7 @@ Build options:
                             Tsuzuri.toml [wasm] max-memory/stack-size set project defaults
     --emit KIND            exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv,
                          spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py,
-                         or bindings-cpp
+                         bindings-cpp, or app
                          Default: exe for native, wasm for wasm32 and wasm64
                          wgsl writes the strict WebGPU compute shader of the one exported kernel
                          (i32 or i32u lanes); wgsl-relaxed also allows f32 lanes and values,
@@ -251,6 +251,10 @@ Build options:
                          NAME.mjs and its TypeScript declarations NAME.d.mts
                          bindings-cs, bindings-py, and bindings-cpp write C#, Python
                          ctypes, and C++20 bindings of the shared library NAME
+                         app (on macOS) writes the application bundle NAME.app around the
+                         executable NAME: Info.plist from Tsuzuri.toml [macos] (bundle_id is
+                         required), its icon, resources and embedded libraries, signed ad hoc;
+                         -g writes NAME.app.dSYM
   -O0, -O1, -O2, -O3    LLVM optimization level (default: -O3; no fast-math)
   -Os, -Oz               Optimize for size (LLVM -Os or -Oz) with build and run; test and bench
                          take -O0 to -O3. Language semantics, traps, and debug information do
@@ -1226,10 +1230,11 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
                             Some("bindings-cs") => Emit::BindingsCs,
                             Some("bindings-py") => Emit::BindingsPy,
                             Some("bindings-cpp") => Emit::BindingsCpp,
+                            Some("app") => Emit::App,
                             _ => {
                                 return Err(command_line_error(
                                     DiagnosticKind::OptionInvalidValue,
-                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                                    "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, bindings-cpp, or app",
                                 ));
                             }
                         },
@@ -1871,11 +1876,12 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         (None, Some(path)) => driver::Profile::Use(path),
         (None, None) => driver::Profile::None,
     };
-    profile.validate(options)?;
-    if let Some(error) = output
-        .as_deref()
-        .and_then(|output| driver::bindings_output_error(options.emit, output))
-    {
+    // The profile of an application bundle is the profile of the executable inside it (M15).
+    profile.validate(options.bundle_executable())?;
+    if let Some(error) = output.as_deref().and_then(|output| {
+        driver::bindings_output_error(options.emit, output)
+            .or_else(|| driver::app_output_error(options.emit, output))
+    }) {
         return Err(error);
     }
     links.check_shape()?;
@@ -1963,7 +1969,7 @@ fn links_apply(action: Action, options: &BuildOptions) -> bool {
         Action::Run => true,
         Action::Build => {
             options.target == Target::Native
-                && matches!(options.emit, Emit::Executable | Emit::Shared)
+                && matches!(options.emit, Emit::Executable | Emit::Shared | Emit::App)
         }
         Action::Test | Action::Bench => options.target == Target::Native,
         _ => false,
@@ -6595,7 +6601,7 @@ mod tests {
         for (values, message) in [
             (
                 vec!["build", "A.tz", "--emit", "bindings-ts"],
-                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, or bindings-cpp",
+                "emit kind must be exe, object, llvm, header, wasm, wgsl, wgsl-relaxed, spirv, spirv-relaxed, shared, bitcode, bindings-js, bindings-cs, bindings-py, bindings-cpp, or app",
             ),
             (
                 vec!["build", "A.tz", "--emit", "bindings-js"],
