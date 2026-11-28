@@ -1831,6 +1831,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | std | `Slice.Sel`（union。`Item`・`Span`・`Whole`・`Rest`・`AddAxis`、`Slice.Axis` の `All`・`NewAxis` との同一モジュール内 case 名重複 `E1001` を避けた名前）・`Slice.Pos`（`Front`・`Back`）・`Slice.Bound`（`Unbounded`・`Included`・`Excluded`）・`Slice.rest`・`Slice.resolve_sel` | NC18 | 範囲外を丸めず、負の数を末尾から数えない厳格なキー。`Slice.Axis` には case を足さない |
 | std | `Tensor.add_scalar_in_place`・`sub_scalar_in_place`・`mul_scalar_in_place`・`div_scalar_in_place`・`rem_scalar_in_place` | NC20 | スカラーの右辺の確保なしの更新（`+=` の本体） |
 | std | `ExternAddr`（opt-in。`of_i64`・`of_i64u`・`to_i64`・`to_i64u`・`offset`） | NS07 | 非ゼロ外部アドレス型（`extern view` の第 1 引数と `extern "sym" address def` の戻り値） |
+| std | `TensorCodec`・`TensorElement`（型クラス）・`TensorIO`（どれも opt-in。`RESERVED_MODULES` に 3 つ）と、非公開の組み込み `TensorCodec.__to_bytes`・`TensorCodec.__of_bytes`・`TensorIO.__mmap_slice`・`Os.__map`・`Os.__unmap` | NC11 | テンソルのファイル（`.npy`・`.npz`・Safetensors・CSV）の純粋な変換、ファイルの読み書き、読み取り専用のメモリーマップ（2026-11-28 に委任による決定で登録し、実装した） |
 | edition・CLI | edition `2028`（`Edition::E2028`）、`--edition 2026\|2027\|2028`、`tsuzuri fix --edition 2028` | NC17 | スライスの素の `..` を終端を含む意味にする（D-66c）。`MANIFEST_DEFAULT` は 2026 のまま |
 | 予約（未割り当て） | `E1035`・`E1044`〜`E1049`・`E2012`〜`E2015`・`W1015` | — | 実装中に必要になったら、この表に追記してから使う。D-66 の委任による決定は新しいコードを使わない（2026-11-25 に `src/` に使われていないことを確認） |
 | 文脈キーワード | `tzroutine`（直後が `{`）・`select`（直後の行が `\|`）・`select` の腕の `recv`・`from`・`send`・`default`・`extern type` の直後の `copy`／`local`（同じ行に識別子が続くとき） | TZ02・TZ04・W18・W19 | 予約語ではない（識別子として使える） |
@@ -2039,6 +2040,8 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **NumPy との意図的な意味差の集約**: `remainder`（NumPy は床剰余、Tsuzuri は `floor_mod` と `ieee_remainder` に分離）、`round`（Tsuzuri は 0 から遠い側、NumPy 相当は `round_even`）、`sign(-0.0)`、`ddof >= n` の `NaN`、`==` のスカラー `bool` 契約、乱数列の非互換などは `_tsuzuri/language-reference/built-in-types-and-modules/numpy-migration.md`（NC07 で新設、後続チケットで追記）に一元記載する。
 - **1 チケット 1 PR**（XL の NC08・NC13 は Phase ごとに 1 PR）。推奨順は Phase 1（NC01・NC02・NC03・NC04・NC15）→ Phase 2（NC05・NC06・NC07）→ Phase 3（NC08・NC09・NC10）→ Phase 4（NC11・NC12・NC13・NC14）。
 - **D-66 で改訂（2026-11-25）**: 言語拡張 ② の「パーサー文法を増やさない」と、[NC03](_completed/NC03-borrowed-arithmetic-operators.md) の D2（多引数クラスを入れず、スカラーとの演算はライブラリ関数で担う）を、[D-66](#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) で範囲の形・添字の角括弧のカンマ・演算子の拡張インスタンス・複合代入に限って改めた。上の「採用しないもの」は D-66 でもそのまま保つ。
+
+- **委任による決定（2026-11-28、NC11）**: 利用者は優先順位の高い 3 件（NC09・NC10・NC11）の実装を依頼し、判断を委任した（「あなたが考える最高の選択肢で実装することを常に許可します」「すべてのフェーズを完了させること」）。NC11 では次のとおり決めた。D1: モジュール名は `TensorCodec`・`TensorIO` とし、要素型の型クラス `TensorElement`（`.tt`）を足して、`RESERVED_MODULES` と D-55 に 3 つを登録する。D2: `.npy` の `object`（pickle）・構造化・文字列・日時の dtype は `UnsupportedDtype` で拒否し、何も評価しない。読み取り専用のマップには非公開の組み込み `TensorIO.__mmap_slice` と `Os.__map`・`Os.__unmap` を足す（W24 の `extern view` は C レイアウトの record の複写で借用スライスを作れず、`Os.__read` などへの操作番号の追加は M15 の D13 と同じ理由で採らない）。D3: 型別の入口ではなく `TensorElement` の instance で要素型を決め、浮動小数点のビットを保つために非公開の組み込み `TensorCodec.__to_bytes`・`TensorCodec.__of_bytes` を足す。`TensorElement` は `TensorCodec.ElementType<'a>`（不透明）で封じ、利用者の instance を持てない（`TensorIO.view` の健全性のため）。Phase 1b（Deflate・Inflate）と Windows のマップも同じ PR に含めた。詳細は [NC11](_completed/NC11-tensor-codec-and-io.md) の「方針の最新化」と「実装と検証」。
 
 ### D-66 自然な添字・範囲・演算子（D-65 の改訂。A37・NC16〜NC20）
 

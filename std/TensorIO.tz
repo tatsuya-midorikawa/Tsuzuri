@@ -264,10 +264,12 @@ fn adopt expected header mapping =
         let mut strides = new [i64](rank, \_ -> 1)
         let mut stride = 1
         // Row-major strides run from the last axis; a column-major file is used in place with the strides reversed.
-        for step in 0i64 ..< rank do
+        let mut step = 0
+        while step < rank do
             let axis = if header.fortran_order then step else rank - 1 - step
             Array.write axis stride (ref mut strides)
             stride = stride * (if header.shape[axis] == 0 then 1 else header.shape[axis])
+            step = step + 1
         let data = mapping.address + header.data_offset
         Result.Ok (MappedTensor { mapping: mapping, dtype: found, shape: Array.copy (ref header.shape), strides: strides, data: data, count: count })
 

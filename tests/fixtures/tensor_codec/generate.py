@@ -479,6 +479,48 @@ def csv_cases():
     return cases
 
 
+def io_files():
+    """The files that tests/tensor_io.mjs gives to the program of tests/fixtures/tensor_io: what NumPy writes
+    for arrays whose elements the suite computes again from the same formulas."""
+    weights = (np.arange(12) * 0.5 - 1).reshape(3, 4)
+    labels = np.array([4, -5, 6], dtype=np.int64)
+    files = {
+        "in_f64.npy": npy_bytes(weights),
+        "in_fortran.npy": npy_bytes(np.asfortranarray(weights)),
+        "in_be.npy": npy_bytes(np.array([1, -2, 3, 400000], dtype=">i4")),
+        "in_i32.npy": npy_bytes((np.arange(6, dtype=np.int32) * 7 - 3).reshape(2, 3)),
+        "in_bool.npy": npy_bytes(np.array([[True, False], [False, True]])),
+        "in_c128.npy": npy_bytes(np.array([1 + 2j, -0.5 + 0.25j])),
+        "in_f16.npy": npy_bytes(np.array([0.5, -1.25, 3], dtype=np.float16)),
+        "in_u8.npy": npy_bytes(np.array([1, 2, 255], dtype=np.uint8)),
+        "in_empty.npy": npy_bytes(np.zeros((0, 3))),
+        "in_scalar.npy": npy_bytes(np.array(2.5)),
+        "in_zero_bytes.npy": b"",
+        "in.npz": numpy_npz({"weights": weights, "labels": labels}, False),
+        "in_compressed.npz": numpy_npz({"weights": weights, "labels": labels}, True),
+    }
+    files["in_cut.npy"] = files["in_f64.npy"][:-1]
+    bad = bytearray(files["in_bool.npy"])
+    bad[-2] = 2
+    files["in_bad_bool.npy"] = bytes(bad)
+    # A valid file whose elements start at byte 76, which is not a multiple of 8.
+    body = b"{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }"
+    body += b" " * (76 - 10 - len(body) - 1) + b"\n"
+    files["in_unaligned.npy"] = b"\x93NUMPY\x01\x00" + struct.pack("<H", len(body)) + body + np.array([1.5, 2.5]).tobytes()
+    assert np.array_equal(np.load(io.BytesIO(files["in_unaligned.npy"])), [1.5, 2.5])
+    files["in.safetensors"] = safetensors_file(
+        [("w", "F32", [2, 2], np.array([[0.5, 1.5], [2.5, 3.5]], dtype="<f4").tobytes()),
+         ("labels", "I64", [3], labels.astype("<i8").tobytes())],
+        {"format": "pt"})
+    text = io.StringIO()
+    np.savetxt(text, weights, delimiter=",", header="a,b,c,d")
+    files["in.csv"] = text.getvalue().encode("utf-8")
+    text = io.StringIO()
+    np.savetxt(text, weights)
+    files["in_default.txt"] = text.getvalue().encode("utf-8")
+    return {name: data.hex() for name, data in files.items()}
+
+
 def main():
     reference = {
         "numpy": np.__version__,
@@ -492,6 +534,7 @@ def main():
         "safetensors": safetensors_cases(),
         "safetensors_errors": safetensors_errors(),
         "csv": csv_cases(),
+        "io": io_files(),
     }
     path = os.path.join(HERE, "reference.json")
     with open(path, "w", encoding="utf-8") as output:

@@ -497,6 +497,7 @@ def main :: unit -> i32 = \() ->
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
+| `TensorCodec`, `TensorIO` | テンソルのファイル（`.npy`・`.npz`・Safetensors・CSV）の変換、読み書き、読み取り専用のメモリーマップ |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Routine.scope`、`Arc` と組み合わせる） |
 | `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |

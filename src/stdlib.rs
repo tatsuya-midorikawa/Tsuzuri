@@ -1072,6 +1072,23 @@ mod tests {
         assert!(!names_of(&["Matrix.rows (ref m)"]).contains(&"MatrixView"));
         assert!(!names_of(&["Slice.all()"]).contains(&"MatrixView"));
         assert!(names_of(&["Matrix.of_array 1 1 [1]", "Slice.all()"]).contains(&"MatrixView"));
+        // NC11: naming TensorIO or the class TensorElement loads TensorCodec, which holds the instances; a
+        // program that names only Tensor loads none of the three.
+        for name in ["TensorCodec", "TensorElement", "TensorIO"] {
+            assert!(is_reserved_module(name));
+        }
+        let with_files = names_of(&["TensorIO.load_npz path"]);
+        assert!(
+            ["Tensor", "Json", "TensorCodec", "TensorElement", "TensorIO"]
+                .iter()
+                .all(|name| with_files.contains(name))
+        );
+        assert!(
+            names_of(&["def f :: TensorElement.TensorElement<'a> => 'a -> 'a"])
+                .contains(&"TensorCodec")
+        );
+        assert!(!names_of(&["TensorCodec.crc32 bytes"]).contains(&"TensorIO"));
+        assert!(!names_of(&["Tensor.zeros [1]"]).contains(&"TensorCodec"));
         assert!(is_reserved_module("Text"));
         assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));

@@ -183,6 +183,11 @@ jobs:
       - name: OS API end to end (W11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/os.mjs target/release/tsuzuri.exe
+      # NC11: TensorIO on Win32: files, and read-only views of a file (CreateFileMappingW, MapViewOfFile,
+      # UnmapViewOfFile), which no other host runs.
+      - name: Tensor files end to end (NC11)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/tensor_io.mjs target/release/tsuzuri.exe
       # W21 & W24: @c_layout records and extern view on Windows MSVC.
       - name: C layout and extern view end to end (W21, W24)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
