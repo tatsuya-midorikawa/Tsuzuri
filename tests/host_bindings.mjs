@@ -206,6 +206,69 @@ try {
     execute(tool, [...args, ...twoLink, "-o", program]);
     assert.match(execute(program, []).stdout, /^two libraries passed\r?$/m, label);
   }
+  if (isWindows && clangxxVersion) {
+    // Windows SDK <minwindef.h> defines empty `near` and `far` macros; generated C++ headers must
+    // shield both namespace `tsuzuri::near` (`near.hpp`) and owned-result exports `near` / `far`.
+    const nearDir = join(root, "near-macro");
+    const nearOut = join(nearDir, "out");
+    mkdirSync(nearOut, { recursive: true });
+    writeFileSync(
+      join(nearDir, "Main.tz"),
+      [
+        "record Span { near: i64, far: i64 }",
+        "export def near :: i64 -> [ubyte]",
+        "fn near n = Array.init n (\\i -> (65 + i) as ubyte)",
+        "export def far :: ref Span -> [ubyte]",
+        "fn far s = Array.init (s.far - s.near) (\\i -> (97 + i) as ubyte)",
+        "",
+      ].join("\n"),
+    );
+    execute(compiler, ["build", nearDir, "--emit", "header", "-o", join(nearOut, "near.h")]);
+    execute(compiler, ["build", nearDir, "--emit", "bindings-cpp", "-o", join(nearOut, "near.hpp")]);
+    execute(compiler, ["build", nearDir, "--emit", "shared", "-o", join(nearOut, "near.dll")]);
+    const nearPlainCpp = join(nearDir, "near_plain.cpp");
+    writeFileSync(
+      nearPlainCpp,
+      [
+        "#undef NDEBUG",
+        "#include <cassert>",
+        '#include "near.hpp"',
+        "int main() {",
+        "  auto a = tsuzuri::near::near(3);",
+        "  tz_record_4Main_4Span s{1, 3};",
+        "  auto b = tsuzuri::near::far(s);",
+        "  assert(a.size() == 3 && a[0] == 65 && b.size() == 2 && b[0] == 97);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const nearWithWinCpp = join(nearDir, "near_with_win.cpp");
+    writeFileSync(
+      nearWithWinCpp,
+      [
+        "#undef NDEBUG",
+        "#include <windows.h>",
+        "#include <cassert>",
+        '#include "near.hpp"',
+        "#undef near",
+        "#undef far",
+        "int main() {",
+        "  auto a = tsuzuri::near::near(2);",
+        "  tz_record_4Main_4Span s{0, 2};",
+        "  auto b = tsuzuri::near::far(s);",
+        "  assert(a.size() == 2 && b.size() == 2);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    for (const [tag, src] of [["plain", nearPlainCpp], ["with_win", nearWithWinCpp]]) {
+      const exe = join(nearOut, `near_${tag}.exe`);
+      execute(clangxx, [...winTargetArgs, "-std=c++20", "-Wall", "-Wextra", "-pedantic", "-Werror", "-I", nearOut, src, join(nearOut, "near.lib"), "-o", exe]);
+      execute(exe, []);
+    }
+  }
   console.log(`host bindings: two libraries in one translation unit passed (${twoRuns.map(([, label]) => label).join(", ")})`);
 
   // C#: one console project with both bindings, against both libraries.

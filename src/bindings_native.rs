@@ -1796,13 +1796,33 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
          #include <windows.h>\n\
          #pragma pop_macro(\"NOMINMAX\")\n\
          #pragma pop_macro(\"WIN32_LEAN_AND_MEAN\")\n\
-         #endif\n\n"
+         #endif\n"
     } else {
         ""
     };
     let _ = write!(
         output,
-        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n{}#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\n{win32_loader}namespace tsuzuri::{namespace} {{\n\n",
+        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n\
+         // tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n\
+         #pragma once\n\
+         #ifdef _WIN32\n\
+         #pragma push_macro(\"near\")\n\
+         #pragma push_macro(\"far\")\n\
+         #endif\n\
+         {win32_loader}#ifdef _WIN32\n\
+         #undef near\n\
+         #undef far\n\
+         #endif\n\
+         #include \"{name}.h\"\n\n\
+         #include <cstddef>\n\
+         #include <cstdint>\n\
+         #include <memory>\n\
+         {}#include <span>\n\
+         #include <stdexcept>\n\
+         #include <string>\n\
+         #include <string_view>\n\
+         #include <utility>\n\n\
+         namespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
         } else {
@@ -1877,7 +1897,14 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
         taken.insert(function_name.clone());
         cpp_export(&mut output, function, module, &function_name, trap_return);
     }
-    let _ = writeln!(output, "}} // namespace tsuzuri::{namespace}");
+    let _ = writeln!(
+        output,
+        "}} // namespace tsuzuri::{namespace}\n\
+         #ifdef _WIN32\n\
+         #pragma pop_macro(\"far\")\n\
+         #pragma pop_macro(\"near\")\n\
+         #endif"
+    );
     output
 }
 
