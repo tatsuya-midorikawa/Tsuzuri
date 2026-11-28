@@ -452,11 +452,11 @@ def main :: Array<string> -> i32 = \\args ->
     {
       const cwd = realpathSync.native(scratch("w-env", optimization));
       const out = lines(run(envProg(optimization), cwd, {
-        args: ["alpha", "beta gamma", "C:\\dir\\"],
+        args: ["alpha", "beta gamma", "C:\\dir\\", "a\"b", "C:\\dir with space\\"],
         env: { TZ_W11_VAR: "hello-win", TZ_W11_EMPTY: "" },
       }));
       assert.deepEqual(out.slice(0, 6), [
-        "same:true:alpha|beta gamma|C:\\dir\\",
+        "same:true:alpha|beta gamma|C:\\dir\\|a\"b|C:\\dir with space\\",
         "some:hello-win",
         "some:",
         "none",

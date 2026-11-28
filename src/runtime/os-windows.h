@@ -577,8 +577,7 @@ TZ_OS_API int64_t tsuzuri_os_args(struct tz_os_buffer *output) {
     const uint16_t *line = (const uint16_t *)GetCommandLineW();
     if (line == NULL) return 0;
     int64_t length = 0;
-    const uint16_t *start = tz_arguments_blank(line);
-    if (*start != 0) start = tz_arguments_blank(tz_arguments_token(start, NULL, &length));
+    const uint16_t *start = tz_arguments_blank(tz_arguments_program(line));
     size_t arg_count = 0;
     for (const uint16_t *at = start; *at != 0; arg_count++) {
         at = tz_arguments_blank(tz_arguments_token(at, NULL, &length));

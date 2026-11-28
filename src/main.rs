@@ -365,6 +365,8 @@ Toolchain:
   Each tool comes from its variable, then a distribution's bin/, then PATH.
   TSUZURI_LLVM_PROFDATA  llvm-profdata that --profile-use runs to merge a directory of .profraw files
                          (default: the one beside Clang or in Clang's toolchain; PATH is not searched)
+  TSUZURI_RC             Windows resource compiler for [windows] .rc files (default: zig rc of the
+                         bundled toolchain, llvm-rc beside Clang or on PATH, then rc.exe on PATH)
   TSUZURI_LINKER         Linker of a native executable or shared library: 'lld' makes Clang link with
                          LLD (-fuse-ld=lld; needs ld.lld or ld64.lld; the bundled Clang always does);
                          'default' or unset leaves it to Clang. Windows targets reject 'lld'.

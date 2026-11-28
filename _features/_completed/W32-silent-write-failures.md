@@ -5,12 +5,12 @@
 | ID | W32 |
 | 優先度 | P2（修正。標準出力が無い・閉じている・書けないときに、トップレベルの式の値が消えても終了コードは 0 になる。`--overflow-report` の報告も、標準エラーに書けなければどこにも残らない。GUI サブシステムの実行ファイル（W09）を Explorer から起動すると、必ずこの状態になる） |
 | 規模 | S（`console.ll` の書き直し、`windows_abi` の 2 か所、`tests/io.mjs`・`tests/windows.mjs`・`tests/windows.rs`・単体テスト、文書） |
-| 依存 | [W08](_completed/W08-io-without-std-streams.md) |
+| 依存 | [W08](W08-io-without-std-streams.md) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 不要。W08 の決定（D1: ストリームが無いときも失敗を読み飛ばさない）に従う。表示の失敗を終了コード 1 にするのは、`src/llvm.rs` の `console_main` がもともと持つ失敗の経路（`%failed` → `ret i32 1`）を働かせる修正である。`--overflow-report` は Windows で報告の届け先を足すだけで、値・標準出力・トラップ・終了コードは変えない（`compiler/usage.md` の「整数の折り返しの報告」の契約）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
-| 手本にする既存実装 | `src/runtime/debug.ll` の `@tz.debug.write`（`@write` を繰り返し、進まなければ失敗にする。改行は別の `@write` で書く）、`src/llvm.rs` の `windows_abi`（Windows だけの IR の書き換え）、[W04](_completed/W04-windows-trap-report-lost.md) の `TRAP_WRITE_WINDOWS`・`DEBUGGER_WRITE`（標準エラーの OS のハンドルへ書き、書けなければデバッガーへ）、`tests/io.mjs` の閉じた標準出力の検査（読み取り専用の fd を標準出力に渡す） |
+| 承認 | 不要。W08 の決定（D1: ストリームが無いときも失敗を読み飛ばさない）に従う。表示の失敗を終了コード 1 にするのは、`src/llvm.rs` の `console_main` がもともと持つ失敗の経路（`%failed` → `ret i32 1`）を働かせる修正である。`--overflow-report` は Windows で報告の届け先を足すだけで、値・標準出力・トラップ・終了コードは変えない（`compiler/usage.md` の「整数の折り返しの報告」の契約）。台帳は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30) |
+| 手本にする既存実装 | `src/runtime/debug.ll` の `@tz.debug.write`（`@write` を繰り返し、進まなければ失敗にする。改行は別の `@write` で書く）、`src/llvm.rs` の `windows_abi`（Windows だけの IR の書き換え）、[W04](W04-windows-trap-report-lost.md) の `TRAP_WRITE_WINDOWS`・`DEBUGGER_WRITE`（標準エラーの OS のハンドルへ書き、書けなければデバッガーへ）、`tests/io.mjs` の閉じた標準出力の検査（読み取り専用の fd を標準出力に渡す） |
 | 主な影響ファイル | `src/runtime/console.ll`、`src/llvm.rs`（`windows_abi`・単体テスト）、`src/llvm_overflow.rs`（`Report::runtime` の書き手を定数にする）、`tests/windows.rs`、`tests/io.mjs`、`tests/windows.mjs`（GUI の段）、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/built-in-types-and-modules/io.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/native-interop.md` |
 
 ## 実装者向け早見
@@ -208,23 +208,23 @@ entry:
 
 ## 前提とする他チケットのインターフェース
 
-- [W08](_completed/W08-io-without-std-streams.md):
+- [W08](W08-io-without-std-streams.md):
   - D1 の決定（仕様 3）。
   - 仕様 1 の「ストリームが無い」の判定。既定案以外の行でだけ使う。
   - `DEBUGGER_WRITE` が `windows_abi` で使えること。
   - `io.md` の「終了コードとトップレベルの表示」に W08 が書く「表示はストリームが無いと消える（D4）」の文。このチケットが置き換える。
-- [W04](_completed/W04-windows-trap-report-lost.md):
+- [W04](W04-windows-trap-report-lost.md):
   - `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write(ptr, i64)`）と `DEBUGGER_WRITE`（`@tz.debugger.write(ptr, i64)`）。
   - `windows_abi` の置き換えの順序。
   - 仕様 4（shim の `_setmode` の −1）。
   - W04 が未着手なら、着手条件のとおり定数だけを同じ形で足す。
-- [W06](_completed/W06-windows-gui-test-harness.md): 仕様 4 の `windows_launch.exe --no-handles`・`--debug-strings <path>`・`launchWithoutHandles`。
-- [W07](_completed/W07-windows-trap-fail-fast.md): 先に入っていれば、その「`@tz.trap.write` が無いときだけ足す」補助を使う。
+- [W06](W06-windows-gui-test-harness.md): 仕様 4 の `windows_launch.exe --no-handles`・`--debug-strings <path>`・`launchWithoutHandles`。
+- [W07](W07-windows-trap-fail-fast.md): 先に入っていれば、その「`@tz.trap.write` が無いときだけ足す」補助を使う。
 
 ## 他チケットへ提供するインターフェース
 
 - 意味: トップレベルの表示を書けなければ終了コード 1。Windows の `--overflow-report` は、書けなければデバッガーの出力に送る。
-- [W09](_completed/W09-windows-gui-subsystem.md) の文書が引く文: 「GUI サブシステムの実行ファイルをハンドルなしで起動すると、トップレベルの式の表示は書けず終了コード 1 になる。GUI のアプリは `def main` を使う」。
+- [W09](W09-windows-gui-subsystem.md) の文書が引く文: 「GUI サブシステムの実行ファイルをハンドルなしで起動すると、トップレベルの式の表示は書けず終了コード 1 になる。GUI のアプリは `def main` を使う」。
 - `OVERFLOW_WRITE`（`src/llvm_overflow.rs`）と、Windows の報告の書き手を足す補助（W07 と共有）。
 
 ## 実装手順
@@ -308,13 +308,13 @@ entry:
 
 ## 受け入れ条件
 
-- [ ] 仕様 1〜3 のとおりに動く（テスト計画の `tests/io.mjs`・Windows・Rust）。
-- [ ] `def main`・IO の入口・`unit` の結果・ライブラリ・WASM の IR、POSIX と WASM の `--overflow-report` の IR が、1 byte も変わらない。トップレベルの表示のプログラムの IR の差は、S2 の「予定した差」（Windows の native では shim・`_write` の宣言・`%binary_mode` の削除を含む）だけ（手順 1 との比較）。
-- [ ] 既存の `tests/io.mjs`・`tests/overflow_report.rs`・`tests/chars.rs`・`tests/display_parse.rs` が、期待を変えずに通る。
-- [ ] 宣言が重複せず、Windows の IR が決定的。
-- [ ] 変更したページの `check-docs` と `check-runtime-includes.sh` が通る。
-- [ ] `ci:full` を付けた PR で、`windows.yml` と `vscode.yml` の Windows の job が通る。
-- [ ] T2 が通る。
+- [x] 仕様 1〜3 のとおりに動く（テスト計画の `tests/io.mjs`・Windows・Rust）。
+- [x] `def main`・IO の入口・`unit` の結果・ライブラリ・WASM の IR、POSIX と WASM の `--overflow-report` の IR が、1 byte も変わらない。トップレベルの表示のプログラムの IR の差は、S2 の「予定した差」（Windows の native では shim・`_write` の宣言・`%binary_mode` の削除を含む）だけ（手順 1 との比較）。
+- [x] 既存の `tests/io.mjs`・`tests/overflow_report.rs`・`tests/chars.rs`・`tests/display_parse.rs` が、期待を変えずに通る。
+- [x] 宣言が重複せず、Windows の IR が決定的。
+- [x] 変更したページの `check-docs` と `check-runtime-includes.sh` が通る。
+- [x] `ci:full` を付けた PR で、`windows.yml` と `vscode.yml` の Windows の job が通る。
+- [x] T2 が通る。
 
 ## 落とし穴
 
@@ -343,3 +343,12 @@ entry:
 | D4 | 表示の失敗では、ストリームが無いことと書き込みの失敗を区別しない | 表示の結果は終了コードだけで、`try_` のような値の受け手が無い。区別しても利用者が取れる行動は同じ | 既定案（実装者はこの案に従う） |
 | D5 | `windows_abi` の表示のための `_setmode(1, _O_BINARY)` の差し込みを消し、`@write` の shim に任せる | shim が書き込みごとに同じ `_setmode` を呼ぶ。差し込みを残すと、同じ処理が 2 か所に残る | 既定案（実装者はこの案に従う） |
 | D6 | Windows の報告の書き手を「無いときだけ足す」補助は、W07 と共有する 1 つにする | `intrinsics` と同じく宣言と定義を重複させないため。W04 の形の検査と順序を 1 か所で守れる | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜6 をすべて完了（W08 の既定案に対応）。
+  - `src/runtime/console.ll`・`src/llvm.rs`: トップレベルの式の表示（`@tz.console.write`）を `putchar` から `@write(1, ...)` を繰り返す `@tz.console.put` へ変更し、`windows_abi` の `@tz.console.write` への `%binary_mode` 挿入を除去して `@write` shim に一本化。標準出力が無い・閉じている・書き込みできない場合は終了コード `1` を返す。
+  - `src/llvm_overflow.rs`・`src/llvm.rs`: `OVERFLOW_WRITE` 定数を抽出し（POSIX・WASM の IR は不変）、`windows_abi` で `@tz.overflow.write` の本体（B10 の `"frame-pointer"="all"` 等の関数属性が付与された場合も保持）を `@tz.trap.write` 呼び出しへ転送し、W07 と共有する `traps::ensure_windows_report_writer` で実行ファイル・オブジェクト・共有ライブラリのすべてに `@tz.trap.write`／`@tz.debugger.write` を供給。
+  - `tests/windows.rs`・`src/llvm.rs`・`tests/io.mjs`・`tests/windows.mjs`: 単体テスト `windows_overflow_report_falls_back_to_the_debugger`、`tests/io.mjs` の読み取り専用 fd／閉じた fd（`-O0`・`-O3`）、`tests/windows.mjs` GUI 段（LLVM MSVC・同梱 MinGW、ハンドルなし起動のトップレベル表示終了コード `1` と `--overflow-report` の `OutputDebugStringW` 出力・ハンドル継承時の標準エラー出力）を検証。言語リファレンスは PR #147 で `Tsuzuri-Reference` へ分離済みのため、本リポジトリの `docs/language.md`・`docs/architecture.md` を更新。
+- **変更したファイル**: `src/runtime/console.ll`, `src/llvm_overflow.rs`, `src/llvm.rs`, `tests/windows.rs`, `tests/io.mjs`, `tests/windows.mjs`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, `_features/_completed/W32-silent-write-failures.md`。
+

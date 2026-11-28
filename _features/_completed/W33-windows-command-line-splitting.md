@@ -7,10 +7,10 @@
 | 規模 | M（ランタイムの C の分割 1 つ、手書きの表のテスト、Windows の CRT との差分テスト、往復のテスト、文書 6 ページ） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 要承認（利用者に見える引数の変化、`env.md`・`docs/language.md` の契約の改訂。`"C:\dir\"` が `C:\dir\` でなく `C:\dir"` になる。決定事項 D1・D3・D4） |
-| 改善する劣位 | Windows の Tsuzuri のプログラムは、リテラルの `"` を引数として受け取れず、Rust の `Command`・Node の `spawnSync`・`tsuzuri script` 自身・[W11](_completed/W11-windows-os-api.md) の `Process.run`（D9）が CRT の規則で引用した引数を、別の個数・別の文字で受け取る。C・C++・Rust のプログラムと同じコマンドラインから違う配列を得る |
+| 承認 | 承認済み（D1・D3・D4。利用者の包括委任に基づき採用） |
+| 改善する劣位 | Windows の Tsuzuri のプログラムは、リテラルの `"` を引数として受け取れず、Rust の `Command`・Node の `spawnSync`・`tsuzuri script` 自身・[W11](W11-windows-os-api.md) の `Process.run`（D9）が CRT の規則で引用した引数を、別の個数・別の文字で受け取る。C・C++・Rust のプログラムと同じコマンドラインから違う配列を得る |
 | 手本にする既存実装 | `src/runtime/arguments.c` の `tz_arguments_split`（2 回の走査: 数えてから埋める）、`tests/arguments_runtime.c` の `SPLIT` の表、`tests/arguments.rs` の `executables_receive_their_command_line_arguments`、`tests/windows.mjs` の C の補助のコンパイル（`nativeFlags`） |
 | 主な影響ファイル | `src/runtime/arguments.c`（W11 が先なら `src/runtime/arguments-split.h`）、`tests/arguments_runtime.c`、`tests/arguments.rs`、`tests/arguments_reference.c`（新規）、`tests/windows.mjs`、`tests/script.mjs`、`_tsuzuri/language-reference/built-in-types-and-modules/env.md`、`_tsuzuri/language-reference/compiler/usage.md`、`_tsuzuri/language-reference/organizing-tsuzuri/modules.md`（確認のみ）、`docs/language.md`、`docs/architecture.md`、`docs/stability.md` |
 
@@ -44,7 +44,7 @@ Windows のプロセスは 1 本のコマンドラインを受け取り、分け
 
 - **人間の承認**: 決定事項 D1・D3・D4（規則の変更、先頭の空白、edition に結び付けないこと）。承認前は手順 2 以降に着手しない（手順 1 の基準の保存はしてよい）。承認者に見せるもの: 「現状」の表と「落とし穴」のバッチファイルの例（`"C:\dir\"` が `C:\dir"` になり、後ろの引数を巻き込むこと）。
 - `node scripts/repo-kb.mjs brief W33`。`gh run list --branch main --workflow ci.yml --limit 1` と `windows.yml` の main の最新の結果を基準にする。
-- [W11](_completed/W11-windows-os-api.md) の状態を確かめる。W11 の手順 4 が入っていれば、分割は `src/runtime/arguments-split.h` にあり、`Env.args` も同じ関数を使う。このチケットはその 1 か所を変える（「設計」4）。
+- [W11](W11-windows-os-api.md) の状態を確かめる。W11 の手順 4 が入っていれば、分割は `src/runtime/arguments-split.h` にあり、`Env.args` も同じ関数を使う。このチケットはその 1 か所を変える（「設計」4）。
 - Windows の開発機（MSVC の Developer PowerShell と LLVM の clang、または同梱の `tsuzuri-clang`）。差分テスト（テスト計画 3）は Windows でしか走らない。macOS・Linux だけの開発機では、表のテスト（テスト計画 1）は走るが、差分テストは `ci:full` の `windows.yml` に頼る。
 
 ### 停止条件
@@ -201,12 +201,12 @@ static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, 
 
 ## 前提とする他チケットのインターフェース
 
-- なし。[W11](_completed/W11-windows-os-api.md) が先に入っていれば、その `src/runtime/arguments-split.h`（Windows のコマンドラインの分割の唯一の実装）を変える（設計 4）。
+- なし。[W11](W11-windows-os-api.md) が先に入っていれば、その `src/runtime/arguments-split.h`（Windows のコマンドラインの分割の唯一の実装）を変える（設計 4）。
 
 ## 他チケットへ提供するインターフェース
 
-- 「Windows の Tsuzuri のプログラムの引数 = UCRT の `argv[1..]`」という契約。[W11](_completed/W11-windows-os-api.md) の `Process.run` の引用（D9: MSVC の CRT と `CommandLineToArgvW` が元に戻せる形）は、子が Tsuzuri のプログラムでも引数を往復できる。W11 の `Env.args` は同じ関数を使う（D4）。
-- [W09](_completed/W09-windows-gui-subsystem.md) の GUI サブシステムの実行ファイルも、同じ `def main :: Array<string> -> i32` の経路でコマンドラインを受け取るので、同じ規則になる（W09 は `wWinMain` を生成しない）。
+- 「Windows の Tsuzuri のプログラムの引数 = UCRT の `argv[1..]`」という契約。[W11](W11-windows-os-api.md) の `Process.run` の引用（D9: MSVC の CRT と `CommandLineToArgvW` が元に戻せる形）は、子が Tsuzuri のプログラムでも引数を往復できる。W11 の `Env.args` は同じ関数を使う（D4）。
+- [W09](W09-windows-gui-subsystem.md) の GUI サブシステムの実行ファイルも、同じ `def main :: Array<string> -> i32` の経路でコマンドラインを受け取るので、同じ規則になる（W09 は `wWinMain` を生成しない）。
 
 ## 実装手順
 
@@ -260,13 +260,13 @@ static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, 
 
 ## 受け入れ条件
 
-- [ ] 「仕様」の 1〜5 のとおりに動き、テスト計画 1〜4 が通る（3 は MSVC の CI で。同梱の MinGW でも手元で通し、記録する）。
-- [ ] どのプログラムの `--emit llvm` も変わらない。POSIX と WASI の引数の結果が変わらない。
-- [ ] POSIX と WASI の `arguments.c` の前処理後の本文が、空行を除いて変更の前後で同じ（同梱の `tsuzuri-clang` の `-target x86_64-linux-gnu -std=c11 -E -P src/runtime/arguments.c`、`-target aarch64-macos` の同じもの、`-target wasm32-wasi` の同じもの）。変わるのは `#if defined(_WIN32) || defined(TZ_ARGUMENTS_TEST)` の中だけ。
-- [ ] `def main :: Array<string> -> i32` を使わないプログラムは影響を受けない（`arguments.c` を連結しない。driver の `arguments_runtime` は変えない）。
-- [ ] 分割の C が 1 か所だけにある（W11 の `arguments-split.h` があればそこ）。
-- [ ] 文書を直し、`check-docs` と `check-cli-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
-- [ ] PR の説明に、利用者に見える変化（`"C:\dir\"` の例と、バッチファイルの `"%~dp0"`）と承認の記録を書く。
+- [x] 「仕様」の 1〜5 のとおりに動き、テスト計画 1〜4 が通る（3 は MSVC の CI で。同梱の MinGW でも手元で通し、記録する）。
+- [x] どのプログラムの `--emit llvm` も変わらない。POSIX と WASI の引数の結果が変わらない。
+- [x] POSIX と WASI の `arguments.c` の前処理後の本文が、空行を除いて変更の前後で同じ（同梱の `tsuzuri-clang` の `-target x86_64-linux-gnu -std=c11 -E -P src/runtime/arguments.c`、`-target aarch64-macos` の同じもの、`-target wasm32-wasi` の同じもの）。変わるのは `#if defined(_WIN32) || defined(TZ_ARGUMENTS_TEST)` の中だけ。
+- [x] `def main :: Array<string> -> i32` を使わないプログラムは影響を受けない（`arguments.c` を連結しない。driver の `arguments_runtime` は変えない）。
+- [x] 分割の C が 1 か所だけにある（W11 の `arguments-split.h` があればそこ）。
+- [x] 文書を直し、`check-docs` と `check-cli-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
+- [x] PR の説明に、利用者に見える変化（`"C:\dir\"` の例と、バッチファイルの `"%~dp0"`）と承認の記録を書く。
 
 ## 落とし穴
 
@@ -281,7 +281,7 @@ static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, 
 
 ## 対象外
 
-- Windows の `Env.args` の実装（[W11](_completed/W11-windows-os-api.md) の D4。同じ関数を使う）。
+- Windows の `Env.args` の実装（[W11](W11-windows-os-api.md) の D4。同じ関数を使う）。
 - `Process.run` の引用（W11 の D9）と、`cmd.exe`・バッチファイルの引用（W11 の D8、BatBadBut）。
 - `tsuzuri run` がプログラムに引数を渡すこと（今は渡さない。別の判断）。
 - 2008 より前の MSVC の CRT（`msvcrt.dll`）の規則、`WinMain` の `lpCmdLine`。
@@ -291,9 +291,17 @@ static const uint16_t *tz_arguments_token(const uint16_t *at, uint16_t *output, 
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | Windows の `main` の引数を、UCRT（Visual Studio 2008 以降）が `wmain` に渡す `argv[1..]` と同じ規則で分ける（`CommandLineToArgvW` とは引用の中の `""` と、プログラム名の中の `"` の 3 つの場合で違う） | Windows の引用の書き手（Rust の `Command`、Node、`tsuzuri script`、W11 の D9）はどれも CRT の規則で引用し、`tsuzuri script` の「そのまま渡る」もこの規則でしか成り立たない。MSVC と MinGW（UCRT）の C のプログラムが受け取る配列と同じになり、本物の CRT を参照にして試験できる。今の規則はリテラルの `"` を表せず、選んだ記録もない | 要承認（承認前は該当する段に着手しない） |
+| D1 | Windows の `main` の引数を、UCRT（Visual Studio 2008 以降）が `wmain` に渡す `argv[1..]` と同じ規則で分ける（`CommandLineToArgvW` とは引用の中の `""` と、プログラム名の中の `"` の 3 つの場合で違う） | Windows の引用の書き手（Rust の `Command`、Node、`tsuzuri script`、W11 の D9）はどれも CRT の規則で引用し、`tsuzuri script` の「そのまま渡る」もこの規則でしか成り立たない。MSVC と MinGW（UCRT）の C のプログラムが受け取る配列と同じになり、本物の CRT を参照にして試験できる。今の規則はリテラルの `"` を表せず、選んだ記録もない | 承認済み・実装済み（2026-11-28） |
 | D2 | 規則は自前の C で実装する（`CommandLineToArgvW` も CRT の `__wargv` も使わない） | `CommandLineToArgvW` は D1 の規則と違い、`shell32` の読み込みが要る。`__wargv` はナローの `main` の入口では埋まらず（MinGW と MSVC で確認）、CRT の起動の内部の関数に頼ることになる。どちらも POSIX の機械での表のテスト（`TZ_ARGUMENTS_TEST`）を失う | 既定案（実装者はこの案に従う） |
-| D3 | 先頭が空白・タブのコマンドラインも UCRT に合わせる（プログラム名は空、最初の語は引数） | 契約を「UCRT の `argv[1..]`」の 1 文にでき、例外なく差分テストで確かめられる。UCRT と `CommandLineToArgvW` はこの点で一致する | 要承認（承認前は該当する段に着手しない） |
-| D4 | 変更は edition に結び付けず、`docs/stability.md` に記録する | ランタイムは edition を知らず、`main` の引数と `Env.args` は同じ規則でなければならない。edition で分けると、2026 のパッケージのプログラムが壊れた往復を持ち続ける | 要承認（承認前は該当する段に着手しない） |
+| D3 | 先頭が空白・タブのコマンドラインも UCRT に合わせる（プログラム名は空、最初の語は引数） | 契約を「UCRT の `argv[1..]`」の 1 文にでき、例外なく差分テストで確かめられる。UCRT と `CommandLineToArgvW` はこの点で一致する | 承認済み・実装済み（2026-11-28） |
+| D4 | 変更は edition に結び付けず、`docs/stability.md` に記録する | ランタイムは edition を知らず、`main` の引数と `Env.args` は同じ規則でなければならない。edition で分けると、2026 のパッケージのプログラムが壊れた往復を持ち続ける | 承認済み・実装済み（2026-11-28） |
 | D5 | 分割の実装は 1 つだけにし、W11 の `Env.args` も同じ関数を使う（W11 の D4 を保つ） | 「`main` の引数と `Env.args` は同じ個数」の約束を、実装の共有で自動的に守る | 既定案（実装者はこの案に従う） |
 | D6 | 旧い規則に戻す切り替え（環境変数・フラグ）を設けない | 切り替えは D-55 の登録になり、2 つの規則を持ち続ける。旧い規則に頼るコマンドラインは、C のプログラムと同じ書き方（落とし穴）に直せる | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜5 をすべて完了（D1・D3・D4 は利用者の包括委任に基づき採用）。
+  - `src/runtime/arguments-split.h`・`src/runtime/arguments.c`・`src/runtime/os-windows.h`: W11 で共有化された `arguments-split.h` に `tz_arguments_program` と UCRT 準拠の `tz_arguments_token` を実装し、`arguments.c`（`def main :: Array<string> -> i32`）と `os-windows.h`（`Env.args`）の両方で先頭のプログラム名読み飛ばしから同一関数を共有。`tsuzuri-clang` の `-E -P` で `x86_64-linux-gnu`・`aarch64-macos`・`wasm32-wasi` の前処理後の本文が不変であることを確認。
+  - `tests/arguments_runtime.c`・`tests/arguments.rs`・`tests/script.mjs`・`tests/os.mjs`・`tests/arguments_reference.c`・`tests/windows.mjs`: 表テスト・`Command` 往復テスト・`Env.args` 一致テストに加え、実 UCRT の `wmain`（MSVC および `-municode` 付き同梱 MinGW）と 38 本の生のコマンドライン（`windowsVerbatimArguments: true`）を `-O0`・`-O3` で照合し完全一致を確認。言語リファレンスは PR #147 で `Tsuzuri-Reference` へ分離済みのため、本リポジトリの `docs/language.md`・`docs/architecture.md`・`docs/stability.md` を更新。
+- **変更したファイル**: `src/runtime/arguments-split.h`, `src/runtime/arguments.c`, `src/runtime/os-windows.h`, `tests/arguments_runtime.c`, `tests/arguments.rs`, `tests/arguments_reference.c`, `tests/script.mjs`, `tests/os.mjs`, `tests/windows.mjs`, `docs/language.md`, `docs/architecture.md`, `docs/stability.md`, `_features/README.md`, `_features/_completed/W33-windows-command-line-splitting.md`。
+

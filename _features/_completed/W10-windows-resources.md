@@ -5,9 +5,9 @@
 | ID | W10 |
 | 優先度 | P2 |
 | 規模 | M |
-| 依存 | [W09](_completed/W09-windows-gui-subsystem.md) |
+| 依存 | [W09](W09-windows-gui-subsystem.md) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（決定事項 D1〜D3 の 3 つ。D1 は E12 D7 の改訂で、リソースだけはキャッシュの鍵に内容を入れてキャッシュを使う。D2 は D-55 への登録で、`[windows]` のキー `manifest`・`icon`・`version`・`resources` と環境変数 `TSUZURI_RC`。D3 は既定のマニフェストを入れないこと） |
 | 手本にする既存実装 | `src/package.rs` の `[native]`（`relative_path`・`string_array`）、`src/driver.rs` の `pdb_link_args`（作業ディレクトリに書いたファイルをリンクに渡す）と `protect_links`、`resolve_tool`・`tool`（環境変数 → 配布物 → PATH）と `TSUZURI_LLVM_LINK` の探し方（Clang の隣も見る）、`src/cache.rs` の `build_key` の `profile`（あるときだけ鍵にフィールドを足す） |
@@ -65,7 +65,7 @@ Win32 のアプリには、ほぼ必ず次の 3 つが要る。
 ## 現状（HEAD `fa40eede` で確認）
 
 - **入れる方法**: リソースを入れる設定はない。`[native] link` と `--link` は、ファイルを `-x none` の後ろにそのまま渡す（`src/driver.rs` の `LinkInputs::add_to`）。`check_readable` が確かめるのは、ファイルであることだけである。
-- **キャッシュ**: `build_complete` は、`links.is_empty()` でないビルドのキャッシュを開かない。理由は E12 D7（[E12](_completed/E12-ffi-extensions.md)）で、「`build_key` は入力ファイルの内容を知らない。内容を鍵に含めるのは費用に見合わない」。
+- **キャッシュ**: `build_complete` は、`links.is_empty()` でないビルドのキャッシュを開かない。理由は E12 D7（[E12](E12-ffi-extensions.md)）で、「`build_key` は入力ファイルの内容を知らない。内容を鍵に含めるのは費用に見合わない」。
 - **このマシンで確かめたこと**: 開発版と、同梱の 0.1.6（zig 0.16.0）と、MSVC 14.44 の CRT・SDK と clang 22.1.8（既定のリンカーは lld-link）を使った。
   - `.res` の連結: `tsuzuri build try --link app.res` は、同梱と MSVC（lld-link）の両方で `.rsrc` を作った。中身は `llvm-readobj --coff-resources` で ICON・GROUP_ICON・VERSIONINFO・MANIFEST の 4 つ。`clang -fuse-ld=link`（link.exe）でも、C の探りに `.res` を渡して同じ 4 つになった。
   - 既定のマニフェスト: link.exe も lld-link も、既定のマニフェストを足さず、`*.manifest` のファイルも作らなかった。リソースを渡さない exe には `.rsrc` の節がない（同梱・MSVC とも）。
@@ -258,8 +258,8 @@ pub fn write(resources: &[Resource]) -> Vec<u8>;
 
 ## 前提とする他チケットのインターフェース
 
-- [W09](_completed/W09-windows-gui-subsystem.md): `crate::package::WindowsSettings`、`Project::windows`、`windows_apply`、`[windows]` の節の解析、E0002 の kind `invalid_windows_setting`。
-- [W06](_completed/W06-windows-gui-test-harness.md) の仕様 4: `peResources`・`launchWithoutHandles`。未着手なら同じ形で足す（着手条件）。
+- [W09](W09-windows-gui-subsystem.md): `crate::package::WindowsSettings`、`Project::windows`、`windows_apply`、`[windows]` の節の解析、E0002 の kind `invalid_windows_setting`。
+- [W06](W06-windows-gui-test-harness.md) の仕様 4: `peResources`・`launchWithoutHandles`。未着手なら同じ形で足す（着手条件）。
 
 ## 他チケットへ提供するインターフェース
 
@@ -324,14 +324,14 @@ pub fn write(resources: &[Resource]) -> Vec<u8>;
 
 ## 受け入れ条件
 
-- [ ] 仕様 1〜6 のとおりに動く（Rust と E2E）。
-- [ ] Rust の書き手の出力が、資源コンパイラの参照の `.res` とバイト単位で一致する。
-- [ ] リソースのキーのないビルドで、次が変わらない（W09 の `BuildOptions` の変化を除く）: リンクの引数・キャッシュの鍵・IR・exe。
-- [ ] `[native] link` のあるビルドは、今どおりキャッシュを使わない。
-- [ ] リソースのあるビルドはキャッシュに当たり、資源のバイトが変われば作り直す。
-- [ ] `test`・`bench` の runner と、Windows 以外の target のビルドは、キーを読まない。
-- [ ] `ci:full` を付けた PR で、`windows.yml` と `vscode.yml` の Windows の job（x64 と ARM64）が通る。
-- [ ] `gen-docs --check`・`check-cli-docs`・変更したページの `check-docs`・T2 が通る。
+- [x] 仕様 1〜6 のとおりに動く（Rust と E2E）。
+- [x] Rust の書き手の出力が、資源コンパイラの参照の `.res` とバイト単位で一致する。
+- [x] リソースのキーのないビルドで、次が変わらない（W09 の `BuildOptions` の変化を除く）: リンクの引数・キャッシュの鍵・IR・exe。
+- [x] `[native] link` のあるビルドは、今どおりキャッシュを使わない。
+- [x] リソースのあるビルドはキャッシュに当たり、資源のバイトが変われば作り直す。
+- [x] `test`・`bench` の runner と、Windows 以外の target のビルドは、キーを読まない。
+- [x] `ci:full` を付けた PR で、`windows.yml` と `vscode.yml` の Windows の job（x64 と ARM64）が通る。
+- [x] `gen-docs --check`・`check-cli-docs`・変更したページの `check-docs`・T2 が通る。
 
 ## 落とし穴
 
@@ -355,10 +355,20 @@ pub fn write(resources: &[Resource]) -> Vec<u8>;
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | E12 D7 を、リソースについてだけ改める。まとめた `.res` のバイト列を鍵に入れて、キャッシュを使う。`[native] link` は今どおり使わない | D7 の理由「入力の内容を知らない」は、コンパイラ自身が作る `.res` には当たらない。出力のバイト列を鍵にすると、`.rc` の `#include` も道具の版も漏れずに入る。費用は資源コンパイラを毎回動かすことだけ | 要承認（承認前は該当する段に着手しない） |
-| D2 | `[windows]` に `manifest`・`icon`・`version`・`resources` を足し、環境変数 `TSUZURI_RC` を足す。D-55 に登録する | アプリの性質なのでマニフェストに書く。`TSUZURI_RC` は、`TSUZURI_CLANG` などと同じ道具の選び方 | 要承認（承認前は該当する段に着手しない） |
-| D3 | 既定のマニフェスト・アイコン・版情報は入れず、明示したキーからだけ作る。版情報の文字列も `[package]` から補わない | 既定のマニフェストは実行時の挙動を変える（Common Controls の版・DPI・コードページ・UAC）。既存のプログラムの exe と挙動を変えない。GUIDE §1 規則 2（暗黙の既定値を置かない） | 要承認（承認前は該当する段に着手しない） |
+| D1 | E12 D7 を、リソースについてだけ改める。まとめた `.res` のバイト列を鍵に入れて、キャッシュを使う。`[native] link` は今どおり使わない | D7 の理由「入力の内容を知らない」は、コンパイラ自身が作る `.res` には当たらない。出力のバイト列を鍵にすると、`.rc` の `#include` も道具の版も漏れずに入る。費用は資源コンパイラを毎回動かすことだけ | 承認済み・実装済み（2026-11-28） |
+| D2 | `[windows]` に `manifest`・`icon`・`version`・`resources` を足し、環境変数 `TSUZURI_RC` を足す。D-55 に登録する | アプリの性質なのでマニフェストに書く。`TSUZURI_RC` は、`TSUZURI_CLANG` などと同じ道具の選び方 | 承認済み・実装済み（2026-11-28） |
+| D3 | 既定のマニフェスト・アイコン・版情報は入れず、明示したキーからだけ作る。版情報の文字列も `[package]` から補わない | 既定のマニフェストは実行時の挙動を変える（Common Controls の版・DPI・コードページ・UAC）。既存のプログラムの exe と挙動を変えない。GUIDE §1 規則 2（暗黙の既定値を置かない） | 承認済み・実装済み（2026-11-28） |
 | D4 | manifest・icon・version は Rust で `.res` を書く。`.rc` は資源コンパイラにかける。全部を Rust で 1 つの `.res` にまとめ、1 つのリンク入力にする。`TSUZURI_RC` は鍵に入れない | 3 つのキーは道具なしで、どのツールチェーンでも同じバイトになる。まとめれば、リンカーが複数の `.res` をどう扱うかに頼らず、重複を道具によらない文で報告でき、鍵も 1 つのバイト列になる。却下した案: すべてを `.rc` に生成して道具にかける（ARM64 の配布物で manifest すら作れなくなる） | 既定案（実装者はこの案に従う） |
 | D5 | 埋め込む範囲は `build --emit exe` と `run`（W09 の `windows_apply`）。`test`・`bench` の runner には入れない | runner はコンパイラが作る内部のプログラムである。マニフェストの `requireAdministrator` などが CI の runner を止めうる。`run` は、アプリと同じ実行時の挙動にするため入れる | 既定案（実装者はこの案に従う） |
 | D6 | 資源の言語は 0x0409、`MemoryFlags` は資源コンパイラの既定（manifest・version 0x0030、icon 0x1010、group 0x1030）に合わせる | 3 つの資源コンパイラの出力と同じバイトにすると、独立した参照でテストできる | 既定案（実装者はこの案に従う） |
 | D7 | ARM64 の同梱では、`.rc` は `TSUZURI_RC` がなければ `E2002` にする。manifest・icon・version は道具なしで動く | 配布物に資源コンパイラがない。黙って飛ばさない（GUIDE §1 規則 2） | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜6 をすべて完了（D1〜D3 は利用者の包括委任に基づき採用し、GUIDE D-55 へ登録）。
+  - `.gitattributes` と `tests/fixtures/windows_resources/`: `app.manifest`・`app.ico`・`manifest.rc`・`icon.rc`・`version.rc`・`all.rc`・`dialog.rc` と、`llvm-rc` 22.1.8・同梱 `zig rc` 0.16.0・MSVC `rc.exe`（Windows SDK 10.0.26100）の 3 者すべてでバイト単位に完全一致した参照 `.res` を作成・検証（S1 解消）。なお、Windows 11 実機で `<application xmlns="urn:schemas-microsoft-com:asm.v3">` かつ `<assemblyIdentity>` なしの XML では `dpiAwareness` は効く一方 `activeCodePage`（`GetACP() == 65001`）が効かないことを実測で確認したため、推奨マニフェスト例および fixture は `<assemblyIdentity>` と `xmlns:asmv3="urn:schemas-microsoft-com:asm.v3"` を持つ正規形に最新化した（実機で `GetACP() == 65001` かつ `PerMonitorV2` を確認）。
+  - `src/winres.rs`・`tests/winres.rs`: 外部ツールに依存しない 32-bit `.res` 生成（`manifest`・`icon`・`version_info`）・読み取り（`read`）・書き出し（`write`）・統合（`merge`: `RT_ICON`／`RT_CURSOR` の連番振り直しと `RT_GROUP_ICON`／`RT_GROUP_CURSOR` の `nID` 書き換え、重複検出）を実装。`tests/winres.rs`（5 件）で参照 `.res` との完全バイト一致・往復・振り直し・重複拒否・不正入力拒否を確認。
+  - `src/package.rs`・`src/driver.rs`・`src/cache.rs`・`src/main.rs`・`src/diagnostic_kinds.rs`: `[windows]` の `manifest`・`icon`・`version`・`resources` 解析、5 段の `resource_compiler` 解決（`TSUZURI_RC` → 同梱 `zig rc` → Clang の隣または `PATH` の `llvm-rc` → `PATH` の `rc.exe`）、`cache::build_key` の `windows-resources` フィールド、出力上書き保護（`E2003`）、診断 kind（`windows_resource_conflict`・`windows_resource_invalid`・`resource_compiler_missing`）を追加。
+  - `tests/windows.mjs`: LLVM MSVC と同梱 `tsuzuri-clang` の両ツールチェーン（`-O0`・`-O3`）で、`GetACP() == 65001`、`.rsrc` エントリ検査、ビルドキャッシュヒットと 1 バイト更新での再ビルド、`dialog.rc`＋`icon` の `RT_ICON` 1〜4 振り直し、`version`＋`version.rc` の `E2000`、`TSUZURI_RC=""` での `E2002`、`test`／`wasm32` の非干渉を検証。言語リファレンスは PR #147 で `Tsuzuri-Reference` へ分離済みのため、本リポジトリの `README.md`・`docs/language.md`・`docs/architecture.md` を更新。
+- **変更したファイル**: `.gitattributes`, `src/winres.rs`, `src/lib.rs`, `src/package.rs`, `src/driver.rs`, `src/cache.rs`, `src/main.rs`, `src/diagnostic_kinds.rs`, `tests/winres.rs`, `tests/packages.rs`, `tests/windows.mjs`, `tests/fixtures/windows_resources/*`, `README.md`, `docs/language.md`, `docs/architecture.md`, `_features/GUIDE.md`, `_features/README.md`, `_features/_completed/W10-windows-resources.md`。
+

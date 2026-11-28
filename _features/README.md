@@ -346,7 +346,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](_completed/W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | done |
 | W08 | [標準ストリームが無いときの IO の意味を決めて実装する](_completed/W08-io-without-std-streams.md) | P1 | S | – | done |
 | W09 | [GUI サブシステムの実行ファイル（`--subsystem windows` と `[windows] subsystem`）](_completed/W09-windows-gui-subsystem.md) | P1 | M | W08 | done |
-| W10 | [Windows のリソース（マニフェスト・アイコン・版情報・`.rc`）を埋め込む](W10-windows-resources.md) | P2 | M | W09 | todo |
+| W10 | [Windows のリソース（マニフェスト・アイコン・版情報・`.rc`）を埋め込む](_completed/W10-windows-resources.md) | P2 | M | W09 | done（`[windows]` の `manifest`・`icon`・`version`・`resources`、`src/winres.rs` による外部ツール不要の 32-bit `.res` 生成と `RT_ICON`／`RT_CURSOR` 振り直し統合、`TSUZURI_RC` 5 段探索、ビルドキャッシュ `windows-resources` 対応） |
 | W11 | [Windows の OS API（`File`・`Dir`・`Env`・`Random`・`Process`・`Time` の OS 時計）](_completed/W11-windows-os-api.md) | P1 | L | – | done（Phase 1: Win32 `File`・`Dir`・`Env`・`Time`・`Random` (`BCryptGenRandom`)；Phase 2: `CreateProcessW` による `Process.run`・バッチ拒否・1 GiB 出力上限・Windows ランタイム統合） |
 | W12 | [静的コールバックの寿命の契約（native ではプロセスの寿命の間呼べる）](_completed/W12-static-callback-lifetime.md) | P1 | M | W06, W07 | done |
 | W13 | [`extern` の `ref mut`（copy-in/copy-out）と、呼び出し先が書く可変バッファ・`@count`](_completed/W13-extern-ref-mut-and-mutable-buffers.md) | P1 | M | – | done |
@@ -368,8 +368,8 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W29 | [コールバックの P の取り戻しの遅延を計測して短い経路を速くする](W29-callback-latency.md) | P2 | M | W12 | todo |
 | W30 | [Windows の実行ファイルのセキュリティの硬化（ASLR・NX・CET・CFG）](W30-windows-hardening.md) | P2 | M | W07（Phase 2: W25） | todo |
 | W31 | [トップレベルのコードで、最初の `let!`・`do!` より前にループがあると `E1018` になる](_completed/W31-top-level-loop-before-do.md) | P2 | S | – | done |
-| W32 | [書き込みの失敗を黙って捨てる経路を塞ぐ（トップレベルの式の表示、`--overflow-report`）](W32-silent-write-failures.md) | P2 | S | W08 | todo |
-| W33 | [Windows のコマンドラインの分割を CRT（`CommandLineToArgvW`）の規則にそろえる](W33-windows-command-line-splitting.md) | P2 | M | – | todo |
+| W32 | [書き込みの失敗を黙って捨てる経路を塞ぐ（トップレベルの式の表示、`--overflow-report`）](_completed/W32-silent-write-failures.md) | P2 | S | W08 | done（トップレベル表示を `@write(1, ...)` 直書きにして失敗時は終了コード `1`、Windows の `--overflow-report` を `@tz.trap.write`／`OutputDebugStringW` へ転送） |
+| W33 | [Windows のコマンドラインの分割を CRT（`CommandLineToArgvW`）の規則にそろえる](_completed/W33-windows-command-line-splitting.md) | P2 | M | – | done（`arguments-split.h` を UCRT の `wmain` 規則に統一し、`def main :: Array<string> -> i32` と `Env.args` を実 UCRT と完全一致） |
 | W34 | [Windows の sysmon の待ちがミリ秒に切り上がり、TZ08 の 20 µs の刻みが成り立たない](W34-windows-sysmon-timer-resolution.md) | P2 | M | – | todo |
 | W35 | [Windows の `--trap-mode return`（`trap.c` の移植と `.pdata`）](W35-windows-trap-mode-return.md) | P2 | L | W07 | todo |
 | W36 | [C レイアウトの record の値渡し（引数と結果。Windows x64・Arm64 から）](_completed/W36-c-layout-by-value.md) | P2 | L | W21 | done（Phase 1–2: Windows x64・Arm64、System V x86-64、AAPCS64。`ref` のない `@c_layout` record は C の値渡し・値返し（S1 は A。互換を破る変更として `docs/stability.md` に記録）。全 target の `declare` を Clang と突き合わせ） |

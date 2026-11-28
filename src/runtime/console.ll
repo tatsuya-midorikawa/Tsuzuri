@@ -1,25 +1,40 @@
-declare i32 @putchar(i32)
+; Writes top-level expression output directly to fd 1 without stdio buffering (W32).
+; On POSIX, default SIGPIPE terminates the process by signal as before; when SIGPIPE is ignored
+; (`EPIPE`), or when fd 1 is missing/closed/unwritable, `write` returns <= 0 and `@main` exits 1.
+declare i64 @write(i32, ptr, i64)
 
 define internal i32 @tz.console.write(ptr %data, i64 %length) {
 entry:
-  br label %loop
-loop:
-  %i = phi i64 [ 0, %entry ], [ %next, %advance ]
-  %done = icmp eq i64 %i, %length
-  br i1 %done, label %newline, label %byte
-byte:
-  %p = getelementptr inbounds i8, ptr %data, i64 %i
-  %b = load i8, ptr %p
-  %c = zext i8 %b to i32
-  %r = call i32 @putchar(i32 %c)
-  %failed = icmp slt i32 %r, 0
-  br i1 %failed, label %error, label %advance
-advance:
-  %next = add i64 %i, 1
-  br label %loop
-newline:
-  %last = call i32 @putchar(i32 10)
+  %newline = alloca i8, align 1
+  store i8 10, ptr %newline, align 1
+  %body = call i32 @tz.console.put(ptr %data, i64 %length)
+  %failed = icmp slt i32 %body, 0
+  br i1 %failed, label %error, label %end
+end:
+  %last = call i32 @tz.console.put(ptr %newline, i64 1)
   ret i32 %last
 error:
+  ret i32 -1
+}
+
+define internal i32 @tz.console.put(ptr %data, i64 %length) {
+entry:
+  br label %loop
+loop:
+  %offset = phi i64 [ 0, %entry ], [ %next, %advance ]
+  %done = icmp eq i64 %offset, %length
+  br i1 %done, label %ok, label %step
+step:
+  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset
+  %remaining = sub i64 %length, %offset
+  %written = call i64 @write(i32 1, ptr %pointer, i64 %remaining)
+  %progress = icmp sgt i64 %written, 0
+  br i1 %progress, label %advance, label %fail
+advance:
+  %next = add i64 %offset, %written
+  br label %loop
+ok:
+  ret i32 0
+fail:
   ret i32 -1
 }

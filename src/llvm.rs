@@ -287,6 +287,27 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
     } else {
         ir
     };
+    const OVERFLOW_DEFINITION: &str = "define internal void @tz.overflow.write(";
+    let has_overflow_write = ir.contains(OVERFLOW_DEFINITION);
+    let ir = if has_overflow_write {
+        let body_of =
+            |writer: &'static str| &writer[writer.find('\n').expect("writer header") + 1..];
+        let start = ir.find(OVERFLOW_DEFINITION).unwrap();
+        let body = start + ir[start..].find('\n').expect("writer header") + 1;
+        let original = body_of(overflow_emit::OVERFLOW_WRITE);
+        assert!(
+            ir.matches(OVERFLOW_DEFINITION).count() == 1 && ir[body..].starts_with(original),
+            "unexpected @tz.overflow.write definition in Windows IR"
+        );
+        let mut ir = ir;
+        ir.replace_range(
+            body..body + original.len(),
+            "entry:\n  call void @tz.trap.write(ptr %data, i64 %length)\n  ret void\n}\n",
+        );
+        ir
+    } else {
+        ir
+    };
     let mut ir_with_i128 = ir;
     ir_with_i128.push_str(&windows_i128_helpers(aarch64));
 
@@ -301,8 +322,6 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
         exports.insert("tsuzuri_main".into());
     }
     let has_write = ir_with_i128.contains("call i64 @write(");
-    let has_console = ir_with_i128.contains("define internal i32 @tz.console.write(");
-    let mut console = false;
     let mut main_entry_block = false;
     let mut in_trap_report = false;
     let mut needs_trap_fail = false;
@@ -339,12 +358,6 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
         } else {
             let _ = writeln!(output, "{line}");
         }
-        if line.starts_with("define internal i32 @tz.console.write(") {
-            console = true;
-        } else if console && line == "entry:" {
-            output.push_str("  %binary_mode = call i32 @_setmode(i32 1, i32 32768)\n");
-            console = false;
-        }
         if executable && line.starts_with("define i32 @main(") {
             main_entry_block = true;
         } else if main_entry_block && line == "entry:" {
@@ -352,7 +365,7 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
             main_entry_block = false;
         }
     }
-    if has_trap_write || executable {
+    if has_trap_write || has_overflow_write || executable {
         traps::ensure_windows_report_writer(&mut output);
     } else if has_debug_write {
         if !output.contains("define internal void @tz.debugger.write(") {
@@ -398,11 +411,8 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
             let _ = writeln!(output, "{declaration}");
         }
     }
-    if has_console || has_write {
-        output.push_str("declare i32 @_setmode(i32, i32)\n");
-    }
     if has_write {
-        output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
+        output.push_str("declare i32 @_setmode(i32, i32)\ndeclare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
     with_coff_comdats(&traps::with_unwind_tables(&output))
 }
@@ -12375,8 +12385,9 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                         assert!(line.contains(" uwtable"), "missing uwtable: {line}");
                     }
                     assert!(win.contains("call ptr @GetStdHandle(i32 -12)"));
-                    assert!(!win.contains("call i64 @write("));
-                    assert!(!win.contains("define internal i64 @write("));
+                    assert!(!win.contains("call i64 @write(i32 2,"));
+                    assert!(win.contains("call i64 @write(i32 1,"));
+                    assert!(win.contains("define internal i64 @write("));
                     assert_eq!(
                         win.matches("define internal void @tz.debugger.write(")
                             .count(),
@@ -12396,6 +12407,22 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
                 }
             }
         }
+        let def_main_src = "def divide :: i64 -> i64\nfn divide x = 10 / x\ndef main :: unit -> i32 = \\() -> (divide 0) as i32\n";
+        let def_main_mod = analyze(def_main_src).unwrap();
+        let def_main_base = emit_with_trap_info_numbered(
+            &def_main_mod,
+            options,
+            &[TrapSource {
+                path: "Main.tz",
+                text: def_main_src,
+            }],
+            &|_| TrapNumbering::Dense,
+        )
+        .unwrap()
+        .ir;
+        let def_main_win = windows_abi(def_main_base, &def_main_mod, true);
+        assert!(!def_main_win.contains("call i64 @write("));
+        assert!(!def_main_win.contains("define internal i64 @write("));
     }
 
     #[test]
@@ -12626,5 +12653,101 @@ def main :: unit -> i32 = \\() ->\n    let _r = c_atexit bye\n    0\n";
                 .contains("@tz_small_shared = weak hidden alias ptr, ptr @tz.weak.tz_small_shared")
         );
         assert!(win_dll.contains("@__multi3 = weak hidden alias "));
+    }
+
+    #[test]
+    fn windows_overflow_report_falls_back_to_the_debugger() {
+        let source = "export def grow :: i32u -> i32u = \\x -> x * 3i32u\n\
+                      def main :: unit -> i32 = \\() -> if grow 4000000000i32u == 3410065408i32u then 0 else 1\n";
+        let module = analyze(source).unwrap();
+        let trap_sources = [TrapSource {
+            path: "./Main.tz",
+            text: source,
+        }];
+        for entry in [Entry::Console, Entry::Library] {
+            let options = EmitOptions {
+                entry,
+                wasm: false,
+                debug_output: false,
+                runtime_objects: false,
+                wasm_simd128: false,
+                allocator: Allocator::System,
+                f16: F16Path::Soft,
+            };
+            for trap_info in [false, true] {
+                for optimized in [false, true] {
+                    let _scope = crate::overflow::Scope::enter(vec![crate::overflow::Source {
+                        path: "./Main.tz".into(),
+                        text: source.into(),
+                        reported: true,
+                    }]);
+                    let posix = if trap_info {
+                        if optimized {
+                            emit_with_debug_info_numbered(
+                                &module,
+                                options,
+                                &trap_sources,
+                                true,
+                                true,
+                                &|_| TrapNumbering::Dense,
+                            )
+                            .unwrap()
+                            .ir
+                        } else {
+                            emit_with_trap_info_numbered(&module, options, &trap_sources, &|_| {
+                                TrapNumbering::Dense
+                            })
+                            .unwrap()
+                            .ir
+                        }
+                    } else {
+                        emit_with_options(&module, options).unwrap()
+                    };
+                    if !trap_info {
+                        assert!(posix.contains(overflow_emit::OVERFLOW_WRITE));
+                    }
+                    assert!(!posix.contains("@GetStdHandle"));
+                    assert!(duplicate_declarations(&posix).is_empty());
+
+                    let executable = entry == Entry::Console;
+                    let win = windows_abi(posix.clone(), &module, executable);
+                    assert_eq!(win, windows_abi(posix.clone(), &module, executable));
+                    assert_eq!(
+                        win,
+                        windows_abi(posix.replace('\n', "\r\n"), &module, executable)
+                    );
+                    assert!(duplicate_declarations(&win).is_empty());
+                    assert!(
+                        win.contains("call void @tz.trap.write(ptr %data, i64 %length)"),
+                        "{win}"
+                    );
+                    assert_eq!(
+                        win.matches("define internal void @tz.overflow.write(")
+                            .count(),
+                        1
+                    );
+                    assert_eq!(
+                        win.matches("define internal void @tz.trap.write(").count(),
+                        1
+                    );
+                    assert_eq!(
+                        win.matches("define internal void @tz.debugger.write(")
+                            .count(),
+                        1
+                    );
+                    for declaration in [
+                        "declare ptr @GetStdHandle(i32)",
+                        "declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)",
+                        "declare void @OutputDebugStringW(ptr)",
+                        "declare i32 @MultiByteToWideChar(i32, i32, ptr, i32, ptr, i32)",
+                    ] {
+                        assert_eq!(win.matches(declaration).count(), 1, "{declaration}");
+                    }
+                    assert!(!win.contains("call i64 @write("));
+                    assert!(!win.contains("define internal i64 @write("));
+                    assert!(!win.contains("declare i32 @_write("));
+                }
+            }
+        }
     }
 }

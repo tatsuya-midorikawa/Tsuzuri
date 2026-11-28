@@ -68,6 +68,8 @@ pub mod target;
 pub mod timings;
 pub mod trap;
 pub mod watch;
+#[doc(hidden)]
+pub mod winres;
 
 use check::{ModuleInput, ModuleOrigin};
 use diagnostic::{Diagnostic, DiagnosticKind, DiagnosticSet, Diagnostics, Span};
