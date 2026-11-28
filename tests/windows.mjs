@@ -1227,6 +1227,15 @@ if (isMain) {
   writeFileSync(join(unresolvedLib, "Main.tz"), "extern def missing_host :: unit -> i64\nexport def call_missing :: i64\nfn call_missing = missing_host ()\n");
   const unresolvedErr = diagnostic(cli(["build", unresolvedLib, "--no-cache", "--emit", "shared", "-o", join(sharedDir, "unresolved.dll"), "--json"], false));
   assert.equal(unresolvedErr.code, "E2002");
+  assert.match(unresolvedErr.message, /unresolved symbols: tsuzuri_host_Main_missing_host/);
+  assert.doesNotMatch(unresolvedErr.message, /shared libraries require the Clang linker/);
+  const unresolvedExeDir = join(sharedDir, "unresolved-exe");
+  mkdirSync(unresolvedExeDir);
+  writeFileSync(join(unresolvedExeDir, "Main.tz"), "extern def host_value :: unit -> i64\ndef main :: unit -> i32 = \\() -> (host_value ()) as i32\n");
+  const unresolvedExeErr = diagnostic(cli(["build", unresolvedExeDir, "--no-cache", "-o", join(sharedDir, "unresolved.exe"), "--json"], false));
+  assert.equal(unresolvedExeErr.code, "E2002");
+  assert.match(unresolvedExeErr.message, /unresolved symbols: tsuzuri_host_Main_host_value/);
+  assert.doesNotMatch(unresolvedExeErr.message, /install LLVM\/Clang/);
   console.log("Windows MSVC: W05 --emit shared (.dll + .lib + .pdb + cache + tzroutine threads) passed");
 
   runGuiStage(compiler, clang, directory);

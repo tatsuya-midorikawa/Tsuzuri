@@ -7618,6 +7618,95 @@ fn run_tool_untimed(command: &mut Command, hint: &str) -> Result<String, Diagnos
     tool_output(&name, command.output(), hint)
 }
 
+/// W03: the symbols that a failed link reports as undefined, in the order the linker printed them,
+/// each once. Empty when the output shows another failure.
+fn undefined_symbols(output: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push = |raw: &str, strip_macho_underscore: bool| {
+        let trimmed = raw
+            .trim()
+            .trim_end_matches('\r')
+            .trim_matches(|ch| matches!(ch, '"' | '\'' | '`' | '‘' | '’'));
+        let name = if strip_macho_underscore {
+            trimmed.strip_prefix('_').unwrap_or(trimmed)
+        } else {
+            trimmed
+        };
+        if !name.is_empty() && seen.insert(name.to_owned()) {
+            symbols.push(name.to_owned());
+        }
+    };
+    let mut in_ld64 = false;
+    for raw_line in output.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("wasm-ld:") {
+            continue;
+        }
+        if trimmed.starts_with("Undefined symbols for architecture ") {
+            in_ld64 = true;
+            continue;
+        }
+        if in_ld64 {
+            if let Some(rest) = trimmed.strip_prefix('"')
+                && let Some((name, after)) = rest.split_once('"')
+                && after.starts_with(", referenced from:")
+            {
+                push(name, true);
+                continue;
+            }
+            if !line.starts_with(' ') && !line.starts_with('\t') {
+                in_ld64 = false;
+            }
+        }
+        if let Some((_, rest)) = line.split_once("undefined symbol: ") {
+            let rest = rest.strip_prefix("__declspec(dllimport) ").unwrap_or(rest);
+            if let Some(token) = rest.split_whitespace().next() {
+                push(token, trimmed.starts_with("ld64.lld:"));
+            }
+            continue;
+        }
+        if (line.contains("error LNK2001:") || line.contains("error LNK2019:"))
+            && let Some((_, rest)) = line.split_once("unresolved external symbol ")
+        {
+            let rest = rest
+                .trim_start_matches('"')
+                .strip_prefix("__declspec(dllimport) ")
+                .unwrap_or(rest);
+            if let Some(token) = rest.split_whitespace().next() {
+                push(token, false);
+            }
+            continue;
+        }
+        for open in [
+            "undefined reference to `",
+            "undefined reference to '",
+            "undefined reference to ‘",
+        ] {
+            if let Some((_, rest)) = line.split_once(open)
+                && let Some(end) = rest.find(['\'', '’'])
+            {
+                push(&rest[..end], false);
+                break;
+            }
+        }
+    }
+    symbols
+}
+
+fn unresolved_symbols_hint(symbols: &[String]) -> String {
+    let listed = symbols[..symbols.len().min(8)].join(", ");
+    let more = if symbols.len() > 8 {
+        format!(", and {} more", symbols.len() - 8)
+    } else {
+        String::new()
+    };
+    format!(
+        "unresolved symbols: {listed}{more}; link the objects or libraries that define them with --link PATH, -l NAME and -L DIR, or list them under [native] in Tsuzuri.toml (an 'extern def' without a link name is the host function tsuzuri_host_<Module>_<name>)"
+    )
+}
+
 fn tool_output(
     name: &str,
     output: io::Result<std::process::Output>,
@@ -7635,10 +7724,26 @@ fn tool_output(
         String::from_utf8_lossy(&output.stderr)
     );
     if !output.status.success() {
+        let is_wasm_ld = Path::new(name)
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("wasm-ld"));
+        let unresolved = if is_wasm_ld {
+            Vec::new()
+        } else {
+            undefined_symbols(&text)
+        };
+        let effective_hint;
+        let shown_hint = if unresolved.is_empty() {
+            hint
+        } else {
+            effective_hint = unresolved_symbols_hint(&unresolved);
+            &effective_hint
+        };
         return Err(driver_error_of(
             DiagnosticKind::ExternalToolFailed,
             format!(
-                "'{name}' failed ({}):\n{}\n{hint}",
+                "'{name}' failed ({}):\n{}\n{shown_hint}",
                 output.status,
                 text.trim()
             ),
@@ -8770,6 +8875,80 @@ mod tests {
             module_definition("my lib.dll", &symbols[..2]),
             "LIBRARY \"my lib.dll\"\nEXPORTS\n    tsuzuri_alloc\n    tsuzuri_free\n"
         );
+    }
+
+    #[test]
+    fn undefined_symbol_hints_name_the_symbols() {
+        assert_eq!(
+            undefined_symbols(
+                "lld-link: error: undefined symbol: GdiFlush\r\n>>> referenced by module.o:(main)\r\n"
+            ),
+            ["GdiFlush"]
+        );
+        assert_eq!(
+            undefined_symbols(
+                "lld-link: error: undefined symbol: __declspec(dllimport) GdiFlush\r\n"
+            ),
+            ["GdiFlush"]
+        );
+        assert_eq!(
+            undefined_symbols(
+                "tag.obj : error LNK2019: unresolved external symbol malloc referenced in function tz.string.to_well_formed\r\n\
+                 tag.obj : error LNK2019: unresolved external symbol free referenced in function tz.free\r\n\
+                 tag.obj : error LNK2019: unresolved external symbol realloc referenced in function tz.realloc\r\n\
+                 tag.obj : error LNK2019: unresolved external symbol malloc referenced in function other\r\n\
+                 ab.exe : fatal error LNK1120: 3 unresolved externals\r\n"
+            ),
+            ["malloc", "free", "realloc"]
+        );
+        assert_eq!(
+            undefined_symbols("LINK : error LNK2001: unresolved external symbol tsuzuri_alloc\r\n"),
+            ["tsuzuri_alloc"]
+        );
+        assert_eq!(
+            undefined_symbols("ld.lld: error: undefined symbol: tsuzuri_host_Main_host_value\n"),
+            ["tsuzuri_host_Main_host_value"]
+        );
+        assert_eq!(
+            undefined_symbols("ld64.lld: error: undefined symbol: _tsuzuri_host_Main_host_value\n"),
+            ["tsuzuri_host_Main_host_value"]
+        );
+        assert_eq!(
+            undefined_symbols("host.c:(.text+0x5): undefined reference to `sqlite3_open'\n"),
+            ["sqlite3_open"]
+        );
+        assert_eq!(
+            undefined_symbols("host.c:(.text+0x5): undefined reference to ‘sqlite3_close’\n"),
+            ["sqlite3_close"]
+        );
+        assert_eq!(
+            undefined_symbols(
+                "Undefined symbols for architecture arm64:\n  \"_tsuzuri_host_Main_host_value\", referenced from:\n      _main in module.o\n  \"_c_helper\", referenced from:\n      _main in module.o\nld: symbol(s) not found for architecture arm64\n"
+            ),
+            ["tsuzuri_host_Main_host_value", "c_helper"]
+        );
+        let nine: String = (1..=9)
+            .map(|i| format!("ld.lld: error: undefined symbol: sym_{i}\n"))
+            .collect();
+        let nine_syms = undefined_symbols(&nine);
+        assert_eq!(nine_syms.len(), 9);
+        let hint9 = unresolved_symbols_hint(&nine_syms);
+        assert!(hint9.starts_with(
+            "unresolved symbols: sym_1, sym_2, sym_3, sym_4, sym_5, sym_6, sym_7, sym_8, and 1 more; link the objects or libraries"
+        ));
+
+        for non_undefined in [
+            "module.ll:12:15: error: use of undefined value '@tz.fn.Main.shim_run'\n",
+            "LINK : fatal error LNK1181: cannot open input file 'm.lib'\r\n",
+            "ld.lld: error: unable to find library -lfoo\n",
+            "clang: error: no such file or directory: 'missing.o'\n",
+            "wasm-ld: error: module.o: undefined symbol: tsuzuri_io_write\n",
+        ] {
+            assert!(
+                undefined_symbols(non_undefined).is_empty(),
+                "unexpected match for: {non_undefined}"
+            );
+        }
     }
 
     #[test]

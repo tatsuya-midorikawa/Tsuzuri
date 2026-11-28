@@ -7,9 +7,9 @@
 | 規模 | M（`src/llvm.rs` の Windows の書き換えに 1 つの関数、条件付きで `src/backend/module.rs` の 1 か所、Rust のテスト 1 件、`tests/windows.mjs` の段、文書 4 ページ） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | doing |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。W01〜W37 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
-| 承認 | 不要（意味を変えない。COFF の弱い定義を、ELF・Mach-O と同じ「リンカーが 1 つを残す」形で出すだけ。言語の意味、ヘッダー、Windows 以外と WebAssembly の IR は変えない。ただし、Windows の target の native の IR と object は、新しい機能を使わないプログラムでも、`comdat` の属性と `$<name> = comdat any` の行の分だけすべて変わる（どの Windows の module にも `wasm.ll` の弱い定義が入るため。W チケットの共通の約束「新しい機能を使わないプログラムの IR は 1 byte も変えない」の例外で、範囲は仕様 4 と S3 が限る）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
+| 承認 | 不要（意味を変えない。COFF の弱い定義を、ELF・Mach-O と同じ「リンカーが 1 つを残す」形で出すだけ。言語の意味、ヘッダー、Windows 以外と WebAssembly の IR は変えない。ただし、Windows の target の native の IR と object は、新しい機能を使わないプログラムでも、`comdat` の属性と `$<name> = comdat any` の行の分だけすべて変わる（どの Windows の module にも `wasm.ll` の弱い定義が入るため。W チケットの共通の約束「新しい機能を使わないプログラムの IR は 1 byte も変えない」の例外で、範囲は仕様 4 と S3 が限る）。台帳は [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
 | 手本にする既存実装 | `src/runtime/io.c`・`net.c`・`gpu.c` の `__attribute__((selectany))`（COFF に弱いデータがないので、複数の翻訳単位が共有する定義を selectany にしている）、`src/llvm.rs` の `windows_abi`（Windows の target だけの IR の書き換え）、`tests/windows.mjs` の object ABI の段（`answer.obj` と C のホスト） |
 | 主な影響ファイル | `src/llvm.rs`（`windows_abi`）、`src/backend/module.rs`（条件付き。設計 3）、`tests/windows.rs`、`tests/windows.mjs`、`_tsuzuri/language-reference/compiler/native-interop.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`docs/architecture.md`、`docs/language.md` |
 
@@ -19,12 +19,12 @@
 - 効果: LLVM は COFF の `weak` の定義を、既定の名前が object ごとに違う弱い外部シンボル（`.weak.<name>.default.<object の最初の公開記号>`）で書く。`comdat any` を付けると、同じ名前の普通の外部シンボルを selectany の COMDAT の節に置く。リンカーは同じ名前の COMDAT を 1 つだけ残す。
 - 最初に読む: 「現状」の表 → `src/llvm.rs` の `windows_abi`（末尾の `output.push_str(include_str!("runtime/wasm.ll"))`）→ 「設計」。
 - 最初に書くテスト: `tests/windows.rs` の `windows_weak_definitions_are_comdat_any`。
-- 触ってはいけない: `src/runtime/wasm.ll`・`heap-small.ll`・`src/llvm_abi.rs` の `allocator` の本文（WebAssembly と POSIX が同じ文字列を使う）、`i128` の補助の呼び出し規約（[W42](_completed/W42-windows-i128-division.md) で修正済み）、`--emit header`。
+- 触ってはいけない: `src/runtime/wasm.ll`・`heap-small.ll`・`src/llvm_abi.rs` の `allocator` の本文（WebAssembly と POSIX が同じ文字列を使う）、`i128` の補助の呼び出し規約（[W42](W42-windows-i128-division.md) で修正済み）、`--emit header`。
 - 完了の見分け方: Developer PowerShell で、「現状」の `a.obj`・`b.obj`（と `c.obj`・`d.obj`）が `lld-link` と `link.exe` の両方でリンクでき、`llvm-nm` に `.weak.` の名前がない。
 
 ## 目的
 
-[G10](_completed/G10-windows.md) の D8 は「複数 object の weak 統合は対象外」とした。その結果、ランタイムを要しない object でも、1 つの Windows のホストには Tsuzuri の object を 1 つしか入れられない。原因は、どの Windows の object にも弱い定義が入っていることにある。弱い定義には、128 bit の補助（`__multi3` など）、所有バッファを返す object の `tsuzuri_alloc`・`tsuzuri_free`、`--allocator small` の `tz_small_shared`・`tz_small_stats` がある。`docs/language.md` は「1 つのプログラムにリンクした複数のオブジェクトは 1 つの状態を共有します」と書いており、ELF と Mach-O ではそのとおりに動く。このチケットは、COFF でも同じ名前の定義をリンカーが 1 つにまとめるようにする。
+[G10](G10-windows.md) の D8 は「複数 object の weak 統合は対象外」とした。その結果、ランタイムを要しない object でも、1 つの Windows のホストには Tsuzuri の object を 1 つしか入れられない。原因は、どの Windows の object にも弱い定義が入っていることにある。弱い定義には、128 bit の補助（`__multi3` など）、所有バッファを返す object の `tsuzuri_alloc`・`tsuzuri_free`、`--allocator small` の `tz_small_shared`・`tz_small_stats` がある。`docs/language.md` は「1 つのプログラムにリンクした複数のオブジェクトは 1 つの状態を共有します」と書いており、ELF と Mach-O ではそのとおりに動く。このチケットは、COFF でも同じ名前の定義をリンカーが 1 つにまとめるようにする。
 
 ## 着手条件と停止条件
 
@@ -145,7 +145,7 @@ fn with_coff_comdats(ir: &str) -> String
 - Windows の IR の弱い定義の行の形: `define weak ptr @tsuzuri_alloc(i64 %size) nounwind comdat {`、`define weak void @tsuzuri_free(ptr %value) nounwind comdat {`、末尾に `$tsuzuri_alloc = comdat any`。
 - [W05](W05-windows-shared-library.md): D2 の書き換え（2 行の完全一致で `weak` を `dllexport` にする）は、このチケットの後では一致しなくなる。行頭の `define weak ` を `define dllexport ` に変え、`comdat` は残してよい（両方のリンカーで export と import library が正しいことを確かめた）。このチケットの後なら、`.def` で弱い定義を export する案も成り立つ（link.exe が export できた）。どちらにするかは W05 が決める。
 - [W03](W03-windows-interop-doc-fixes.md): R3 の回避策の文（link.exe は `tsuzuri_alloc`・`tsuzuri_free` を export できない、import library は `.def` から作り直す）は、このチケットの後では正しくない。後に入る方が直す。
-- [W35](W35-windows-trap-mode-return.md): D4 の理由（2 つの object の `__multi3` が衝突する）と、テストの `-DMIXED_OBJECTS` を Windows で飛ばす理由は、このチケットの後では成り立たない。trap ランタイムの強い定義（`TZ_TRAP_API` が空）の重複は残るので、W35 の結論が変わるかは W35 が確かめる。
+- [W35](../W35-windows-trap-mode-return.md): D4 の理由（2 つの object の `__multi3` が衝突する）と、テストの `-DMIXED_OBJECTS` を Windows で飛ばす理由は、このチケットの後では成り立たない。trap ランタイムの強い定義（`TZ_TRAP_API` が空）の重複は残るので、W35 の結論が変わるかは W35 が確かめる。
 
 ## 実装手順
 
@@ -170,7 +170,7 @@ fn with_coff_comdats(ir: &str) -> String
 ## テスト計画
 
 1. **IR**（`tests/windows.rs` の `windows_weak_definitions_are_comdat_any`、すべてのホスト）: 所有バッファを返す export を持つ module を `--allocator small` と既定で `emit_with_export_style(…, Dllexport)` に通す。`tz_soft_*` を参照して `numeric.ll` を足す module（どの式が参照するかは着手時に `--emit llvm` で選ぶ）も通す。すべての `define weak`・`= weak` の行が `comdat` を持ち、その名前ごとに `$<name> = comdat any` がちょうど 1 行あり、2 回の出力が同じ。既存の `emits_windows_exports_without_changing_default_or_wasm` の既定と wasm32 の IR に `comdat` がないことも確かめる。
-2. **E2E**（`tests/windows.mjs` の object ABI の段の後）: `answer`・`twice`、`make_tag`・`make_pad`（既定と `--allocator small`）の object の組（`-O0` と `-O3` のそれぞれ。`linkonce_odr` の失敗は `-O3` だけに出た）を、それぞれ 1 つの C のホストに、`nativeFlags`（`-fuse-ld=lld`）と `-fuse-ld=link`（MSVC の link.exe）でリンクして実行し、結果（`84`、`ABCab`）を確かめる。`llvm-nm` に `.weak.` の名前がないことも見る。[W42](_completed/W42-windows-i128-division.md) が入ったので、`i128` の除算の結果も確かめる。
+2. **E2E**（`tests/windows.mjs` の object ABI の段の後）: `answer`・`twice`、`make_tag`・`make_pad`（既定と `--allocator small`）の object の組（`-O0` と `-O3` のそれぞれ。`linkonce_odr` の失敗は `-O3` だけに出た）を、それぞれ 1 つの C のホストに、`nativeFlags`（`-fuse-ld=lld`）と `-fuse-ld=link`（MSVC の link.exe）でリンクして実行し、結果（`84`、`ABCab`）を確かめる。`llvm-nm` に `.weak.` の名前がないことも見る。[W42](W42-windows-i128-division.md) が入ったので、`i128` の除算の結果も確かめる。
 3. **既存**: `tests/windows.mjs` の全段、`tests/fast_backend.rs`、`tests/trap_locations.rs`（どちらも `wasm.ll` を自分で足す）、`tests/host_abi.rs`。
 
 ## ドキュメント
@@ -182,10 +182,10 @@ fn with_coff_comdats(ir: &str) -> String
 
 ## 受け入れ条件
 
-- [ ] 「仕様」1〜4 のとおりに動き、「現状」の組（既定と `--allocator small`）が lld-link・link.exe・同梱の MinGW でリンクでき、実行結果が正しい。
-- [ ] Windows 以外の target・wasm32 の IR とすべてのヘッダーが変更の前後で同じ。Windows の IR の差は `comdat` の属性と `$<name> = comdat any` の行だけ。
-- [ ] `tests/windows.rs` と `tests/windows.mjs` の新しい検査が通る。T2 が通る。
-- [ ] 文書を直し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
+- [x] 「仕様」1〜4 のとおりに動き、「現状」の組（既定と `--allocator small`）が lld-link・link.exe・同梱の MinGW でリンクでき、実行結果が正しい。
+- [x] Windows 以外の target・wasm32 の IR とすべてのヘッダーが変更の前後で同じ。Windows の IR の差は `comdat` の属性と `$<name> = comdat any` の行だけ。
+- [x] `tests/windows.rs` と `tests/windows.mjs` の新しい検査が通る。T2 が通る。
+- [x] 文書を直し、`check-docs` が通る。PR に `ci:full` を付け、`windows.yml` が通る。
 
 ## 落とし穴
 
@@ -197,8 +197,8 @@ fn with_coff_comdats(ir: &str) -> String
 
 ## 対象外
 
-- **Windows x86-64 の `i128` の除算の呼び出し規約**: [W42](_completed/W42-windows-i128-division.md) で Win64 の C の ABI の包み `src/runtime/i128-windows-x64.ll` に修正済み。このチケットは補助の包みの linkage（`comdat`）だけを変え、本文と規約は変えない。
-- ランタイムを含む COFF の object の `E2002`（G10 D8 の前半）と、trap ランタイムの強い定義（[W35](W35-windows-trap-mode-return.md)）。
+- **Windows x86-64 の `i128` の除算の呼び出し規約**: [W42](W42-windows-i128-division.md) で Win64 の C の ABI の包み `src/runtime/i128-windows-x64.ll` に修正済み。このチケットは補助の包みの linkage（`comdat`）だけを変え、本文と規約は変えない。
+- ランタイムを含む COFF の object の `E2002`（G10 D8 の前半）と、trap ランタイムの強い定義（[W35](../W35-windows-trap-mode-return.md)）。
 - DLL の出力（[W05](W05-windows-shared-library.md)）。
 - 今の版のコンパイラで作った object どうしの組（2 つ以上あれば今と同じく失敗する）。
 
@@ -212,3 +212,14 @@ fn with_coff_comdats(ir: &str) -> String
 | D4 | MSVC と MinGW を分けない | 同梱の MinGW は今も通るが、書き換えの後も通った（測定）。target の種類で IR を分けない方が単純 | 既定案（実装者はこの案に従う） |
 | D5 | `--allocator` の違う object の組を検出しない | ELF・Mach-O と同じ契約（`docs/language.md`）。リンカーの選択は object の外にあり、コンパイラからは見えない | 既定案（実装者はこの案に従う） |
 | D6 | `--backend fast` が Windows の target の IR を読むなら、関数の `comdat` を大域変数と同じく読み飛ばす | 読み飛ばさないと、この書き換えで fast backend の Windows の出力が `E2002` になる。届くかは設計 3 で確かめる | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜3 をすべて完了。
+  - `src/llvm.rs`: `windows_abi` の末尾（`traps::with_unwind_tables` の後）に `with_coff_comdats` を追加し、IR 内のすべての `define weak` 関数と `@<name> = weak` 大域変数に linkage を `weak` のまま `comdat` を付与し、出現順に `$<name> = comdat any` を末尾へ出力。
+  - `src/backend/module.rs`: 関数属性の解析（`parse_func_attrs`）で大域変数と同様に `comdat`（および任意の括弧引数）を読み飛ばすよう対応（D6）。
+  - `tests/windows.rs`: `windows_weak_definitions_are_comdat_any` を追加（`x86_64-pc-windows-msvc`・`x86_64-pc-windows-gnu`・`aarch64-pc-windows-msvc`、`system`・`small` アロケーター、`tz_soft_*` を含む IR の決定性と `comdat` 一致、POSIX・wasm32 不変を検証）。
+  - `tests/windows.mjs`: スカラー＋`i128` 除算の 2 オブジェクト組と、所有バッファを返す 2 オブジェクト組（`system`・`small` アロケーター）を `-O0`・`-O3` × `lld-link`・`link.exe` でリンク・実行し、`llvm-nm` に `.weak.` が現れないことと実行結果（`84`、`3333333333333`、`ABCab`）を検証。同梱の `tsuzuri-clang`（MinGW）でも `-O0`・`-O3` で `ABCab` を確認。
+- **最新仕様との整合**: W07（`uwtable`）および W42（`i128-windows-x64.ll`）導入後の `windows_abi` に対し、LLVM IR 文法順（`nounwind uwtable comdat`）を保つ位置に `with_coff_comdats` を配置。言語リファレンスは PR #147 で別リポジトリ `Tsuzuri-Reference` へ分離済みのため、本リポジトリ内の `docs/language.md`・`docs/architecture.md` を更新。
+- **変更したファイル**: `src/llvm.rs`, `src/backend/module.rs`, `tests/windows.rs`, `tests/windows.mjs`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, `_features/_completed/W39-windows-multiple-objects-weak-defaults.md`。
+
