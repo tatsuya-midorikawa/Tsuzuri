@@ -7,7 +7,7 @@
 | 規模 | M（`src/llvm.rs` の Windows の書き換えに 1 つの関数、条件付きで `src/backend/module.rs` の 1 か所、Rust のテスト 1 件、`tests/windows.mjs` の段、文書 4 ページ） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-11-22（D-63。W01〜W37 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 不要（意味を変えない。COFF の弱い定義を、ELF・Mach-O と同じ「リンカーが 1 つを残す」形で出すだけ。言語の意味、ヘッダー、Windows 以外と WebAssembly の IR は変えない。ただし、Windows の target の native の IR と object は、新しい機能を使わないプログラムでも、`comdat` の属性と `$<name> = comdat any` の行の分だけすべて変わる（どの Windows の module にも `wasm.ll` の弱い定義が入るため。W チケットの共通の約束「新しい機能を使わないプログラムの IR は 1 byte も変えない」の例外で、範囲は仕様 4 と S3 が限る）。台帳は [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)） |
 | 手本にする既存実装 | `src/runtime/io.c`・`net.c`・`gpu.c` の `__attribute__((selectany))`（COFF に弱いデータがないので、複数の翻訳単位が共有する定義を selectany にしている）、`src/llvm.rs` の `windows_abi`（Windows の target だけの IR の書き換え）、`tests/windows.mjs` の object ABI の段（`answer.obj` と C のホスト） |

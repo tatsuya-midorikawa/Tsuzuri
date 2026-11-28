@@ -365,7 +365,107 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
     if has_write {
         output.push_str("declare i32 @_write(i32, ptr, i32)\ndefine internal i64 @write(i32 %fd, ptr %buffer, i64 %length) {\nentry:\n  %mode = call i32 @_setmode(i32 %fd, i32 32768)\n  %bad_mode = icmp eq i32 %mode, -1\n  br i1 %bad_mode, label %failed, label %ready\nfailed:\n  ret i64 -1\nready:\n  %large = icmp ugt i64 %length, 2147483647\n  %chunk = select i1 %large, i64 2147483647, i64 %length\n  %count = trunc i64 %chunk to i32\n  %written = call i32 @_write(i32 %fd, ptr %buffer, i32 %count)\n  %result = sext i32 %written to i64\n  ret i64 %result\n}\n");
     }
-    traps::with_unwind_tables(&output)
+    with_coff_comdats(&traps::with_unwind_tables(&output))
+}
+
+/// W39: LLVM writes a `weak` definition for COFF as a weak external whose default is named after the
+/// object (`.weak.<name>.default.<first symbol>`), and lld-link and link.exe reject a second one. The
+/// same definition in a `comdat any` (selectany) section is kept once, as ELF and Mach-O keep one weak
+/// definition. The linkage stays `weak`: `linkonce_odr` lets the optimizer drop what only the host or a
+/// libcall reaches (`tsuzuri_free`, `__divti3`), and `weak_odr` would call different bodies equal.
+fn with_coff_comdats(ir: &str) -> String {
+    let mut output = String::with_capacity(ir.len() + 512);
+    let mut comdats = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in ir.lines() {
+        if line.starts_with("define weak ")
+            && let Some((prefix, suffix)) = line.split_once('@')
+            && let Some((name, _)) = suffix.split_once('(')
+            && !name.is_empty()
+        {
+            debug_assert!(
+                !name.starts_with('"'),
+                "unexpected quoted weak function name: {line}"
+            );
+            let params_open = prefix.len() + 1 + name.len();
+            let mut depth = 0i32;
+            let mut after_params = params_open;
+            for (offset, byte) in line[params_open..].bytes().enumerate() {
+                match byte {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            after_params = params_open + offset + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let rest = &line[after_params..];
+            let insert_at = [
+                rest.find(" align "),
+                rest.find(" gc "),
+                rest.find(" prefix "),
+                rest.find(" prologue "),
+                rest.find(" personality "),
+                rest.find(" !"),
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .or_else(|| rest.rfind(" {"))
+            .map(|offset| after_params + offset);
+            debug_assert!(
+                insert_at.is_some(),
+                "unexpected weak function header without '{{': {line}"
+            );
+            if let Some(index) = insert_at {
+                if !line[after_params..index].contains(" comdat") {
+                    output.push_str(&line[..index]);
+                    output.push_str(" comdat");
+                    let _ = writeln!(output, "{}", &line[index..]);
+                } else {
+                    let _ = writeln!(output, "{line}");
+                }
+                if seen.insert(name.to_owned()) {
+                    comdats.push(name.to_owned());
+                }
+                continue;
+            }
+        } else if let Some((lhs, rhs)) = line.split_once(" = ")
+            && let Some(name) = lhs.strip_prefix('@')
+            && !name.is_empty()
+            && rhs.starts_with("weak ")
+        {
+            debug_assert!(
+                !name.starts_with('"'),
+                "unexpected quoted weak global name: {line}"
+            );
+            if !rhs.contains(", comdat") {
+                let insert_at = [line.find(", align "), line.find(", !")]
+                    .into_iter()
+                    .flatten()
+                    .min()
+                    .unwrap_or(line.len());
+                output.push_str(&line[..insert_at]);
+                output.push_str(", comdat");
+                let _ = writeln!(output, "{}", &line[insert_at..]);
+            } else {
+                let _ = writeln!(output, "{line}");
+            }
+            if seen.insert(name.to_owned()) {
+                comdats.push(name.to_owned());
+            }
+            continue;
+        }
+        let _ = writeln!(output, "{line}");
+    }
+    for name in comdats {
+        let _ = writeln!(output, "${name} = comdat any");
+    }
+    output
 }
 
 /// Lowers the standard IO to the WASI host: its `declare`s lose the `tsuzuri_io` import attributes,

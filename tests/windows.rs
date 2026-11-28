@@ -75,6 +75,119 @@ fn windows_x64_i128_helpers_follow_the_win64_abi() {
 }
 
 #[test]
+fn windows_weak_definitions_are_comdat_any() {
+    let owned = analyze(
+        "export def make_tag :: i64 -> [ubyte]\nfn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)\n",
+    )
+    .unwrap();
+    let soft = analyze(
+        "export def half_sum :: i64 -> i64\nfn half_sum n = ((n as f16) + 1.5f16) as i64\n",
+    )
+    .unwrap();
+    let base = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+
+    let check_ir = |ir: &str| -> Vec<String> {
+        let mut expected = Vec::new();
+        let mut seen = BTreeSet::new();
+        for line in ir.lines() {
+            if line.starts_with("define weak ") {
+                let name = line
+                    .split_once('@')
+                    .and_then(|(_, rest)| rest.split_once('('))
+                    .map(|(name, _)| name)
+                    .expect("weak function name");
+                assert!(
+                    line.contains(" comdat {") || line.contains(" comdat !"),
+                    "missing comdat on weak function: {line}"
+                );
+                if seen.insert(name.to_owned()) {
+                    expected.push(name.to_owned());
+                }
+            } else if let Some((lhs, rhs)) = line.split_once(" = ")
+                && lhs.starts_with('@')
+                && rhs.starts_with("weak ")
+            {
+                let name = &lhs[1..];
+                assert!(
+                    line.contains(", comdat"),
+                    "missing comdat on weak global: {line}"
+                );
+                if seen.insert(name.to_owned()) {
+                    expected.push(name.to_owned());
+                }
+            }
+        }
+        let comdat_lines: Vec<String> = ir
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix('$')
+                    .and_then(|rest| rest.strip_suffix(" = comdat any"))
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            comdat_lines, expected,
+            "comdat declarations must match weak definitions in order"
+        );
+        expected
+    };
+
+    for triple in [
+        Triple::X86_64WindowsMsvc,
+        Triple::X86_64WindowsGnu,
+        Triple::Aarch64WindowsMsvc,
+    ] {
+        let _scope = PlatformScope::enter(Platform::new(Some(triple)));
+        let sys_ir =
+            llvm::emit_with_export_style(&owned, base, llvm::ExportStyle::Dllexport).unwrap();
+        assert_eq!(
+            sys_ir,
+            llvm::emit_with_export_style(&owned, base, llvm::ExportStyle::Dllexport).unwrap()
+        );
+        let sys_names = check_ir(&sys_ir);
+        assert!(sys_names.contains(&"tsuzuri_alloc".to_owned()));
+        assert!(sys_names.contains(&"tsuzuri_free".to_owned()));
+        assert!(sys_names.contains(&"__multi3".to_owned()));
+
+        let small_options = llvm::EmitOptions {
+            allocator: llvm::Allocator::Small,
+            ..base
+        };
+        let small_ir =
+            llvm::emit_with_export_style(&owned, small_options, llvm::ExportStyle::Dllexport)
+                .unwrap();
+        let small_names = check_ir(&small_ir);
+        assert!(small_names.contains(&"tz_small_shared".to_owned()));
+        assert!(small_names.contains(&"tz_small_stats".to_owned()));
+        assert!(
+            small_ir.contains(
+                "@tz_small_shared = weak hidden global ptr @tz_small_own, comdat, align 8"
+            ),
+            "{small_ir}"
+        );
+
+        let soft_ir =
+            llvm::emit_with_export_style(&soft, base, llvm::ExportStyle::Dllexport).unwrap();
+        let soft_names = check_ir(&soft_ir);
+        assert!(soft_names.contains(&"tz_soft_op".to_owned()));
+    }
+
+    let posix_ir = llvm::emit_with_options(&owned, base).unwrap();
+    assert!(!posix_ir.contains("comdat"));
+    let wasm_ir =
+        llvm::emit_with_options(&owned, llvm::EmitOptions { wasm: true, ..base }).unwrap();
+    assert!(!wasm_ir.contains("comdat"));
+}
+
+#[test]
 fn emits_windows_exports_without_changing_default_or_wasm() {
     let module = analyze(
         "export def answer :: i64\nfn answer = { let value = 42; Debug.print (&value); value }",

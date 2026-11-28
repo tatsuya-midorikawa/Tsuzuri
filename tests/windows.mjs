@@ -543,6 +543,105 @@ if (isMain) {
   const executable = join(directory, "answer.exe");
   execute(clang, [...nativeFlags, host, object, "-o", executable]);
   execute(executable, []);
+
+  // W39: multiple runtime-free Tsuzuri objects share weak definitions via `comdat any` across lld-link and link.exe at -O0 and -O3.
+  const msvcLinkFlags = nativeFlags.map((flag) => (flag === "-fuse-ld=lld" ? "-fuse-ld=link" : flag));
+  const llvmNm = join(dirname(clang), process.platform === "win32" ? "llvm-nm.exe" : "llvm-nm");
+  const nmTool = existsSync(llvmNm) ? llvmNm : "llvm-nm";
+  assert.doesNotMatch(execute(nmTool, [object]).stdout, /\.weak\./, "COFF object must not emit .weak. default symbols");
+  const multiTwice = join(directory, "multi-twice");
+  const multiTag = join(directory, "multi-tag");
+  const multiPad = join(directory, "multi-pad");
+  for (const dir of [multiTwice, multiTag, multiPad]) mkdirSync(dir);
+  writeFileSync(
+    join(multiTwice, "Main.tz"),
+    [
+      "export def twice :: i64 -> i64",
+      "fn twice x = x * 2",
+      "export def wide_div :: i64 -> i64 -> i64",
+      "fn wide_div a b = (((a as i128) * 1000000000000i128) / (b as i128)) as i64",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(multiTag, "Main.tz"),
+    "export def make_tag :: i64 -> [ubyte]\nfn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)\n",
+  );
+  writeFileSync(
+    join(multiPad, "Main.tz"),
+    "export def make_pad :: i64 -> [ubyte]\nfn make_pad n = Array.init n (\\i -> (97 + i) as ubyte)\n",
+  );
+  const tagHeader = join(directory, "multi_tag.h");
+  const padHeader = join(directory, "multi_pad.h");
+  cli(["build", multiTag, "--emit", "header", "-o", tagHeader]);
+  cli(["build", multiPad, "--emit", "header", "-o", padHeader]);
+  const multiScalarHost = join(directory, "multi_scalar_host.c");
+  writeFileSync(
+    multiScalarHost,
+    [
+      "#undef NDEBUG",
+      "#include <assert.h>",
+      "#include <stdint.h>",
+      "extern int64_t tz_answer(void), tz_twice(int64_t), tz_wide_div(int64_t, int64_t);",
+      "int main(void) {",
+      "  assert(tz_twice(tz_answer()) == 84);",
+      "  assert(tz_wide_div(1000000000000LL, 300000000000LL) == 3333333333333LL);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const multiOwnedHost = join(directory, "multi_owned_host.c");
+  writeFileSync(
+    multiOwnedHost,
+    [
+      "#undef NDEBUG",
+      "#include <assert.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      '#include "multi_tag.h"',
+      '#include "multi_pad.h"',
+      "int main(void) {",
+      "  tsuzuri_ubyte_buffer tag = {0, 0}, pad = {0, 0};",
+      "  tz_make_tag(&tag, 3);",
+      "  tz_make_pad(&pad, 2);",
+      "  assert(tag.len == 3 && memcmp(tag.ptr, \"ABC\", 3) == 0);",
+      "  assert(pad.len == 2 && memcmp(pad.ptr, \"ab\", 2) == 0);",
+      "  fwrite(tag.ptr, 1, (size_t)tag.len, stdout);",
+      "  fwrite(pad.ptr, 1, (size_t)pad.len, stdout);",
+      "  tsuzuri_free(tag.ptr);",
+      "  tsuzuri_free(pad.ptr);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const optimization of ["-O0", "-O3"]) {
+    const objA = join(directory, `multi-a${optimization}.obj`);
+    const objB = join(directory, `multi-b${optimization}.obj`);
+    cli(["build", library, "--no-cache", optimization, "--emit", "object", "-o", objA]);
+    cli(["build", multiTwice, "--no-cache", optimization, "--emit", "object", "-o", objB]);
+    assert.doesNotMatch(execute(nmTool, [objB]).stdout, /\.weak\./);
+    for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+      const abExe = join(directory, `multi-ab-${label}${optimization}.exe`);
+      execute(clang, [...linkFlags, optimization, multiScalarHost, objA, objB, "-o", abExe]);
+      execute(abExe, []);
+    }
+    for (const [allocLabel, allocFlags] of [["system", []], ["small", ["--allocator", "small"]]]) {
+      const objC = join(directory, `multi-c-${allocLabel}${optimization}.obj`);
+      const objD = join(directory, `multi-d-${allocLabel}${optimization}.obj`);
+      cli(["build", multiTag, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objC]);
+      cli(["build", multiPad, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objD]);
+      assert.doesNotMatch(execute(nmTool, [objC]).stdout, /\.weak\./);
+      assert.doesNotMatch(execute(nmTool, [objD]).stdout, /\.weak\./);
+      for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+        const cdExe = join(directory, `multi-cd-${allocLabel}-${label}${optimization}.exe`);
+        execute(clang, [...linkFlags, optimization, "-I", directory, multiOwnedHost, objC, objD, "-o", cdExe]);
+        assert.equal(execute(cdExe, []).stdout, "ABCab");
+      }
+    }
+  }
+  console.log("Windows MSVC: multiple Tsuzuri objects linked with lld-link and link.exe at -O0 and -O3 (system and small allocators)");
   const wasm = join(directory, "answer.wasm");
   cli(["build", library, "--target", "wasm32", "-o", wasm]);
   const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
