@@ -294,9 +294,10 @@ try {
     const environment = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
     // Freed memory is overwritten, so a buffer freed during a copy shows (macOS, glibc).
     const scribbled = { ...environment, MallocScribble: "1", MALLOC_PERTURB_: "85" };
-    execute("dotnet", ["build", "-c", "Release", "-nologo", "-v", "q"], { cwd: project, env: environment });
+    const csOut = join(project, "out");
+    execute("dotnet", ["build", "-c", "Release", "-o", csOut, "-nologo", "-v", "q"], { cwd: project, env: environment });
     for (const optimization of ["-O0", "-O3"]) {
-      const csArgs = [join(project, "bin", "Release", `net${major}.0`, "bindings.dll"), join(root, optimization, `${libPrefix}native.${extension}`)];
+      const csArgs = [join(csOut, "bindings.dll"), join(root, optimization, `${libPrefix}native.${extension}`)];
       if (supportsTrapReturn) csArgs.push(trapLibrary);
       const output = execute("dotnet", csArgs, { env: scribbled });
       assert.match(output.stdout, supportsTrapReturn ? /^csharp bindings passed \(trap site \d+\)/ : /^csharp bindings passed/);
@@ -563,9 +564,11 @@ try {
       "}",
       "",
     ].join("\n"));
+    const ns02CsOut = join(ns02CsProj, "out");
     const environment = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
-    execute("dotnet", ["build", "-c", "Release", "-nologo", "-v", "q"], { cwd: ns02CsProj, env: environment });
-    execute("dotnet", [join(ns02CsProj, "bin", "Release", `net${major}.0`, "ns02.dll"), ns02Lib, ...(supportsTrapReturn ? [ns02TrapLib] : [])], { env: environment });
+    delete environment.Platform;
+    execute("dotnet", ["build", "-c", "Release", "-o", ns02CsOut, "-nologo", "-v", "q"], { cwd: ns02CsProj, env: environment });
+    execute("dotnet", [join(ns02CsOut, "ns02.dll"), ns02Lib, ...(supportsTrapReturn ? [ns02TrapLib] : [])], { env: environment });
   }
   console.log("host bindings: NS02 nullable exports and host bindings passed");
 } finally {

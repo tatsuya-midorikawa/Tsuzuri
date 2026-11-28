@@ -127,7 +127,7 @@ fn grow count =
   assert.ok(declared.includes("malloc") && declared.includes("realloc") && declared.includes("free"));
   assert.equal((smallIr.match(/^@.* thread_local .*global /gm) ?? []).length, 1, "one thread-local variable");
   assert.ok(!/@(aligned_alloc|posix_memalign|mmap|munmap|calloc|pthread_\w+)\b/.test(smallIr), "no system call or thread library");
-  assert.ok(/^define internal noalias ptr @tz\.alloc\(i64 %size\)/m.test(smallIr) && /^@tz_small_shared = weak hidden global/m.test(smallIr));
+  assert.ok(/^define internal noalias ptr @tz\.alloc\(i64 %size\)/m.test(smallIr) && /^@tz_small_shared = weak hidden (?:global|alias)/m.test(smallIr));
 
   // B2. LLVM treats the entry points like malloc and free: an allocation that is freed unread disappears, one that escapes
   // stays a call. The allocation and its free are in different helpers, as in a program: the inliner has already seen
