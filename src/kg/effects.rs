@@ -53,6 +53,8 @@ pub(crate) fn builtin_effect(builtin: Builtin) -> Option<&'static str> {
         | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
         // M01: retaining and the checked cast call the Objective-C runtime.
         ObjcRetain | ObjcDowncast => Some("extern"),
+        // M10: the pool calls the Objective-C runtime around the function.
+        ObjcWithAutoreleasePool => Some("extern"),
         ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some("atomic")

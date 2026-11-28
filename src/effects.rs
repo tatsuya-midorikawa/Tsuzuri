@@ -614,6 +614,11 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => {
             facts(None, false, false, false, false, false, None)
         }
+        // M10: the pool is two calls of the Objective-C runtime around the function, which runs
+        // on the calling thread.
+        ObjcWithAutoreleasePool => {
+            facts(Some(Effect::Extern), false, false, false, true, false, None)
+        }
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
         AnchorCreate | AnchorCreateShared => {
             facts(Some(Effect::Atomic), true, true, false, false, false, None)
@@ -2490,7 +2495,9 @@ pub(crate) fn pinning_argument_mask(
             if arg_count == 1
                 && matches!(
                     instance.builtin,
-                    Builtin::RoutineWithLockedThread | Builtin::FnPtrOf
+                    Builtin::RoutineWithLockedThread
+                        | Builtin::ObjcWithAutoreleasePool
+                        | Builtin::FnPtrOf
                 ) =>
         {
             1
@@ -2502,7 +2509,10 @@ pub(crate) fn pinning_argument_mask(
             let function = &module.functions[*id];
             if function.module == "$builtin"
                 && arg_count == 1
-                && wrapper_builtin(function) == Some(Builtin::RoutineWithLockedThread)
+                && matches!(
+                    wrapper_builtin(function),
+                    Some(Builtin::RoutineWithLockedThread | Builtin::ObjcWithAutoreleasePool)
+                )
             {
                 return 1;
             }
@@ -2558,7 +2568,10 @@ fn boundary_of(module: &CheckedModule, mut callee: &TypedExpr) -> Boundary {
         TypedExprKind::Function(FunctionRef::User(id)) => wrapper_builtin(&module.functions[*id]),
         _ => None,
     };
-    if builtin == Some(Builtin::RoutineWithLockedThread) {
+    if matches!(
+        builtin,
+        Some(Builtin::RoutineWithLockedThread | Builtin::ObjcWithAutoreleasePool)
+    ) {
         Boundary::Locked
     } else {
         Boundary::Entry
@@ -4208,7 +4221,7 @@ mod tests {
             );
         }
         // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path; NC11 added Os.__map, Os.__unmap, 2 TensorCodec builtins and TensorIO.__mmap_slice.
-        assert_eq!(Builtin::ALL.len(), 397);
+        assert_eq!(Builtin::ALL.len(), 398);
         // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
         // M09 added 3 MainThread builtins, all of the effect `task`.
         // M09 Phase 3 added 4 Anchor builtins of the shared anchors.

@@ -1,5 +1,6 @@
-//! The Objective-C lowering (M01, M02): class and selector references, the module flags of an
-//! Objective-C image, retain and release, and the functions of the built-in module `ObjC`.
+//! The Objective-C lowering (M01, M02, M10): class and selector references, the module flags of
+//! an Objective-C image, retain and release, the autorelease pools, and the functions of the
+//! built-in module `ObjC`.
 //!
 //! The shapes follow what clang emits for `-fobjc-arc` on an arm64 Apple target (classrefs,
 //! selrefs, `@llvm.compiler.used`, the six module flags). Retain and release are plain calls of
@@ -10,7 +11,7 @@ use super::*;
 
 /// The libobjc functions that the compiler calls, with their `declare` lines. The IR declares
 /// each one once, and only when the program's own `extern` does not declare the symbol already.
-const RUNTIME: [(&str, &str); 4] = [
+const RUNTIME: [(&str, &str); 6] = [
     ("objc_retain", "declare ptr @objc_retain(ptr)"),
     ("objc_release", "declare void @objc_release(ptr)"),
     (
@@ -21,7 +22,20 @@ const RUNTIME: [(&str, &str); 4] = [
         "objc_opt_isKindOfClass",
         "declare i1 @objc_opt_isKindOfClass(ptr, ptr)",
     ),
+    // M10: the ABI of clang's `@autoreleasepool`. No SDK header declares the two.
+    (
+        "objc_autoreleasePoolPush",
+        "declare ptr @objc_autoreleasePoolPush()",
+    ),
+    (
+        "objc_autoreleasePoolPop",
+        "declare void @objc_autoreleasePoolPop(ptr)",
+    ),
 ];
+
+/// The pool of a console `@main` (M10): the push before the call of the entry, and the pop.
+pub(super) const MAIN_POOL_PUSH: &str = "  %tz.pool = call ptr @objc_autoreleasePoolPush()\n";
+pub(super) const MAIN_POOL_POP: &str = "  call void @objc_autoreleasePoolPop(ptr %tz.pool)\n";
 
 /// The operand of the `clang.arc.attachedcall` bundle. It is only named, never called (M01 D6).
 const ATTACHED_CALL_DECLARE: &str = "declare ptr @llvm.objc.retainAutoreleasedReturnValue(ptr)";
@@ -57,6 +71,18 @@ impl ObjcGlobals {
         debug_assert!(RUNTIME.iter().any(|(name, _)| *name == symbol));
         self.used = true;
         self.runtime.insert(symbol);
+    }
+
+    /// Whether the program is an Objective-C image so far.
+    pub(super) fn used(&self) -> bool {
+        self.used
+    }
+
+    /// Marks a push and a pop of an autorelease pool (M10). A program that only has a pool is
+    /// an Objective-C image too: it links libobjc, and its `@main` has its pool.
+    pub(super) fn pool(&mut self) {
+        self.runtime("objc_autoreleasePoolPush");
+        self.runtime("objc_autoreleasePoolPop");
     }
 
     /// Marks a call that carries the attached-call bundle.
@@ -167,6 +193,34 @@ impl FunctionEmitter<'_, '_> {
         self.value(format!(
             "call ptr @objc_retainAutoreleasedReturnValue(ptr {object})"
         ))
+    }
+
+    /// The body of `ObjC.with_autorelease_pool f` (M10): a pool around `f ()`. A pool is a LIFO
+    /// of one thread, and a tzroutine that waits may go on on another thread, so where code can
+    /// run on a tzroutine of the scheduler the thread is kept from before the push to after the
+    /// pop (the pop on another thread aborts in libobjc). The closure is dropped before the pop:
+    /// what the `dealloc` of a captured object autoreleases goes into this pool.
+    pub(super) fn objc_with_autorelease_pool(&mut self, ty: &Type) -> String {
+        let Type::Function(parameters, _) = ty else {
+            unreachable!("builtin has function type")
+        };
+        let pinned = self.globals.scheduler;
+        if pinned {
+            self.intrinsics
+                .insert("declare void @tsuzuri_tz_lock_thread()".into());
+            self.intrinsics
+                .insert("declare void @tsuzuri_tz_unlock_thread()".into());
+            self.instruction("call void @tsuzuri_tz_lock_thread()");
+        }
+        self.globals.objc.pool();
+        let pool = self.value("call ptr @objc_autoreleasePoolPush()");
+        let (value, _) = self.apply_value("%arg0", &parameters[0], Some((&Type::Unit, "0")), true);
+        self.drop_value(&parameters[0], "%arg0");
+        self.instruction(format!("call void @objc_autoreleasePoolPop(ptr {pool})"));
+        if pinned {
+            self.instruction("call void @tsuzuri_tz_unlock_thread()");
+        }
+        value
     }
 
     /// A direct call of a function of the built-in module `ObjC` (M01).

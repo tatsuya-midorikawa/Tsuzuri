@@ -216,6 +216,8 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => None,
         // M01: retaining and the checked cast call the Objective-C runtime.
         ObjcRetain | ObjcDowncast => Some(Outside),
+        // M10: the pool calls the Objective-C runtime around the function.
+        ObjcWithAutoreleasePool => Some(Outside),
         ObjcUpcast | ObjcUpcastOwned | ObjcSel | ObjcLiteral => None,
         TimerChannel | TimerStop | TimerFree | TickerChannel | TickerStop | TickerFree => {
             Some(State)

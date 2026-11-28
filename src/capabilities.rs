@@ -663,6 +663,14 @@ pub fn analyze_with_limits(
                 | TypedExprKind::Closure(target, _) => edges[id].push((*target, expression.span)),
                 TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
                     builtins[id].push((instance.builtin.name(), expression.span));
+                    // M10: the pool calls the Objective-C runtime and names no class.
+                    if instance.builtin == crate::check::Builtin::ObjcWithAutoreleasePool {
+                        objc_uses[id].push((
+                            crate::syntax::OBJC_OBJECT.to_owned(),
+                            expression.span,
+                            Some(instance.builtin.name()),
+                        ));
+                    }
                     if instance.builtin.is_objc() {
                         let calls = matches!(
                             instance.builtin,

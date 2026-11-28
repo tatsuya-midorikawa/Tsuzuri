@@ -1861,6 +1861,10 @@ pub enum Builtin {
     ObjcSel,
     /// `ObjC.literal :: string -> NSString`: a constant NSString object (M02).
     ObjcLiteral,
+    /// `ObjC.with_autorelease_pool :: (unit -> 'a) -> 'a` (M10): calls the function inside an
+    /// autorelease pool of its own, with the calling tzroutine kept on its OS thread from the push
+    /// to the pop (a pool belongs to one thread).
+    ObjcWithAutoreleasePool,
     ListCons,
     ListTail,
     ArrayConcat,
@@ -2528,6 +2532,7 @@ impl Builtin {
         Self::ObjcDowncast,
         Self::ObjcSel,
         Self::ObjcLiteral,
+        Self::ObjcWithAutoreleasePool,
         Self::ListCons,
         Self::ListTail,
         Self::ArrayConcat,
@@ -2934,6 +2939,7 @@ impl Builtin {
             Self::ObjcDowncast => "ObjC.downcast",
             Self::ObjcSel => "ObjC.sel",
             Self::ObjcLiteral => "ObjC.literal",
+            Self::ObjcWithAutoreleasePool => "ObjC.with_autorelease_pool",
             Self::ListCons => "List.cons",
             Self::ListTail => "List.tail",
             Self::ArrayConcat => "Array.concat",
@@ -4403,7 +4409,7 @@ impl Builtin {
             Self::RoutineCount | Self::RoutineMaxProcs | Self::RoutineCpuCount => {
                 (vec![Concrete(Type::Unit)], Concrete(Type::I64), Vec::new())
             }
-            Self::RoutineWithLockedThread => (
+            Self::RoutineWithLockedThread | Self::ObjcWithAutoreleasePool => (
                 vec![BuiltinType::Function(
                     vec![Concrete(Type::Unit)],
                     Box::new(Var("a")),
@@ -4683,6 +4689,12 @@ impl Builtin {
                 | Self::ObjcSel
                 | Self::ObjcLiteral
         )
+    }
+
+    /// Whether a reached reference to this builtin needs the Objective-C runtime: the functions of
+    /// `is_objc` and `ObjC.with_autorelease_pool` (M10), which is an ordinary function value.
+    pub(crate) fn needs_objc_runtime(self) -> bool {
+        self.is_objc() || self == Self::ObjcWithAutoreleasePool
     }
 
     pub(crate) fn is_anchor(self) -> bool {
