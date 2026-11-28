@@ -1,0 +1,389 @@
+/// Why reading, writing or mapping a tensor file failed: the system refused (`Io`), the contents are not a
+/// valid file of the format (`Codec`), or the file is valid but cannot be used in place (`Unmappable`, with the
+/// reason: big-endian elements, elements that are not aligned in the file, a `bool` byte that is not 0 or 1).
+union Error = Io of Os.Error | Codec of TensorCodec.Error | Unmappable of string
+
+instance Display<Error> {
+    fn display error =
+        match error with
+        | Io reason -> Os.message reason
+        | Codec reason -> Display.display reason
+        | Unmappable reason -> $"the file cannot be mapped: {reason}"
+}
+
+private def written :: own Result<unit, Os.Error> -> Result<unit, Error>
+fn written outcome =
+    match outcome with
+    | Result.Ok _ -> Result.Ok ()
+    | Result.Error error -> Result.Error (Io error)
+
+private def checked :: own Result<'a, TensorCodec.Error> -> Result<'a, Error>
+fn checked outcome =
+    match outcome with
+    | Result.Ok value -> Result.Ok value
+    | Result.Error error -> Result.Error (Codec error)
+
+// Writes the encoded bytes, or reports why there are none.
+private def store :: own string -> own Result<[ubyte], TensorCodec.Error> -> IO<Result<unit, Error>>
+fn store path encoded =
+    match encoded with
+    | Result.Ok bytes -> IO.map written (File.write_bytes path bytes)
+    | Result.Error error -> IO.pure (Result.Error (Codec error))
+
+/// Writes a window as an `.npy` file, byte for byte what NumPy's `np.save` writes. The window is encoded
+/// when the action is made, so later changes to its storage do not reach the file.
+///
+/// ```tsuzuri
+/// let t = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// let window = Tensor.view t
+/// let! saved = TensorIO.save_npy "weights.npy" (ref window)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_npy :: (TensorElement<'a>, Copy<'a>) => own string -> ref Tensor.View<'a> -> IO<Result<unit, Error>>
+fn save_npy path view = store path (TensorCodec.encode_npy view)
+
+/// Reads an `.npy` file as a tensor of the element type that the context asks for; a file of another dtype
+/// is `Codec (DtypeMismatch ...)`.
+///
+/// ```tsuzuri
+/// let! loaded = TensorIO.load_npy "weights.npy"
+/// let weights: Result<Tensor<f64>, TensorIO.Error> = loaded
+/// match weights with
+/// | Result.Ok tensor -> IO.writeln $"{Tensor.as_array tensor}"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def load_npy :: TensorElement<'a> => own string -> IO<Result<Tensor<'a>, Error>>
+fn load_npy path = IO.map (\loaded ->
+    match loaded with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok bytes -> checked (TensorCodec.decode_npy (ref bytes))) (File.read_bytes path)
+
+/// Writes a `TensorCodec.Raw` as an `.npy` file.
+///
+/// ```tsuzuri
+/// let raw = TensorCodec.Raw { dtype: TensorCodec.U8, shape: [3], data: [1ubyte, 2ubyte, 3ubyte] }
+/// let! saved = TensorIO.save_npy_raw "bytes.npy" (ref raw)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_npy_raw :: own string -> ref TensorCodec.Raw -> IO<Result<unit, Error>>
+fn save_npy_raw path raw = store path (TensorCodec.encode_npy_raw raw)
+
+/// Reads an `.npy` file whose dtype is only known from the file.
+///
+/// ```tsuzuri
+/// let! loaded = TensorIO.load_npy_raw "unknown.npy"
+/// match loaded with
+/// | Result.Ok raw -> IO.writeln (TensorCodec.dtype_name (ref raw.dtype))
+/// | Result.Error error -> IO.writeln (Display.display (ref error))
+/// ```
+def load_npy_raw :: own string -> IO<Result<TensorCodec.Raw, Error>>
+fn load_npy_raw path = IO.map (\loaded ->
+    match loaded with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok bytes -> checked (TensorCodec.decode_npy_raw (ref bytes))) (File.read_bytes path)
+
+/// Writes named tensors as an uncompressed `.npz` file (NumPy's `np.savez`).
+///
+/// ```tsuzuri
+/// let weights = Tensor.of_array [2] [1.0, 2.0]
+/// let bias = Tensor.of_array [1] [7i32]
+/// let tensors = [("w", TensorCodec.to_raw (Tensor.view weights)), ("b", TensorCodec.to_raw (Tensor.view bias))]
+/// let! saved = TensorIO.save_npz "model.npz" (ref tensors)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_npz :: own string -> ref [(string * TensorCodec.Raw)] -> IO<Result<unit, Error>>
+fn save_npz path tensors = store path (TensorCodec.encode_npz tensors)
+
+/// Writes named tensors as a deflated `.npz` file (NumPy's `np.savez_compressed`).
+///
+/// ```tsuzuri
+/// let weights = Tensor.init [1000] (\_ -> 0.0)
+/// let tensors = [("w", TensorCodec.to_raw (Tensor.view weights))]
+/// let! saved = TensorIO.save_npz_compressed "model.npz" (ref tensors)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_npz_compressed :: own string -> ref [(string * TensorCodec.Raw)] -> IO<Result<unit, Error>>
+fn save_npz_compressed path tensors = store path (TensorCodec.encode_npz_compressed tensors)
+
+/// Reads an `.npz` file as an archive; take its tensors out with `TensorCodec.archive_get`.
+///
+/// ```tsuzuri
+/// let! loaded = TensorIO.load_npz "model.npz"
+/// match loaded with
+/// | Result.Ok archive -> IO.writeln (TensorCodec.archive_names (ref archive))
+/// | Result.Error error -> IO.writeln (Display.display (ref error))
+/// ```
+def load_npz :: own string -> IO<Result<TensorCodec.Archive, Error>>
+fn load_npz path = IO.map (\loaded ->
+    match loaded with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok bytes -> checked (TensorCodec.decode_npz bytes)) (File.read_bytes path)
+
+/// Writes named tensors as a Safetensors file without metadata.
+///
+/// ```tsuzuri
+/// let weights = Tensor.of_array [2] [1.0f32, 2.0f32]
+/// let tensors = [("w", TensorCodec.to_raw (Tensor.view weights))]
+/// let! saved = TensorIO.save_safetensors "model.safetensors" (ref tensors)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_safetensors :: own string -> ref [(string * TensorCodec.Raw)] -> IO<Result<unit, Error>>
+fn save_safetensors path tensors = store path (TensorCodec.encode_safetensors tensors)
+
+/// Writes named tensors as a Safetensors file with a `__metadata__` map of text to text.
+///
+/// ```tsuzuri
+/// let weights = Tensor.of_array [2] [1.0f32, 2.0f32]
+/// let tensors = [("w", TensorCodec.to_raw (Tensor.view weights))]
+/// let metadata = [("format", "pt")]
+/// let! saved = TensorIO.save_safetensors_with (ref metadata) "model.safetensors" (ref tensors)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_safetensors_with :: ref [(string * string)] -> own string -> ref [(string * TensorCodec.Raw)] -> IO<Result<unit, Error>>
+fn save_safetensors_with metadata path tensors = store path (TensorCodec.encode_safetensors_with metadata tensors)
+
+/// Reads a Safetensors file as an archive; take its tensors out with `TensorCodec.archive_get`.
+///
+/// ```tsuzuri
+/// let! loaded = TensorIO.load_safetensors "model.safetensors"
+/// match loaded with
+/// | Result.Ok archive -> IO.writeln (TensorCodec.archive_names (ref archive))
+/// | Result.Error error -> IO.writeln (Display.display (ref error))
+/// ```
+def load_safetensors :: own string -> IO<Result<TensorCodec.Archive, Error>>
+fn load_safetensors path = IO.map (\loaded ->
+    match loaded with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok bytes -> checked (TensorCodec.decode_safetensors bytes)) (File.read_bytes path)
+
+/// Writes a window of rank 0, 1 or 2 as a table of text in UTF-8; see `TensorCodec.encode_csv`.
+///
+/// ```tsuzuri
+/// let t = Tensor.of_array [2, 2] [1.5, 2.5, 3.5, 4.5]
+/// let window = Tensor.view t
+/// let! saved = TensorIO.save_csv (TensorCodec.csv ()) "table.csv" (ref window)
+/// match saved with
+/// | Result.Ok _ -> IO.writeln "saved"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def save_csv :: Display<'a> => own TensorCodec.CsvOptions -> own string -> ref Tensor.View<'a> -> IO<Result<unit, Error>>
+fn save_csv options path view =
+    match TensorCodec.encode_csv options view with
+    | Result.Ok text -> IO.map written (File.write_bytes path (Utf8String.to_bytes text))
+    | Result.Error error -> IO.pure (Result.Error (Codec error))
+
+/// Reads a table of text in UTF-8 as a tensor of rank 2 of the element type that the context asks for; see
+/// `TensorCodec.decode_csv`. A file that is not UTF-8 is `Codec (CsvParseError (0, ...))`.
+///
+/// ```tsuzuri
+/// let! loaded = TensorIO.load_csv (TensorCodec.csv ()) "table.csv"
+/// let table: Result<Tensor<f64>, TensorIO.Error> = loaded
+/// match table with
+/// | Result.Ok tensor -> IO.writeln $"{Tensor.as_array tensor}"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def load_csv :: Parse<'a> => own TensorCodec.CsvOptions -> own string -> IO<Result<Tensor<'a>, Error>>
+fn load_csv options path = IO.map (\loaded ->
+    match loaded with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok bytes ->
+        match Utf8String.from_bytes bytes with
+        | Maybe.Some text -> checked (TensorCodec.decode_csv options (ref text))
+        | Maybe.None -> Result.Error (Codec (TensorCodec.CsvParseError (0, "the file is not UTF-8")))) (File.read_bytes path)
+
+// A whole file mapped read-only. The value owns the mapping: dropping it releases the mapping, once.
+private record Mapping { address: i64, length: i64 }
+
+instance Drop<Mapping> {
+    fn drop mapping =
+        let _status = Os.__unmap mapping.address mapping.length
+        ()
+}
+
+/// A tensor file that is mapped into memory read-only instead of being read: `view` lends its elements as a
+/// window without copying them, and the system loads the pages that are touched. Dropping the value releases
+/// the mapping; a window cannot outlive it. The file must not be truncated by another program while it is
+/// mapped (the system then stops the program on the next read of the missing pages).
+record MappedTensor { mapping: Mapping, dtype: TensorCodec.Dtype, shape: [i64], strides: [i64], data: i64, count: i64 }
+
+private def map_file :: ref string -> Result<Mapping, Error>
+fn map_file path =
+    match Os.encode path with
+    | Result.Error error -> Result.Error (Io error)
+    | Result.Ok name ->
+        match Os.__map (ref name) with
+        | (0, place) -> Result.Ok (Mapping { address: Os.decode_i64 0 (ref place), length: Os.decode_i64 8 (ref place) })
+        | (status, _) -> Result.Error (Io (Os.error_of_status status))
+
+// The bytes of a mapping, lent for as long as the mapping is borrowed.
+private def mapped_bytes { r } :: ref { r } Mapping -> ref { r } [ubyte]
+fn mapped_bytes mapping = TensorIO.__mmap_slice mapping.address mapping.length mapping
+
+// The alignment that the elements of a dtype need in memory.
+private def alignment :: ref TensorCodec.Dtype -> i64
+fn alignment dtype =
+    match dtype with
+    | TensorCodec.Complex64 -> 4
+    | TensorCodec.Complex128 -> 8
+    | _ -> TensorCodec.dtype_size dtype
+
+// Whether every byte of the range is 0 or 1.
+private def all_bool :: own i64 -> own i64 -> ref [ubyte] -> bool
+fn all_bool start count bytes =
+    let mut valid = true
+    for index in start ..< start + count do
+        if bytes[index] > 1ubyte then valid = false
+    valid
+
+// Checks that the elements that `header` describes can be used where they are, and takes the mapping.
+private def adopt :: own Maybe<TensorCodec.Dtype> -> own TensorCodec.Header -> own Mapping -> Result<MappedTensor, Error>
+fn adopt expected header mapping =
+    let found = header.dtype
+    let wanted = Maybe.default_value found expected
+    let size = TensorCodec.dtype_size (ref found)
+    let mut count = 1
+    for axis in 0i64 ..< header.shape.length do count = count * header.shape[axis]
+    if wanted != found then Result.Error (Codec (TensorCodec.DtypeMismatch (TensorCodec.dtype_name (ref wanted), TensorCodec.dtype_name (ref found))))
+    elif header.big_endian then Result.Error (Unmappable "its elements are big-endian")
+    elif (mapping.address + header.data_offset) % alignment (ref found) != 0 then Result.Error (Unmappable "its elements are not aligned in the file")
+    elif found == TensorCodec.Bool && !(all_bool header.data_offset (count * size) (mapped_bytes (ref mapping))) then Result.Error (Unmappable "a bool element is not 0 or 1")
+    else
+        let rank = header.shape.length
+        let mut strides = new [i64](rank, \_ -> 1)
+        let mut stride = 1
+        // Row-major strides run from the last axis; a column-major file is used in place with the strides reversed.
+        for step in 0i64 ..< rank do
+            let axis = if header.fortran_order then step else rank - 1 - step
+            Array.write axis stride (ref mut strides)
+            stride = stride * (if header.shape[axis] == 0 then 1 else header.shape[axis])
+        let data = mapping.address + header.data_offset
+        Result.Ok (MappedTensor { mapping: mapping, dtype: found, shape: Array.copy (ref header.shape), strides: strides, data: data, count: count })
+
+private def open_npy :: own Maybe<TensorCodec.Dtype> -> ref string -> Result<MappedTensor, Error>
+fn open_npy expected path =
+    match map_file path with
+    | Result.Error error -> Result.Error error
+    | Result.Ok mapping ->
+        match TensorCodec.inspect_npy (mapped_bytes (ref mapping)) with
+        | Result.Error error -> Result.Error (Codec error)
+        | Result.Ok header -> adopt expected header mapping
+
+private def open_safetensors :: ref string -> ref string -> Result<MappedTensor, Error>
+fn open_safetensors name path =
+    match map_file path with
+    | Result.Error error -> Result.Error error
+    | Result.Ok mapping ->
+        match TensorCodec.inspect_safetensors name (mapped_bytes (ref mapping)) with
+        | Result.Error error -> Result.Error (Codec error)
+        | Result.Ok header -> adopt Maybe.None header mapping
+
+/// Maps an `.npy` file read-only. The header is read and checked when the file is opened, as
+/// `TensorCodec.inspect_npy` does; the elements must be little-endian and aligned in the file (what
+/// NumPy's `np.save` writes), and a `bool` file must hold only 0 and 1 (it is read once to check). A
+/// column-major file is used in place. WebAssembly cannot map files: the result there is an `Io` error.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_npy "weights.npy"
+/// match opened with
+/// | Result.Ok mapped ->
+///     let window: Tensor.View<f64> = TensorIO.view (ref mapped)
+///     IO.writeln (Tensor.count (ref window))
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def open_mmap_npy :: own string -> IO<Result<MappedTensor, Error>>
+fn open_mmap_npy path = IO.map (\() -> open_npy Maybe.None (ref path)) (IO.pure ())
+
+/// Maps an `.npy` file read-only as `open_mmap_npy` does, and also checks its dtype: a file of another dtype
+/// is `Codec (DtypeMismatch ...)`, so that `view` of that element type cannot trap.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_npy_as TensorCodec.F32 "weights.npy"
+/// match opened with
+/// | Result.Ok mapped -> IO.writeln $"{TensorIO.mapped_shape (ref mapped)}"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def open_mmap_npy_as :: own TensorCodec.Dtype -> own string -> IO<Result<MappedTensor, Error>>
+fn open_mmap_npy_as dtype path = IO.map (\() -> open_npy (Maybe.Some dtype) (ref path)) (IO.pure ())
+
+/// Maps a Safetensors file read-only and selects the tensor `name` of it. The whole header is checked as
+/// `TensorCodec.decode_safetensors` does; the elements of the tensor must be aligned in the file.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_safetensors "encoder.weight" "model.safetensors"
+/// match opened with
+/// | Result.Ok mapped -> IO.writeln $"{TensorIO.mapped_shape (ref mapped)}"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def open_mmap_safetensors :: own string -> own string -> IO<Result<MappedTensor, Error>>
+fn open_mmap_safetensors name path = IO.map (\() -> open_safetensors (ref name) (ref path)) (IO.pure ())
+
+/// Maps an `.npy` file read-only, calls `body` with it, and releases the mapping before the action returns.
+/// A `MappedTensor` cannot be carried across a `let!` (it is a `Drop` value), so this is the form to use in
+/// the middle of a chain of actions.
+///
+/// ```tsuzuri
+/// let! total = TensorIO.with_mmap_npy "weights.npy" (\mapped ->
+///     let window: Tensor.View<f64> = TensorIO.view mapped
+///     Tensor.fold (\sum value -> sum + value) 0.0 (ref window))
+/// match total with
+/// | Result.Ok sum -> IO.writeln sum
+/// | Result.Error error -> IO.writeln (Display.display (ref error))
+/// ```
+def with_mmap_npy :: Capture<'a> => own string -> own (ref MappedTensor -> 'a) -> IO<Result<'a, Error>>
+fn with_mmap_npy path body = IO.map (\() ->
+    match open_npy Maybe.None (ref path) with
+    | Result.Error error -> Result.Error error
+    | Result.Ok mapped -> Result.Ok (body (ref mapped))) (IO.pure ())
+
+/// The dtype of the elements of a mapped file.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_npy "weights.npy"
+/// match opened with
+/// | Result.Ok mapped -> IO.writeln (TensorCodec.dtype_name (TensorIO.mapped_dtype (ref mapped)))
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def mapped_dtype :: ref MappedTensor -> TensorCodec.Dtype
+fn mapped_dtype mapped = mapped.dtype
+
+/// The shape of a mapped file.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_npy "weights.npy"
+/// match opened with
+/// | Result.Ok mapped -> IO.writeln $"{TensorIO.mapped_shape (ref mapped)}"
+/// | Result.Error error -> IO.writeln (Display.display error)
+/// ```
+def mapped_shape { r } :: ref { r } MappedTensor -> ref { r } [i64]
+fn mapped_shape mapped = ref mapped.shape
+
+/// Lends the elements of a mapped file as a window, without copying them. The element type that the context
+/// asks for must be the one of the file: another one traps (check `mapped_dtype`, or open the file with
+/// `open_mmap_npy_as`). The window borrows the `MappedTensor`, so it cannot be used after the mapping is
+/// released.
+///
+/// ```tsuzuri
+/// let! opened = TensorIO.open_mmap_npy_as TensorCodec.F64 "weights.npy"
+/// match opened with
+/// | Result.Ok mapped ->
+///     let window: Tensor.View<f64> = TensorIO.view (ref mapped)
+///     IO.writeln (deref (Tensor.at [0, 0] (ref window)))
+/// | Result.Error error -> IO.writeln (Display.display (ref error))
+/// ```
+def view { r } :: TensorElement<'a> => ref { r } MappedTensor -> Tensor.View<'a> { r }
+fn view mapped =
+    let none: ['a] = []
+    assert (TensorCodec.element_dtype (ref none) == mapped.dtype)
+    Tensor.strided 0 (Array.copy (ref mapped.shape)) (Array.copy (ref mapped.strides)) (TensorIO.__mmap_slice mapped.data mapped.count mapped)

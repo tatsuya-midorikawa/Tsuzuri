@@ -1,8 +1,8 @@
 /// The element types that `TensorCodec` and `TensorIO` read and write: `bool`, the integers of 8 to 64 bits, `f16`,
-/// `f32`, `f64`, `Complex<f32>` and `Complex<f64>`. The instances are in `TensorCodec`; the functions of that module
-/// (`TensorCodec.encode_npy`, `TensorCodec.decode_npy`, `TensorCodec.to_raw`, `TensorIO.view`...) call the methods,
-/// so write those. User code names the class `TensorElement.TensorElement`, since `TensorElement` is an opt-in std
-/// module.
+/// `f32`, `f64`, `Complex<f32>` and `Complex<f64>`. The instances are in `TensorCodec`, and there can be no others
+/// (see `element_type`); the functions of that module (`TensorCodec.encode_npy`, `TensorCodec.decode_npy`,
+/// `TensorCodec.to_raw`, `TensorIO.view`...) call the methods, so write those. User code names the class
+/// `TensorElement.TensorElement`, since `TensorElement` is an opt-in std module.
 ///
 /// ```tsuzuri run=float32%2012
 /// def describe :: (TensorElement.TensorElement<'a>, Copy<'a>) => ref Tensor.View<'a> -> string
@@ -14,8 +14,9 @@
 /// describe (Tensor.view (ref t))
 /// ```
 class TensorElement<'a> {
-    /// The dtype of the element type; the array only names the type and is not read.
-    def dtype :: ref ['a] -> TensorCodec.Dtype
+    /// The proof that the type is an element type, with its dtype. Only `TensorCodec` can make the value, so no
+    /// other module can give the class an instance.
+    def element_type :: unit -> TensorCodec.ElementType<'a>
 
     /// The elements as bytes, each element little-endian, in the order of the array.
     def to_le_bytes :: ref ['a] -> [ubyte]

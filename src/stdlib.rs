@@ -90,6 +90,7 @@ pub const SOURCES: &[(&str, &str)] = &[
         "std/TensorElement.tt",
         include_str!("../std/TensorElement.tt"),
     ),
+    ("std/TensorIO.tz", include_str!("../std/TensorIO.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -262,6 +263,9 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
             | "ExternAddr.ExternAddr"
+            | "TensorCodec.Archive"
+            | "TensorCodec.ElementType"
+            | "TensorIO.MappedTensor"
     )
 }
 
@@ -537,13 +541,19 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         module: "TensorCodec",
         names: &["TensorCodec", "TensorElement"],
         aliases: &[],
-        uses: &["Complex", "Tensor", "TensorElement"],
+        uses: &["Complex", "Json", "Tensor", "TensorElement"],
     },
     OptIn {
         module: "TensorElement",
         names: &["TensorElement"],
         aliases: &[],
         uses: &["TensorCodec"],
+    },
+    OptIn {
+        module: "TensorIO",
+        names: &["TensorIO"],
+        aliases: &[],
+        uses: &["Tensor", "TensorCodec", "TensorElement"],
     },
 ];
 
