@@ -1690,7 +1690,7 @@ public:
 
 private:
     struct release {
-        void operator()(T *pointer) const noexcept { ::tsuzuri_free(pointer); }
+    void operator()(T *pointer) const noexcept { detail::free_owned(pointer); }
     };
     std::unique_ptr<T, release> data_;
     std::size_t size_ = 0;
@@ -1783,9 +1783,19 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             })
     });
     let mut output = banner("//");
+    let win32_loader = if owned {
+        "#if defined(_WIN32) && !defined(TSUZURI_WIN32_LOADER_DECLARED)\n\
+         #define TSUZURI_WIN32_LOADER_DECLARED\n\
+         struct HINSTANCE__;\n\
+         extern \"C\" __declspec(dllimport) ::HINSTANCE__ *__stdcall GetModuleHandleW(const wchar_t *name);\n\
+         extern \"C\" __declspec(dllimport) std::intptr_t (__stdcall *__stdcall GetProcAddress(::HINSTANCE__ *module, const char *proc))();\n\
+         #endif\n\n"
+    } else {
+        ""
+    };
     let _ = write!(
         output,
-        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n{}#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\nnamespace tsuzuri::{namespace} {{\n\n",
+        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n{}#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\n{win32_loader}namespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
         } else {
@@ -1808,6 +1818,30 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     .map(str::to_owned)
     .collect();
     if owned {
+        let escaped_dll = format!("{name}.dll")
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let _ = write!(
+            output,
+            "namespace detail {{\n\n\
+             #ifdef _WIN32\n\
+             inline void free_owned(void *pointer) noexcept {{\n\
+                 using free_fn = void (*)(void *);\n\
+                 static const free_fn release = []() noexcept -> free_fn {{\n\
+                     if (auto *module = ::GetModuleHandleW(L\"{escaped_dll}\")) {{\n\
+                         if (auto proc = ::GetProcAddress(module, \"tsuzuri_free\")) {{\n\
+                             return reinterpret_cast<free_fn>(reinterpret_cast<std::uintptr_t>(proc));\n\
+                         }}\n\
+                     }}\n\
+                     return &::tsuzuri_free;\n\
+                 }}();\n\
+                 release(pointer);\n\
+             }}\n\
+             #else\n\
+             inline void free_owned(void *pointer) noexcept {{ ::tsuzuri_free(pointer); }}\n\
+             #endif\n\n\
+             }} // namespace detail\n\n"
+        );
         output.push_str(CPP_SUPPORT);
     }
     if trap_return {

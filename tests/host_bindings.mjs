@@ -171,14 +171,20 @@ try {
   }
   writeFileSync(join(two, "liba", "Lib.tz"), "export def coordinate_sum :: ref Common::Geo.Point -> f64\nfn coordinate_sum point = point.x + point.y\n\nexport def greet :: ref string -> string\nfn greet name = clone_string name\n");
   writeFileSync(join(two, "libb", "Lib.tz"), "export def origin :: own i64 -> Common::Geo.Point\nfn origin x = Common::Geo.Point { x: x as f64, y: 0.5 }\n\nexport def total :: ref [i64] -> i64\nfn total values = Array.sum values\n\nexport def echo :: ref utf8string -> utf8string\nfn echo text = Utf8String.clone text\n\nexport def divide :: own i64 -> own i64 -> i64\nfn divide a b = a / b\n");
-  const libbFlags = supportsTrapReturn ? ["--trap-mode", "return"] : [];
-  const libraries = { liba: [join(two, "liba", "Lib.tz")], libb: [join(two, "libb", "Lib.tz"), ...libbFlags] };
-  for (const [name, [source, ...flags]] of Object.entries(libraries)) {
-    execute(compiler, ["build", source, "--emit", "header", ...flags, "-o", join(twoOut, `${name}.h`)]);
-    execute(compiler, ["build", source, "--emit", "shared", ...flags, "-o", join(twoOut, `${libPrefix}${name}.${extension}`)]);
-    if (clangxxVersion) execute(compiler, ["build", source, "--emit", "bindings-cpp", ...flags, "-o", join(twoOut, `${name}.hpp`)]);
+  // On POSIX libb uses --trap-mode return; on Windows libb uses --allocator small while liba uses
+  // system, verifying DLL-specific tsuzuri_free resolution across mixed allocators and CRT heaps.
+  const libbApiFlags = supportsTrapReturn ? ["--trap-mode", "return"] : [];
+  const libbSharedFlags = supportsTrapReturn ? ["--trap-mode", "return"] : ["--allocator", "small"];
+  const libraries = {
+    liba: { source: join(two, "liba", "Lib.tz"), apiFlags: [], sharedFlags: [] },
+    libb: { source: join(two, "libb", "Lib.tz"), apiFlags: libbApiFlags, sharedFlags: libbSharedFlags },
+  };
+  for (const [name, { source, apiFlags, sharedFlags }] of Object.entries(libraries)) {
+    execute(compiler, ["build", source, "--emit", "header", ...apiFlags, "-o", join(twoOut, `${name}.h`)]);
+    execute(compiler, ["build", source, "--emit", "shared", ...sharedFlags, "-o", join(twoOut, `${libPrefix}${name}.${extension}`)]);
+    if (clangxxVersion) execute(compiler, ["build", source, "--emit", "bindings-cpp", ...apiFlags, "-o", join(twoOut, `${name}.hpp`)]);
   }
-  execute(compiler, ["build", libraries.libb[0], "--emit", "header", ...libbFlags, "-o", join(two, "again.h")]);
+  execute(compiler, ["build", libraries.libb.source, "--emit", "header", ...libbApiFlags, "-o", join(two, "again.h")]);
   assert.deepEqual(readFileSync(join(two, "again.h")), readFileSync(join(twoOut, "libb.h")), "the header is deterministic");
   const twoHost = join(repository, "tests/host_bindings_two_libraries.c");
   const twoFlags = [...winTargetArgs, ...(supportsTrapReturn ? [] : ["-DTSUZURI_NO_TRAP_MODE"]), "-Wall", "-Wextra", "-pedantic", "-Werror", "-I", twoOut];
