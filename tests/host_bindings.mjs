@@ -239,10 +239,14 @@ try {
       [
         "#undef NDEBUG",
         "#include <cassert>",
+        '#include "ERROR.hpp"',
         '#include "near.hpp"',
         '#include "cdecl.hpp"',
-        '#include "ERROR.hpp"',
-        "int main() {",
+        "#include <windows.h>",
+        "int main(int argc, char **) {",
+        "  if (argc > 100) {",
+        "    (void)::MessageBoxW(nullptr, L\"msg\", L\"cap\", MB_OK);",
+        "  }",
         "  tz_record_4Main_4Span s{1, 3, 2, 5};",
         "  auto a = tsuzuri::near::near(3);",
         "  auto b = tsuzuri::near::far(s);",
@@ -282,7 +286,7 @@ try {
         "",
       ].join("\n"),
     );
-    const macroLibs = [join(macroOut, "near.lib"), join(macroOut, "cdecl.lib"), join(macroOut, "ERROR.lib")];
+    const macroLibs = [join(macroOut, "near.lib"), join(macroOut, "cdecl.lib"), join(macroOut, "ERROR.lib"), "-luser32"];
     for (const [tag, src] of [["plain", macroPlainCpp], ["with_win", macroWithWinCpp]]) {
       const exe = join(macroOut, `macro_${tag}.exe`);
       execute(clangxx, [...winTargetArgs, "-std=c++20", "-Wall", "-Wextra", "-pedantic", "-Werror", "-I", macroOut, src, ...macroLibs, "-o", exe]);

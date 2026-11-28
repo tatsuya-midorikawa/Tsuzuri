@@ -1845,42 +1845,12 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     let mut output = banner("//");
     let win32_loader = if owned {
         "#ifdef _WIN32\n\
-         #pragma push_macro(\"WIN32_LEAN_AND_MEAN\")\n\
          #pragma push_macro(\"NOMINMAX\")\n\
-         #pragma push_macro(\"NOGDI\")\n\
-         #pragma push_macro(\"NOUSER\")\n\
-         #pragma push_macro(\"NOSERVICE\")\n\
-         #pragma push_macro(\"NOMCX\")\n\
-         #pragma push_macro(\"NOIME\")\n\
-         #ifndef WIN32_LEAN_AND_MEAN\n\
-         #define WIN32_LEAN_AND_MEAN\n\
-         #endif\n\
          #ifndef NOMINMAX\n\
          #define NOMINMAX\n\
          #endif\n\
-         #ifndef NOGDI\n\
-         #define NOGDI\n\
-         #endif\n\
-         #ifndef NOUSER\n\
-         #define NOUSER\n\
-         #endif\n\
-         #ifndef NOSERVICE\n\
-         #define NOSERVICE\n\
-         #endif\n\
-         #ifndef NOMCX\n\
-         #define NOMCX\n\
-         #endif\n\
-         #ifndef NOIME\n\
-         #define NOIME\n\
-         #endif\n\
          #include <windows.h>\n\
-         #pragma pop_macro(\"NOIME\")\n\
-         #pragma pop_macro(\"NOMCX\")\n\
-         #pragma pop_macro(\"NOSERVICE\")\n\
-         #pragma pop_macro(\"NOUSER\")\n\
-         #pragma pop_macro(\"NOGDI\")\n\
          #pragma pop_macro(\"NOMINMAX\")\n\
-         #pragma pop_macro(\"WIN32_LEAN_AND_MEAN\")\n\
          #endif\n"
     } else {
         ""
@@ -1890,11 +1860,6 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
         "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n\
          // tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n\
          #pragma once\n\
-         #ifdef _WIN32\n\
-         {push_macros}#endif\n\
-         {win32_loader}#ifdef _WIN32\n\
-         {undef_macros}#endif\n\
-         #include \"{name}.h\"\n\n\
          #include <cstddef>\n\
          #include <cstdint>\n\
          #include <memory>\n\
@@ -1903,6 +1868,11 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
          #include <string>\n\
          #include <string_view>\n\
          #include <utility>\n\n\
+         #ifdef _WIN32\n\
+         {push_macros}#endif\n\
+         {win32_loader}#ifdef _WIN32\n\
+         {undef_macros}#endif\n\
+         #include \"{name}.h\"\n\n\
          namespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
