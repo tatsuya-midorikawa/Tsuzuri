@@ -146,6 +146,13 @@ jobs:
         run: |
           node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri tensor_codec
           node scripts/slot.mjs -- node tests/tensor_io.mjs target/debug/tsuzuri
+      - name: Numeric libraries (NC09, NC10)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri fft
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri polynomial
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri random
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri random_tensor
       - name: Ordered containers
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
