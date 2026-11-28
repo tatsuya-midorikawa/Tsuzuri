@@ -292,6 +292,7 @@ try {
 </Project>
 `);
     const environment = { ...process.env, DOTNET_CLI_TELEMETRY_OPTOUT: "1", DOTNET_NOLOGO: "1", DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1" };
+    delete environment.Platform;
     // Freed memory is overwritten, so a buffer freed during a copy shows (macOS, glibc).
     const scribbled = { ...environment, MallocScribble: "1", MALLOC_PERTURB_: "85" };
     const csOut = join(project, "out");
