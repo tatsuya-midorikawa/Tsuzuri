@@ -1604,7 +1604,7 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            181
+            183
         );
         assert!(!builtin_impure(Builtin::ArrayUpdate));
         assert!(!builtin_impure(Builtin::ZUtf8StringLiteral));

@@ -1926,8 +1926,9 @@ mod tests {
         // Appendix A.2: 31 builtins reach the host (4 of them the timers of TZ05, 2 the deadlines
         // of TZ07; TZ13 removed the 3 of Async and the 5 of Net's async operations); the rest
         // touch only the CPU and memory.
-        assert_eq!(world, 33);
-        assert_eq!(private.len(), 33 + PRIVATE_WITHOUT_CAPABILITY.len());
+        // NC11 added `Os.__map`.
+        assert_eq!(world, 34);
+        assert_eq!(private.len(), 34 + PRIVATE_WITHOUT_CAPABILITY.len());
         // The multiplexed builtins follow their file.
         assert_eq!(primitive("Os.__read", "Env"), Some(Capability::Env));
         assert_eq!(primitive("Os.__read", "Dir"), Some(Capability::Fs));

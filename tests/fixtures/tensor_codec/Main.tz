@@ -1,0 +1,269 @@
+/// NC11: `TensorCodec` on native and WebAssembly at `-O0` and `-O3` (`tests/features.mjs`, suite `tensor_codec`).
+/// The module needs no capability and no import. `tests/features.mjs` computes each expected value itself: the
+/// bytes of an `.npy` file from the format, CRC-32, and the plain values. `tests/tensor_codec.rs` compares the
+/// same functions with the bytes that NumPy and zlib write.
+
+def crc :: ref [ubyte] -> i64
+fn crc bytes = TensorCodec.crc32 bytes as i64
+
+/// The CRC-32 of the `.npy` file of a 3 by 4 tensor of the dtype number `kind`, whose element `i` is given by
+/// the formula of that dtype; -1 for a number that is no dtype.
+export def npy_crc :: own i64 -> i64
+fn npy_crc kind =
+    let shape = [3, 4]
+    if kind == 0 then
+        let t = Tensor.init shape (\i -> i % 3 == 0)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 1 then
+        let t = Tensor.init shape (\i -> (i * 37 - 100) as i8)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 2 then
+        let t = Tensor.init shape (\i -> (i * 3700 - 10000) as i16)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 3 then
+        let t = Tensor.init shape (\i -> (i * 370000000 - 1000000000) as i32)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 4 then
+        let t = Tensor.init shape (\i -> i * 1234567890123456789 - 5)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 5 then
+        let t = Tensor.init shape (\i -> (i * 37) as i8u)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 6 then
+        let t = Tensor.init shape (\i -> (i * 3700) as i16u)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 7 then
+        let t = Tensor.init shape (\i -> (i * 370000000) as i32u)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 8 then
+        let t = Tensor.init shape (\i -> (i * 1234567890123456789) as i64u)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 9 then
+        let t = Tensor.init shape (\i -> (to_float i * 0.25 - 1.5) as f16)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 10 then
+        let t = Tensor.init shape (\i -> (to_float i * 0.25 - 1.5) as f32)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 11 then
+        let t = Tensor.init shape (\i -> to_float i * 0.1 - 1.5)
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 12 then
+        let t = Tensor.init shape (\i -> Complex.of ((to_float i * 0.5) as f32) ((0.0 - to_float i) as f32))
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    elif kind == 13 then
+        let t = Tensor.init shape (\i -> Complex.of (to_float i * 0.1) (0.0 - to_float i))
+        crc (ref (Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))))
+    else -1
+
+/// The CRC-32 of the `.npy` file of a window that is not contiguous: the 3 by 4 tensor of `f64` with its axes
+/// exchanged (`kind` 0), its rows reversed (1), or every other column (2).
+export def npy_window_crc :: own i64 -> i64
+fn npy_window_crc kind =
+    let t = Tensor.init [3, 4] (\i -> to_float i * 0.1 - 1.5)
+    let whole = Tensor.view (ref t)
+    let window = if kind == 0 then Tensor.permute [1, 0] (ref whole) elif kind == 1 then Tensor.flip_axis 0 (ref whole) else Tensor.slice [Slice.all(), Slice.every 2] (ref whole)
+    crc (ref (Result.get (TensorCodec.encode_npy (ref window))))
+
+/// Encodes and decodes a tensor of `count` elements of `f32` and returns the sum of the decoded elements as
+/// an integer (the elements are `i - 3`).
+export def npy_round_trip :: own i64 -> i64
+fn npy_round_trip count =
+    let t = Tensor.init [count] (\i -> (to_float (i - 3)) as f32)
+    let file = Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))
+    let header = Result.get (TensorCodec.inspect_npy (ref file))
+    let decoded: Result<Tensor<f32>, TensorCodec.Error> = TensorCodec.decode_npy (ref file)
+    let back = Result.get decoded
+    let raw = Result.get (TensorCodec.decode_npy_raw (ref file))
+    let again: Result<Tensor<f32>, TensorCodec.Error> = TensorCodec.of_raw (ref raw)
+    let same = Result.get again == back && Result.get (TensorCodec.encode_npy_raw (ref raw)) == file
+    let total = Tensor.fold (\sum value -> sum + (value as f64)) 0.0 (Tensor.view (ref back))
+    if same && header.data_offset % 64 == 0 && TensorCodec.dtype_of (Tensor.view (ref back)) == header.dtype then total as i64 else -1
+
+/// The error number of decoding `kind` of broken input: every one is an error and none traps.
+def error_number :: ref TensorCodec.Error -> i64
+fn error_number error =
+    match error with
+    | TensorCodec.InvalidMagic -> 1
+    | TensorCodec.UnsupportedVersion _ -> 2
+    | TensorCodec.InvalidHeader _ -> 3
+    | TensorCodec.DtypeMismatch _ -> 4
+    | TensorCodec.UnsupportedDtype _ -> 5
+    | TensorCodec.TruncatedData -> 6
+    | TensorCodec.ShapeOverflow -> 7
+    | TensorCodec.EntryNotFound _ -> 8
+    | TensorCodec.UnsupportedCompression _ -> 9
+    | TensorCodec.CsvParseError _ -> 10
+    | TensorCodec.InvalidArchive _ -> 11
+    | TensorCodec.CorruptData _ -> 12
+    | TensorCodec.UnsupportedRank _ -> 13
+
+def raw_error :: own Result<TensorCodec.Raw, TensorCodec.Error> -> i64
+fn raw_error outcome =
+    match outcome with
+    | Result.Ok _ -> 0
+    | Result.Error error -> error_number (ref error) + (Display.display (ref error)).length * 0
+
+def archive_error :: own Result<TensorCodec.Archive, TensorCodec.Error> -> i64
+fn archive_error outcome =
+    match outcome with
+    | Result.Ok _ -> 0
+    | Result.Error error -> error_number (ref error)
+
+export def hostile :: own i64 -> i64
+fn hostile kind =
+    let t = Tensor.init [4] (\i -> to_float i)
+    let good = Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))
+    if kind == 0 then raw_error (TensorCodec.decode_npy_raw [1ubyte, 2ubyte, 3ubyte])
+    elif kind == 1 then raw_error (TensorCodec.decode_npy_raw (ref good[0 ..< good.length - 1]))
+    elif kind == 2 then raw_error (TensorCodec.decode_npy_raw (ref (new [ubyte](good.length, \i -> if i == 6 then 9ubyte else good[i]))))
+    elif kind == 3 then raw_error (TensorCodec.decode_npy_raw (ref (new [ubyte](good.length, \i -> if i == 10 then 91ubyte else good[i]))))
+    elif kind == 4 then
+        let typed: Result<Tensor<i32>, TensorCodec.Error> = TensorCodec.decode_npy (ref good)
+        match typed with
+        | Result.Ok _ -> 0
+        | Result.Error error -> error_number (ref error)
+    elif kind == 5 then archive_error (TensorCodec.decode_npz (Array.copy (ref good)))
+    elif kind == 6 then archive_error (TensorCodec.decode_safetensors (Array.copy (ref good)))
+    elif kind == 7 then archive_error (TensorCodec.decode_safetensors [255ubyte, 255ubyte, 255ubyte, 255ubyte, 255ubyte, 255ubyte, 255ubyte, 255ubyte, 123ubyte, 125ubyte])
+    elif kind == 8 then
+        match TensorCodec.inflate 100 [7ubyte, 255ubyte, 255ubyte] with
+        | Result.Ok _ -> 0
+        | Result.Error error -> error_number (ref error)
+    elif kind == 9 then
+        match TensorCodec.inflate 3 [75ubyte, 76ubyte, 4ubyte, 1ubyte, 0ubyte] with
+        | Result.Ok _ -> 0
+        | Result.Error error -> error_number (ref error)
+    elif kind == 10 then
+        let table: Result<Tensor<i64>, TensorCodec.Error> = TensorCodec.decode_csv (TensorCodec.csv ()) u8"1,2\n3,four\n"
+        match table with
+        | Result.Ok _ -> 0
+        | Result.Error error -> error_number (ref error)
+    elif kind == 11 then
+        let cube = Tensor.init [1, 1, 1] (\i -> i)
+        match TensorCodec.encode_csv (TensorCodec.tsv ()) (Tensor.view (ref cube)) with
+        | Result.Ok _ -> 0
+        | Result.Error error -> error_number (ref error)
+    else -1
+
+/// The bytes `(i * i + i / 7) % 251` for `i` below `count`.
+def pattern :: own i64 -> [ubyte]
+fn pattern count = new [ubyte](count, \i -> ((i * i + i / 7) % 251) as ubyte)
+
+/// The CRC-32 of what `inflate` gives back for the deflated pattern of `count` bytes, or -1 when the stream
+/// is not smaller than the bytes it stands for plus the cost of a stored block.
+export def deflate_round_trip :: own i64 -> i64
+fn deflate_round_trip count =
+    let plain = pattern count
+    let packed = TensorCodec.deflate (ref plain)
+    match TensorCodec.inflate count (ref packed) with
+    | Result.Ok back -> if packed.length <= count + 5 * (count / 65535 + 1) then crc (ref back) else -1
+    | Result.Error _ -> -2
+
+/// The CRC-32 of what `inflate` reads from a stream that zlib wrote for the 304 bytes of the squares of 0 to 69,
+/// each followed by a comma (Python: `data = b"".join(b"%d," % (i * i) for i in range(70))`, then
+/// `c = zlib.compressobj(level, zlib.DEFLATED, -15, 8, strategy); c.compress(data) + c.flush()`):
+/// `kind` 0 is level 0 (a stored block), 1 is `Z_FIXED` (the fixed codes), and 2 is level 9 (codes of its own).
+export def inflate_zlib :: own i64 -> i64
+fn inflate_zlib kind =
+    let stored: [ubyte] = [1ubyte, 48ubyte, 1ubyte, 207ubyte, 254ubyte, 48ubyte, 44ubyte, 49ubyte, 44ubyte, 52ubyte, 44ubyte, 57ubyte, 44ubyte, 49ubyte, 54ubyte, 44ubyte, 50ubyte, 53ubyte, 44ubyte, 51ubyte, 54ubyte, 44ubyte, 52ubyte, 57ubyte, 44ubyte, 54ubyte, 52ubyte, 44ubyte, 56ubyte, 49ubyte, 44ubyte, 49ubyte, 48ubyte, 48ubyte, 44ubyte, 49ubyte, 50ubyte, 49ubyte, 44ubyte, 49ubyte, 52ubyte, 52ubyte, 44ubyte, 49ubyte, 54ubyte, 57ubyte, 44ubyte, 49ubyte, 57ubyte, 54ubyte, 44ubyte, 50ubyte, 50ubyte, 53ubyte, 44ubyte, 50ubyte, 53ubyte, 54ubyte, 44ubyte, 50ubyte, 56ubyte, 57ubyte, 44ubyte, 51ubyte, 50ubyte, 52ubyte, 44ubyte, 51ubyte, 54ubyte, 49ubyte, 44ubyte, 52ubyte, 48ubyte, 48ubyte, 44ubyte, 52ubyte, 52ubyte, 49ubyte, 44ubyte, 52ubyte, 56ubyte, 52ubyte, 44ubyte, 53ubyte, 50ubyte, 57ubyte, 44ubyte, 53ubyte, 55ubyte, 54ubyte, 44ubyte, 54ubyte, 50ubyte, 53ubyte, 44ubyte, 54ubyte, 55ubyte, 54ubyte, 44ubyte, 55ubyte, 50ubyte, 57ubyte, 44ubyte, 55ubyte, 56ubyte, 52ubyte, 44ubyte, 56ubyte, 52ubyte, 49ubyte, 44ubyte, 57ubyte, 48ubyte, 48ubyte, 44ubyte, 57ubyte, 54ubyte, 49ubyte, 44ubyte, 49ubyte, 48ubyte, 50ubyte, 52ubyte, 44ubyte, 49ubyte, 48ubyte, 56ubyte, 57ubyte, 44ubyte, 49ubyte, 49ubyte, 53ubyte, 54ubyte, 44ubyte, 49ubyte, 50ubyte, 50ubyte, 53ubyte, 44ubyte, 49ubyte, 50ubyte, 57ubyte, 54ubyte, 44ubyte, 49ubyte, 51ubyte, 54ubyte, 57ubyte, 44ubyte, 49ubyte, 52ubyte, 52ubyte, 52ubyte, 44ubyte, 49ubyte, 53ubyte, 50ubyte, 49ubyte, 44ubyte, 49ubyte, 54ubyte, 48ubyte, 48ubyte, 44ubyte, 49ubyte, 54ubyte, 56ubyte, 49ubyte, 44ubyte, 49ubyte, 55ubyte, 54ubyte, 52ubyte, 44ubyte, 49ubyte, 56ubyte, 52ubyte, 57ubyte, 44ubyte, 49ubyte, 57ubyte, 51ubyte, 54ubyte, 44ubyte, 50ubyte, 48ubyte, 50ubyte, 53ubyte, 44ubyte, 50ubyte, 49ubyte, 49ubyte, 54ubyte, 44ubyte, 50ubyte, 50ubyte, 48ubyte, 57ubyte, 44ubyte, 50ubyte, 51ubyte, 48ubyte, 52ubyte, 44ubyte, 50ubyte, 52ubyte, 48ubyte, 49ubyte, 44ubyte, 50ubyte, 53ubyte, 48ubyte, 48ubyte, 44ubyte, 50ubyte, 54ubyte, 48ubyte, 49ubyte, 44ubyte, 50ubyte, 55ubyte, 48ubyte, 52ubyte, 44ubyte, 50ubyte, 56ubyte, 48ubyte, 57ubyte, 44ubyte, 50ubyte, 57ubyte, 49ubyte, 54ubyte, 44ubyte, 51ubyte, 48ubyte, 50ubyte, 53ubyte, 44ubyte, 51ubyte, 49ubyte, 51ubyte, 54ubyte, 44ubyte, 51ubyte, 50ubyte, 52ubyte, 57ubyte, 44ubyte, 51ubyte, 51ubyte, 54ubyte, 52ubyte, 44ubyte, 51ubyte, 52ubyte, 56ubyte, 49ubyte, 44ubyte, 51ubyte, 54ubyte, 48ubyte, 48ubyte, 44ubyte, 51ubyte, 55ubyte, 50ubyte, 49ubyte, 44ubyte, 51ubyte, 56ubyte, 52ubyte, 52ubyte, 44ubyte, 51ubyte, 57ubyte, 54ubyte, 57ubyte, 44ubyte, 52ubyte, 48ubyte, 57ubyte, 54ubyte, 44ubyte, 52ubyte, 50ubyte, 50ubyte, 53ubyte, 44ubyte, 52ubyte, 51ubyte, 53ubyte, 54ubyte, 44ubyte, 52ubyte, 52ubyte, 56ubyte, 57ubyte, 44ubyte, 52ubyte, 54ubyte, 50ubyte, 52ubyte, 44ubyte, 52ubyte, 55ubyte, 54ubyte, 49ubyte, 44ubyte]
+    let fixed: [ubyte] = [51ubyte, 208ubyte, 49ubyte, 212ubyte, 49ubyte, 209ubyte, 177ubyte, 212ubyte, 49ubyte, 52ubyte, 211ubyte, 49ubyte, 50ubyte, 213ubyte, 49ubyte, 54ubyte, 211ubyte, 49ubyte, 177ubyte, 212ubyte, 49ubyte, 51ubyte, 209ubyte, 177ubyte, 48ubyte, 212ubyte, 49ubyte, 52ubyte, 48ubyte, 208ubyte, 49ubyte, 52ubyte, 2ubyte, 210ubyte, 38ubyte, 38ubyte, 64ubyte, 89ubyte, 160ubyte, 10ubyte, 75ubyte, 160ubyte, 18ubyte, 160ubyte, 26ubyte, 35ubyte, 83ubyte, 32ubyte, 109ubyte, 97ubyte, 169ubyte, 99ubyte, 108ubyte, 100ubyte, 2ubyte, 84ubyte, 15ubyte, 212ubyte, 13ubyte, 84ubyte, 103ubyte, 98ubyte, 2ubyte, 164ubyte, 45ubyte, 76ubyte, 116ubyte, 76ubyte, 141ubyte, 44ubyte, 117ubyte, 76ubyte, 205ubyte, 205ubyte, 116ubyte, 204ubyte, 128ubyte, 234ubyte, 204ubyte, 128ubyte, 180ubyte, 57ubyte, 144ubyte, 111ubyte, 14ubyte, 20ubyte, 183ubyte, 0ubyte, 202ubyte, 91ubyte, 2ubyte, 213ubyte, 89ubyte, 154ubyte, 129ubyte, 204ubyte, 5ubyte, 106ubyte, 52ubyte, 52ubyte, 0ubyte, 154ubyte, 96ubyte, 104ubyte, 8ubyte, 52ubyte, 202ubyte, 16ubyte, 100ubyte, 166ubyte, 161ubyte, 17ubyte, 208ubyte, 112ubyte, 67ubyte, 99ubyte, 144ubyte, 45ubyte, 38ubyte, 32ubyte, 235ubyte, 76ubyte, 65ubyte, 246ubyte, 154ubyte, 129ubyte, 28ubyte, 96ubyte, 6ubyte, 114ubyte, 137ubyte, 57ubyte, 208ubyte, 69ubyte, 134ubyte, 22ubyte, 38ubyte, 32ubyte, 55ubyte, 0ubyte, 93ubyte, 104ubyte, 100ubyte, 0ubyte, 114ubyte, 133ubyte, 33ubyte, 200ubyte, 197ubyte, 70ubyte, 6ubyte, 150ubyte, 58ubyte, 70ubyte, 198ubyte, 6ubyte, 38ubyte, 58ubyte, 70ubyte, 38ubyte, 6ubyte, 134ubyte, 64ubyte, 151ubyte, 1ubyte, 117ubyte, 24ubyte, 153ubyte, 129ubyte, 88ubyte, 230ubyte, 32ubyte, 49ubyte, 11ubyte, 144ubyte, 172ubyte, 37ubyte, 80ubyte, 157ubyte, 49ubyte, 72ubyte, 135ubyte, 49ubyte, 208ubyte, 124ubyte, 144ubyte, 163ubyte, 129ubyte, 46ubyte, 55ubyte, 6ubyte, 154ubyte, 103ubyte, 108ubyte, 2ubyte, 52ubyte, 217ubyte, 24ubyte, 100ubyte, 135ubyte, 177ubyte, 57ubyte, 208ubyte, 54ubyte, 99ubyte, 11ubyte, 160ubyte, 189ubyte, 198ubyte, 150ubyte, 64ubyte, 23ubyte, 152ubyte, 24ubyte, 0ubyte, 221ubyte, 98ubyte, 2ubyte, 114ubyte, 149ubyte, 137ubyte, 49ubyte, 208ubyte, 125ubyte, 38ubyte, 38ubyte, 64ubyte, 151ubyte, 154ubyte, 152ubyte, 1ubyte, 221ubyte, 108ubyte, 98ubyte, 14ubyte, 116ubyte, 61ubyte, 0ubyte]
+    let dynamic: [ubyte] = [21ubyte, 142ubyte, 201ubyte, 1ubyte, 0ubyte, 33ubyte, 8ubyte, 3ubyte, 27ubyte, 226ubyte, 33ubyte, 144ubyte, 69ubyte, 233ubyte, 191ubyte, 177ubyte, 157ubyte, 188ubyte, 80ubyte, 200ubyte, 49ubyte, 39ubyte, 50ubyte, 20ubyte, 27ubyte, 57ubyte, 81ubyte, 95ubyte, 244ubyte, 132ubyte, 54ubyte, 70ubyte, 241ubyte, 50ubyte, 242ubyte, 156ubyte, 200ubyte, 98ubyte, 74ubyte, 92ubyte, 81ubyte, 44ubyte, 18ubyte, 52ubyte, 245ubyte, 49ubyte, 223ubyte, 70ubyte, 151ubyte, 208ubyte, 227ubyte, 70ubyte, 39ubyte, 49ubyte, 159ubyte, 226ubyte, 171ubyte, 141ubyte, 239ubyte, 78ubyte, 12ubyte, 186ubyte, 97ubyte, 94ubyte, 254ubyte, 151ubyte, 253ubyte, 227ubyte, 190ubyte, 232ubyte, 118ubyte, 156ubyte, 139ubyte, 49ubyte, 15ubyte, 9ubyte, 153ubyte, 68ubyte, 165ubyte, 51ubyte, 179ubyte, 8ubyte, 207ubyte, 118ubyte, 139ubyte, 92ubyte, 247ubyte, 185ubyte, 119ubyte, 12ubyte, 48ubyte, 38ubyte, 185ubyte, 16ubyte, 229ubyte, 147ubyte, 25ubyte, 32ubyte, 172ubyte, 99ubyte, 138ubyte, 52ubyte, 113ubyte, 157ubyte, 141ubyte, 234ubyte, 163ubyte, 40ubyte, 157ubyte, 132ubyte, 12ubyte, 71ubyte, 141ubyte, 95ubyte, 215ubyte, 187ubyte, 231ubyte, 235ubyte, 162ubyte, 107ubyte, 59ubyte, 154ubyte, 124ubyte, 67ubyte, 67ubyte, 222ubyte, 228ubyte, 181ubyte, 72ubyte, 110ubyte, 119ubyte, 244ubyte, 165ubyte, 173ubyte, 31ubyte, 189ubyte, 189ubyte, 16ubyte, 232ubyte, 192ubyte, 34ubyte, 83ubyte, 169ubyte, 225ubyte, 147ubyte, 32ubyte, 213ubyte, 192ubyte, 172ubyte, 11ubyte, 253ubyte, 15ubyte]
+    let stream = if kind == 0 then stored elif kind == 1 then fixed else dynamic
+    match TensorCodec.inflate 304 (ref stream) with
+    | Result.Ok text -> crc (ref text)
+    | Result.Error _ -> -1
+
+/// Writes five tensors into an `.npz` archive with the given options and reads them back: the number of
+/// tensors that came back equal, times 1000, plus the number of names.
+export def npz_round_trip :: own i64 -> own i64 -> i64
+fn npz_round_trip compress zip64 =
+    let weights = Tensor.init [20, 10] (\i -> to_float (i % 9) * 0.5)
+    let labels = Tensor.init [7] (\i -> i * i - 20)
+    let flags = Tensor.init [5] (\i -> i % 2 == 0)
+    let halves = Tensor.init [3] (\i -> (to_float i * 0.5) as f16)
+    let pairs = Tensor.init [2] (\i -> Complex.of (to_float i) (to_float (i + 1)))
+    let tensors = [("weights", TensorCodec.to_raw (Tensor.view (ref weights))), ("labels", TensorCodec.to_raw (Tensor.view (ref labels))), ("flags", TensorCodec.to_raw (Tensor.view (ref flags))), ("halves", TensorCodec.to_raw (Tensor.view (ref halves))), ("pairs", TensorCodec.to_raw (Tensor.view (ref pairs)))]
+    let options = TensorCodec.NpzOptions { compress: compress != 0, zip64: zip64 != 0 }
+    let file = Result.get (TensorCodec.encode_npz_with options (ref tensors))
+    let shorthand = if compress != 0 then Result.get (TensorCodec.encode_npz_compressed (ref tensors)) else Result.get (TensorCodec.encode_npz (ref tensors))
+    let archive = Result.get (TensorCodec.decode_npz file)
+    let first: Result<Tensor<f64>, TensorCodec.Error> = TensorCodec.archive_get "weights" (ref archive)
+    let second: Result<Tensor<i64>, TensorCodec.Error> = TensorCodec.archive_get "labels" (ref archive)
+    let third: Result<Tensor<bool>, TensorCodec.Error> = TensorCodec.archive_get "flags" (ref archive)
+    let fourth: Result<Tensor<f16>, TensorCodec.Error> = TensorCodec.archive_get "halves" (ref archive)
+    let fifth = Result.get (TensorCodec.archive_raw "pairs" (ref archive))
+    let place = Result.get (TensorCodec.archive_inspect "labels" (ref archive))
+    let mut equal = 0
+    if Result.get first == weights then equal = equal + 1
+    if Result.get second == labels then equal = equal + 1
+    if Result.get third == flags then equal = equal + 1
+    if Result.get fourth == halves then equal = equal + 1
+    if fifth == TensorCodec.to_raw (Tensor.view (ref pairs)) then equal = equal + 1
+    if place.shape == [7] && (place.data_offset < 0) == (compress != 0) then equal = equal + 1
+    if zip64 != 0 || shorthand.length == archive_size (ref archive) then equal = equal + 1
+    equal * 1000 + (TensorCodec.archive_names (ref archive)).length + (TensorCodec.archive_metadata (ref archive)).length
+
+/// The number of bytes that an archive would take again, through its names: used only to touch `encode_npz`.
+def archive_size :: ref TensorCodec.Archive -> i64
+fn archive_size archive =
+    let names = TensorCodec.archive_names archive
+    let mut tensors: Vec<(string * TensorCodec.Raw)> = Vec.empty()
+    for index in 0i64 ..< names.length do
+        tensors = Vec.push_owned ($"{names[index]}", Result.get (TensorCodec.archive_raw (ref names[index]) archive)) tensors
+    let listed = Vec.to_array tensors
+    let none = TensorCodec.NpzOptions { compress: false, zip64: false }
+    let plain = Result.get (TensorCodec.encode_npz_with none (ref listed))
+    let packed = Result.get (TensorCodec.encode_npz_compressed (ref listed))
+    let first = Result.get (TensorCodec.archive_inspect (ref names[0]) archive)
+    if first.data_offset < 0 then packed.length else plain.length
+
+/// Writes three tensors and two metadata entries into a Safetensors file and reads them back: the number of
+/// checks that hold.
+export def safetensors_round_trip :: own i64 -> i64
+fn safetensors_round_trip _unused =
+    let wide = Tensor.init [4] (\i -> to_float i * 1.5)
+    let narrow = Tensor.init [3] (\i -> (i + 1) as i8u)
+    let middle = Tensor.init [2, 2] (\i -> (i * 7) as i32)
+    let tensors = [("narrow", TensorCodec.to_raw (Tensor.view (ref narrow))), ("wide", TensorCodec.to_raw (Tensor.view (ref wide))), ("middle", TensorCodec.to_raw (Tensor.view (ref middle)))]
+    let file = Result.get (TensorCodec.encode_safetensors_with [("format", "pt"), ("step", "3")] (ref tensors))
+    let plain = Result.get (TensorCodec.encode_safetensors (ref tensors))
+    let place = Result.get (TensorCodec.inspect_safetensors "wide" (ref file))
+    let archive = Result.get (TensorCodec.decode_safetensors file)
+    let first: Result<Tensor<f64>, TensorCodec.Error> = TensorCodec.archive_get "wide" (ref archive)
+    let second: Result<Tensor<i8u>, TensorCodec.Error> = TensorCodec.archive_get "narrow" (ref archive)
+    let third: Result<Tensor<i32>, TensorCodec.Error> = TensorCodec.archive_get "middle" (ref archive)
+    let mut held = 0
+    if Result.get first == wide then held = held + 1
+    if Result.get second == narrow then held = held + 1
+    if Result.get third == middle then held = held + 1
+    if place.data_offset % 8 == 0 && place.shape == [4] then held = held + 1
+    if TensorCodec.archive_metadata (ref archive) == [("format", "pt"), ("step", "3")] then held = held + 1
+    if TensorCodec.archive_names (ref archive) == ["narrow", "wide", "middle"] then held = held + 1
+    if plain.length < archive_bytes (ref archive) then held = held + 1
+    held
+
+def archive_bytes :: ref TensorCodec.Archive -> i64
+fn archive_bytes archive =
+    let names = TensorCodec.archive_names archive
+    let mut total = 1000
+    for index in 0i64 ..< names.length do
+        let header = Result.get (TensorCodec.archive_inspect (ref names[index]) archive)
+        total = total + TensorCodec.dtype_size (ref header.dtype) + (TensorCodec.dtype_name (ref header.dtype)).length
+    total
+
+/// Writes a 3 by 2 table of `f64` as text with the separator number `kind` and reads it back: the sum of the
+/// elements times 8 as an integer (they are multiples of an eighth), or -1 when the bits changed.
+export def csv_round_trip :: own i64 -> i64
+fn csv_round_trip kind =
+    let t = Tensor.of_array [3, 2] [1.5, -2.25, 1024.0, 0.125, -0.0, 3.0e10]
+    let window = Tensor.view (ref t)
+    let options = if kind == 0 then TensorCodec.csv () elif kind == 1 then TensorCodec.tsv () else TensorCodec.CsvOptions { delimiter: u8"", skip_rows: 0, comment: u8"%" }
+    let again = if kind == 0 then TensorCodec.csv () elif kind == 1 then TensorCodec.tsv () else TensorCodec.CsvOptions { delimiter: u8"", skip_rows: 0, comment: u8"%" }
+    let written = Result.get (TensorCodec.encode_csv options (ref window))
+    let decoded: Result<Tensor<f64>, TensorCodec.Error> = TensorCodec.decode_csv again (ref written)
+    let back = Result.get decoded
+    let none: [f64] = []
+    let same = TensorCodec.to_raw (Tensor.view (ref back)) == TensorCodec.to_raw (ref window) && TensorCodec.element_dtype (ref none) == TensorCodec.F64
+    if same then (Tensor.fold (\sum value -> sum + value) 0.0 (Tensor.view (ref back)) * 8.0) as i64 else -1
+
+def main :: unit -> i32 = \() -> 0
