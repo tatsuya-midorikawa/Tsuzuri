@@ -406,14 +406,17 @@ try {
     const opened = spawnSync("perl", ["-e", "alarm 60; exec @ARGV", "open", "-W", "-n", join(root, "AppDivz.app")], { encoding: "utf8", timeout: 90_000 });
     assert.ifError(opened.error);
     assert.equal(opened.status, 0, `open AppDivz.app\n${opened.stdout}\n${opened.stderr}`);
-    const message = "trap: integer division by zero at appdivz/Main.tz:1:34";
+    // A project with a manifest names its sources by their full path, so the message ends with the project's
+    // own directory.
+    const reason = "trap: integer division by zero at ";
+    const position = "/appdivz/Main.tz:1:34";
     const image = "/AppDivz.app/Contents/MacOS/AppDivz";
     const deadline = Date.now() + 60_000;
     let found = [];
     for (;;) {
       const entries = logged();
       assert.ok(entries, "`log show` failed after it had worked");
-      found = [...entries.values()].flat().filter((entry) => entry.eventMessage === message);
+      found = [...entries.values()].flat().filter((entry) => entry.eventMessage.startsWith(reason) && entry.eventMessage.endsWith(position));
       if (found.length > 0 || Date.now() > deadline) break;
       sleep(500);
     }
