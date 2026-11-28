@@ -7034,8 +7034,37 @@ fn read_bounded_resource(
     Ok(bytes)
 }
 
-/// W10: builds and merges all `[windows]` resources (`manifest`, `icon`, `version`, `resources`)
-/// into `directory/resources.res`, returning its path and exact bytes for the build cache key.
+fn push_resource_batch(
+    inputs: &mut Vec<(String, Vec<crate::winres::Resource>)>,
+    remaining_bytes: &mut usize,
+    remaining_records: &mut usize,
+    label: String,
+    resources: Vec<crate::winres::Resource>,
+) -> Result<(), Diagnostic> {
+    if resources.len() > *remaining_records {
+        return Err(driver_error_of(
+            DiagnosticKind::WindowsResourceInvalid,
+            format!(
+                "merged Windows resources exceed {} entries at {label}",
+                crate::winres::MAX_RESOURCE_RECORDS
+            ),
+        ));
+    }
+    let mut batch_bytes = 0usize;
+    for res in &resources {
+        batch_bytes = batch_bytes.saturating_add(res.data.len());
+        if batch_bytes > *remaining_bytes {
+            return Err(driver_error_of(
+                DiagnosticKind::WindowsResourceInvalid,
+                format!("merged Windows resources exceed the 64 MiB limit at {label}"),
+            ));
+        }
+    }
+    *remaining_records -= resources.len();
+    *remaining_bytes -= batch_bytes;
+    inputs.push((label, resources));
+    Ok(())
+}
 fn windows_resources(
     project: &Project,
     directory: &Path,
@@ -7057,31 +7086,54 @@ fn windows_resources(
     };
 
     let mut inputs = Vec::new();
+    let mut remaining_bytes = crate::winres::MAX_INPUT_BYTES;
+    let mut remaining_records = crate::winres::MAX_RESOURCE_RECORDS;
+
     if let Some(manifest_rel) = &settings.manifest {
         let bytes = read_bounded_resource(
             &root.join(manifest_rel),
             manifest_rel,
-            crate::winres::MAX_MANIFEST_BYTES,
+            crate::winres::MAX_MANIFEST_BYTES.min(remaining_bytes),
             "not a valid manifest: exceeds the 1 MiB limit",
             false,
         )?;
         let res = crate::winres::manifest(&bytes).map_err(|err| invalid(manifest_rel, err))?;
-        inputs.push(("[windows] manifest".to_owned(), vec![res]));
+        drop(bytes);
+        push_resource_batch(
+            &mut inputs,
+            &mut remaining_bytes,
+            &mut remaining_records,
+            "[windows] manifest".to_owned(),
+            vec![res],
+        )?;
     }
     if let Some(icon_rel) = &settings.icon {
         let bytes = read_bounded_resource(
             &root.join(icon_rel),
             icon_rel,
-            crate::winres::MAX_INPUT_BYTES,
-            "not an icon file: exceeds the 64 MiB limit",
+            remaining_bytes,
+            "not an icon file: exceeds the 64 MiB resource budget",
             false,
         )?;
         let res = crate::winres::icon(&bytes).map_err(|err| invalid(icon_rel, err))?;
-        inputs.push(("[windows] icon".to_owned(), res));
+        drop(bytes);
+        push_resource_batch(
+            &mut inputs,
+            &mut remaining_bytes,
+            &mut remaining_records,
+            "[windows] icon".to_owned(),
+            res,
+        )?;
     }
     if let Some((version_text, parts)) = &settings.version {
         let res = crate::winres::version_info(version_text, *parts);
-        inputs.push(("[windows] version".to_owned(), vec![res]));
+        push_resource_batch(
+            &mut inputs,
+            &mut remaining_bytes,
+            &mut remaining_records,
+            "[windows] version".to_owned(),
+            vec![res],
+        )?;
     }
     for (index, relative) in settings.resources.iter().enumerate() {
         let full = root.join(relative);
@@ -7124,28 +7176,43 @@ fn windows_resources(
                 &mut cmd,
                 "compiling a .rc resource needs llvm-rc, rc.exe, or zig rc; set TSUZURI_RC or use the bundled toolchain",
             )?;
-            read_bounded_resource(
+            let out = read_bounded_resource(
                 &staged_res,
                 relative,
-                crate::winres::MAX_INPUT_BYTES,
-                "not a 32-bit .res file: compiled output exceeds the 64 MiB limit",
+                remaining_bytes,
+                "not a 32-bit .res file: exceeds the remaining 64 MiB resource budget",
                 true,
-            )?
+            )?;
+            let _ = fs::remove_file(&staged_res);
+            out
         } else {
             read_bounded_resource(
                 &full,
                 relative,
-                crate::winres::MAX_INPUT_BYTES,
-                "not a 32-bit .res file: exceeds the 64 MiB limit",
+                remaining_bytes,
+                "not a 32-bit .res file: exceeds the remaining 64 MiB resource budget",
                 false,
             )?
         };
         let parsed = crate::winres::read(&res_bytes).map_err(|err| invalid(relative, err))?;
-        inputs.push((format!("'{}'", relative.display()), parsed));
+        drop(res_bytes);
+        push_resource_batch(
+            &mut inputs,
+            &mut remaining_bytes,
+            &mut remaining_records,
+            format!("'{}'", relative.display()),
+            parsed,
+        )?;
     }
 
-    let merged = crate::winres::merge(inputs)
-        .map_err(|message| driver_error_of(DiagnosticKind::WindowsResourceConflict, message))?;
+    let merged = crate::winres::merge(inputs).map_err(|message| {
+        let kind = if message.contains("is defined by both") {
+            DiagnosticKind::WindowsResourceConflict
+        } else {
+            DiagnosticKind::WindowsResourceInvalid
+        };
+        driver_error_of(kind, message)
+    })?;
     let bytes = crate::winres::write(&merged);
     let res_path = directory.join("resources.res");
     fs::write(&res_path, &bytes)
@@ -10001,6 +10068,55 @@ mod tests {
             .unwrap(),
             b"<assembly/>"
         );
+
+        // Cumulative resource budget stops before reading or retaining beyond 64 MiB across repeated .res files.
+        let chunk_res = crate::winres::write(&[crate::winres::Resource {
+            kind: crate::winres::Name::Id(10),
+            name: crate::winres::Name::Id(1),
+            language: 0x0409,
+            memory_flags: 0x0030,
+            data_version: 0,
+            version: 0,
+            characteristics: 0,
+            data: vec![0xAA; 20 * 1024 * 1024],
+        }]);
+        fs::write(root.join("chunk.res"), &chunk_res).unwrap();
+        drop(chunk_res);
+        let staging = root.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        let project = Project {
+            sources: vec![SourceFile {
+                path: root.join("Main.tz"),
+                relative_path: PathBuf::from("Main.tz"),
+                name: "Main".into(),
+                text: "42\n".into(),
+                origin: ModuleOrigin::User,
+                package: None,
+                namespace: String::new(),
+                edition: Edition::LATEST,
+            }],
+            manifests: Vec::new(),
+            root: 0,
+            root_package: Some(crate::package::PackageId {
+                name: "app".into(),
+                root: root.clone(),
+            }),
+            wasm: Default::default(),
+            native: Default::default(),
+            capabilities: None,
+            windows: crate::package::WindowsSettings {
+                resources: (0..100).map(|_| PathBuf::from("chunk.res")).collect(),
+                ..Default::default()
+            },
+            macos: Default::default(),
+        };
+        let cumulative_err = windows_resources(&project, &staging).unwrap_err();
+        assert_eq!(cumulative_err.code, "E2001");
+        assert_eq!(
+            cumulative_err.kind,
+            Some(DiagnosticKind::WindowsResourceInvalid.id())
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 

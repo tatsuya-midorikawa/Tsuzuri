@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_RESOURCE_RECORDS: usize = u16::MAX as usize;
 pub const LANGUAGE_EN_US: u16 = 0x0409;
 
 pub const RT_CURSOR: u16 = 1;
@@ -342,6 +343,9 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Resource>, String> {
         }
 
         if !(data_size == 0 && kind == Name::Id(0) && name == Name::Id(0)) {
+            if out.len() >= MAX_RESOURCE_RECORDS {
+                return Err("invalid .res file: too many resource entries".to_owned());
+            }
             out.push(Resource {
                 kind,
                 name,
