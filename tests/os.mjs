@@ -237,6 +237,8 @@ def main :: Array<string> -> i32 = \\main_args ->
     do! say (text_text cwd)
     let! osv = Env.os_version ()
     do! say (text_text osv)
+    let! exe = Env.executable_path ()
+    do! say (text_text exe)
     0
 `);
 
@@ -462,6 +464,13 @@ def main :: Array<string> -> i32 = \\args ->
         `ok:${cwd}`,
       ]);
       assert.match(out[6], /^ok:\d+\.\d+\.\d+$/);
+      // M15: Env.executable_path is the path that GetModuleFileNameW reports, which Windows does not
+      // normalize (a short name or another letter case may differ), so the file system compares the two.
+      assert.match(out[7], /^ok:(?:[A-Za-z]:\\|\\\\)/);
+      assert.equal(
+        realpathSync.native(out[7].slice(3)).toLowerCase(),
+        realpathSync.native(envProg(optimization)).toLowerCase(),
+      );
     }
 
     // 10-11. Clocks & Random
@@ -1818,6 +1827,85 @@ def main :: unit -> i32 = \\() ->
     const cwd = scratch("os-version", optimization);
     assert.equal(run(osVersionProg(optimization), cwd).stdout, `ok:${expectedNativeOsVer}\n`);
     assert.equal(runWasi("os-version", optimization, cwd).stdout, "other (os error 52)\n");
+  }
+
+  // M15: Env.executable_path is the canonical path of the executable, also when the process was started
+  // through a symbolic link or with a relative path, and ENOSYS (52) on WASI.
+  const executablePathProg = program("executable-path", `
+def main :: unit -> i32 = \\() ->
+    let! path = Env.executable_path ()
+    do! say (text_text path)
+    0
+`);
+  for (const optimization of optimizations) {
+    const cwd = scratch("executable-path", optimization);
+    const executable = executablePathProg(optimization);
+    const canonical = `ok:${realpathSync(executable)}\n`;
+    assert.equal(run(executable, cwd).stdout, canonical);
+    const link = join(cwd, "linked-program");
+    symlinkSync(executable, link);
+    assert.equal(run(link, cwd).stdout, canonical);
+    assert.equal(execute("./linked-program", [], { cwd }).stdout, canonical);
+    assert.equal(runWasi("executable-path", optimization, cwd).stdout, "other (os error 52)\n");
+  }
+  {
+    // `tsuzuri run` and `tsuzuri test` start a temporary executable that the compiler built: the path is
+    // absolute, and it is not asserted further. The test runner compiles the runtime on its own path.
+    const directory = join(root, "project-executable-path");
+    const ran = execute(compiler, ["run", directory]).stdout;
+    assert.match(ran, /^ok:\/.+\n$/);
+    const tested = join(root, "project-executable-path-test");
+    mkdirSync(tested, { recursive: true });
+    writeFileSync(join(tested, "Main.tz"), `
+// An action runs in the entry point or in a tzroutine, so the test asks from a tzroutine.
+def absolute :: unit -> bool = \\() ->
+    let results: Channel<bool> = Channel.make 1
+    let out = Channel.share results
+    tzroutine {
+        let! path = Env.executable_path ()
+        Channel.send out (match path with
+            | Result.Ok text -> String.starts_with "/" (ref text)
+            | Result.Error _ -> false)
+    }
+    match Channel.recv results with
+        | Maybe.Some value -> value
+        | Maybe.None -> false
+
+test "the test runner knows its executable" = assert (absolute ())
+`);
+    execute(compiler, ["test", tested]);
+    // The default wasm32 target has no host to ask.
+    const refused = execute(compiler, ["build", directory, "--target", "wasm32", "-o", join(root, "executable-path.wasm")], {}, false);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /error\[E2000\]: wasm output cannot use the File, Dir, Env/);
+  }
+  {
+    // D13: the runtime behind Env.executable_path is compiled only into a program that reaches it. The wrapper
+    // records the arguments of every Clang run; only the runs of the program that calls it carry the macro.
+    const calls = join(root, "clang-calls.log");
+    const wrapper = join(root, "clang-wrapper.mjs");
+    writeFileSync(wrapper, `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + "\\n");
+const result = spawnSync(${JSON.stringify(clang)}, args, { stdio: "inherit" });
+process.exitCode = result.status ?? 1;
+`);
+    chmodSync(wrapper, 0o755);
+    const env = { ...process.env, TSUZURI_CLANG: wrapper };
+    const defined = (project, extra) => {
+      writeFileSync(calls, "");
+      execute(compiler, ["build", join(root, project), "-O0", "--no-cache", ...extra, "-o", join(root, "gate-output")], { env });
+      const runs = readFileSync(calls, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
+      assert.ok(runs.length > 0);
+      return runs.filter(args => args.includes("-DTZ_OS_EXECUTABLE_PATH")).length;
+    };
+    for (const extra of [[], ["--target", "wasm32", "--wasm-host", "wasi"]]) {
+      assert.equal(defined("project-executable-path", extra), 1, "the run that compiles the operating-system runtime");
+      // Env.os_version reaches the operating-system runtime without it.
+      assert.equal(defined("project-os-version", extra), 0);
+    }
   }
 
   // The exit code of `main` reaches the WASI host through proc_exit, and the host's arguments reach `main`.

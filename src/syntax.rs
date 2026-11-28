@@ -907,21 +907,28 @@ pub enum HandleKind {
     Copy,
     /// `extern type local H`: moved, bound to its OS thread, neither Send nor Sync (W19).
     Local,
+    /// `extern type main H`: moved and bound to the process main thread, neither Send nor Sync;
+    /// the code that touches it has the effect `main_thread` (M09).
+    Main,
     /// `extern class C` and `ObjC.Object`: one strong reference to an Objective-C object, released
     /// on drop and bound to its OS thread like `Local` (M01).
     ObjcLocal,
     /// `extern class sync C`: one strong reference to an Objective-C object that any thread may
     /// use, so the value is Send and Sync (M01).
     ObjcSync,
+    /// `extern class main C`: one strong reference to an Objective-C object that only the process
+    /// main thread may use, like `Main` (M09).
+    ObjcMain,
 }
 
 impl HandleKind {
     /// The modifier after `extern type`; an Objective-C class is not written as an `extern type`.
     pub fn keyword(self) -> Option<&'static str> {
         match self {
-            Self::Owned | Self::ObjcLocal | Self::ObjcSync => None,
+            Self::Owned | Self::ObjcLocal | Self::ObjcSync | Self::ObjcMain => None,
             Self::Copy => Some("copy"),
             Self::Local => Some("local"),
+            Self::Main => Some("main"),
         }
     }
 
@@ -929,7 +936,12 @@ impl HandleKind {
     pub fn copy(self) -> bool {
         match self {
             Self::Copy => true,
-            Self::Owned | Self::Local | Self::ObjcLocal | Self::ObjcSync => false,
+            Self::Owned
+            | Self::Local
+            | Self::ObjcLocal
+            | Self::ObjcSync
+            | Self::Main
+            | Self::ObjcMain => false,
         }
     }
 
@@ -938,20 +950,29 @@ impl HandleKind {
         !self.copy()
     }
 
-    /// Bound to the OS thread that created it: neither Send nor Sync, and the code that touches
-    /// it is `pinned` (W19, M01).
+    /// Bound to one OS thread, the one that created it or the process main thread: neither Send
+    /// nor Sync, and the code that touches it is `pinned` (W19, M01, M09).
     pub fn thread_bound(self) -> bool {
         match self {
-            Self::Local | Self::ObjcLocal => true,
+            Self::Local | Self::ObjcLocal | Self::Main | Self::ObjcMain => true,
             Self::Owned | Self::Copy | Self::ObjcSync => false,
+        }
+    }
+
+    /// Bound to the process main thread: the code that touches it has the effect `main_thread`
+    /// (M09).
+    pub fn main_thread(self) -> bool {
+        match self {
+            Self::Main | Self::ObjcMain => true,
+            Self::Owned | Self::Copy | Self::Local | Self::ObjcLocal | Self::ObjcSync => false,
         }
     }
 
     /// A strong reference to an Objective-C object, which a drop releases (M01).
     pub fn objc(self) -> bool {
         match self {
-            Self::ObjcLocal | Self::ObjcSync => true,
-            Self::Owned | Self::Copy | Self::Local => false,
+            Self::ObjcLocal | Self::ObjcSync | Self::ObjcMain => true,
+            Self::Owned | Self::Copy | Self::Local | Self::Main => false,
         }
     }
 
@@ -959,7 +980,7 @@ impl HandleKind {
     pub fn syncable(self) -> bool {
         match self {
             Self::Copy | Self::ObjcSync => true,
-            Self::Owned | Self::Local | Self::ObjcLocal => false,
+            Self::Owned | Self::Local | Self::ObjcLocal | Self::Main | Self::ObjcMain => false,
         }
     }
 }
@@ -981,6 +1002,8 @@ pub struct ExternClassDecl {
     pub runtime_name: Option<(String, Span)>,
     /// The span of `sync`: the values are Send and Sync.
     pub sync: Option<Span>,
+    /// The span of `main`: only the process main thread may use the values (M09).
+    pub main: Option<Span>,
     pub name: Ident,
     pub base: TypeExpr,
     /// Whether a `{ ... }` body follows, which may be empty.
@@ -1014,6 +1037,9 @@ impl ExternClassDecl {
         header.push_str("class ");
         if self.sync.is_some() {
             header.push_str("sync ");
+        }
+        if self.main.is_some() {
+            header.push_str("main ");
         }
         header.push_str(name);
         header.push_str(" : ");

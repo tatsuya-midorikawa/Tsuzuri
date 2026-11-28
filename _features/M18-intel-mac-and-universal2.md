@@ -257,7 +257,7 @@ double alpha_of(NSWindow *w) { return [w alphaValue]; }
 
 ## 他チケットへ提供するインターフェース
 
-- `Triple::X86_64AppleDarwin`。[M15](M15-macos-app-bundle.md) の `--emit app` は、Universal 2 の実行ファイルを `Contents/MacOS` に置ける（M15 がそれを足すかは M15 か後のチケットで決める。このチケットの対象外）。
+- `Triple::X86_64AppleDarwin`。[M15](_completed/M15-macos-app-bundle.md) の `--emit app` は、Universal 2 の実行ファイルを `Contents/MacOS` に置ける（M15 がそれを足すかは M15 か後のチケットで決める。このチケットの対象外）。
 - Phase 2 の `BuildOptions::universal` と `build_universal`。
 - ObjC の x86_64 の差の参照の表（「現状」）: M02・M03・M05 が x86_64 の分岐を足すときに使う。
 

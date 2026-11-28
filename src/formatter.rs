@@ -195,9 +195,14 @@ fn canonicalize(mut program: Program) -> (String, Hints) {
         if let Some((_, span)) = &mut class.runtime_name {
             *span = Span::default();
         }
-        for span in [&mut class.sync, &mut class.trusted, &mut class.weak]
-            .into_iter()
-            .flatten()
+        for span in [
+            &mut class.sync,
+            &mut class.main,
+            &mut class.trusted,
+            &mut class.weak,
+        ]
+        .into_iter()
+        .flatten()
         {
             *span = Span::default();
         }

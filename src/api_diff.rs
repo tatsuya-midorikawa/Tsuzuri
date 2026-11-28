@@ -223,6 +223,9 @@ struct Item {
     copy_handle: bool,
     /// `extern type local Name` (W19): adding `local` breaks callers, removing it is compatible.
     local_handle: bool,
+    /// `extern type main Name` (M09): adding `main` breaks callers; `local` or no modifier in its
+    /// place is compatible.
+    main_handle: bool,
     /// Non-default `@count(position, length)` settings on an `extern def` (W13; `i64` is normalized out).
     extern_counts: BTreeMap<u32, CountLength>,
     /// `@c_layout` / `@c_layout(pack = N)` on a `record` (W21): `None` = plain, `Some(pack)` = C layout.
@@ -272,6 +275,7 @@ impl Item {
             exported: false,
             copy_handle: false,
             local_handle: false,
+            main_handle: false,
             extern_counts: BTreeMap::new(),
             c_layout: None,
             constant: false,
@@ -1657,6 +1661,7 @@ fn add_items(
             .documented(declaration.doc.as_ref());
         item.copy_handle = declaration.kind == HandleKind::Copy;
         item.local_handle = declaration.kind == HandleKind::Local;
+        item.main_handle = declaration.kind == HandleKind::Main;
         add(item);
     }
     // M01, M02: the header carries the runtime name, `sync` and the base, so a change of any of
@@ -2419,6 +2424,7 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         || old.exported != new.exported
         || old.copy_handle != new.copy_handle
         || old.local_handle != new.local_handle
+        || old.main_handle != new.main_handle
         || old.extern_counts != new.extern_counts
         || old.c_layout != new.c_layout
         || old.constant != new.constant
@@ -2435,11 +2441,16 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
         let copy_removed = old.kind == "extern type" && old.copy_handle && !new.copy_handle;
         let local_added = old.kind == "extern type" && !old.local_handle && new.local_handle;
         let local_removed = old.kind == "extern type" && old.local_handle && !new.local_handle;
+        // How tightly the values are bound to a thread: none, their own (`local`), the main one.
+        let confinement =
+            |item: &Item| u8::from(item.local_handle) + 2 * u8::from(item.main_handle);
+        let confined_more = old.kind == "extern type" && confinement(old) < confinement(new);
+        let confined_less = old.kind == "extern type" && confinement(old) > confinement(new);
         let added_obligation = new.callbacks && new.asserts.0 & !old.asserts.0 != 0;
-        let widened = (old.header == new.header || copy_added || local_removed)
+        let widened = (old.header == new.header || copy_added || local_removed || confined_less)
             && old.exported <= new.exported
             && old.copy_handle <= new.copy_handle
-            && old.local_handle >= new.local_handle
+            && !confined_more
             && old.extern_counts == new.extern_counts
             && old.c_layout == new.c_layout
             && old.constant <= new.constant
@@ -2463,6 +2474,8 @@ fn compare_items(old: &Item, new: &Item, changes: &mut Vec<Change>) {
                 "C struct layout of the record changes"
             } else if added_obligation {
                 "callers must pass functions (or instantiate it with types) that keep the new effect attribute"
+            } else if new.main_handle && confined_more {
+                "values of the type are now bound to the process main thread"
             } else if local_added {
                 "values of the type are now bound to their OS thread"
             } else if copy_removed {

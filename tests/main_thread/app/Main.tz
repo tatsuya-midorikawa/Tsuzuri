@@ -1,0 +1,142 @@
+// M09: the scenes of tests/main_thread.mjs. The first argument names a scene. A posted function
+// runs only while the main thread serves its dispatch queue, so every scene that expects one to
+// run is inside `CFRunLoopRun`, and the last function of the scene stops the run loop.
+//
+// The program is not under tests/fixtures/: the repository-wide tests build every fixture for
+// their host, and `MainThread` builds only for an Apple target.
+
+@trusted
+extern "CFRunLoopGetMain" def cf_run_loop_get_main :: unit -> i64
+
+@trusted
+extern "CFRunLoopRun" def cf_run_loop_run :: unit -> unit
+
+@trusted
+extern "CFRunLoopStop" def cf_run_loop_stop :: i64 -> unit
+
+@trusted
+extern "dispatch_get_global_queue" def global_queue :: i64 -> i64u -> i64
+
+@trusted
+extern "dispatch_async_f" def dispatch_async_f :: i64 -> i64 -> (i64 -> unit) -> unit
+
+record Guard { name: string }
+
+def say :: string -> unit = \text ->
+    do! IO.writeln $"{text}"
+    ()
+
+instance Drop<Guard> {
+    fn drop guard = say $"dropped {guard.name}"
+}
+
+def stop :: unit -> unit = \() -> cf_run_loop_stop (cf_run_loop_get_main ())
+
+def report :: string -> unit = \label ->
+    do! IO.writeln $"{label}: {MainThread.is_current ()}"
+    ()
+
+// The example of the reference: a tzroutine hands work back to the main thread.
+def runloop :: unit -> i32 = \() ->
+    tzroutine {
+        MainThread.post (Owned.function (\() -> report "posted on main"))
+        MainThread.after (Time.millisecond() * 50) (Owned.function (\() -> {
+            report "after on main";
+            stop ()
+        }))
+    }
+    cf_run_loop_run ()
+    0
+
+// A post from the main thread itself is not called in place, and posts run in their order.
+def from_main :: unit -> i32 = \() ->
+    MainThread.post (Owned.function (\() -> say "first"))
+    MainThread.post (Owned.function (\() -> say "second"))
+    MainThread.post (Owned.function (\() -> {
+        say "third";
+        stop ()
+    }))
+    say "posted three"
+    cf_run_loop_run ()
+    0
+
+// The function is dropped right after its one call: what it captured is dropped once.
+def ran_then_dropped :: unit -> i32 = \() ->
+    let guard = Guard { name: "posted" }
+    MainThread.post (Owned.function (\() -> {
+        say $"ran {guard.name}";
+        stop ()
+    }))
+    cf_run_loop_run ()
+    say "main returns"
+    0
+
+// `main` returns without serving the queue: nothing is called, and each capture is dropped once,
+// in the order of the posts. The last deadline saturates and is never queued.
+def drop_at_end :: unit -> i32 = \() ->
+    let first = Guard { name: "posted" }
+    MainThread.post (Owned.function (\() -> say $"ran {first.name}"))
+    let second = Guard { name: "after" }
+    MainThread.after (Time.hour()) (Owned.function (\() -> say $"ran {second.name}"))
+    let third = Guard { name: "forever" }
+    MainThread.after 9223372036854775807 (Owned.function (\() -> say $"ran {third.name}"))
+    say "main returns"
+    0
+
+def spawn_late :: unit -> unit = \() ->
+    tzroutine {
+        Time.sleep (Time.millisecond() * 60)
+        say "spawned finished"
+    }
+    say "posted ran"
+    stop ()
+
+// A tzroutine that a posted function starts belongs to `main`, whose end waits for it.
+def spawn_in_post :: unit -> i32 = \() ->
+    MainThread.post (Owned.function (\() -> spawn_late ()))
+    cf_run_loop_run ()
+    say "main returns"
+    0
+
+def on_worker :: i64 -> unit = \_context ->
+    report "worker on main"
+    MainThread.post (Owned.function (\() -> {
+        report "posted on main";
+        stop ()
+    }))
+
+// A static callback on a thread of libdispatch's global queue posts to the main thread.
+def gcd_worker :: unit -> i32 = \() ->
+    dispatch_async_f (global_queue 0 0i64u) 7 on_worker
+    cf_run_loop_run ()
+    0
+
+// `after` runs in the order of the deadlines; a delay of 0 is a post.
+def after_order :: unit -> i32 = \() ->
+    MainThread.after (Time.millisecond() * 80) (Owned.function (\() -> {
+        say "after 80";
+        stop ()
+    }))
+    MainThread.after (Time.millisecond() * 20) (Owned.function (\() -> say "after 20"))
+    MainThread.after 0 (Owned.function (\() -> say "after 0"))
+    cf_run_loop_run ()
+    0
+
+def main :: Array<string> -> i32 = \args ->
+    let named = Array.length args > 0
+    if named && args[0] == "runloop" then
+        runloop ()
+    elif named && args[0] == "from_main" then
+        from_main ()
+    elif named && args[0] == "ran_then_dropped" then
+        ran_then_dropped ()
+    elif named && args[0] == "drop_at_end" then
+        drop_at_end ()
+    elif named && args[0] == "spawn_in_post" then
+        spawn_in_post ()
+    elif named && args[0] == "gcd_worker" then
+        gcd_worker ()
+    elif named && args[0] == "after_order" then
+        after_order ()
+    else
+        2

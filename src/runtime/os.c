@@ -996,4 +996,67 @@ TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
 }
 #endif
 #endif
+
+// Env.executable_path (M15): the absolute path of the running executable. The driver defines the macro
+// only for a program that reaches the function, so the object of every other program stays as it was.
+#if defined(TZ_OS_EXECUTABLE_PATH)
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+// `_NSGetExecutablePath` gives the path that the process was started with, which may hold `..` and
+// symbolic links; `realpath` makes it the canonical one.
+static int64_t tz_os_executable_path_now(struct tz_os_buffer *output) {
+    uint32_t capacity = 1024;
+    char *raw;
+    for (;;) {
+        raw = malloc(capacity);
+        if (raw == NULL) return tz_os_status(TZ_OS_OTHER, ENOMEM);
+        uint32_t needed = capacity;
+        if (_NSGetExecutablePath(raw, &needed) == 0) break;
+        free(raw);
+        // The buffer was too small, and `needed` is the size that the path takes.
+        if (needed <= capacity || needed > TZ_OS_MAX_CURRENT_DIR) return tz_os_status(TZ_OS_OTHER, ERANGE);
+        capacity = needed;
+    }
+    char *real = realpath(raw, NULL);
+    int error = errno;
+    free(raw);
+    if (real == NULL) return tz_os_error(error);
+    int64_t status = tz_os_deliver(output, (const unsigned char *)real, strlen(real));
+    free(real);
+    return status;
+}
+#else
+// Linux: the link `/proc/self/exe` holds the canonical path (with ` (deleted)` after the file is removed).
+static int64_t tz_os_executable_path_now(struct tz_os_buffer *output) {
+    size_t capacity = 4096;
+    for (;;) {
+        char *buffer = malloc(capacity);
+        if (buffer == NULL) return tz_os_status(TZ_OS_OTHER, ENOMEM);
+        ssize_t length = readlink("/proc/self/exe", buffer, capacity);
+        if (length < 0) {
+            int error = errno;
+            free(buffer);
+            return tz_os_error(error);
+        }
+        // A result that fills the buffer may have been cut.
+        if ((size_t)length < capacity) {
+            int64_t status = tz_os_deliver(output, (const unsigned char *)buffer, (size_t)length);
+            free(buffer);
+            return status;
+        }
+        free(buffer);
+        if (capacity >= TZ_OS_MAX_CURRENT_DIR) return tz_os_status(TZ_OS_OTHER, ERANGE);
+        capacity *= 2;
+    }
+}
+#endif
+
+TZ_OS_API int64_t tsuzuri_os_executable_path(struct tz_os_buffer *output) {
+    tz_os_clear(output);
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_executable_path_now(output);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+#endif
 #endif

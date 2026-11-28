@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {
   existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
-  rmSync, symlinkSync, writeFileSync,
+  realpathSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -837,6 +837,20 @@ try {
   const dashOutput = join("-output", process.platform === "win32" ? "program.exe" : "program");
   cli(["build", input, "-o", dashOutput], { cwd: temporary });
   assert.equal(execute(join(temporary, dashOutput), []).stdout, "42\n");
+
+  // M15: Env.executable_path asks the system for the path of the running executable. On Windows the path is not
+  // normalized (a short name or another letter case), so the file system compares the two there.
+  const located = join(temporary, "located");
+  mkdirSync(located);
+  writeFileSync(join(located, "Main.tz"), "def main :: unit -> i32 = \\() ->\n    let! path = Env.executable_path ()\n    do! IO.writeln (match path with\n        | Result.Ok text -> text\n        | Result.Error error -> Os.message (ref error))\n    0\n");
+  const locatedProgram = join(located, process.platform === "win32" ? "located.exe" : "located");
+  cli(["build", located, "-O0", "-o", locatedProgram]);
+  const reported = execute(locatedProgram, []).stdout.replace(/\r?\n$/, "");
+  if (process.platform === "win32") {
+    assert.equal(realpathSync.native(reported).toLowerCase(), realpathSync.native(locatedProgram).toLowerCase());
+  } else {
+    assert.equal(reported, realpathSync(locatedProgram));
+  }
 
   writeFileSync(output, "preserved");
   const failedCompiler = cli(["build", input, "-o", output, "--json"], {

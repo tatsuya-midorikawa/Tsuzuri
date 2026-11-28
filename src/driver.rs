@@ -531,7 +531,7 @@ fn macos_sdk_error(framework_name: &str) -> Diagnostic {
 }
 
 /// Refuses an output that would replace a link input.
-fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
+pub(crate) fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
     let Ok(metadata) = fs::symlink_metadata(output) else {
         return Ok(());
     };
@@ -643,6 +643,10 @@ pub enum Emit {
     BindingsPy,
     /// `--emit bindings-cpp` (E13 Phase 2): a header-only C++20 wrapper over the C header.
     BindingsCpp,
+    /// `--emit app` (M15): a macOS application bundle `Name.app` around the native executable, signed
+    /// ad hoc. [`crate::app_bundle::build_app`] builds the executable with `Emit::Executable` options,
+    /// so `build_complete` never sees this kind.
+    App,
 }
 
 impl Emit {
@@ -875,6 +879,11 @@ impl BuildOptions {
     }
 
     pub fn validate(self) -> Result<(), Diagnostic> {
+        if self.emit == Emit::App {
+            self.validate_app(cfg!(target_os = "macos"))?;
+            // Every other rule is the rule of the executable inside the bundle.
+            return self.bundle_executable().validate();
+        }
         if self.backend == Backend::Fast {
             // The advice of the fast backend's errors is `--backend llvm`, which would give the error
             // of a combination that no backend builds, so that error is the one reported.
@@ -1572,8 +1581,59 @@ impl BuildOptions {
             Emit::BindingsCs => "cs",
             Emit::BindingsPy => "py",
             Emit::BindingsCpp => "hpp",
+            Emit::App => "app",
         })
     }
+
+    /// The options of the executable inside the bundle of `--emit app` (M15): the same options with
+    /// `--emit exe`, so that the executable shares its cache entry with that build. Other options are
+    /// returned as they are.
+    pub fn bundle_executable(self) -> Self {
+        if self.emit == Emit::App {
+            Self {
+                emit: Emit::Executable,
+                ..self
+            }
+        } else {
+            self
+        }
+    }
+
+    /// The host and the target of `--emit app` (M15): the bundle is signed with `codesign`, which only
+    /// macOS has, and it holds a Mach-O executable. `macos_host` is whether the compiler runs on macOS.
+    pub fn validate_app(self, macos_host: bool) -> Result<(), Diagnostic> {
+        if !macos_host {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "'--emit app' needs a macOS host: the bundle is signed with codesign",
+            ));
+        }
+        if self.target != Target::Native || !self.platform().mach_o() {
+            return Err(driver_error_of(
+                DiagnosticKind::OptionUnsupportedPlatform,
+                "'--emit app' builds a macOS application; build for aarch64-apple-darwin or remove it",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The error for an output path that `--emit app` cannot use (M15): the bundle is a directory `Name.app`,
+/// and `Name` names its executable (`Contents/MacOS/Name` and `CFBundleExecutable`).
+pub fn app_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
+    if emit != Emit::App || app_executable_name(output).is_some() {
+        return None;
+    }
+    Some(driver_error_of(
+        DiagnosticKind::OutputExtensionInvalid,
+        "app output must end with '.app'; its file name, without the extension, names the executable",
+    ))
+}
+
+/// `Name` of a bundle path `…/Name.app`.
+pub fn app_executable_name(output: &Path) -> Option<&str> {
+    let stem = output.file_stem().and_then(OsStr::to_str)?;
+    (output.extension() == Some(OsStr::new("app")) && !stem.is_empty()).then_some(stem)
 }
 
 /// The error for an output path that bindings cannot use. The JavaScript module must be a `.mjs`
@@ -1881,6 +1941,30 @@ pub(crate) fn arguments_runtime_source_for(platform: Platform) -> String {
         )
     } else {
         source.to_owned()
+    }
+}
+
+/// The main-thread runtime of `MainThread` (M09), which only an Apple target has.
+pub(crate) const MAIN_THREAD_RUNTIME: &str = include_str!("runtime/mainthread-darwin.c");
+/// Why a native target that is not Apple's cannot build a program that uses `MainThread`.
+const MAIN_THREAD_NATIVE_MESSAGE: &str =
+    "MainThread is available only on macOS targets; build for aarch64-apple-darwin or on a Mac";
+/// Why WebAssembly cannot build a program that uses `MainThread`.
+const MAIN_THREAD_WASM_MESSAGE: &str =
+    "MainThread is not available on WebAssembly; build for a macOS target";
+
+/// The same two for a program whose only use of the runtime is the check of the calling thread at
+/// an entry whose body uses a main-thread extern type (M09 Phase 2).
+const MAIN_HANDLE_NATIVE_MESSAGE: &str = "an export, a callback, a test or a library entry that uses a main-thread extern type checks that the main thread calls it, which only macOS targets support; build for aarch64-apple-darwin or on a Mac, or keep the code that uses the type in 'main'";
+const MAIN_HANDLE_WASM_MESSAGE: &str = "an export, a callback, a test or a library entry that uses a main-thread extern type checks that the main thread calls it, which WebAssembly does not support; build for a macOS target, or keep the code that uses the type in 'main'";
+
+/// Why the IR `text`, which names the main-thread runtime, does not build for another native
+/// target and for WebAssembly: it posts with `MainThread`, or it only checks its entries.
+pub(crate) fn main_thread_messages(text: &str) -> (&'static str, &'static str) {
+    if text.contains("@tz.main_thread.check(") && !text.contains("@tsuzuri_mainthread_post(") {
+        (MAIN_HANDLE_NATIVE_MESSAGE, MAIN_HANDLE_WASM_MESSAGE)
+    } else {
+        (MAIN_THREAD_NATIVE_MESSAGE, MAIN_THREAD_WASM_MESSAGE)
     }
 }
 
@@ -4337,8 +4421,37 @@ pub fn build_profiled(
     links: &LinkInputs,
     profile: &Profile,
 ) -> Result<Vec<String>, Diagnostic> {
+    if options.emit == Emit::App {
+        return crate::app_bundle::build_app(module, project, output, options, links, profile);
+    }
     build_complete(module, project, output, options, links, "build", profile)
         .map(|(messages, _, _)| messages)
+}
+
+/// The executable of an application bundle (M15): a `build` of `options`, which are those of `--emit exe`,
+/// to `output` in the staging directory. `final_output` is where the executable will be in the bundle; the
+/// cache key of a `-g` build records that path instead of the staging path, which differs in every build.
+pub(crate) fn build_bundle_executable(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    final_output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    profile: &Profile,
+) -> Result<Vec<String>, Diagnostic> {
+    debug_assert_eq!(options.emit, Emit::Executable);
+    build_complete_keyed(
+        module,
+        project,
+        output,
+        final_output,
+        options,
+        links,
+        "build",
+        profile,
+    )
+    .map(|(messages, _, _)| messages)
 }
 
 /// What a build reports besides its outputs: the tool messages, the trap sites, and the sites of
@@ -4353,6 +4466,24 @@ fn build_complete(
     module: &CheckedModule,
     project: &Project,
     output: &Path,
+    options: BuildOptions,
+    links: &LinkInputs,
+    action: &str,
+    profile: &Profile,
+) -> Result<Built, Diagnostic> {
+    build_complete_keyed(
+        module, project, output, output, options, links, action, profile,
+    )
+}
+
+/// [`build_complete`] whose cache key records `key_output` as the output path (see `cache::build_key`):
+/// the same path as `output` for every build but the executable of an application bundle.
+#[allow(clippy::too_many_arguments)]
+fn build_complete_keyed(
+    module: &CheckedModule,
+    project: &Project,
+    output: &Path,
+    key_output: &Path,
     options: BuildOptions,
     links: &LinkInputs,
     action: &str,
@@ -4396,6 +4527,13 @@ fn build_complete(
             ));
         }
         links.check_readable()?;
+    }
+    // M09: the main thread runs a posted function long after the call that posted it returned.
+    if options.trap_return && llvm::uses_main_thread(module) {
+        return Err(driver_error_of(
+            DiagnosticKind::OptionConflict,
+            "--trap-mode return cannot be combined with MainThread: a posted function runs outside the call that posted it",
+        ));
     }
     // A trap in a tzroutine happens on a scheduler thread, far from the call that spawned it (TZ02).
     if options.trap_return && llvm::spawns(module) {
@@ -4715,6 +4853,14 @@ fn build_complete(
             text = llvm::with_codeview(text);
         }
     }
+    // M19: an executable for an Apple target sends its reports to unified logging when its standard error is
+    // closed or /dev/null (a process started from Finder, the Dock, `open` or launchd). Objects, shared
+    // libraries and the IR that `--emit llvm` writes are left alone: their host owns its standard error.
+    let report_to_os_log =
+        platform.mach_o() && options.target == Target::Native && options.emit == Emit::Executable;
+    if report_to_os_log {
+        text = llvm::darwin_report(text);
+    }
     if options.target.is_wasm() && options.emit != Emit::Header {
         text = llvm::with_wasm_heap_limit(text, max_memory);
         if options.wasm_host == Some(WasmHost::Wasi) {
@@ -4758,6 +4904,8 @@ fn build_complete(
     );
     let runtime_symbols = crate::runtime_cache::RuntimeSymbols::collect(&text);
     let os_version_runtime = runtime_symbols.contains("tsuzuri_os_version");
+    // M15 D13: the part of the runtime behind `Env.executable_path` is compiled only into the programs that reach it.
+    let executable_path_runtime = runtime_symbols.contains("tsuzuri_os_executable_path");
     let macos_choice = if options.target == Target::Native
         && !matches!(options.emit, Emit::Llvm | Emit::Header)
         && !options.emit.is_kernel()
@@ -4816,6 +4964,8 @@ fn build_complete(
     let os_runtime = runtime_symbols.prefix("tsuzuri_os_");
     // The sockets of the standard Net module are src/runtime/net.c (E09).
     let net_runtime = runtime_symbols.prefix("tsuzuri_net_");
+    // `MainThread` queues on the main dispatch queue in src/runtime/mainthread-darwin.c (M09).
+    let main_thread_runtime = runtime_symbols.prefix("tsuzuri_mainthread_");
     // `Gpu.request Gpu.WebGpu` loads a WebGPU library at run time in src/runtime/gpu.c, and `Gpu.Vulkan` and
     // `Gpu.Auto` add the Vulkan backend of src/runtime/gpu-vulkan.c to it (F09 Phases 2 and 3).
     let gpu_runtime = options.target == Target::Native && runtime_symbols.prefix("tsuzuri_gpu_");
@@ -4847,6 +4997,10 @@ fn build_complete(
             text.as_str()
         };
         if let Some((_, feature)) = [
+            (
+                "@tsuzuri_mainthread_",
+                "MainThread or the entry check of a main-thread extern type",
+            ),
             ("declare i32 @tsuzuri_channel_send(", "DataChannel"),
             ("@tsuzuri_tz_anchor_", "Anchor"),
             ("@tsuzuri_tz_", "tzroutine"),
@@ -4899,7 +5053,11 @@ fn build_complete(
         || trap_runtime
         || gpu_runtime
         || (options.target == Target::Native
-            && (io_runtime || os_runtime || net_runtime || arguments_runtime));
+            && (io_runtime
+                || os_runtime
+                || net_runtime
+                || arguments_runtime
+                || main_thread_runtime));
     // Native executables of programs that can recurse report a stack overflow themselves (E14 Phase 3);
     // objects leave the host's signals alone, and a program without recursion cannot exhaust its stack.
     // A tzroutine's stack is smaller than a thread's, so a program with tzroutines reports its
@@ -4914,6 +5072,15 @@ fn build_complete(
     // and libraries leave the host's signals alone (as stack.c does), and the fast backend cannot place
     // a function in a section: both keep the checks of Phase 1 only.
     let async_preempt = stack_runtime && tzroutine_runtime && !fast && llvm::spawns(module);
+    // M19: src/runtime/oslog-darwin.c decides where the reports of an Apple executable go. It is linked when
+    // the IR's own writer asks it (`@tz.trap.write`) or when a C runtime that reports is linked; those C
+    // runtimes are then built with TZ_REPORT_OSLOG, so that they ask it too.
+    let report_runtime = report_to_os_log
+        && (runtime_symbols.prefix("tsuzuri_report_")
+            || tzroutine_runtime
+            || stack_runtime
+            || cpu_runtime
+            || main_thread_runtime);
     if async_preempt {
         text = llvm::preempt::with_generated_section(
             text,
@@ -4928,6 +5095,24 @@ fn build_complete(
     let debug_import = options.target.is_wasm() && runtime_symbols.contains("tsuzuri_debug_write");
     // A callback's address is a table index the host resolves through the exported table.
     let callback_table = options.target.is_wasm() && runtime_symbols.prefix("tz.callback.");
+    // M09: only an Apple target has the main dispatch queue. These come before the checks of the
+    // tzroutine runtime, which a program that posts from a tzroutine would meet first.
+    if main_thread_runtime && options.target.is_wasm() {
+        return Err(driver_error_of(
+            DiagnosticKind::WasmMainThreadUnsupported,
+            main_thread_messages(&text).1,
+        ));
+    }
+    if main_thread_runtime
+        && !platform.mach_o()
+        && options.target == Target::Native
+        && options.emit != Emit::Llvm
+    {
+        return Err(driver_error_of(
+            DiagnosticKind::PlatformUnsupportedApi,
+            main_thread_messages(&text).0,
+        ));
+    }
     // TZ02: the tzroutine runtime switches stacks on aarch64 and x86-64 under POSIX and Windows.
     // On wasm32 it suspends through JSPI (TZ09).
     if (tzroutine_symbols || tzroutine_runtime)
@@ -5175,7 +5360,7 @@ fn build_complete(
                 options,
                 action,
                 &text,
-                output,
+                key_output,
                 clang_identity.as_ref(),
                 staged_profile
                     .as_ref()
@@ -5474,6 +5659,11 @@ fn build_complete(
                 source.push('\n');
                 source.push_str(&tzroutine_runtime_source_for(platform));
             }
+            // M09: after everything else, and only when used, for the same reason.
+            if main_thread_runtime {
+                source.push('\n');
+                source.push_str(MAIN_THREAD_RUNTIME);
+            }
             fs::write(&runtime_source, &source)
                 .map_err(|error| io_error("write C runtime", &runtime_source, error))?;
             let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
@@ -5486,7 +5676,11 @@ fn build_complete(
                 .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?)
                 .arg(options.optimization.flag());
-            if (tzroutine_runtime || trap_runtime || net_runtime || gpu_runtime)
+            if (tzroutine_runtime
+                || trap_runtime
+                || net_runtime
+                || gpu_runtime
+                || main_thread_runtime)
                 && !platform.windows()
             {
                 runtime.arg("-pthread");
@@ -5497,11 +5691,19 @@ fn build_complete(
             if stack_runtime {
                 runtime.arg("-DTZ_STACK_GUARD");
             }
+            // M19: only a unit with a C runtime that reports (tzroutine.c, cpu.c, mainthread-darwin.c). A unit
+            // of io.c alone keeps its arguments, which are the ones of the prebuilt object.
+            if report_runtime && (tzroutine_runtime || cpu_runtime || main_thread_runtime) {
+                runtime.arg("-DTZ_REPORT_OSLOG");
+            }
             if async_preempt {
                 runtime.arg("-DTZ_ASYNC_PREEMPT");
             }
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");
+            }
+            if executable_path_runtime {
+                runtime.arg("-DTZ_OS_EXECUTABLE_PATH");
             }
             // The runtime has no debug information, like the stack guard below: stepping never
             // stops in it, and the program's DWARF is the compiler's unit alone, whose version a
@@ -5622,6 +5824,9 @@ fn build_complete(
                 .args(["-std=c11", "-c", "-O1"])
                 .args(compile_args(platform, macos_choice))
                 .args(sdk_args(platform)?);
+            if report_runtime {
+                runtime.arg("-DTZ_REPORT_OSLOG");
+            }
             let hint = cross_hint(
                 platform,
                 "native runtime requires Clang and the platform C/OS SDK headers",
@@ -5640,6 +5845,39 @@ fn build_complete(
                 )?;
             } else {
                 runtime.arg(&stack_source).arg("-o").arg(&stack_object);
+                collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
+            }
+        }
+        // M19: the report destination of an Apple executable is an object of its own in every build, so that
+        // the runtime cache (or a distribution's prebuilt object) saves the compile of <os/log.h>.
+        let mut report_object = temporary.path.join(format!("{REPORT_UNIT}.o"));
+        if report_runtime {
+            let mut runtime = Command::new(tool("TSUZURI_CLANG", "clang"));
+            runtime
+                .args(["-std=c11", "-c", "-O1"])
+                .args(compile_args(platform, macos_choice))
+                .args(sdk_args(platform)?);
+            let hint = cross_hint(
+                platform,
+                "native runtime requires Clang and the platform C/OS SDK headers",
+            );
+            if options.cache {
+                let args: Vec<_> = runtime.get_args().map(OsStr::to_owned).collect();
+                report_object = compile_runtime_object(
+                    REPORT_UNIT,
+                    include_str!("runtime/oslog-darwin.c"),
+                    "oslog-darwin.c",
+                    &args,
+                    &temporary.path,
+                    clang_identity.as_ref(),
+                    &hint,
+                    &mut messages,
+                )?;
+            } else {
+                let report_source = temporary.path.join("oslog-darwin.c");
+                fs::write(&report_source, include_str!("runtime/oslog-darwin.c"))
+                    .map_err(|error| io_error("write report runtime", &report_source, error))?;
+                runtime.arg(&report_source).arg("-o").arg(&report_object);
                 collect_message(&mut messages, run_tool(&mut runtime, &hint)?);
             }
         }
@@ -5676,6 +5914,9 @@ fn build_complete(
             }
             if os_version_runtime {
                 runtime.arg("-DTZ_OS_VERSION");
+            }
+            if executable_path_runtime {
+                runtime.arg("-DTZ_OS_EXECUTABLE_PATH");
             }
             runtime.arg(options.optimization.flag());
             let hint = "the WASI host needs Clang with WebAssembly support";
@@ -5924,6 +6165,10 @@ fn build_complete(
             } else {
                 // The same Clang run compiles the guard, which costs far less than a process of its own.
                 clang.args(["-x", "c", "-std=c11"]).arg(&stack_source);
+                // M19: the overflow report of an Apple executable asks oslog-darwin.c where it goes.
+                if report_runtime {
+                    clang.arg("-DTZ_REPORT_OSLOG");
+                }
             }
             clang.arg("-pthread");
         }
@@ -5933,6 +6178,9 @@ fn build_complete(
             } else {
                 clang.args(["-x", "c", "-std=c11"]).arg(&backtrace_source);
             }
+        }
+        if report_runtime && dwarf_sidecar.is_none() {
+            clang.args(["-x", "none"]).arg(&report_object);
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang, link_extras)?;
@@ -6049,6 +6297,9 @@ fn build_complete(
             }
             if backtrace_runtime {
                 linker.arg(&backtrace_object);
+            }
+            if report_runtime {
+                linker.arg(&report_object);
             }
             links.add_to(&mut linker, link_extras)?;
             linker.arg("-o").arg(&artifact);
@@ -7383,6 +7634,10 @@ fn dead_strip_args(platform: Platform) -> Vec<OsString> {
 const RUNTIME_OBJECT_HINT: &str =
     "runtime objects require Clang with support for the selected target";
 
+/// The runtime cache's name of the object of `src/runtime/oslog-darwin.c` (M19); `scripts/toolchain/runtime.mjs`
+/// prebuilds the same unit for a macOS distribution.
+const REPORT_UNIT: &str = "report-darwin";
+
 /// Translates the module's IR with the fast backend and writes the object (PB05).
 #[cfg(feature = "fast-backend")]
 fn translate_fast(text: &str, platform: Platform, object: &Path) -> Result<(), Diagnostic> {
@@ -7601,7 +7856,7 @@ fn tool(variable: &str, fallback: &str) -> OsString {
     resolve_tool(variable, fallback).1
 }
 
-fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
+pub(crate) fn run_tool(command: &mut Command, hint: &str) -> Result<String, Diagnostic> {
     let name = command.get_program().to_string_lossy().into_owned();
     let started = crate::timings::start();
     let output = command.output();
@@ -7829,7 +8084,7 @@ fn run_wasm_opt(
     })
 }
 
-fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
+pub(crate) fn protect_sources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
     for source in project.sources.iter().chain(&project.manifests) {
         // Std sources are embedded, so no output can overwrite them.
         if source.origin == ModuleOrigin::User {
@@ -7895,11 +8150,11 @@ fn same_file(
     Ok(false)
 }
 
-fn driver_error_of(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
+pub(crate) fn driver_error_of(kind: DiagnosticKind, message: impl Into<String>) -> Diagnostic {
     Diagnostic::of(kind, message, Span::default())
 }
 
-fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
+pub(crate) fn io_error(action: &str, path: &Path, error: io::Error) -> Diagnostic {
     driver_error_of(
         DiagnosticKind::IoFailure,
         format!("cannot {action} '{}': {error}", path.display()),
@@ -7943,6 +8198,12 @@ impl TemporaryDirectory {
             DiagnosticKind::TempDirectoryFailed,
             "could not create a unique temporary directory",
         ))
+    }
+
+    /// Leaves the directory in place when the value is dropped: it holds files that a failed
+    /// publication could not put back, and the error names it.
+    pub(crate) fn keep(&mut self) {
+        self.removed = true;
     }
 
     pub(crate) fn close(mut self) -> Result<(), Diagnostic> {

@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Written by hand: the Info.plist that the M15 specification gives for the Probe example with a category,
+     an executable linked for macOS 12.0, and the keys of Extra.source.plist.
+     Info.plist is `plutil -convert xml1 -o Info.plist Info.source.plist`. -->
+<plist version="1.0">
+<dict>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleName</key><string>Probe</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleIdentifier</key><string>dev.example.probe</string>
+  <key>CFBundleIconFile</key><string>Probe.icns</string>
+  <key>CFBundleExecutable</key><string>Probe</string>
+
+  <key>b</key><string>a &amp; b &lt; c &gt; d "q" 's' AB	tab</string>
+  <key>a</key>
+  <array>
+    <integer>-5</integer>
+    <real>1.5</real>
+    <true/>
+    <false/>
+    <dict/>
+    <array/>
+    <string></string>
+    <string></string>
+    <date>2026-11-28T01:02:03Z</date>
+  </array>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Example &amp; Sons &lt;dev@example.invalid&gt;</string>
+  <key>Z</key><date>2024-02-29T23:59:59Z</date>
+  <key>_x</key><data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4A=</data>
+  <key>1</key>
+  <dict>
+    <key>deep</key>
+    <dict>
+      <key>blob</key><data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4A=</data>
+      <key>empty</key><data></data>
+      <key>one</key><data>AQ==</data>
+      <key>two</key><data>AQI=</data>
+      <key>line</key><data>AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUm</data>
+    </dict>
+  </dict>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key><true/>
+  </dict>
+  <key>é</key><string>a key that is not ASCII</string>
+  <key>😀</key><string>a key outside the BMP: its surrogates sort before U+FF61</string>
+  <key>｡</key><string>U+FF61</string>
+  <key>B</key><integer>18446744073709551615</integer>
+  <key>ws</key><string>  two leading spaces
+ and a second line  </string>
+</dict>
+</plist>

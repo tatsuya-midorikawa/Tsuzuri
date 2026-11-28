@@ -102,7 +102,21 @@ TZ_CPU_API uint64_t tsuzuri_cpu_features(void) {
     return value;
 }
 
+#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
+/* M19, src/runtime/oslog-darwin.c: an Apple executable whose standard error is closed or /dev/null
+   sends the report to unified logging. Only the driver's unit of an executable defines the macro. */
+int32_t tsuzuri_report_to_log(void);
+void tsuzuri_report_whole(int32_t category, const char *text, int64_t length);
+#endif
+
 static _Noreturn void tz_cpu_unavailable(void) {
+#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)
+    if (tsuzuri_report_to_log()) {
+        static const char message[] = "Tsuzuri CPU runtime: requested variant is unavailable or unknown\n";
+        tsuzuri_report_whole(1, message, (int64_t)(sizeof message - 1));
+        abort();
+    }
+#endif
     fputs("Tsuzuri CPU runtime: requested variant is unavailable or unknown\n", stderr);
     abort();
 }

@@ -198,3 +198,70 @@ fn many =
     Owned.drop owners
     let dropped = Atomic.load (Arc.get (ref drops))
     if sum == 50005000 && dropped == 10000 then 42 else -1
+
+// M09 Phase 3: shared anchors, which every thread reads through the token.
+
+// A read, the two kinds of anchor kept apart, another value type, and Stale after the owner's drop,
+// which dropped the value once.
+export def shared_basic :: i64
+fn shared_basic =
+    let drops = Arc.new (Atomic.create 0i64)
+    let state = Anchor.create_shared (Tracked { value: 40, drops: Arc.share (ref drops) })
+    let token = Anchor.shared_token (ref state)
+    let read = match Anchor.read_shared (\(item: ref Tracked) -> item.value + 2) token with
+        | Result.Ok v -> v
+        | Result.Error _ -> -1
+    let kind = match Anchor.read (\(item: ref Tracked) -> item.value) token with
+        | Result.Error Anchor.WrongType -> 100
+        | _ -> 0
+    let other = match Anchor.read_shared (\(n: ref i64) -> deref n) token with
+        | Result.Error Anchor.WrongType -> 1000
+        | _ -> 0
+    Owned.drop state
+    let stale = match Anchor.read_shared (\(item: ref Tracked) -> item.value) token with
+        | Result.Error Anchor.Stale -> 10000
+        | _ -> 0
+    read + kind + other + stale + Atomic.load (Arc.get (ref drops)) * 100000
+
+// The token of an anchor of one thread is not a shared anchor's.
+export def shared_kinds :: i64
+fn shared_kinds =
+    let own = Anchor.create 5i64
+    match Anchor.read_shared (\(n: ref i64) -> deref n) (Anchor.token (ref own)) with
+    | Result.Error Anchor.WrongType -> 7
+    | _ -> 0
+
+// A detached anchor outlives its owner. Its release inside a read makes later reads Stale at once
+// and drops the value when that read ends; a second release finds nothing.
+export def shared_detached :: i64
+fn shared_detached =
+    let drops = Arc.new (Atomic.create 0i64)
+    let token = Anchor.detach_shared (Anchor.create_shared (Tracked { value: 9, drops: Arc.share (ref drops) }))
+    let alive = Atomic.load (Arc.get (ref drops))
+    let read = match Anchor.read_shared (\(item: ref Tracked) -> item.value) token with
+        | Result.Ok v -> v
+        | Result.Error _ -> -1
+    let drops_in = Arc.share (ref drops)
+    let during = match Anchor.read_shared (\(item: ref Tracked) ->
+        let released = Anchor.release_shared token
+        let dropped_now = Atomic.load (Arc.get (ref drops_in))
+        let stale_now = match Anchor.read_shared (\(x: ref Tracked) -> x.value) token with
+            | Result.Error Anchor.Stale -> 1
+            | _ -> 0
+        if released && dropped_now == 0 && stale_now == 1 then item.value else -1) token with
+        | Result.Ok v -> v
+        | Result.Error _ -> -2
+    let after = Atomic.load (Arc.get (ref drops))
+    let again = if Anchor.release_shared token then 1 else 0
+    alive * 1000000 + read * 10000 + during * 100 + after * 10 + again
+
+// `release_shared` leaves an anchor that still has its owner.
+export def shared_owned_release :: i64
+fn shared_owned_release =
+    let state = Anchor.create_shared 5i64
+    let token = Anchor.shared_token (ref state)
+    let refused = if Anchor.release_shared token then 0 else 1
+    let still = match Anchor.read_shared (\(n: ref i64) -> deref n) token with
+        | Result.Ok v -> v
+        | Result.Error _ -> -1
+    refused * 10 + still

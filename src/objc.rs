@@ -25,6 +25,8 @@ pub struct ObjcClassInfo {
     /// The qualified name of the declared base class; `None` when the base is `ObjC.Object`.
     pub base: Option<String>,
     pub sync: bool,
+    /// Declared `main`: only the process main thread may use the objects (M09).
+    pub main: bool,
     pub trusted: bool,
     /// Declared `@weak`: the class may be missing at run time (M17).
     pub weak: bool,
@@ -85,6 +87,10 @@ pub struct ObjcSend {
     /// of `owner` for an inherited member. Its audit row counts the use too, because the trust
     /// of the send is the trust of this declaration.
     pub declaring: String,
+    /// The class that receives the message is declared `main` (M09): the send has the effect
+    /// `main_thread`, a class method too, and the main thread holds no P that the call could keep
+    /// from the scheduler.
+    pub main_thread: bool,
 }
 
 /// The method families of Cocoa's naming rules that change ownership (M02 D8).

@@ -1,0 +1,88 @@
+// M09: the scenes of tests/main_thread.mjs that need the C host tests/main_thread_host.c. The
+// first argument names a scene.
+//
+// `Window` stands for an object that only the main thread may use (`extern type main`): the code
+// that touches it has the effect `main_thread`, and a callback whose body has it checks its thread
+// on entry.
+
+extern type main Window
+
+@trusted
+extern "m09_window_make" def make_window :: unit -> Window
+
+@trusted
+extern "m09_window_close" def close_window :: own Window -> unit
+
+@trusted
+extern "m09_windows_live" def windows_live :: unit -> i64
+
+@trusted
+extern "m09_call_here" def call_here :: (i64 -> unit) -> i64 -> unit
+
+@trusted
+extern "m09_call_on_thread" def call_on_thread :: (i64 -> unit) -> i64 -> unit
+
+def say :: string -> unit = \text ->
+    do! IO.writeln $"{text}"
+    ()
+
+// Uses a window: `main_thread`.
+def on_event :: i64 -> unit = \value ->
+    let window = make_window ()
+    say $"event {value}: {windows_live ()} window on main {MainThread.is_current ()}"
+    close_window window
+
+// Uses no window: any thread may call it.
+def on_tick :: i64 -> unit = \value ->
+    say $"tick {value} on main {MainThread.is_current ()}"
+
+// The host calls the callback on the thread that registered it: the main thread.
+def callback_on_main :: unit -> i32 = \() ->
+    call_here on_event 3
+    say $"left {windows_live ()}"
+    0
+
+// A callback without the effect is not checked: the host's own thread may call it.
+def plain_callback_on_thread :: unit -> i32 = \() ->
+    call_on_thread on_tick 5
+    0
+
+// The host calls a callback that uses a window on a thread of its own: the entry check traps
+// before the body runs, so no window is made.
+def callback_on_thread :: unit -> i32 = \() ->
+    say "calling"
+    call_on_thread on_event 7
+    say "not reached"
+    0
+
+record Inbox { out: Channel<i64>, base: i64 }
+
+// Runs on a thread of the host that has not joined the runtime (M09 Phase 3).
+def on_host_thread :: i64 -> unit = \token ->
+    let _sent = Anchor.read_shared (\(inbox: ref Inbox) -> Channel.send (ref inbox.out) (inbox.base + 1)) token
+    ()
+
+// A thread of the host reads a shared anchor and sends to a tzroutine through the channel in it.
+def shared_from_thread :: unit -> i32 = \() ->
+    let results: Channel<i64> = Channel.make 1
+    let inbox = Anchor.create_shared (Inbox { out: Channel.share results, base: 41 })
+    tzroutine {
+        match Channel.recv results with
+        | Maybe.Some value -> say $"tzroutine received {value}"
+        | Maybe.None -> say "closed"
+    }
+    call_on_thread on_host_thread (Anchor.shared_token (ref inbox))
+    0
+
+def main :: Array<string> -> i32 = \args ->
+    let named = Array.length args > 0
+    if named && args[0] == "callback_on_main" then
+        callback_on_main ()
+    elif named && args[0] == "plain_callback_on_thread" then
+        plain_callback_on_thread ()
+    elif named && args[0] == "callback_on_thread" then
+        callback_on_thread ()
+    elif named && args[0] == "shared_from_thread" then
+        shared_from_thread ()
+    else
+        2

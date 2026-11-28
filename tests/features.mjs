@@ -3504,6 +3504,14 @@ const suites = {
       ["forged", [], 15n],
       ["wrong_type", [], 11n],
       ["many", [], 42n],
+      // M09 Phase 3: 42 read + 100 (Anchor.read: WrongType) + 1000 (another type) + 10000 (Stale
+      // after the drop) + 100000 (one drop).
+      ["shared_basic", [], 111142n],
+      ["shared_kinds", [], 7n],
+      // No drop while detached (0), 9 read, 9 read during the release, 1 drop after it, no second
+      // release (0).
+      ["shared_detached", [], 90910n],
+      ["shared_owned_release", [], 15n],
     ],
   },
   sync_single: {

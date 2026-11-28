@@ -5,7 +5,7 @@
 | ID | M12 |
 | 優先度 | P3（GPU の計算を使う `.app` と、GPU でウィンドウに描くアプリだけが要る。今の回避策は、Phase 1 が環境変数 `TSUZURI_VULKAN_LIBRARY`・`TSUZURI_WEBGPU_LIBRARY`、Phase 2 が C・ObjC・Swift のシムである） |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](_completed/M01-objc-class-types.md)), ([M02](_completed/M02-objc-typed-message-send.md)), ([M15](M15-macos-app-bundle.md))（M01 は Phase 2 の前提。M15 は同梱の手順の文書だけ） |
+| 依存 | ([NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md)), ([M01](_completed/M01-objc-class-types.md)), ([M02](_completed/M02-objc-typed-message-send.md)), ([M15](_completed/M15-macos-app-bundle.md))（M01 は Phase 2 の前提。M15 は同梱の手順の文書だけ） |
 | 後続 | – |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 5（Gpu は計算専用で、ウィンドウへの表示がない。GPU のランタイムが Homebrew の絶対パスを dlopen するので、.app に同梱した形にならない）」に当たる。HEAD `804b7970` で確認） |
@@ -196,7 +196,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
 
 ### Phase 1: 探索（`src/runtime/gpu-vulkan.c`・`src/runtime/gpu.c`）
 
-- Apple だけの補助を 1 つ足す: `static int tz_gpu_bundle_library(const char *name, char *out, size_t size)`。`_NSGetExecutablePath`（`PATH_MAX` の領域）→ `realpath` → 末尾の 3 つの要素（`<ファイル>`・`MacOS`・`Contents`）と `.app` の接尾辞を確かめる → `<Contents>/Frameworks/<name>` を `out` に書いて 1 を返す。条件に合わなければ 0。`#include <mach-o/dyld.h>`・`<limits.h>`・`<unistd.h>`（`access`）も `#if defined(__APPLE__)` の中に置く。[M15](M15-macos-app-bundle.md) の `Env.executable_path`（`os.c` の `#if defined(TZ_OS_EXECUTABLE_PATH)` の中の入口 `tsuzuri_os_executable_path`。到達したプログラムでだけコンパイルされる。M15 の D13）も macOS で同じ `_NSGetExecutablePath` と `realpath` を使う。ランタイムの部品は使うときだけ入るので関数は共有しないが、`realpath` を通してから使う規則は両方でそろえる（後に入るチケットが先の実装に合わせる）。失敗したときの扱いは用途で違う。M12 は ② を飛ばし、M15 は `Os.Error` を返す。領域も違い、M12 は `PATH_MAX` の固定の領域、M15 は返された長さで取り直す。
+- Apple だけの補助を 1 つ足す: `static int tz_gpu_bundle_library(const char *name, char *out, size_t size)`。`_NSGetExecutablePath`（`PATH_MAX` の領域）→ `realpath` → 末尾の 3 つの要素（`<ファイル>`・`MacOS`・`Contents`）と `.app` の接尾辞を確かめる → `<Contents>/Frameworks/<name>` を `out` に書いて 1 を返す。条件に合わなければ 0。`#include <mach-o/dyld.h>`・`<limits.h>`・`<unistd.h>`（`access`）も `#if defined(__APPLE__)` の中に置く。[M15](_completed/M15-macos-app-bundle.md) の `Env.executable_path`（`os.c` の `#if defined(TZ_OS_EXECUTABLE_PATH)` の中の入口 `tsuzuri_os_executable_path`。到達したプログラムでだけコンパイルされる。M15 の D13）も macOS で同じ `_NSGetExecutablePath` と `realpath` を使う。ランタイムの部品は使うときだけ入るので関数は共有しないが、`realpath` を通してから使う規則は両方でそろえる（後に入るチケットが先の実装に合わせる）。失敗したときの扱いは用途で違う。M12 は ② を飛ばし、M15 は `Os.Error` を返す。領域も違い、M12 は `PATH_MAX` の固定の領域、M15 は返された長さで取り直す。
 - 置き場所: 同じ定義を `gpu-vulkan.c` と `gpu.c` の両方の Apple の節に置き、`#ifndef TZ_GPU_BUNDLE_LIBRARY_DEFINED` / `#define TZ_GPU_BUNDLE_LIBRARY_DEFINED` で守る。翻訳単位で先に来たほうが定義する（`gpu.c:61-65` の `TSUZURI_BLOCKING_HOOKS_DEFINED` と同じ形）。ランタイムの C は 3 つの形で翻訳される。プログラムの実行ファイルでは `runtime_source` が `gpu-vulkan.c` を `gpu.c` の前に置く（WebGPU だけのプログラムは `gpu.c` だけ）。`tests/gpu_vulkan_runtime.c:41` は `gpu-vulkan.c` だけを include する。`tests/gpu_runtime.mjs` の C のホストは `gpu.c` だけをビルドする（365 行）。どの形でも定義はちょうど 1 つになる。採らない形: `gpu-vulkan.c` に `static` の前方宣言だけを置き、定義を `gpu.c` に 1 つ置く（`tests/gpu_vulkan_runtime.c` のハーネスでは定義がなくなり、Phase 1 のテストがビルドできない）。新しいランタイムのファイルは足さない（足すなら `scripts/check-runtime-includes.sh` と `include_str!` を合わせる）。
 - `tz_vk_find_library`: 環境変数の処理の後、既定の候補の loop の前に、Apple なら bundle の 2 つの候補を、loop の本体と同じ規則（`vkGetInstanceProcAddr` の検査と読み飛ばし）で試す。足すのは `#if defined(__APPLE__)` の中の呼び出し 1 つと、Apple の節の中の関数だけにする。今の loop は括り出さない。括り出すと Linux・Windows の前処理の後のトークンの並びが変わり、Gpu を使うプログラムの Linux・Windows の object が変わる（`-O0` では関数の呼び出しが残る）。検査の数行は Apple の節の中で重ねて書く。
 - `tz_wgpu_load`: 同じく、既定の候補の前に bundle の 1 つの候補を試す（`#if defined(__APPLE__)` の中だけ）。版 0 の扱いは、既定の候補と同じ（`requested == NULL` の枝）。
@@ -218,7 +218,7 @@ def present :: ref Buffer<i32u> -> ref mut Surface -> Result<unit, Error>
   - [M01](_completed/M01-objc-class-types.md): `ObjC.Object`（`ref ObjC.Object` の引数）と `objc_opt_isKindOfClass` の下げ方（D6 の (a)）。D-67 の分岐 1 が X′ に決まったので D6 の (b) は採らず、M01 が done になってから Phase 2 に着手する。
   - [M02](_completed/M02-objc-typed-message-send.md): 利用者が CAMetalLayer を作り（`CAMetalLayer.layer ()`）、ビューの `setLayer:`・`setWantsLayer:` を呼ぶ型付きの送信。M02 がなければ、利用者は今の `objc_msgSend` の手書きの宣言で layer を作る。
   - [NC13](NC13-tensor-simd-parallel-and-gpu-kernels.md) の D2: Metal のバックエンドの判断（D7）。
-- 文書: [M15](M15-macos-app-bundle.md) の `[macos] embed`（`Contents/Frameworks` に写すファイル）と、[M16](M16-macos-signing-notarization-hardening.md) の Developer ID 署名。出荷されていなければ、手で bundle を作る手順と `codesign` の手順を書く。
+- 文書: [M15](_completed/M15-macos-app-bundle.md) の `[macos] embed`（`Contents/Frameworks` に写すファイル）と、[M16](M16-macos-signing-notarization-hardening.md) の Developer ID 署名。出荷されていなければ、手で bundle を作る手順と `codesign` の手順を書く。
 
 ## 他チケットへ提供するインターフェース
 

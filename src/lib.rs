@@ -9,6 +9,7 @@ compile_error!("Tsuzuri supports only Windows x64/Arm64, Linux x64/Arm64, and ma
 
 pub mod abi;
 pub mod api_diff;
+pub mod app_bundle;
 #[cfg(feature = "fast-backend")]
 pub mod backend;
 pub mod bindgen;
@@ -52,6 +53,7 @@ pub mod package;
 mod parallel;
 pub mod parallel_report;
 pub mod parser;
+pub mod plist;
 pub mod prove;
 mod ranges;
 pub mod repl;

@@ -1,4 +1,4 @@
-//! The effect summary of each function (A20, W19): a set of the 15 effects of D-53, inferred from
+//! The effect summary of each function (A20, W19, M09): a set of the 16 effects of D-53, inferred from
 //! the typed IR after specialization and closure lowering, and the checks of the effect attributes
 //! `@no_alloc`, `@no_copy`, `@no_trap` and `@terminates`.
 //!
@@ -26,6 +26,7 @@ pub enum Effect {
     Extern,
     Gpu,
     Io,
+    MainThread,
     Net,
     Os,
     Pinned,
@@ -36,7 +37,7 @@ pub enum Effect {
 }
 
 impl Effect {
-    pub const ALL: [Effect; 15] = [
+    pub const ALL: [Effect; 16] = [
         Effect::Alloc,
         Effect::Atomic,
         Effect::Copy,
@@ -45,6 +46,7 @@ impl Effect {
         Effect::Extern,
         Effect::Gpu,
         Effect::Io,
+        Effect::MainThread,
         Effect::Net,
         Effect::Os,
         Effect::Pinned,
@@ -64,6 +66,7 @@ impl Effect {
             Effect::Extern => "extern",
             Effect::Gpu => "gpu",
             Effect::Io => "io",
+            Effect::MainThread => "main_thread",
             Effect::Net => "net",
             Effect::Os => "os",
             Effect::Pinned => "pinned",
@@ -85,8 +88,9 @@ pub struct EffectSet(u16);
 
 impl EffectSet {
     pub const EMPTY: EffectSet = EffectSet(0);
-    pub const ALL: EffectSet = EffectSet((1 << 15) - 1);
-    /// What A19's `pure` forbids: the 10 effects that are not `alloc`, `copy`, `diverge` or `trap`.
+    pub const ALL: EffectSet = EffectSet(u16::MAX);
+    /// What A19's `pure` forbids: the 10 effects that are not `alloc`, `copy`, `diverge` or `trap`,
+    /// nor the two that only say which thread the code may run on (`pinned`, `main_thread`).
     pub const PURE_FORBIDDEN: EffectSet = EffectSet::of(&[
         Effect::Atomic,
         Effect::Debug,
@@ -315,16 +319,49 @@ pub struct FunctionEffects {
     empty: Summary,
 }
 
-const BITS: usize = 18;
-const DYN: usize = 15;
-const UNRESOLVED: usize = 16;
-const VALUE_CALL: usize = 17;
+const BITS: usize = 19;
+const DYN: usize = 16;
+const UNRESOLVED: usize = 17;
+const VALUE_CALL: usize = 18;
+
+/// What an edge to a function carries to the function that refers to it (W19, M09). The edge of a
+/// function value that goes straight to `Routine.with_locked_thread` does not carry `pinned`: the
+/// thread is fixed there, but it is whichever thread the tzroutine runs on, so `main_thread` goes
+/// on. The edge of one that goes to a callback `extern`, to `FnPtr.of` or to `MainThread.post`
+/// carries neither: the thread is fixed, and it is the main thread or the wrapper checks that it
+/// is.
+const CARRY_PINNED: u8 = 1;
+const CARRY_MAIN_THREAD: u8 = 2;
+const CARRY_ALL: u8 = CARRY_PINNED | CARRY_MAIN_THREAD;
+
+/// Where a function value goes, for the two effects that confine code to a thread.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Boundary {
+    /// Anywhere else: the function's effects are those of whoever refers to it.
+    #[default]
+    None,
+    /// `Routine.with_locked_thread`: some one thread.
+    Locked,
+    /// A callback `extern`, `FnPtr.of`, `MainThread.post` or `MainThread.after`: one thread, and
+    /// the main thread where the function needs it.
+    Entry,
+}
+
+impl Boundary {
+    fn carry(self) -> u8 {
+        match self {
+            Boundary::None => CARRY_ALL,
+            Boundary::Locked => CARRY_MAIN_THREAD,
+            Boundary::Entry => 0,
+        }
+    }
+}
 
 fn bit(effect: Effect) -> usize {
     effect as usize
 }
 
-/// The 15 effects and the three sources of an unknown summary, as one bit set.
+/// The 16 effects and the three sources of an unknown summary, as one bit set.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
 struct Bits(u32);
 
@@ -338,7 +375,7 @@ impl Bits {
     }
 
     fn effects(self) -> EffectSet {
-        EffectSet((self.0 & ((1 << 15) - 1)) as u16)
+        EffectSet((self.0 & 0xFFFF) as u16)
     }
 }
 
@@ -479,7 +516,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             Some("host_status"),
         ),
         // B16
-        OsArgs | OsVersion | OsRandom => facts(
+        OsArgs | OsVersion | OsExecutablePath | OsRandom => facts(
             Some(Effect::Os),
             true,
             false,
@@ -550,6 +587,12 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         RoutineWithLockedThread => {
             facts(Some(Effect::Task), false, false, false, true, false, None)
         }
+        // M09: `MainThread.post` and `after` box the owned function for the main queue, which
+        // calls it later; `is_current` only asks the OS which thread this is.
+        MainThreadPost | MainThreadAfter => {
+            facts(Some(Effect::Task), true, false, false, true, false, None)
+        }
+        MainThreadIsCurrent => facts(Some(Effect::Task), false, false, false, false, false, None),
         // W22: `FnPtr.of`, W20: `ZString.literal`, and M06: `ZUtf8String.literal` produce static addresses without side effects or allocation.
         FnPtrOf | ZStringLiteral | ZUtf8StringLiteral => {
             facts(None, false, false, false, false, false, None)
@@ -571,8 +614,19 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
             facts(None, false, false, false, false, false, None)
         }
         // W23: `Anchor` stores and borrows values in the runtime's anchor table.
-        AnchorCreate => facts(Some(Effect::Atomic), true, true, false, false, false, None),
-        AnchorRead | AnchorUpdate => {
+        AnchorCreate | AnchorCreateShared => {
+            facts(Some(Effect::Atomic), true, true, false, false, false, None)
+        }
+        AnchorDetach | AnchorReleaseShared => facts(
+            Some(Effect::Atomic),
+            false,
+            false,
+            false,
+            false,
+            false,
+            None,
+        ),
+        AnchorRead | AnchorReadShared | AnchorUpdate => {
             facts(Some(Effect::Atomic), false, false, false, true, false, None)
         }
         AnchorRelease => facts(
@@ -859,10 +913,11 @@ struct CallSite {
 struct Local {
     bits: Bits,
     first: [Option<(Span, Why)>; BITS],
-    /// `(callee, span, carries_pinned)`: `carries_pinned` is `false` only for callbacks that a
-    /// pinning boundary (`Routine.with_locked_thread`, `FnPtr.of`, or a callback `extern`) runs on
-    /// a pinned OS thread (W19).
-    edges: Vec<(usize, Span, bool)>,
+    /// `(callee, span, carry)`: `carry` lacks `CARRY_PINNED` only for callbacks that a pinning
+    /// boundary (`Routine.with_locked_thread`, `FnPtr.of`, a callback `extern`, `MainThread.post`)
+    /// runs on a pinned OS thread (W19), and `CARRY_MAIN_THREAD` for those of them that run on the
+    /// main thread or check that they do (M09).
+    edges: Vec<(usize, Span, u8)>,
     calls: Vec<CallSite>,
     /// Calls of the function's own parameters: the bit set and the first call of each.
     param_calls: u64,
@@ -942,9 +997,9 @@ struct Ctx {
     pattern: bool,
     /// An element of a literal tree whose root already counted the frame bytes.
     nested: bool,
-    /// W19: the function value is passed directly to a thread-pinning boundary, so its `pinned`
-    /// effect does not propagate to the caller.
-    pinning_arg: bool,
+    /// W19, M09: the function value is passed directly to a thread-pinning boundary, so its
+    /// `pinned` effect (and at an entry its `main_thread` effect) does not propagate to the caller.
+    pinning_arg: Boundary,
     /// What the enclosing expressions do with the value, when it is a function.
     consumer: Consumer,
 }
@@ -1436,7 +1491,7 @@ impl<'s, 'a> Scan<'s, 'a> {
             if id == usize::MAX {
                 self.unknown(UNRESOLVED, span, "user-drop");
             } else {
-                self.local.edges.push((id, span, true));
+                self.local.edges.push((id, span, CARRY_ALL));
             }
         }
     }
@@ -1515,6 +1570,35 @@ impl<'s, 'a> Scan<'s, 'a> {
                 self.source(Effect::Pinned, span, "local-handle");
             }
         }
+        // M09: a function whose types reach a handle of the main thread runs there.
+        if self.state.module.main_bound && self.state.computes(Effect::MainThread) {
+            // A message to a `main` class is sent on the main thread, also a class method whose
+            // types name no object.
+            if let TypedExprKind::HostCall(import, _) = &function.body.kind
+                && import.objc.as_ref().is_some_and(|send| send.main_thread)
+            {
+                self.source(Effect::MainThread, function.body.span, "main-class-send");
+            }
+            let types = self.state.module.types();
+            for parameter in &function.parameters {
+                if parameter.ty.reaches_main_handle(&types) {
+                    let span = if parameter.span == Span::default() {
+                        function.body.span
+                    } else {
+                        parameter.span
+                    };
+                    self.source(Effect::MainThread, span, "main-handle");
+                }
+            }
+            if function.signature.result.reaches_main_handle(&types) {
+                let span = if function.span == Span::default() {
+                    function.body.span
+                } else {
+                    function.span
+                };
+                self.source(Effect::MainThread, span, "main-handle");
+            }
+        }
         if user_drops || objc {
             // The function drops the owned parameters that its body does not move on, so their
             // destructors run here even when no expression names them (review of #63). A
@@ -1550,6 +1634,7 @@ impl<'s, 'a> Scan<'s, 'a> {
         let user_drops = !module.user_drops.is_empty();
         let objc = module.objc.has_objects();
         let track_pinned = module.thread_bound && self.state.computes(Effect::Pinned);
+        let track_main = module.main_bound && self.state.computes(Effect::MainThread);
         let mut entered = Vec::new();
         let mut stack = vec![Item::Node(root, Ctx::default())];
         while let Some(item) = stack.pop() {
@@ -1581,6 +1666,9 @@ impl<'s, 'a> Scan<'s, 'a> {
             }
             if track_pinned && expression.ty.reaches_local_handle(&types) {
                 self.source(Effect::Pinned, expression.span, "local-handle");
+            }
+            if track_main && expression.ty.reaches_main_handle(&types) {
+                self.source(Effect::MainThread, expression.span, "main-handle");
             }
             if user_drops {
                 self.user_drop(&expression.ty, expression.span);
@@ -1622,7 +1710,11 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: false,
                     pattern: ctx.pattern,
                     nested: false,
-                    pinning_arg: forward && ctx.pinning_arg,
+                    pinning_arg: if forward {
+                        ctx.pinning_arg
+                    } else {
+                        Boundary::None
+                    },
                     consumer,
                 };
                 for value in expression.children().into_iter().rev() {
@@ -1679,19 +1771,19 @@ impl<'s, 'a> Scan<'s, 'a> {
             read: inherit,
             pattern: ctx.pattern,
             nested: false,
-            pinning_arg: false,
+            pinning_arg: Boundary::None,
             consumer: Consumer::default(),
         };
         let element = Ctx {
             read: ctx.read,
             pattern: false,
             nested: ctx.read,
-            pinning_arg: false,
+            pinning_arg: Boundary::None,
             consumer: Consumer::default(),
         };
         match &expression.kind {
             K::GenericFunction(id, _) if self.state.options.templates => {
-                self.local.edges.push((*id, span, true));
+                self.local.edges.push((*id, span, CARRY_ALL));
                 false
             }
             K::Lambda { .. } if self.state.options.templates => false,
@@ -1748,7 +1840,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 false
             }
             K::Function(FunctionRef::User(id)) => {
-                self.local.edges.push((*id, span, !ctx.pinning_arg));
+                self.local.edges.push((*id, span, ctx.pinning_arg.carry()));
                 if !self.state.module.functions[*id].origin.asserts.is_empty() {
                     self.local.references.push((*id, span, ctx.consumer));
                 }
@@ -1833,7 +1925,13 @@ impl<'s, 'a> Scan<'s, 'a> {
                         }
                         _ => self.value_call(Some(right), &[left.as_ref()], span),
                     }
-                    let left_pinned = pinning_argument_mask(self.state.module, right, 1) == 1;
+                    let left_pinned = if pinning_argument_mask(self.state.module, right, 1) == 1 {
+                        boundary_of(self.state.module, right)
+                    } else if posted_pipe(self.state.module, right) {
+                        Boundary::Entry
+                    } else {
+                        Boundary::None
+                    };
                     stack.push(Item::Node(
                         right,
                         Ctx {
@@ -1911,13 +2009,27 @@ impl<'s, 'a> Scan<'s, 'a> {
                 ) {
                     return true;
                 }
-                let pinning_mask =
+                let mut pinning_mask =
                     pinning_argument_mask(self.state.module, callee, arguments.len());
+                // M09: `MainThread.post (Owned.function f)`: the function inside the owned
+                // function is what the main thread runs.
+                let mut boundary = boundary_of(self.state.module, callee);
+                if ctx.pinning_arg != Boundary::None
+                    && arguments.len() == 1
+                    && owned_function_callee(self.state.module, callee)
+                {
+                    pinning_mask = 1;
+                    boundary = ctx.pinning_arg;
+                }
                 for (index, value) in arguments.iter().enumerate().rev() {
                     stack.push(Item::Node(
                         value,
                         Ctx {
-                            pinning_arg: index < 64 && (pinning_mask & (1 << index)) != 0,
+                            pinning_arg: if index < 64 && (pinning_mask & (1 << index)) != 0 {
+                                boundary
+                            } else {
+                                Boundary::None
+                            },
                             ..read(false)
                         },
                     ));
@@ -2023,7 +2135,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                 false
             }
             K::Closure(id, captures) => {
-                self.local.edges.push((*id, span, !ctx.pinning_arg));
+                self.local.edges.push((*id, span, ctx.pinning_arg.carry()));
                 if !captures.is_empty() || matches!(expression.ty, Type::Once(_)) {
                     self.source(Effect::Alloc, span, "closure-environment");
                 }
@@ -2128,7 +2240,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                     read: false,
                     pattern: true,
                     nested: false,
-                    pinning_arg: false,
+                    pinning_arg: Boundary::None,
                     consumer: Consumer::default(),
                 };
                 let body = Ctx {
@@ -2277,7 +2389,7 @@ impl<'s, 'a> Scan<'s, 'a> {
                         read: true,
                         pattern: ctx.pattern,
                         nested: false,
-                        pinning_arg: false,
+                        pinning_arg: Boundary::None,
                         consumer: Consumer::default(),
                     },
                 ));
@@ -2316,7 +2428,11 @@ impl<'s, 'a> Scan<'s, 'a> {
                 stack.push(Item::Node(
                     value,
                     Ctx {
-                        pinning_arg: !*mutable && ctx.pinning_arg,
+                        pinning_arg: if *mutable {
+                            Boundary::None
+                        } else {
+                            ctx.pinning_arg
+                        },
                         consumer,
                         ..read(!*mutable)
                     },
@@ -2378,6 +2494,9 @@ pub(crate) fn pinning_argument_mask(
         {
             1
         }
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+            posted_argument_mask(instance.builtin, arg_count)
+        }
         TypedExprKind::Function(FunctionRef::User(id)) => {
             let function = &module.functions[*id];
             if function.module == "$builtin"
@@ -2385,6 +2504,14 @@ pub(crate) fn pinning_argument_mask(
                 && wrapper_builtin(function) == Some(Builtin::RoutineWithLockedThread)
             {
                 return 1;
+            }
+            if function.module == "$builtin"
+                && let Some(builtin) = wrapper_builtin(function)
+            {
+                let mask = posted_argument_mask(builtin, arg_count);
+                if mask != 0 {
+                    return mask;
+                }
             }
             if let TypedExprKind::HostCall(import, _) = &function.body.kind
                 && import.callbacks
@@ -2401,6 +2528,68 @@ pub(crate) fn pinning_argument_mask(
             0
         }
         _ => 0,
+    }
+}
+
+/// M09: the position of the owned function that `MainThread.post` and `MainThread.after` hand to
+/// the process main thread, in a full call. That one fixed thread runs the function, so its
+/// `Effect::Pinned` stays there.
+fn posted_argument_mask(builtin: Builtin, arg_count: usize) -> u64 {
+    match (builtin, arg_count) {
+        (Builtin::MainThreadPost, 1) => 1,
+        (Builtin::MainThreadAfter, 2) => 2,
+        _ => 0,
+    }
+}
+
+/// W19, M09: which boundary the positions of `pinning_argument_mask` of `callee` are.
+/// `Routine.with_locked_thread` fixes the thread without saying which one it is.
+fn boundary_of(module: &CheckedModule, mut callee: &TypedExpr) -> Boundary {
+    while let TypedExprKind::Cast(inner)
+    | TypedExprKind::BorrowOperand(inner)
+    | TypedExprKind::Borrow(inner, false)
+    | TypedExprKind::Dereference(inner) = &callee.kind
+    {
+        callee = inner;
+    }
+    let builtin = match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => Some(instance.builtin),
+        TypedExprKind::Function(FunctionRef::User(id)) => wrapper_builtin(&module.functions[*id]),
+        _ => None,
+    };
+    if builtin == Some(Builtin::RoutineWithLockedThread) {
+        Boundary::Locked
+    } else {
+        Boundary::Entry
+    }
+}
+
+/// M09: whether `callee` is `Owned.function` (or its generated wrapper).
+fn owned_function_callee(module: &CheckedModule, callee: &TypedExpr) -> bool {
+    match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => {
+            instance.builtin == Builtin::OwnedFunction
+        }
+        TypedExprKind::Function(FunctionRef::User(id)) => {
+            wrapper_builtin(&module.functions[*id]) == Some(Builtin::OwnedFunction)
+        }
+        _ => false,
+    }
+}
+
+/// M09: whether the left side of `left |> right` is the owned function of `MainThread.post` or of
+/// `MainThread.after delay`.
+fn posted_pipe(module: &CheckedModule, right: &TypedExpr) -> bool {
+    let builtin_of = |callee: &TypedExpr| match &callee.kind {
+        TypedExprKind::Function(FunctionRef::Builtin(instance)) => Some(instance.builtin),
+        TypedExprKind::Function(FunctionRef::User(id)) => wrapper_builtin(&module.functions[*id]),
+        _ => None,
+    };
+    match &right.kind {
+        TypedExprKind::Call(callee, supplied) => {
+            builtin_of(callee) == Some(Builtin::MainThreadAfter) && supplied.len() == 1
+        }
+        _ => builtin_of(right) == Some(Builtin::MainThreadPost),
     }
 }
 
@@ -2569,7 +2758,9 @@ fn summarize_roots(
             (id, edges)
         })
         .collect();
-    let pinned_bit = bit(Effect::Pinned);
+    // The two effects that confine code to a thread spread over fewer edges than the others
+    // (`Boundary`), so each has a pass of its own below.
+    let confined: u32 = (1 << bit(Effect::Pinned)) | (1 << bit(Effect::MainThread));
     let mut bits: BTreeMap<usize, Bits> = BTreeMap::new();
     for component in components(&graph) {
         let members: BTreeSet<usize> = component.iter().copied().collect();
@@ -2645,13 +2836,13 @@ fn summarize_roots(
         }
         let mut union = Bits::default();
         for &id in &component {
-            union.0 |= locals[&id].bits.0 & !(1 << pinned_bit);
+            union.0 |= locals[&id].bits.0 & !confined;
             for &(callee, _, _) in &locals[&id].edges {
                 if members.contains(&callee) {
                     continue;
                 }
                 let mut callee_bits = bits[&callee];
-                callee_bits.0 &= !(1 << pinned_bit);
+                callee_bits.0 &= !confined;
                 if !open[callee] {
                     // A closed callee only calls the function values that its own reach creates.
                     callee_bits.0 &= !(1 << VALUE_CALL);
@@ -2685,7 +2876,7 @@ fn summarize_roots(
         // The witnesses: a direct source, else the smallest call of a callee outside the component
         // that has the bit, else breadth-first from those through the component's callers.
         for index in 0..BITS {
-            if index == pinned_bit || !union.contains(index) {
+            if confined & (1 << index) != 0 || !union.contains(index) {
                 continue;
             }
             let mut queue = VecDeque::new();
@@ -2728,14 +2919,21 @@ fn summarize_roots(
             }
         }
     }
-    if module.thread_bound && options.computed.contains(Effect::Pinned) {
+    for (effect, carry, enabled) in [
+        (Effect::Pinned, CARRY_PINNED, module.thread_bound),
+        (Effect::MainThread, CARRY_MAIN_THREAD, module.main_bound),
+    ] {
+        if !enabled || !options.computed.contains(effect) {
+            continue;
+        }
+        let confined_bit = bit(effect);
         let pinned_graph: BTreeMap<usize, Vec<usize>> = locals
             .iter()
             .map(|(&id, local)| {
                 let mut edges: Vec<usize> = local
                     .edges
                     .iter()
-                    .filter(|&&(_, _, carries)| carries)
+                    .filter(|&&(_, _, carries)| carries & carry != 0)
                     .map(|&(callee, _, _)| callee)
                     .collect();
                 edges.sort_unstable();
@@ -2748,11 +2946,11 @@ fn summarize_roots(
             let members: BTreeSet<usize> = component.iter().copied().collect();
             let mut has = false;
             for &id in &component {
-                if locals[&id].bits.contains(pinned_bit) {
+                if locals[&id].bits.contains(confined_bit) {
                     has = true;
                 }
                 for &(callee, _, carries) in &locals[&id].edges {
-                    if carries
+                    if carries & carry != 0
                         && !members.contains(&callee)
                         && pinned_has.get(&callee).copied().unwrap_or(false)
                     {
@@ -2763,7 +2961,7 @@ fn summarize_roots(
             for &id in &component {
                 pinned_has.insert(id, has);
                 if has {
-                    result.summaries[id].effects.insert(Effect::Pinned);
+                    result.summaries[id].effects.insert(effect);
                 }
             }
             if !has {
@@ -2772,8 +2970,8 @@ fn summarize_roots(
             let mut queue = VecDeque::new();
             for &id in &component {
                 let local = &locals[&id];
-                if let Some((span, why)) = local.first[pinned_bit] {
-                    result.witnesses[id][pinned_bit] = Some(Witness::Direct { span, why });
+                if let Some((span, why)) = local.first[confined_bit] {
+                    result.witnesses[id][confined_bit] = Some(Witness::Direct { span, why });
                     queue.push_back(id);
                     continue;
                 }
@@ -2781,28 +2979,29 @@ fn summarize_roots(
                     .edges
                     .iter()
                     .filter(|&&(callee, _, carries)| {
-                        carries
+                        carries & carry != 0
                             && !members.contains(&callee)
                             && pinned_has.get(&callee).copied().unwrap_or(false)
                     })
                     .min_by_key(|(_, span, _)| position(*span))
                 {
-                    result.witnesses[id][pinned_bit] = Some(Witness::Via { callee, span });
+                    result.witnesses[id][confined_bit] = Some(Witness::Via { callee, span });
                     queue.push_back(id);
                 }
             }
             while let Some(callee) = queue.pop_front() {
                 for &caller in &component {
-                    if result.witnesses[caller][pinned_bit].is_some() {
+                    if result.witnesses[caller][confined_bit].is_some() {
                         continue;
                     }
                     if let Some(&(_, span, _)) = locals[&caller]
                         .edges
                         .iter()
-                        .filter(|&&(target, _, carries)| carries && target == callee)
+                        .filter(|&&(target, _, carries)| carries & carry != 0 && target == callee)
                         .min_by_key(|(_, span, _)| position(*span))
                     {
-                        result.witnesses[caller][pinned_bit] = Some(Witness::Via { callee, span });
+                        result.witnesses[caller][confined_bit] =
+                            Some(Witness::Via { callee, span });
                         queue.push_back(caller);
                     }
                 }
@@ -3946,7 +4145,7 @@ mod tests {
 
     #[test]
     fn effect_names_are_sorted_and_round_trip() {
-        assert_eq!(Effect::ALL.len(), 15);
+        assert_eq!(Effect::ALL.len(), 16);
         let names: Vec<_> = Effect::ALL.iter().map(|effect| effect.name()).collect();
         let mut sorted = names.clone();
         sorted.sort_unstable();
@@ -3956,7 +4155,7 @@ mod tests {
             assert_eq!(effect as usize, bit(effect));
         }
         assert_eq!(Effect::from_name("pure"), None);
-        assert_eq!(EffectSet::ALL.iter().count(), 15);
+        assert_eq!(EffectSet::ALL.iter().count(), 16);
         assert_eq!(EffectSet::ALL.names(), names);
     }
 
@@ -3967,6 +4166,7 @@ mod tests {
             Effect::Alloc,
             Effect::Copy,
             Effect::Diverge,
+            Effect::MainThread,
             Effect::Pinned,
             Effect::Trap,
         ] {
@@ -4006,10 +4206,12 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins.
-        assert_eq!(Builtin::ALL.len(), 384);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path.
+        assert_eq!(Builtin::ALL.len(), 392);
         // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 173);
+        // M09 added 3 MainThread builtins, all of the effect `task`.
+        // M09 Phase 3 added 4 Anchor builtins of the shared anchors.
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 181);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 211);
     }
 
@@ -4017,10 +4219,10 @@ mod tests {
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 2);
-        assert_eq!(by(Effect::Os), 22);
+        assert_eq!(by(Effect::Os), 23);
         assert_eq!(by(Effect::Net), 7);
-        assert_eq!(by(Effect::Task), 17);
-        assert_eq!(by(Effect::Atomic), 96);
+        assert_eq!(by(Effect::Task), 20);
+        assert_eq!(by(Effect::Atomic), 100);
         assert_eq!(by(Effect::Rc), 18);
         assert_eq!(by(Effect::Debug), 3);
         assert_eq!(by(Effect::Gpu), 5);
@@ -4029,13 +4231,13 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 78);
+        assert_eq!(count(|facts| facts.alloc), 82);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 60);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 28);
+        assert_eq!(count(|facts| facts.trap), 61);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 29);
     }
 
     #[test]
@@ -4045,7 +4247,7 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 31);
+        assert_eq!(count(|facts| facts.callbacks), 34);
     }
 
     fn checked(source: &str) -> CheckedModule {

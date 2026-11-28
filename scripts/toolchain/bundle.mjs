@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { bundleRuntime } from './runtime.mjs';
+import { bundleRuntime, runtimeObjectCount } from './runtime.mjs';
 
 export const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const host = `${process.platform}-${process.arch}`;
@@ -163,8 +163,10 @@ export async function verify(destination) {
     if (!await exists(path.join(destination, ...file.split('/')))) { throw new Error(`Missing debugger support file: ${file}`); }
   }
   const runtime = JSON.parse(await readFile(path.join(destination, 'share/runtime/manifest.json'), 'utf8'));
-  if (runtime.format !== 2 || !/^[0-9a-f]{64}$/.test(runtime.resource_fingerprint) || runtime.objects.length !== 36) {
-    throw new Error('Incomplete prebuilt runtime inventory: expected numeric/math and three C combinations at O0-O3.');
+  if (runtime.format !== 2 || !/^[0-9a-f]{64}$/.test(runtime.resource_fingerprint)
+    || runtime.objects.length !== runtimeObjectCount(process.platform)) {
+    throw new Error('Incomplete prebuilt runtime inventory: expected numeric/math and three C combinations at O0-O3'
+      + ' (and on macOS the report destination and the two reporting combinations with cpu.c).');
   }
   run(path.join(destination, 'bin', `tsuzuri${suffix}`), ['--version']);
   console.log(`Verified ${host}: ${files.length} files, ${manifest.id}`);
