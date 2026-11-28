@@ -6978,6 +6978,62 @@ fn subsystem_link_args(subsystem: Option<Subsystem>, msvc: bool) -> Vec<OsString
     }
 }
 
+/// Reads at most `limit` bytes from `full`, rejecting regular files larger than `limit` before
+/// allocating or reading them into memory.
+fn read_bounded_resource(
+    full: &Path,
+    relative: &Path,
+    limit: usize,
+    over_limit: &str,
+    compiled_rc: bool,
+) -> Result<Vec<u8>, Diagnostic> {
+    let io_fail = |error: io::Error| {
+        if compiled_rc {
+            io_error("read compiled .res", full, error)
+        } else {
+            driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': {error}",
+                    relative.display()
+                ),
+            )
+        }
+    };
+    let too_large = || {
+        driver_error_of(
+            DiagnosticKind::WindowsResourceInvalid,
+            format!("'{}' is {over_limit}", relative.display()),
+        )
+    };
+    let file = fs::File::open(full).map_err(io_fail)?;
+    let metadata = file.metadata().map_err(io_fail)?;
+    if !metadata.is_file() {
+        return Err(driver_error_of(
+            DiagnosticKind::IoFailure,
+            format!(
+                "cannot read windows resource '{}': not a regular file",
+                relative.display()
+            ),
+        ));
+    }
+    if metadata.len() > limit as u64 {
+        return Err(too_large());
+    }
+    let cap = usize::try_from(metadata.len())
+        .unwrap_or(limit)
+        .min(limit)
+        .saturating_add(1);
+    let mut bytes = Vec::with_capacity(cap);
+    io::Read::take(file, (limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io_fail)?;
+    if bytes.len() > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
+}
+
 /// W10: builds and merges all `[windows]` resources (`manifest`, `icon`, `version`, `resources`)
 /// into `directory/resources.res`, returning its path and exact bytes for the build cache key.
 fn windows_resources(
@@ -6993,36 +7049,6 @@ fn windows_resources(
         .as_ref()
         .map_or_else(|| Path::new("."), |package| package.root.as_path());
     let root = crate::cache::real_path(root_raw).unwrap_or_else(|_| root_raw.to_path_buf());
-    let read_input = |relative: &Path| -> Result<Vec<u8>, Diagnostic> {
-        let full = root.join(relative);
-        let metadata = fs::metadata(&full).map_err(|error| {
-            driver_error_of(
-                DiagnosticKind::IoFailure,
-                format!(
-                    "cannot read windows resource '{}': {error}",
-                    relative.display()
-                ),
-            )
-        })?;
-        if !metadata.is_file() {
-            return Err(driver_error_of(
-                DiagnosticKind::IoFailure,
-                format!(
-                    "cannot read windows resource '{}': not a regular file",
-                    relative.display()
-                ),
-            ));
-        }
-        fs::read(&full).map_err(|error| {
-            driver_error_of(
-                DiagnosticKind::IoFailure,
-                format!(
-                    "cannot read windows resource '{}': {error}",
-                    relative.display()
-                ),
-            )
-        })
-    };
     let invalid = |relative: &Path, detail: String| -> Diagnostic {
         driver_error_of(
             DiagnosticKind::WindowsResourceInvalid,
@@ -7032,12 +7058,24 @@ fn windows_resources(
 
     let mut inputs = Vec::new();
     if let Some(manifest_rel) = &settings.manifest {
-        let bytes = read_input(manifest_rel)?;
+        let bytes = read_bounded_resource(
+            &root.join(manifest_rel),
+            manifest_rel,
+            crate::winres::MAX_MANIFEST_BYTES,
+            "not a valid manifest: exceeds the 1 MiB limit",
+            false,
+        )?;
         let res = crate::winres::manifest(&bytes).map_err(|err| invalid(manifest_rel, err))?;
         inputs.push(("[windows] manifest".to_owned(), vec![res]));
     }
     if let Some(icon_rel) = &settings.icon {
-        let bytes = read_input(icon_rel)?;
+        let bytes = read_bounded_resource(
+            &root.join(icon_rel),
+            icon_rel,
+            crate::winres::MAX_INPUT_BYTES,
+            "not an icon file: exceeds the 64 MiB limit",
+            false,
+        )?;
         let res = crate::winres::icon(&bytes).map_err(|err| invalid(icon_rel, err))?;
         inputs.push(("[windows] icon".to_owned(), res));
     }
@@ -7086,10 +7124,21 @@ fn windows_resources(
                 &mut cmd,
                 "compiling a .rc resource needs llvm-rc, rc.exe, or zig rc; set TSUZURI_RC or use the bundled toolchain",
             )?;
-            fs::read(&staged_res)
-                .map_err(|error| io_error("read compiled .res", &staged_res, error))?
+            read_bounded_resource(
+                &staged_res,
+                relative,
+                crate::winres::MAX_INPUT_BYTES,
+                "not a 32-bit .res file: compiled output exceeds the 64 MiB limit",
+                true,
+            )?
         } else {
-            read_input(relative)?
+            read_bounded_resource(
+                &full,
+                relative,
+                crate::winres::MAX_INPUT_BYTES,
+                "not a 32-bit .res file: exceeds the 64 MiB limit",
+                false,
+            )?
         };
         let parsed = crate::winres::read(&res_bytes).map_err(|err| invalid(relative, err))?;
         inputs.push((format!("'{}'", relative.display()), parsed));
@@ -9907,6 +9956,51 @@ mod tests {
             (path_rc_exe.into_os_string(), Vec::new())
         );
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_bounded_resource_rejects_oversized_files_before_reading() {
+        let root = env::temp_dir().join(format!(
+            "tsuzuri-w10-bounded-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let big = root.join("huge.manifest");
+        let file = fs::File::create(&big).unwrap();
+        file.set_len((crate::winres::MAX_MANIFEST_BYTES + 1) as u64)
+            .unwrap();
+        drop(file);
+
+        let err = read_bounded_resource(
+            &big,
+            Path::new("huge.manifest"),
+            crate::winres::MAX_MANIFEST_BYTES,
+            "not a valid manifest: exceeds the 1 MiB limit",
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, "E2001");
+        assert_eq!(err.kind, Some(DiagnosticKind::WindowsResourceInvalid.id()));
+        assert!(err.message.contains("'huge.manifest'"), "{}", err.message);
+
+        let small = root.join("ok.manifest");
+        fs::write(&small, b"<assembly/>").unwrap();
+        assert_eq!(
+            read_bounded_resource(
+                &small,
+                Path::new("ok.manifest"),
+                crate::winres::MAX_MANIFEST_BYTES,
+                "not a valid manifest: exceeds the 1 MiB limit",
+                false,
+            )
+            .unwrap(),
+            b"<assembly/>"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
