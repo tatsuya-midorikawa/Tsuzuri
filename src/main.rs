@@ -1872,10 +1872,10 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
         (None, None) => driver::Profile::None,
     };
     profile.validate(options)?;
-    if let Some(error) = output
-        .as_deref()
-        .and_then(|output| driver::bindings_output_error(options.emit, output))
-    {
+    if let Some(error) = output.as_deref().and_then(|output| {
+        driver::bindings_output_error(options.emit, output)
+            .or_else(|| driver::shared_output_error(options, output))
+    }) {
         return Err(error);
     }
     links.check_shape()?;

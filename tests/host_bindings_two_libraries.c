@@ -43,12 +43,16 @@ int main(void) {
     const int64_t values[] = {1, 2, 39};
     CHECK(tz_total(values, 3) == 42);
 
+#ifndef TSUZURI_NO_TRAP_MODE
     /* The trap record of libb's --trap-mode return. */
     tsuzuri_trap_info trap;
     int64_t result = 0;
     CHECK(tsuzuri_try_total(&trap, &result, values, 3) == 0 && result == 42);
     CHECK(tsuzuri_try_divide(&trap, &result, 7, 0) == 1 && trap.kind == 1);
     CHECK(tsuzuri_try_divide(&trap, &result, 84, 2) == 0 && result == 42);
+#else
+    CHECK(tz_divide(84, 2) == 42);
+#endif
 
 #ifdef TSUZURI_CPP_BINDINGS
     const tz_record_6Common_3Geo_5Point made = tsuzuri::libb::origin(4);
@@ -57,6 +61,7 @@ int main(void) {
     CHECK(tsuzuri::libb::total(more) == 42);
     CHECK(tsuzuri::liba::greet(u"Tz").view() == u"Tz");
     CHECK(tsuzuri::libb::echo("ok").view() == "ok");
+#ifndef TSUZURI_NO_TRAP_MODE
     bool trapped = false;
     try {
         tsuzuri::libb::divide(1, 0);
@@ -64,6 +69,9 @@ int main(void) {
         trapped = error.kind() == 1;
     }
     CHECK(trapped);
+#else
+    CHECK(tsuzuri::libb::divide(84, 2) == 42);
+#endif
 #endif
 
     if (failures == 0) puts("two libraries passed");

@@ -368,6 +368,25 @@ pub(crate) fn windows_abi(ir: String, module: &CheckedModule, executable: bool) 
     with_coff_comdats(&traps::with_unwind_tables(&output))
 }
 
+const WEAK_ALLOC_HEADER: &str = "define weak ptr @tsuzuri_alloc(i64 %size) nounwind";
+const WEAK_FREE_HEADER: &str = "define weak void @tsuzuri_free(ptr %value) nounwind";
+
+/// W05: the copy of `tsuzuri_alloc` and `tsuzuri_free` that a Windows DLL exports. `link.exe`
+/// cannot export a weak definition without COMDAT and LLD names a weak import `.weak.<name>.default.<symbol>`,
+/// so the DLL defines them strongly. Only a Windows `--emit shared` build calls this; every other
+/// output keeps the weak definitions that let several Tsuzuri objects share one host.
+pub(crate) fn with_exported_allocator(ir: String) -> String {
+    let mut output = String::with_capacity(ir.len() + 16);
+    for line in ir.lines() {
+        if line.starts_with(WEAK_ALLOC_HEADER) || line.starts_with(WEAK_FREE_HEADER) {
+            let _ = writeln!(output, "define dllexport {}", &line["define weak ".len()..]);
+        } else {
+            let _ = writeln!(output, "{line}");
+        }
+    }
+    output
+}
+
 /// W39: LLVM writes a `weak` definition for COFF as a weak external whose default is named after the
 /// object (`.weak.<name>.default.<first symbol>`), and lld-link and link.exe reject a second one. The
 /// same definition in a `comdat any` (selectany) section is kept once, as ELF and Mach-O keep one weak
@@ -12057,5 +12076,65 @@ define i64 @\"q (r1)\"(i64 %x) alwaysinline {\n}\ndefine i64 @é1(i64 %x) always
             windows_abi(trap_posix.replace('\n', "\r\n"), &module, true),
             trap_win
         );
+    }
+
+    #[test]
+    fn windows_shared_libraries_define_the_allocator_strongly() {
+        for raw in [
+            host_abi::allocator().to_owned(),
+            host_abi::native_allocator(),
+        ] {
+            assert!(raw.lines().any(|line| line.starts_with(WEAK_ALLOC_HEADER)));
+            assert!(raw.lines().any(|line| line.starts_with(WEAK_FREE_HEADER)));
+            let exported = with_exported_allocator(raw.clone());
+            assert!(exported.contains("define dllexport ptr @tsuzuri_alloc(i64 %size) nounwind {"));
+            assert!(
+                exported.contains("define dllexport void @tsuzuri_free(ptr %value) nounwind {")
+            );
+            assert!(!exported.contains("define weak ptr @tsuzuri_alloc("));
+            assert!(!exported.contains("define weak void @tsuzuri_free("));
+            if raw.contains("@tsuzuri_trap_hooks = weak ") {
+                assert!(exported.contains("@tsuzuri_trap_hooks = weak "));
+            }
+        }
+
+        let module = analyze(
+            "export def make_tag :: i64 -> [ubyte]\nfn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)\n",
+        )
+        .unwrap();
+        let options = EmitOptions {
+            entry: Entry::Library,
+            wasm: false,
+            debug_output: false,
+            runtime_objects: false,
+            wasm_simd128: false,
+            allocator: Allocator::Small,
+            f16: F16Path::Soft,
+        };
+        let win_obj = emit_with_export_style(&module, options, ExportStyle::Dllexport).unwrap();
+        assert!(
+            win_obj.contains("define weak ptr @tsuzuri_alloc(i64 %size) nounwind uwtable comdat {")
+        );
+        assert!(
+            win_obj
+                .contains("define weak void @tsuzuri_free(ptr %value) nounwind uwtable comdat {")
+        );
+        let win_dll = with_exported_allocator(win_obj);
+        assert!(
+            win_dll.contains(
+                "define dllexport ptr @tsuzuri_alloc(i64 %size) nounwind uwtable comdat {"
+            )
+        );
+        assert!(
+            win_dll.contains(
+                "define dllexport void @tsuzuri_free(ptr %value) nounwind uwtable comdat {"
+            )
+        );
+        assert!(win_dll.contains("define weak hidden void @tz_small_stats("));
+        assert!(win_dll.contains("@tz_small_shared = weak hidden global"));
+        assert!(win_dll.contains("@__multi3("));
+        for line in win_dll.lines().filter(|line| line.contains("@__multi3(")) {
+            assert!(line.starts_with("define weak hidden "), "{line}");
+        }
     }
 }

@@ -7,7 +7,7 @@
 | 規模 | L（driver の Windows のリンクの分岐、IR の 1 か所の書き換え、import library の sidecar とキャッシュ、3 つの E2E suite と CI の step、文書） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | doing |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E13 の DLL の方針、G10 の後続）。D1（出力の形）は承認前に着手しない。ほかの決定は既定案 |
 | 手本にする既存実装 | `src/driver.rs` の `link_shared`（macOS・Linux の分岐）・`shared_exports`・`pdb_link_args`・`pdb_path`・`BuildOptions::validate_shared`、`src/cache.rs` の `hash_output_path`、`src/llvm.rs` の `windows_abi`、`tests/windows.mjs`（object と IR を C のホストへつなぐ段）、`tests/host_bindings.mjs`、`tests/targets.mjs` の共有ライブラリの段 |

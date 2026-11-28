@@ -1371,7 +1371,7 @@ impl BuildOptions {
         Ok(())
     }
 
-    /// The options of `--emit shared` (E13 Phase 2): a native library that hosts load at run time.
+    /// The options of `--emit shared` (E13 Phase 2, W05): a native library that hosts load at run time.
     fn validate_shared(self) -> Result<(), Diagnostic> {
         if self.target != Target::Native {
             return Err(driver_error_of(
@@ -1379,10 +1379,10 @@ impl BuildOptions {
                 "'--emit shared' requires '--target native'",
             ));
         }
-        if self.platform().windows() {
+        if self.platform().windows() && self.trap_return {
             return Err(driver_error_of(
                 DiagnosticKind::OptionUnsupportedPlatform,
-                "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL",
+                "--trap-mode return is not supported for Windows shared libraries yet: its runtime needs POSIX threads and unwind tables; build without --trap-mode return",
             ));
         }
         if self.allocator == llvm::Allocator::Host {
@@ -1432,7 +1432,10 @@ impl BuildOptions {
                 && matches!(self.emit, Emit::Executable | Emit::Shared)
             {
                 ("macOS", "its dSYM comes from dsymutil")
-            } else if platform.msvc() && !cfg!(windows) && self.emit == Emit::Executable {
+            } else if platform.msvc()
+                && !cfg!(windows)
+                && matches!(self.emit, Emit::Executable | Emit::Shared)
+            {
                 ("Windows", "its PDB comes from the MSVC linker")
             } else {
                 return Ok(());
@@ -1599,6 +1602,29 @@ pub fn bindings_output_error(emit: Emit, output: &Path) -> Option<Diagnostic> {
 /// The TypeScript declarations next to the JavaScript bindings `output`: `<name>.d.mts`.
 pub fn bindings_sidecar_path(output: &Path) -> PathBuf {
     output.with_extension("d.mts")
+}
+
+/// W05: the error for an output path that a Windows shared library cannot use. Its import library
+/// is written next to it as `<stem>.lib`, and the native bindings look for `<stem>.dll`.
+pub fn shared_output_error(options: BuildOptions, output: &Path) -> Option<Diagnostic> {
+    if options.emit != Emit::Shared
+        || options.target != Target::Native
+        || !options.platform().windows()
+    {
+        return None;
+    }
+    let stem = output.file_stem().and_then(OsStr::to_str);
+    let is_dll = output
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("dll"));
+    if is_dll && stem.is_some_and(|stem| !stem.is_empty()) {
+        return None;
+    }
+    Some(driver_error_of(
+        DiagnosticKind::OutputExtensionInvalid,
+        "a Windows shared library must end with '.dll'; its import library is written next to it as '<stem>.lib'",
+    ))
 }
 
 /// Stacks wrap below address 0, which is always out of bounds on wasm64 and on
@@ -4397,6 +4423,9 @@ fn build_complete(
         return build_bindings(module, project, output, options)
             .map(|()| (Vec::new(), Vec::new(), Vec::new()));
     }
+    if let Some(error) = shared_output_error(options, output) {
+        return Err(error);
+    }
     // B10: a program that calls `Domain.run` runs on the tracked heap of src/runtime/trap.c, whose
     // frames contain its traps; a build that cannot hold them is rejected at the first call.
     let domain = !crate::check::domain_calls(module).is_empty();
@@ -4679,6 +4708,9 @@ fn build_complete(
         && !(options.emit == Emit::Header || options.emit.is_kernel())
     {
         text = llvm::windows_abi(text, module, options.emit == Emit::Executable);
+        if options.emit == Emit::Shared {
+            text = llvm::with_exported_allocator(text);
+        }
         if options.debug_info && codeview_for(platform, &tool("TSUZURI_CLANG", "clang")) {
             text = llvm::with_codeview(text);
         }
@@ -5019,9 +5051,15 @@ fn build_complete(
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
     }
+    let import_library =
+        (platform.windows() && options.emit == Emit::Shared).then(|| output.with_extension("lib"));
+    if let Some(import_library) = &import_library {
+        protect_sources(project, import_library)?;
+        protect_links(links, import_library)?;
+    }
     let pdb = (options.debug_info
         && options.target == Target::Native
-        && options.emit == Emit::Executable
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
         && msvc_linker_for(platform))
     .then(|| pdb_path(output));
     if let Some(pdb) = &pdb {
@@ -5035,13 +5073,28 @@ fn build_complete(
     fs::create_dir_all(parent)
         .map_err(|error| io_error("create output directory", parent, error))?;
     let mut temporary = TemporaryDirectory::new(parent)?;
-    let artifact = temporary
-        .path
-        .join(if options.emit == Emit::Executable && platform.windows() {
-            "artifact.exe"
-        } else {
-            "artifact"
-        });
+    let shared_staging = temporary.path.join("shared");
+    if platform.windows() && options.emit == Emit::Shared {
+        fs::create_dir_all(&shared_staging)
+            .map_err(|error| io_error("create shared staging directory", &shared_staging, error))?;
+    }
+    let artifact = if platform.windows() && options.emit == Emit::Shared {
+        shared_staging.join(
+            output
+                .file_name()
+                .unwrap_or_else(|| OsStr::new("artifact.dll")),
+        )
+    } else if options.emit == Emit::Executable && platform.windows() {
+        temporary.path.join("artifact.exe")
+    } else {
+        temporary.path.join("artifact")
+    };
+    let staged_import = shared_staging.join(
+        import_library
+            .as_deref()
+            .and_then(Path::file_name)
+            .unwrap_or_else(|| OsStr::new("artifact.lib")),
+    );
     let mut messages = Vec::new();
     // The merge of a profile comes first: the cache key records the bytes that Clang will read.
     let staged_profile = profile::prepare_profile(
@@ -5083,6 +5136,9 @@ fn build_complete(
     }
     if dwarf_sidecar.is_some() {
         cache_paths.insert("dwarf".into(), staged_dwarf.clone());
+    }
+    if import_library.is_some() {
+        cache_paths.insert("import".into(), staged_import.clone());
     }
     if pdb.is_some() {
         cache_paths.insert("pdb".into(), staged_pdb.clone());
@@ -5881,7 +5937,9 @@ fn build_complete(
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang, link_extras)?;
         }
-        if let Some(pdb) = &pdb {
+        if options.emit == Emit::Executable
+            && let Some(pdb) = &pdb
+        {
             clang.args(pdb_link_args(&staged_pdb, pdb, &temporary.path)?);
         }
         if fast
@@ -5931,8 +5989,19 @@ fn build_complete(
                 macos_choice,
                 links,
                 link_extras,
-                (&object, native_runtime.then_some(runtime_object.as_path())),
-                (&artifact, output),
+                (
+                    &object,
+                    native_runtime.then_some(runtime_object.as_path()),
+                    net_runtime,
+                    os_runtime,
+                ),
+                (
+                    &artifact,
+                    output,
+                    &staged_import,
+                    pdb.as_deref()
+                        .map(|published| (staged_pdb.as_path(), published)),
+                ),
                 &temporary.path,
                 &mut messages,
             )?;
@@ -6219,6 +6288,7 @@ fn build_complete(
                 .map(|path| (&staged_overflow, path)),
         )
         .chain(dwarf_sidecar.as_ref().map(|path| (&staged_dwarf, path)))
+        .chain(import_library.as_ref().map(|path| (&staged_import, path)))
         .chain(pdb.as_ref().map(|path| (&staged_pdb, path)))
         .chain(profile_writer.as_ref().map(|path| (&staged_writer, path)))
         .collect();
@@ -6271,7 +6341,17 @@ pub(crate) fn shared_exports(ir: &str, module: &CheckedModule, trap_return: bool
     symbols
 }
 
-/// Links the object of `--emit shared` (E13 Phase 2) into a shared library that exports only the
+/// W05: the module-definition file of a Windows DLL: its file name, so that the import library
+/// names the DLL that is published, and the exports of `shared_exports`.
+fn module_definition(library: &str, symbols: &[String]) -> String {
+    let mut text = format!("LIBRARY \"{library}\"\nEXPORTS\n");
+    for symbol in symbols {
+        text.push_str(&format!("    {symbol}\n"));
+    }
+    text
+}
+
+/// Links the object of `--emit shared` (E13 Phase 2, W05) into a shared library that exports only the
 /// public C ABI and resolves every symbol at link time, like an executable.
 #[allow(clippy::too_many_arguments)]
 fn link_shared(
@@ -6280,63 +6360,106 @@ fn link_shared(
     macos_choice: MacosChoice,
     links: &LinkInputs,
     link_extras: LinkExtras<'_>,
-    (object, runtime): (&Path, Option<&Path>),
-    (artifact, output): (&Path, &Path),
+    (object, runtime, net_runtime, os_runtime): (&Path, Option<&Path>, bool, bool),
+    (artifact, output, staged_import, pdb): (&Path, &Path, &Path, Option<(&Path, &Path)>),
     temporary: &Path,
     messages: &mut Vec<String>,
 ) -> Result<(), Diagnostic> {
-    let list = temporary.join("exports.txt");
     let file_name = output
         .file_name()
         .and_then(OsStr::to_str)
         .unwrap_or("library");
     let platform = options.platform();
-    let mut linker = Command::new(tool("TSUZURI_CLANG", "clang"));
+    let clang_program = tool("TSUZURI_CLANG", "clang");
+    let mut linker = Command::new(&clang_program);
     linker
         .args(target_args(platform, macos_choice))
         .args(sdk_args(platform)?)
         .args(final_link_args(platform)?);
-    if platform.mach_o() {
-        let text: String = symbols
-            .iter()
-            .map(|symbol| format!("_{symbol}\n"))
-            .collect();
-        fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
-        let mut exported = OsString::from("-Wl,-exported_symbols_list,");
-        exported.push(&list);
-        linker
-            .arg("-dynamiclib")
-            .arg(exported)
-            .arg(format!("-Wl,-install_name,@rpath/{file_name}"));
-    } else {
-        let text = format!(
-            "{{\n  global:\n{}  local: *;\n}};\n",
-            symbols
-                .iter()
-                .map(|symbol| format!("    {symbol};\n"))
-                .collect::<String>()
-        );
-        fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
-        let mut script = OsString::from("-Wl,--version-script=");
-        script.push(&list);
-        linker
-            .arg("-shared")
-            .arg(script)
-            .arg(format!("-Wl,-soname,{file_name}"))
-            .arg("-Wl,--no-undefined");
-    }
-    if options.debug_info {
-        linker.arg("-g");
-    }
-    linker.args(["-x", "none"]).arg(object);
-    if let Some(runtime) = runtime {
-        linker.arg(runtime).arg("-pthread");
-        // The runtime may load a WebGPU library with dlopen, which older glibc keeps in libdl.
-        if platform.linux() {
-            linker.arg("-ldl");
+    if platform.windows() {
+        let def_path = temporary.join("exports.def");
+        fs::write(&def_path, module_definition(file_name, symbols))
+            .map_err(|error| io_error("write module definition", &def_path, error))?;
+        let msvc_style = platform.msvc() && !bundled_launcher(&clang_program);
+        linker.arg("-shared");
+        if options.debug_info {
+            linker.arg("-g");
         }
+        if msvc_style {
+            let mut def_arg = OsString::from("/DEF:");
+            def_arg.push(&def_path);
+            let mut implib_arg = OsString::from("/IMPLIB:");
+            implib_arg.push(staged_import);
+            linker
+                .arg("-Xlinker")
+                .arg(def_arg)
+                .arg("-Xlinker")
+                .arg(implib_arg);
+            if let Some((staged_pdb, published_pdb)) = pdb {
+                linker.args(pdb_link_args(staged_pdb, published_pdb, temporary)?);
+            }
+        } else {
+            let mut implib_arg = OsString::from("--out-implib=");
+            implib_arg.push(staged_import);
+            linker.arg("-Xlinker").arg(implib_arg);
+        }
+        linker.args(["-x", "none"]).arg(object);
+        if !msvc_style {
+            linker.arg(&def_path);
+        }
+        if let Some(runtime) = runtime {
+            linker.arg(runtime);
+            if net_runtime {
+                linker.arg("-lws2_32");
+            }
+            if os_runtime {
+                linker.arg("-lbcrypt");
+            }
+        }
+    } else {
+        let list = temporary.join("exports.txt");
+        if platform.mach_o() {
+            let text: String = symbols
+                .iter()
+                .map(|symbol| format!("_{symbol}\n"))
+                .collect();
+            fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
+            let mut exported = OsString::from("-Wl,-exported_symbols_list,");
+            exported.push(&list);
+            linker
+                .arg("-dynamiclib")
+                .arg(exported)
+                .arg(format!("-Wl,-install_name,@rpath/{file_name}"));
+        } else {
+            let text = format!(
+                "{{\n  global:\n{}  local: *;\n}};\n",
+                symbols
+                    .iter()
+                    .map(|symbol| format!("    {symbol};\n"))
+                    .collect::<String>()
+            );
+            fs::write(&list, text).map_err(|error| io_error("write export list", &list, error))?;
+            let mut script = OsString::from("-Wl,--version-script=");
+            script.push(&list);
+            linker
+                .arg("-shared")
+                .arg(script)
+                .arg(format!("-Wl,-soname,{file_name}"))
+                .arg("-Wl,--no-undefined");
+        }
+        if options.debug_info {
+            linker.arg("-g");
+        }
+        linker.args(["-x", "none"]).arg(object);
+        if let Some(runtime) = runtime {
+            linker.arg(runtime).arg("-pthread");
+            // The runtime may load a WebGPU library with dlopen, which older glibc keeps in libdl.
+            if platform.linux() {
+                linker.arg("-ldl");
+            }
+        }
+        linker.arg("-lm");
     }
-    linker.arg("-lm");
     links.add_to(&mut linker, link_extras)?;
     linker.arg("-o").arg(artifact);
     collect_message(
@@ -8275,44 +8398,88 @@ mod tests {
             emit: Emit::Shared,
             ..BuildOptions::default()
         };
+        assert!(shared.validate().is_ok());
+        for options in [
+            BuildOptions {
+                allocator: llvm::Allocator::Counting,
+                ..shared
+            },
+            BuildOptions {
+                allocator: llvm::Allocator::Small,
+                ..shared
+            },
+            BuildOptions {
+                cpu: Cpu::Native,
+                ..shared
+            },
+        ] {
+            if options.cpu == Cpu::Native && native_cpu_flag(env::consts::ARCH).is_err() {
+                continue;
+            }
+            assert!(options.validate().is_ok(), "{options:?}");
+        }
         if cfg!(windows) {
             assert_eq!(
-                shared.validate().unwrap_err().message,
-                "'--emit shared' is not supported on Windows yet (G10); build an object with --emit object and link it into a DLL"
-            );
-        } else {
-            assert!(shared.validate().is_ok());
-            for options in [
                 BuildOptions {
                     trap_return: true,
                     trap_info: true,
-                    ..shared
-                },
-                BuildOptions {
-                    allocator: llvm::Allocator::Counting,
-                    ..shared
-                },
-                BuildOptions {
-                    cpu: Cpu::Native,
-                    ..shared
-                },
-            ] {
-                if options.cpu == Cpu::Native && native_cpu_flag(env::consts::ARCH).is_err() {
-                    continue;
-                }
-                assert!(options.validate().is_ok(), "{options:?}");
-            }
-            assert_eq!(
-                BuildOptions {
-                    allocator: llvm::Allocator::Host,
                     ..shared
                 }
                 .validate()
                 .unwrap_err()
                 .message,
-                "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc"
+                "--trap-mode return is not supported for Windows shared libraries yet: its runtime needs POSIX threads and unwind tables; build without --trap-mode return"
+            );
+        } else {
+            assert!(
+                BuildOptions {
+                    trap_return: true,
+                    trap_info: true,
+                    ..shared
+                }
+                .validate()
+                .is_ok()
             );
         }
+        let win_shared = BuildOptions {
+            triple: Some(Triple::X86_64WindowsGnu),
+            ..shared
+        };
+        assert!(win_shared.validate().is_ok());
+        assert_eq!(
+            BuildOptions {
+                trap_return: true,
+                ..win_shared
+            }
+            .validate()
+            .unwrap_err()
+            .message,
+            "--trap-mode return is not supported for Windows shared libraries yet: its runtime needs POSIX threads and unwind tables; build without --trap-mode return"
+        );
+        for valid in ["tag.dll", "TAG.DLL", "dir/my lib.dll"] {
+            assert!(
+                shared_output_error(win_shared, Path::new(valid)).is_none(),
+                "{valid}"
+            );
+        }
+        for invalid in ["tag.so", "tag.dylib", "tag", ".dll"] {
+            let err = shared_output_error(win_shared, Path::new(invalid)).expect(invalid);
+            assert_eq!(err.code, "E2000");
+            assert_eq!(
+                err.message,
+                "a Windows shared library must end with '.dll'; its import library is written next to it as '<stem>.lib'"
+            );
+        }
+        assert_eq!(
+            BuildOptions {
+                allocator: llvm::Allocator::Host,
+                ..shared
+            }
+            .validate()
+            .unwrap_err()
+            .message,
+            "--allocator host cannot be combined with --emit shared: a shared library resolves its symbols when it is linked; link the object into the host that defines tsuzuri_host_alloc, tsuzuri_host_free, and tsuzuri_host_realloc"
+        );
         assert_eq!(
             BuildOptions {
                 target: Target::Wasm32,
@@ -8581,7 +8748,28 @@ mod tests {
                 "tz_copy"
             ]
         );
+        let win_ir = "define dllexport i64 @tz_add(i64 %arg0) uwtable {\ndefine dllexport ptr @tsuzuri_alloc(i64 %size) nounwind uwtable comdat {\ndefine dllexport void @tsuzuri_free(ptr %value) nounwind uwtable comdat {\ndefine weak hidden void @tz_soft_op(ptr %0) uwtable comdat {\n";
+        assert_eq!(
+            shared_exports(win_ir, &module, false),
+            ["tsuzuri_alloc", "tsuzuri_free", "tz_add", "tz_copy"]
+        );
         directory.close().unwrap();
+    }
+
+    #[test]
+    fn windows_module_definitions_name_the_library_and_the_exports() {
+        let symbols: Vec<String> = ["tsuzuri_alloc", "tsuzuri_free", "tz_add", "tz_make_tag"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(
+            module_definition("tag.dll", &symbols),
+            "LIBRARY \"tag.dll\"\nEXPORTS\n    tsuzuri_alloc\n    tsuzuri_free\n    tz_add\n    tz_make_tag\n"
+        );
+        assert_eq!(
+            module_definition("my lib.dll", &symbols[..2]),
+            "LIBRARY \"my lib.dll\"\nEXPORTS\n    tsuzuri_alloc\n    tsuzuri_free\n"
+        );
     }
 
     #[test]

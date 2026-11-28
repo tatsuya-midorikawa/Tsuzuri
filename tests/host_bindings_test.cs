@@ -8,11 +8,11 @@ using System.Threading;
 using Tsuzuri.Bindings;
 
 string library = args[0];
-string trapLibrary = args[1];
+string? trapLibrary = args.Length > 1 ? args[1] : null;
 NativeLibrary.SetDllImportResolver(typeof(Native).Assembly, (name, _, _) => name switch
 {
     Native.LibraryName => NativeLibrary.Load(library),
-    NativeTrap.LibraryName => NativeLibrary.Load(trapLibrary),
+    NativeTrap.LibraryName when trapLibrary is not null => NativeLibrary.Load(trapLibrary),
     _ => IntPtr.Zero,
 });
 
@@ -145,17 +145,24 @@ unsafe
     Check(stats[2] == 0 && stats[0] == stats[1], $"live bytes {stats[2]}");
 }
 
-// --trap-mode return: a trap becomes an exception, and the next call runs normally.
-var trap = Throws<NativeTrap.TsuzuriTrapException>(() => NativeTrap.divide(1, 0), "divide by zero");
-Check(trap.Kind == 1 && trap.KindName == "integer division by zero" && trap.Message.StartsWith("trap: integer division by zero (site "), "trap");
-Check(NativeTrap.divide(-7, 2) == -3, "after a trap");
-Check(Throws<NativeTrap.TsuzuriTrapException>(() => NativeTrap.check(-1), "assert").KindName == "assertion failed", "assert");
-using (var after = NativeTrap.copy_text("after"))
+if (trapLibrary is not null)
 {
-    Check(after.ToString() == "after", "copy_text after a trap");
+    // --trap-mode return: a trap becomes an exception, and the next call runs normally.
+    var trap = Throws<NativeTrap.TsuzuriTrapException>(() => NativeTrap.divide(1, 0), "divide by zero");
+    Check(trap.Kind == 1 && trap.KindName == "integer division by zero" && trap.Message.StartsWith("trap: integer division by zero (site "), "trap");
+    Check(NativeTrap.divide(-7, 2) == -3, "after a trap");
+    Check(Throws<NativeTrap.TsuzuriTrapException>(() => NativeTrap.check(-1), "assert").KindName == "assertion failed", "assert");
+    using (var after = NativeTrap.copy_text("after"))
+    {
+        Check(after.ToString() == "after", "copy_text after a trap");
+    }
+    Check(NativeTrap.add(40, 2) == 42, "trap add");
+    Console.WriteLine($"csharp bindings passed (trap site {trap.Site})");
 }
-Check(NativeTrap.add(40, 2) == 42, "trap add");
-Console.WriteLine($"csharp bindings passed (trap site {trap.Site})");
+else
+{
+    Console.WriteLine("csharp bindings passed");
+}
 
 internal static unsafe partial class Stats
 {

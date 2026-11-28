@@ -475,8 +475,11 @@ fn hash_output_path(
         let name = output.file_name().unwrap_or_default();
         hash.field("shared-library-name", name.as_encoded_bytes());
     }
-    // A Windows debug executable names its PDB, `<output>.pdb`, without a directory (G16).
-    if options.platform().windows() && options.debug_info && options.emit == Emit::Executable {
+    // A Windows debug executable or shared library names its PDB, `<output>.pdb`, without a directory (G16, W05).
+    if options.platform().windows()
+        && options.debug_info
+        && matches!(options.emit, Emit::Executable | Emit::Shared)
+    {
         let pdb = crate::driver::pdb_path(output);
         let name = pdb.file_name().unwrap_or_default();
         hash.field("pdb-name", name.as_encoded_bytes());
@@ -762,7 +765,7 @@ impl BuildCache {
             for (name, fields) in files {
                 if !matches!(
                     name.as_str(),
-                    "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile"
+                    "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile" | "import"
                 ) {
                     return Err(invalid("invalid cache artifact name"));
                 }
@@ -889,7 +892,7 @@ impl BuildCache {
         for (name, file) in files {
             if !matches!(
                 name.as_str(),
-                "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile"
+                "artifact" | "traps" | "overflow" | "dwarf" | "pdb" | "profile" | "import"
             ) {
                 return Err(invalid("invalid cache artifact name"));
             }
@@ -1298,6 +1301,7 @@ mod tests {
         for sidecars in [
             &["traps", "dwarf"][..],
             &["traps", "pdb"],
+            &["traps", "import", "pdb"],
             &["traps", "profile"],
             &["traps", "overflow", "profile"],
         ] {

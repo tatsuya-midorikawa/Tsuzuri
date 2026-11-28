@@ -5,7 +5,8 @@ name: Windows MSVC
 # W1-W8 extend the gate of _features/_completed/G10-windows.md; the tiers in
 # Tsuzuri-Reference docs/compiler/platforms.md claims only what a step of this file checks.
 #   W1 cargo fmt, W2 cargo clippy, W4 the release build, W5 tests/windows.mjs, W6 tests/cache.mjs,
-#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, and W3 the Rust tests. Each host runs W3 in jobs of its own
+#   W7 tests/examples.mjs, W8 tests/wasm_threads.mjs, tests/host_bindings.mjs (W05 shared libraries and bindings),
+#   and W3 the Rust tests. Each host runs W3 in jobs of its own
 #   (`matrix.group` tests-N: cargo-nextest, in slices of the whole list, `--partition slice:N/M`: three on win32-x64, whose
 #   runner takes 1.7 times as long as Linux's for the same tests, and two on win32-arm64), next to the job `gate` with every
 #   other step, so a run takes about as long as its longest job (about 32 minutes; 70 to 105 in one job with `cargo test`,
@@ -197,6 +198,12 @@ jobs:
         run: |
           node tests/c_layout_by_value.mjs target/release/tsuzuri.exe
           if ($LASTEXITCODE -ne 0) { throw "c_layout_by_value.mjs failed: $LASTEXITCODE" }
+      # W05: Windows shared libraries (--emit shared) and C++, Python and C# host bindings.
+      - name: Shared libraries and host bindings (W05)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          PYTHON: python
+        run: node tests/host_bindings.mjs target/release/tsuzuri.exe
       # TZ02: tzroutine { } end to end on fibers.
       - name: tzroutine end to end (TZ02)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
