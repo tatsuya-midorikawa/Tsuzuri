@@ -196,6 +196,9 @@ try {
     twoRuns.push(
       [clangxx, "C++17", ["-std=c++17", ...twoFlags, "-x", "c++", twoHost, "-x", "none"]],
       [clangxx, "C++20 bindings", ["-std=c++20", "-DTSUZURI_CPP_BINDINGS", ...twoFlags, "-x", "c++", twoHost, "-x", "none"]],
+      ...(isWindows
+        ? [[clangxx, "C++20 bindings NO_STRICT", ["-std=c++20", "-DNO_STRICT", "-DTSUZURI_CPP_BINDINGS", ...twoFlags, "-x", "c++", twoHost, "-x", "none"]]]
+        : []),
     );
   }
   for (const [tool, label, args] of twoRuns) {

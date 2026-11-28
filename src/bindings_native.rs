@@ -1784,11 +1784,18 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
     });
     let mut output = banner("//");
     let win32_loader = if owned {
-        "#if defined(_WIN32) && !defined(TSUZURI_WIN32_LOADER_DECLARED)\n\
-         #define TSUZURI_WIN32_LOADER_DECLARED\n\
-         struct HINSTANCE__;\n\
-         extern \"C\" __declspec(dllimport) ::HINSTANCE__ *__stdcall GetModuleHandleW(const wchar_t *name);\n\
-         extern \"C\" __declspec(dllimport) std::intptr_t (__stdcall *__stdcall GetProcAddress(::HINSTANCE__ *module, const char *proc))();\n\
+        "#ifdef _WIN32\n\
+         #pragma push_macro(\"WIN32_LEAN_AND_MEAN\")\n\
+         #pragma push_macro(\"NOMINMAX\")\n\
+         #ifndef WIN32_LEAN_AND_MEAN\n\
+         #define WIN32_LEAN_AND_MEAN\n\
+         #endif\n\
+         #ifndef NOMINMAX\n\
+         #define NOMINMAX\n\
+         #endif\n\
+         #include <windows.h>\n\
+         #pragma pop_macro(\"NOMINMAX\")\n\
+         #pragma pop_macro(\"WIN32_LEAN_AND_MEAN\")\n\
          #endif\n\n"
     } else {
         ""
