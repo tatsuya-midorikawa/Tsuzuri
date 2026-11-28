@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Written by hand: the seven keys that dsymutil writes into the dSYM of an executable inside the Probe bundle
+     (CFBundleShortVersionString 0.1.0 and CFBundleVersion 1 come from the bundle).
+     Dsym.plist is `plutil -convert xml1 -o Dsym.plist Dsym.source.plist`. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>English</string>
+  <key>CFBundleIdentifier</key><string>com.apple.xcode.dsym.dev.example.probe</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundlePackageType</key><string>dSYM</string>
+  <key>CFBundleSignature</key><string>????</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+</dict>
+</plist>

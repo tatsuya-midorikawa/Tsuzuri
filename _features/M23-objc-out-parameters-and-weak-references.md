@@ -86,7 +86,7 @@ def main :: unit -> i32 = \() ->
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない（`grep -n '利用者が決めた点' _features/GUIDE.md`）。
 - Phase 1: D1・D2 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み、2026-11-26）。[M01](_completed/M01-objc-class-types.md) と [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
 - Phase 2: D8・D9 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み）、M01 が done。Phase 1 が done でなくてもよい。
-- 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
+- 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](_completed/M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
 - 環境: arm64 の macOS と Apple clang と SDK。Rust のテストはどのホストでも走る。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）・`--emit header`・`check --json` を `target/scratch/m23/base/` に保存する。`node scripts/repo-kb.mjs brief M23`。
 
@@ -476,7 +476,7 @@ def stop :: ref Controller -> unit = \controller ->
   - 内側が `__strong`（`NSNetServices.h:230` など）か `__unsafe_unretained` のものは今のとおり `// skipped`・`W2002`（理由の文案 `strong object out-parameter`・`unretained object out-parameter`）。`const` の物体のポインター（`const ObjectType []`）は ARC では `__unsafe_unretained` なので、この行に入る。`CFErrorRef *` は対象外。
   - `Result` への自動の写像はしない（D5）。`swift_error` から `Result` を返す Tsuzuri の包みを生成するかは M07 の後の Phase で決める。
 - [M05](M05-objc-exception-boundary.md): 書き戻しは `CopyOut` の表の中にあり、例外の経路では行われない。
-- [M03](M03-objc-classes-defined-in-tsuzuri.md)・[M09](M09-main-thread-dispatch-and-handles.md): 状態（`Anchor` の値）に `ObjC.Weak<C>` を置ける。M03 の IMP の引数の `ref mut Maybe<C>`（呼ばれる側が書く向き）は `objc_object_position` のまま。
+- [M03](M03-objc-classes-defined-in-tsuzuri.md)・[M09](_completed/M09-main-thread-dispatch-and-handles.md): 状態（`Anchor` の値）に `ObjC.Weak<C>` を置ける。M03 の IMP の引数の `ref mut Maybe<C>`（呼ばれる側が書く向き）は `objc_object_position` のまま。
 - [M04](M04-objc-blocks.md): Phase 2 が先なら、型引数を持つ std の record の仕組みを使える。
 
 ## 実装手順

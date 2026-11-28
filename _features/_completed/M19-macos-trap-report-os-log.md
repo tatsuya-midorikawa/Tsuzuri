@@ -7,11 +7,11 @@
 | 規模 | M |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-28。Apple の実行ファイル（`build --emit exe`・`--emit app`・`run`）は、標準エラーが閉じているか `/dev/null` のときだけ、トラップとランタイムの報告を unified logging（subsystem `dev.tsuzuri.runtime`、category `trap`・`runtime`）へ送る。端末・パイプ・ファイルへ書くバイト列と、ほかの OS・object・shared の出力は変わらない。「実装と検証（2026-11-28）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「配布 4（Finder から起動すると stderr は /dev/null で、トラップ・デッドロック・スタックのあふれの理由が消える。W04・W32 は POSIX の代替の送り先を退けている）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）は承認済み（2026-11-26）。要承認: subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。D2 の承認が記録されるまで、このチケットに着手しない。台帳は [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
-| 改善する劣位 | Objective-C・Swift（`NSLog`・`os_log` の文は、Finder から起動しても unified logging に残り、Console.app と `log show` で読める）比と、Windows の Tsuzuri（[W04](_completed/W04-windows-trap-report-lost.md) が標準エラーに書けない報告を `OutputDebugStringW` へ送る）比: Finder・Dock・`open` から起動した Tsuzuri のアプリでは、標準エラーが `/dev/null` で、トラップ・デッドロック・スタックのあふれの理由の文が消える。クラッシュレポートには `EXC_BREAKPOINT`（SIGTRAP）しか残らない |
-| 手本にする既存実装 | [W04](_completed/W04-windows-trap-report-lost.md)（`src/llvm_traps.rs` の `TRAP_WRITE_WINDOWS`、`src/llvm.rs` の `windows_abi` の置き換えと宣言の重複の防止、`src/runtime/tzroutine-windows.h` の `tzr_report`）、`src/driver.rs` の `stack_runtime`・`backtrace_runtime`（実行ファイルにだけ C のランタイムを足す。`backtrace_runtime` は IR の宣言を見る）と `compile_runtime_object`（ランタイムの object のキャッシュ）、`src/runtime/stack.c` の `tsuzuri_stack_scheduler_thread`（`hidden` の内部の `tsuzuri_` symbol）、`tests/stack_overflow.mjs`（実行ファイルを作って標準エラーを調べる E2E） |
+| 承認 | D-67 の分岐 7（W04 の対象外（W04:178）と W32 の 207・331 行が退けた POSIX の代替の送り先を、macOS に限って足す。D1）は承認済み（2026-11-26）。要承認: subsystem の名前（D2。D-55 の外の文字列だが、利用者が `log` で引く名前なので決定事項に書く）。D3〜D9 は既定案。D2 は 2026-11-28 に D-67 の委任（利用者の指示「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）で推奨の案に決めた。台帳は [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) |
+| 改善する劣位 | Objective-C・Swift（`NSLog`・`os_log` の文は、Finder から起動しても unified logging に残り、Console.app と `log show` で読める）比と、Windows の Tsuzuri（[W04](W04-windows-trap-report-lost.md) が標準エラーに書けない報告を `OutputDebugStringW` へ送る）比: Finder・Dock・`open` から起動した Tsuzuri のアプリでは、標準エラーが `/dev/null` で、トラップ・デッドロック・スタックのあふれの理由の文が消える。クラッシュレポートには `EXC_BREAKPOINT`（SIGTRAP）しか残らない |
+| 手本にする既存実装 | [W04](W04-windows-trap-report-lost.md)（`src/llvm_traps.rs` の `TRAP_WRITE_WINDOWS`、`src/llvm.rs` の `windows_abi` の置き換えと宣言の重複の防止、`src/runtime/tzroutine-windows.h` の `tzr_report`）、`src/driver.rs` の `stack_runtime`・`backtrace_runtime`（実行ファイルにだけ C のランタイムを足す。`backtrace_runtime` は IR の宣言を見る）と `compile_runtime_object`（ランタイムの object のキャッシュ）、`src/runtime/stack.c` の `tsuzuri_stack_scheduler_thread`（`hidden` の内部の `tsuzuri_` symbol）、`tests/stack_overflow.mjs`（実行ファイルを作って標準エラーを調べる E2E） |
 | 主な影響ファイル | `src/runtime/oslog-darwin.c`（新規）、`src/runtime/tzroutine.c`、`src/runtime/stack.c`、`src/runtime/cpu.c`、`src/llvm_traps.rs`、`src/llvm.rs`、`src/driver.rs`、`scripts/toolchain/runtime.mjs`、`tests/macos_report.mjs`（新規）、`.github/workflows/targets.yml`、`docs/architecture.md`、`docs/language.md`、`_tsuzuri/language-reference/compiler/platforms.md`、`_tsuzuri/language-reference/compiler/debugging.md`、`_tsuzuri/language-reference/compiler/native-interop.md` |
 
 ## 実装者向け早見
@@ -41,13 +41,13 @@ macOS の標準の記録先は unified logging（`os_log`）である。Objectiv
 
 ### 着手条件
 
-- D-67 の分岐 7（D1）は承認済みで、[GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている（2026-11-26）。subsystem の名前（D2）の承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
+- D-67 の分岐 7（D1）は承認済みで、[GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「利用者が決めた点」に記録されている（2026-11-26）。subsystem の名前（D2）の承認が記録されるまで、このチケットに着手しない。承認で名前が変わったら、このチケットの名前を直してから始める。
 - `node scripts/repo-kb.mjs brief M19`。P2 のチケットなので、着手前にその時点のコードと台帳に対してレビューを行い、指摘を反映してから実装する（GUIDE §0 の 2）。
 - 「現状」の再現を HEAD で繰り返し、同じ結果になることを確かめる。行番号は `grep -n` で取り直す。
 - macOS（arm64）の開発機で、`/usr/bin/log show` が sudo なしで自分のプロセスの記録を読める（起票時の機械では読めた）。
 - CI の macOS のランナー（`targets.yml` の `macos-15`）で `log show` が使えるかを、最初の PR の試しの段で確かめる。使えなければ、テスト計画の「差し替えの口」で判定を確かめ、`log show` の段は手元の確認にする（S4）。
 - 同梱の zig のツールチェーン（macOS のホストと、Linux のホストからの `--target aarch64-apple-darwin`）が `<os/log.h>` を含めて `src/runtime/oslog-darwin.c` をコンパイルできるかを確かめる。起票時は確かめていない（この機械に同梱のツールチェーンがなかった）。できなければ S3。
-- [W32](W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
+- [W32](../W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
 
 ### 停止条件
 
@@ -364,7 +364,7 @@ void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
 | D1 | macOS に限り、fd 2 が閉じている（`EBADF`）か `/dev/null` のときだけ、報告を `os_log` へ送る。端末・パイプ・ファイルへの出力は 1 byte も変えない。退けた案: 送らない（今の W04・W32 の判断のまま、GUI のアプリの報告が消え続ける）と、「設計」の採らない案（いつも送る、`syslog`、書き込みの失敗で送る） | 誰も読めない状態だけを選ぶので、今読める報告を変えない。unified logging は macOS の標準の記録先で、権限も設定も要らない（W04 の D1 が `OutputDebugStringW` を選んだ理由と同じ）。W32 が POSIX の送り先を退けた理由「設定と権限が要り、報告の契約にも当たらない」（W32:207）と「POSIX には標準の経路が無い」（W32:342）は、macOS の unified logging には当たらない。文も終わり方も変えないので、報告の契約にも触れない | 承認済み（2026-11-26。D-67 の分岐 7） |
-| D2 | subsystem は `dev.tsuzuri.runtime`、category は `trap`（生成コードの報告とスタックのあふれ）と `runtime`（tzroutine と CPU のランタイム）。退けた案: `OS_LOG_DEFAULT`（subsystem がなく Tsuzuri の報告だけを引けない）、プログラムごとの subsystem（bundle の識別子を知る手段が要る） | 利用者が `log show --predicate` と Console.app で引く名前で、文書に書く。逆 DNS の形（`os_log_create` の説明）。D-55 の登録の外の文字列だが、変えると利用者の引き方が壊れる。逆 DNS の元のドメイン（`tsuzuri.dev`）の持ち主は起票時に確かめていないので、承認の判断に含める | 要承認（承認前はこのチケットに着手しない。名前が変わったら仕様・テスト・文書を直す） |
+| D2 | subsystem は `dev.tsuzuri.runtime`、category は `trap`（生成コードの報告とスタックのあふれ）と `runtime`（tzroutine と CPU のランタイム）。退けた案: `OS_LOG_DEFAULT`（subsystem がなく Tsuzuri の報告だけを引けない）、プログラムごとの subsystem（bundle の識別子を知る手段が要る） | 利用者が `log show --predicate` と Console.app で引く名前で、文書に書く。逆 DNS の形（`os_log_create` の説明）。D-55 の登録の外の文字列だが、変えると利用者の引き方が壊れる。逆 DNS の元のドメイン（`tsuzuri.dev`）の持ち主は起票時に確かめていないので、承認の判断に含める | 承認済み（D-67 の委任で決定、2026-11-28。推奨の案のとおり。ドメインの持ち主は確かめていない: subsystem は記録の識別子で、名前の解決には使われない） |
 | D3 | 判定と送信はランタイムの C の新しいファイル `src/runtime/oslog-darwin.c` に置き、生成した `@tz.trap.write` はそれを呼ぶ。ほかのランタイムの C を連結しないプログラムにも、この小さな object を足す。退けた案: IR に `_os_log_impl` を直接書く（「設計」の採らない案。S3 のときの代案） | `os_log` はマクロで、引数の符号化を clang に任せられる。IR とランタイムの C が 1 つの実装を共有する。連結は stack.c・backtrace.c と同じ「IR が名前を持つ実行ファイルにだけ足す」形 | 既定案（実装者はこの案に従う） |
 | D4 | 判定は最初の報告のときに 1 回だけ行い、結果を覚える。constructor は足さない | 報告のない実行の費用を 0 にする。`dup2` で fd 2 を付け替えるプログラムにも、最初の報告の時点の状態で答える | 既定案（実装者はこの案に従う） |
 | D5 | 対象は Apple の実行ファイル（`build --emit exe`・`run`）だけ。object・共有ライブラリ・`--emit llvm`・`bitcode`・テストのランナーの実行ファイルは変えない | object を埋め込むホストは自分の標準エラーを持つ（stack.c・backtrace.c が実行ファイルにだけ入るのと同じ理由）。ランナーは子の標準エラーをパイプで受ける。出力が変わる範囲を最小にする | 既定案（実装者はこの案に従う） |
@@ -372,3 +372,77 @@ void tsuzuri_report_log(int32_t category, const char *text, int64_t length);
 | D7 | 対象の報告は、`@tz.trap.write`（トラップと W12 の `main` の後のコールバック）、`tzr_report` を通る tzroutine の 4 種、`tzr_async_lost`、スタックのあふれ、CPU の版の失敗。「対象外」の出力は変えない | プロセスを終わらせる報告だけを選ぶ。警告や利用者の出力は端末で読むためのもの | 既定案（実装者はこの案に従う） |
 | D8 | シグナルの中の報告（スタックのあふれ、`tzr_async_lost`）も送り、E2E の overflow の段で、止まらないことと代替スタックに収まることを測る。止まるなら S2 で止め、シグナルの中では送らない代案を人間に諮る | 起票時の 1 回の実測では、ハンドラーの中の最初の `os_log_create` と送信が動いた。GUI のアプリでいちばん理由の分からない終わり方なので、外す前に測る | 既定案（実装者はこの案に従う） |
 | D9 | 新しい環境変数・CLI・診断・manifest のキーを足さない。`OS_ACTIVITY_MODE=disable` などで OS が記録しないときは何も残らない | 自動の判定で足り、名前の登録（D-55）が要らない。OS の記録の設定に逆らわない | 既定案（実装者はこの案に従う） |
+| D10 | `src/runtime/oslog-darwin.c` は `<os/log.h>` を include せず、`os_log_with_type` の展開（`os_log_create`・`os_log_type_enabled`・`_os_log_impl` の宣言、`__TEXT,__oslogstring` の書式の文字列、`__builtin_os_log_format`）を自前で書く。送り元の image には `&__dso_handle` でなく `&_mh_execute_header` を渡す。退けた案: `<os/log.h>` を使う（同梱の zig のヘッダーに無く、同梱のツールチェーンでコンパイルも事前ビルドもできない。S3）、IR に `_os_log_impl` と引数の符号化を直接書く（「設計」の採らない案。符号化をコンパイラが写して持つ）、`__has_include` で 2 つの経路を持つ（ツールチェーンごとに別のコードになり、片方しか手元で確かめられない） | S3 が当たった（実装時に確かめた）。引数の符号化は clang の組み込みに任せたままなので D3 の理由は保たれ、Apple clang の `-O0` の IR で SDK のマクロと同じ符号化（`__os_log_helper_16_2_2_4_16_8_34`、18 バイトの領域）になることを比べた。zig のリンカーは `___dso_handle` を `__DATA` に置き、その番地で送った記録は `<compose failure [missing precomposed log]>` になって subsystem で引けない（実測）。`_mh_execute_header` はどちらのリンカーでもヘッダーを指し、この object は実行ファイルにだけ連結する | 委任で決定（2026-11-28） |
+| D11 | 改行で終わらない断片は 512 バイトの領域に貯め、改行で終わる断片が来たときに 1 件にして送る。領域は待たずに取る `atomic_flag` で守り、取れなかった呼び出しはその場で送る。退けた案: 断片ごとに 1 件送る（M17 の `@tz.weak.missing` の報告が接頭辞・名前・接尾辞の 3 件に分かれ、`log show` で 1 行として読めない） | 起票の後に M17 が `@tz.trap.write` を 3 回呼ぶ書き手を足した。標準エラーへは 1 行として出るので、記録も 1 件にする。待たないので、シグナルのハンドラー（スタックのあふれ）がほかの報告の途中に割り込んでも止まらない | 委任で決定（2026-11-28） |
+
+## 実装と検証（2026-11-28）
+
+Phase のないチケットなので、手順 1〜6 のすべてを 1 つのブランチ（`feat/m19-macos-trap-report-os-log`。M09・M15 と同じ PR にまとめる前の作業ブランチ）で実装した。D2 は D-67 の委任で推奨の案に決めた（GUIDE D-67 の「委任による決定（2026-11-28、M19）」）。
+
+### 着手前のレビュー（HEAD `faa091b2`）
+
+- 報告の書き手は起票時と同じで、M17 が足した `@tz.weak.missing`（`src/llvm.rs`。`@tz.trap.write` を 3 回呼ぶ）だけが増えていた。`@tz.trap.write` を通るので対象に入り、category は `trap` にした（D11）。fd 2 へ書くほかの所（`src/llvm_overflow.rs` の `--overflow-report`、`io.c`、GPU のランタイム）は対象外のまま。
+- `--trap-info` の実行ファイルの `@tz.trap.write` の定義の行には、B10 の `"frame-pointer"="all"` が付く。設計の「`TRAP_WRITE` がちょうど 1 回ある」は成り立たないので、`darwin_report` は定義の行でなく本体を照らして置き換える。
+- 言語リファレンスは別リポジトリ（Tsuzuri-Reference）へ移っている。「ドキュメント」の `_tsuzuri/language-reference/compiler/*.md` は `docs/compiler/*.md` に読み替えた。
+- 同梱のツールチェーン（この機械の `target/toolchain`、zig）で確かめると、`<os/log.h>` が無く（S3）、`__dso_handle` が Mach-O のヘッダーを指さなかった。D10 のとおり設計を直した。
+
+### 実装したもの
+
+- **ランタイムの C**（`src/runtime/oslog-darwin.c`、新規）: `tsuzuri_report_to_log()`（最初の呼び出しで `fstat(2)` を 1 回調べて覚える）と `tsuzuri_report_log(category, text, length)`（subsystem `dev.tsuzuri.runtime`、category `trap`／`runtime`、型 `Error`、`%{public}.*s`、末尾の改行を除く。D10・D11）。`TZ_REPORT_TEST_LOG` を定義したときだけ、記録の代わりにそのファイルへ `<category>\t<文>\n` を追記する（テスト計画の「差し替えの口」。コンパイラは定義しない）。
+- **生成コード**: `llvm_traps::TRAP_WRITE_DARWIN`・`DARWIN_REPORT_DECLARATIONS` と `llvm::darwin_report`。`@tz.trap.write` の本体を置き換え、2 つの `declare` を 1 回ずつ足す。書き手のない IR と、すでに通した IR はそのまま返す。
+- **driver**: `report_to_os_log`（Apple の native の `Emit::Executable`）のときだけ `darwin_report` を当てる。`report_runtime`（IR が `tsuzuri_report_` を持つか、tzroutine・stack・cpu のランタイムを連結する）のときに、単位 `report-darwin`（`-std=c11 -c -O1` と target の引数。`<cache>/runtime/` に保存、`--no-cache` は直接コンパイル）を連結し、`-DTZ_REPORT_OSLOG` を tzroutine.c か cpu.c を含む `native-c` の単位（`-DTZ_STACK_GUARD` の次）、`-g` なしの stack.c（最後の Clang の実行）、`-g` の `stack-debug` に足す。`src/test_runner.rs` は変えていない。
+- **ランタイムの C の呼び出し側**: `tzroutine.c` の POSIX の `tzr_report` と `tzr_async_lost`、`stack.c` の `tz_stack_fault` の 2 か所、`cpu.c` の `tz_cpu_unavailable`。どれも `#if defined(__APPLE__) && defined(TZ_REPORT_OSLOG)` の中だけ。
+- **事前ビルド**（`scripts/toolchain/runtime.mjs`）: macOS の束に `report-darwin` と、`-DTZ_REPORT_OSLOG` 付きの cpu を含む 2 組（mask 2・6）× O0〜O3 を足した（36 → 45 object。`runtimeObjectCount`。`bundle.mjs` の `verify` と `smoke.mjs` の数の検査も合わせた）。引数の列は、Clang の引数を記録する包みでドライバーの実際の列と照らした。
+- **テスト**: 単体 `darwin_trap_report_asks_the_runtime`（`src/llvm.rs`）、`tests/trap_locations.rs` の `emitted_ir_keeps_the_plain_report_writer_on_every_target`（`--emit llvm` はどの target でも書き手を変えない）、E2E `tests/macos_report.mjs` と `tests/macos_report_host.c`。`.github/workflows/targets.yml` の darwin-arm64 の `suites` に段「macOS reports in unified logging (M19)」を足し、README の「変更の種類 → テスト」に行を足した。
+
+### 検証（arm64 macOS 27.2、Apple clang 21、開発版 `target/debug/tsuzuri`）
+
+- **S1（変わらないこと）**: `tests/fixtures`・`examples` の `Main.tz` 214 個を、`--emit llvm`（native・`--target x86_64-unknown-linux-gnu`・`--target wasm32`）と `--emit object --no-cache`（native）、それぞれ `-O0`・`-O3` で、着手前の開発版と比べた。作れた 1,638 個（作れない組 74 個は前後で同じ）がすべて `cmp` で一致した。ランタイムの C は、`#include` を除いた `tzroutine.c`・`stack.c`・`cpu.c` を 7 つの構成（Linux、Windows、Apple、Apple＋`TZ_STACK_GUARD`＋`TZ_ASYNC_PREEMPT`、Linux＋`TZ_REPORT_OSLOG`、`TZR_SINGLE`、`TZR_JSPI`）で前処理した文が着手前と一致し、Apple＋`TZ_REPORT_OSLOG` だけが違うことを確かめた（21 組が一致、3 組が意図どおり違う）。
+- **単体**: `cargo test --locked --lib darwin_trap_report`（`running 1 test`、通過）。`--trap-info` の安定した番号と密な番号、`-g` あり・なし、`-O0`・`-O3`、ドライバーが実行ファイルに使う `emit_native_build_numbered` の IR、W12 の `@tz.callback.after_main` だけの IR で、置き換えの形・宣言が 1 回ずつ・冪等・決定的・書き手と 2 つの宣言のほかは 1 byte も変わらないことを確かめる。
+- **E2E**: `node tests/macos_report.mjs target/debug/tsuzuri` が `macos_report: 55 cases, 44 processes checked against unified logging`（同梱のツールチェーンを `TSUZURI_BUNDLED_CLANG` で与えると `56 cases, 45 processes`。高速バックエンドの段は、開発版に機能がないので飛ばした）。`-O0`・`-O3` で、トラップ（パイプ・ファイル・`/dev/null`・閉じた fd 2）、負の `WaitGroup`、スタックのあふれ（メインスレッドは 1 件、tzroutine は 1 件以上）、`main` の後のコールバック、デッドロック、無い `@weak` の関数（3 つの断片が 1 件）、CPU の版の失敗を確かめ、`-g`・`--no-cache`・codegen unit（`TSUZURI_CODEGEN_UNITS=split`）、`OS_ACTIVITY_MODE=disable`（記録 0 件）、`tsuzuri run`、`nm -u`（報告を持たない実行ファイルと object は `os_log`・`tsuzuri_report_` を参照しない）を足した。パイプとファイルの期待の文はソースの位置から手で書いた。記録は `--style ndjson` をプロセス ID で分け、パイプ・ファイルのプロセスは 0 件であることも最後に確かめる。
+- **S2（シグナルの中）**: `deep` と `routine`（`-O0`・`-O3`）を fd 2 が `/dev/null` で 20 回ずつ動かし、80 回すべてが SIGABRT で終わり（最長 269 ms）、すべてのプロセスに `trap: stack overflow` の記録が残った（`deep` は 40 回とも 1 件、`routine` は 1 件が 28 回・2 件が 12 回）。止まった実行と、代替スタックをあふれた形（SIGSEGV・SIGBUS で終わる）はなかった。
+- **S3・同梱のツールチェーン**: `tsuzuri-clang`（zig）で `oslog-darwin.c` がコンパイルでき、リンクした実行ファイルの記録が subsystem・category・文とも読めた（E2E の bundled の段。`_mh_execute_header` に直す前は `<compose failure>` になり、E2E が落ちた）。
+- **S4**: この機械では `log show` が子の記録を sudo なしで読めた。CI の `macos-15` のランナーでは未確認である。読めないときに備えて、E2E は SDK の `os_log` で書いた探りの記録が読めるかを先に確かめ、読めなければその旨を出して記録の検査だけを飛ばす。送り先の判定と 1 件の形は、`log show` に頼らない段（`tests/macos_report_host.c`。パイプ・ファイル・`/dev/null`・閉じた fd 2・`/dev/zero`）がどの機械でも確かめる。
+- **LaunchServices**: 早見のプログラムを最小の `.app`（`LSUIElement`）にして `open -W` で起動し、記録に `[dev.tsuzuri.runtime:trap] trap: integer division by zero at divz/Main.tz:1:34` が出た（手元で 1 回。残ったプロセスなし。記録のプロセスの名前は、同じ UUID の別の実行ファイルの名前で出た。「落とし穴」のとおり）。
+- **既存の suite**（開発版）: `stack_overflow.mjs`（22 cases）、`tzroutine.mjs`（179 runs）、`weak_import.mjs`、`cpu_dispatch.mjs`、`prebuilt_runtime.mjs`、`trap_boundary.mjs`、`trap_return.mjs`、`ffi_extensions.mjs`、`cache.mjs`、`macos_link_inputs.mjs`、`debug_info.mjs` が通過。
+- **T0・T1 ほか**: `cargo fmt --all -- --check` と `cargo clippy --locked --all-targets -- -D warnings` が通過。`cargo nextest run --locked` は `3754 tests run: 3754 passed (28 slow), 4 skipped`（`tests/trap_locations.rs` に 1 件を足す前の実行で、そのファイルの既存の 8 件を含む。足した 1 件は `cargo test --locked --test trap_locations emitted_ir_keeps` で通過（`running 1 test`、`1 passed; 8 filtered out`）。3 つの作業が同じ機械を使っていて負荷平均が 160 を超えていたので、時間は参考にならない）。完全な T2（関係しない node の suite）は、M09・M15 と合わせたブランチで実行する。
+- **文書**: `TSUZURI_BIN=… TSUZURI_REPO=… node scripts/check-docs.mjs docs/compiler/debugging.md docs/compiler/platforms.md docs/compiler/native-interop.md`（Tsuzuri-Reference）が `3 pages, 32 links, 6 checked examples, 8 native runs`。`node scripts/gen-docs.mjs --check --bin target/debug/tsuzuri`（11 blocks、0 stale）、`node scripts/check-cli-docs.mjs --bin target/debug/tsuzuri`（4 checks、0 failed）、`node scripts/check-guide-lite.mjs`（87 references、0 failed）、`sh scripts/check-runtime-includes.sh`（65 files）。
+
+### チケットから外れた判断
+
+- **`<os/log.h>` を使わない・`_mh_execute_header` を渡す**（D10）: S3 が当たったため。設計の C の `os_log_with_type(log, OS_LOG_TYPE_ERROR, "%{public}.*s", …)` は、同じ展開を自前で書いたものに替えた。
+- **断片をまとめる**（D11）: M17 の報告のため。
+- **`darwin_report` は本体を置き換える**: 定義の行に B10 の属性が付くため（「着手前のレビュー」）。`assert_eq!(…matches(TRAP_WRITE).count(), 1)` の代わりに、定義が 1 つで本体が `TRAP_WRITE` の本体と一致することを `assert!` する。
+- **`report-darwin` の単位はいつも自分の object**: 設計のとおりだが、`-g` なしでも最後の Clang の実行で一緒にコンパイルせず、`<cache>/runtime/` の object を連結する（設計の「連結」の節のとおり。stack.c の `-g` なしの経路とは違う）。
+- **事前ビルドの数の検査**: `bundle.mjs`・`smoke.mjs` が object の数を 36 に固定していたので、macOS だけ 45 にした（チケットは数の検査に触れていない）。束を作り直して確かめる検査（`scripts/toolchain/bundle.mjs`・`smoke.mjs`）は CI（`targets.yml`・`vscode.yml`）で走る。手元では束を作っていない。
+- **テストの追加**: `tests/trap_locations.rs` の 1 件（`--emit llvm` の書き手が変わらないこと。Linux の CI でも走る）、E2E の `weak`・`cpu`・`units`・`nocache`・`OS_ACTIVITY_MODE` の段はテスト計画にない追加。
+- **`.app` の段は CI に入れていない**（テスト計画のとおり）。
+
+### 更新した文書
+
+- `docs/language.md`「トラップ位置」: macOS の実行ファイルの送り先の段落。
+- `docs/architecture.md`: スタック枯渇の検知の後に「macOS の報告の送り先（M19）」の 3 段落、「事前ビルドしたランタイム」に macOS の 45 object。
+- `README.md`: 「変更の種類 → テスト」の表に 1 行（クイックスタート・特徴・CLI の概要は変えていない）。
+- `_features/GUIDE.md` D-67: 委任による決定（2026-11-28、M19）と、D-55 の外の名前の行。
+- Tsuzuri-Reference: `docs/compiler/debugging.md`（要点の 1 行と小節「Finder から起動したアプリの報告」）、`docs/compiler/platforms.md`（制限事項の 1 行）、`docs/compiler/native-interop.md`（「報告の出力先」の 1 行）。
+
+### 変更したファイル
+
+`src/runtime/oslog-darwin.c`（新規）、`src/runtime/tzroutine.c`、`src/runtime/stack.c`、`src/runtime/cpu.c`、`src/llvm_traps.rs`、`src/llvm.rs`、`src/driver.rs`、`scripts/toolchain/runtime.mjs`、`scripts/toolchain/bundle.mjs`、`scripts/toolchain/smoke.mjs`、`tests/macos_report.mjs`（新規）、`tests/macos_report_host.c`（新規）、`tests/trap_locations.rs`、`.github/workflows/targets.yml`、`README.md`、`docs/language.md`、`docs/architecture.md`、`_features/GUIDE.md`、このチケット。
+
+### 残っていること
+
+- CI の `macos-15` のランナーで `log show` が読めるか（S4）と、束の事前ビルドの object（45 個）が実際に照合されるかは、PR の `ci:full` の `targets.yml`・`vscode.yml` で確かめる。
+- `--emit app`（M15）の実行ファイル: 統合で確かめて済んだ（下の「統合時の追記」）。
+- Linux のホストからの `--target aarch64-apple-darwin` のリンクは、手元では確かめていない（`oslog-darwin.c` は SDK のヘッダーのうち C の標準のものと `<sys/stat.h>` だけを使う）。
+
+### 統合時の追記（2026-11-28、M09・M15 との統合）
+
+- **`--emit app`（M15）**: M15 の `build_app` はバンドルの実行ファイルを `Emit::Executable` の `build_complete_keyed` で作るので、`report_to_os_log` の条件を変えずに対象に入る。`[macos] bundle_id`・`ui_element = true` のプロジェクトを `--emit app --trap-info` で作り、`open -W` で起動すると、`[dev.tsuzuri.runtime:trap] trap: integer division by zero at …/Main.tz:1:34` の 1 件が残り、`codesign --verify --deep --strict` も通ることを確かめた。`tests/macos_report.mjs` に、この組み合わせの段（`open` で起動したバンドルの記録を、文とバンドルの中の実行ファイルのパスで探す。`TSUZURI_MACOS_BUNDLE_NO_OPEN=1` で飛ばせる）を足した。
+- **`MainThread`（M09）のランタイム**: `src/runtime/mainthread-darwin.c` の確保の失敗の報告（`Tsuzuri runtime: out of memory`）も、`TZ_REPORT_OSLOG` の下で同じ判定を通るようにした（category `runtime`）。`report_runtime` と C の単位の `-DTZ_REPORT_OSLOG` の条件に `main_thread_runtime` を足した。`MainThread` を使わないプログラムの単位の文字列と引数は変わらない。
+
+### レビュー対応（2026-11-28、PR #152 の Copilot レビュー）
+
+- **独立した報告が 1 件に混ざる**（`src/runtime/oslog-darwin.c`、D11 の改訂）: 断片を貯める領域がプロセスに 1 つで、断片の間に別のスレッドの報告やシグナルのハンドラーの報告が来ると、先の断片に続けて 1 件になり、後の呼び出しの category で送られた。C のランタイムの報告（`tzr_report`・`tzr_async_lost`・`stack.c`・`cpu.c`・`mainthread-darwin.c`）は、貯めた断片に触れない `tsuzuri_report_whole(category, text, length)` を呼ぶようにした（いつも 1 回の呼び出しで 1 件）。生成コードの `tsuzuri_report_log` は、貯めた断片を書いたスレッドを覚え、別のスレッドの断片は貯めずにその場で送る。
+- **テスト**: `tests/macos_report_host.c` に、断片の間に C のランタイムの報告と別のスレッドの報告が来る段を足した（3 件が別々の記録になる。直す前の実装では 1 件目と 2 件目が先の断片と混ざることを確かめた）。
+

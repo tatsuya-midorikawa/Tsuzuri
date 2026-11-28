@@ -27,3 +27,39 @@ instance Display<Error> {
 /// ```
 def token :: ref Anchor<'a> -> i64
 fn token anchor = anchor.token
+
+/// An owner of a value that every thread may read through its token (`Anchor.create_shared`,
+/// `Anchor.shared_token`, `Anchor.read_shared`, M09): a thread of the host that has not joined the
+/// runtime too. The value is Send and Sync and is never changed in place; put a `Mutex`, an
+/// `Atomic` or a `Channel` in it to change state or to send to a tzroutine.
+record Shared<'a> { token: i64 }
+
+instance Drop<Shared<'a>> {
+    fn drop shared = Anchor.__release shared.token
+}
+
+/// The `i64` token for `shared`, valid until `shared` is dropped (or, once detached, until
+/// `Anchor.release_shared`) and never `0`.
+///
+/// ```tsuzuri run=true
+/// let state = Anchor.create_shared 42
+/// let key = Anchor.shared_token (ref state)
+/// key > 0
+/// ```
+def shared_token :: ref Shared<'a> -> i64
+fn shared_token shared = shared.token
+
+/// Gives up `shared` and returns its token: the value stays readable until
+/// `Anchor.release_shared` names the token, for an entry that outlives the function that made it.
+///
+/// ```tsuzuri run=true%20false
+/// let key = Anchor.detach_shared (Anchor.create_shared 42)
+/// let first = Anchor.release_shared key
+/// let second = Anchor.release_shared key
+/// $"{first} {second}"
+/// ```
+def detach_shared :: own Shared<'a> -> i64
+fn detach_shared shared =
+    let token = shared.token
+    Anchor.__detach token
+    token

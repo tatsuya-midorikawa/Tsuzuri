@@ -493,7 +493,7 @@ Selector    = 文字列の literal（"setTitle:"、"initWithContentRect:styleMas
 - [M23](../M23-objc-out-parameters-and-weak-references.md): `abi::objc_parameter`（`ref mut Maybe<C>` を `ptr` 1 つにする）、セレクターの数の `c`（同じく 1 つ）、`host_call` の分割（引数の共通の部分が物体の出力引数の写し込みと書き戻しを持つ）、`ObjcCallSite`。
 - [M07](../M07-apple-sdk-bindgen-and-package.md): 宣言の文法（`[class] "sel" name :: T`、`extern category`、`@returns_*`、`Self`）、同じ名前は `E1001` なので生成器が名前を変える、buffer は 2 つの C の引数、可変長は書けない、Phase 2 の前は構造体のメソッドを飛ばす。
 - [M04](../M04-objc-blocks.md)（弱い）: `objc_parameter` に `ref ObjC.Block<F>`・`Maybe<ref ObjC.Block<F>>` を足す口。[M10](../M10-objc-autorelease-pools.md)（弱い）: +0 の結果は M01 の D6 の bundle で retain する（返された物体はハンドシェイクが効けば pool を経ないが、呼ばれた側の中で autorelease された物体は pool に入る）。[M12](../M12-gpu-presentation-to-window.md)（弱い）: CAMetalLayer への送信。[M18](../M18-intel-mac-and-universal2.md)（弱い）: 仕様 5 の表を target ごとの表にし、x86_64 の行（`BOOL` は `i8 signext`、`objc_msgSend_stret`）を足せる形にする。
-- [M09](../M09-main-thread-dispatch-and-handles.md) の Phase 2: `main` の型への送信の包みを省く印。[M17](M17-macos-min-version-and-weak-import.md): クラスの受け手の classref の load に NULL の検査を差し込む所。
+- [M09](M09-main-thread-dispatch-and-handles.md) の Phase 2: `main` の型への送信の包みを省く印。[M17](M17-macos-min-version-and-weak-import.md): クラスの受け手の classref の load に NULL の検査を差し込む所。
 
 ## 実装手順
 

@@ -5,7 +5,7 @@
 | ID | M04 |
 | 優先度 | P2 |
 | 規模 | L（Phase 1・2。人間が求めない限り Phase 1 だけを実装する） |
-| 依存 | [M01](_completed/M01-objc-class-types.md), ([M02](_completed/M02-objc-typed-message-send.md)), ([M03](M03-objc-classes-defined-in-tsuzuri.md)), ([M09](M09-main-thread-dispatch-and-handles.md))（M02 はメンバーの引数、M03 は型の符号化器を共有） |
+| 依存 | [M01](_completed/M01-objc-class-types.md), ([M02](_completed/M02-objc-typed-message-send.md)), ([M03](M03-objc-classes-defined-in-tsuzuri.md)), ([M09](_completed/M09-main-thread-dispatch-and-handles.md))（M02 はメンバーの引数、M03 は型の符号化器を共有） |
 | 後続 | [M14](M14-tls-http-packages.md)（弱い後続: [M07](M07-apple-sdk-bindgen-and-package.md), [M13](M13-desktop-os-services-package.md)） |
 | 状態 | todo |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 1（Block は calloc・FnPtr の @c_layout・memcpy・dlsym で手作りし、解放もできない）」に当たる。HEAD `804b7970` で確認） |
@@ -331,7 +331,7 @@ C が Block を呼ぶと（`block->invoke(block, a1, …, an)`）、コンパイ
 
 ### 6. スレッド・target・効果（Phase 1）
 
-- Block は ObjC と GCD のどのスレッドからも呼ばれうる。invoke の中で `Anchor` を引くと、作ったスレッド以外では `WrongThread` になる。状態を main で更新するには、[M09](M09-main-thread-dispatch-and-handles.md) の Phase 1 の `MainThread.post` で main に移る（鍵と引数は `i64` なので捕捉できる）。
+- Block は ObjC と GCD のどのスレッドからも呼ばれうる。invoke の中で `Anchor` を引くと、作ったスレッド以外では `WrongThread` になる。状態を main で更新するには、[M09](_completed/M09-main-thread-dispatch-and-handles.md) の Phase 1 の `MainThread.post` で main に移る（鍵と引数は `i64` なので捕捉できる）。
 
 ```tsuzuri
 record AppState { changes: i64, last: i32 }
@@ -411,7 +411,7 @@ entry:
 - [M03](M03-objc-classes-defined-in-tsuzuri.md): `src/objc_encoding.rs`（M04 が先なら M04 が作る）。Phase 2 の IMP の引数の型の表と包み。
 - [W12](_completed/W12-static-callback-lifetime.md)・[W22](_completed/W22-fnptr-values.md): `llvm_abi::wrapper`、`WrapperKind::Callback`、`@tz.main.done`、`with_blocking_externs`、`validate_callbacks`。
 - [W23](_completed/W23-anchor-state.md): `Anchor.token`・`read`・`update`、`WrongThread`。
-- [M09](M09-main-thread-dispatch-and-handles.md)（あれば）: `MainThread.post`（文書の例）。Phase 2 の `main` の型は Block の本体を使える文脈に数える。
+- [M09](_completed/M09-main-thread-dispatch-and-handles.md)（あれば）: `MainThread.post`（文書の例）。Phase 2 の `main` の型は Block の本体を使える文脈に数える。
 - [W26](W26-com-objects-in-tsuzuri.md)（あれば）: コールバックの `ref mut T` の変換。
 
 ## 他チケットへ提供するインターフェース

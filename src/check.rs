@@ -26,6 +26,7 @@ mod deriving;
 mod domain_rules;
 #[path = "pinned_rules.rs"]
 mod pinned_rules;
+pub(crate) use pinned_rules::main_thread_functions;
 #[path = "select.rs"]
 mod select;
 pub(crate) use domain_rules::domain_calls;
@@ -694,8 +695,10 @@ impl Type {
                 _,
                 HandleKind::Owned
                 | HandleKind::Local
+                | HandleKind::Main
                 | HandleKind::ObjcLocal
-                | HandleKind::ObjcSync,
+                | HandleKind::ObjcSync
+                | HandleKind::ObjcMain,
             )
             // Sharing is explicit (`Rc.share`), never an implicit copy (C10).
             | Self::Shared(..)
@@ -1151,8 +1154,10 @@ impl Type {
                 _,
                 HandleKind::Owned
                 | HandleKind::Local
+                | HandleKind::Main
                 | HandleKind::ObjcLocal
-                | HandleKind::ObjcSync,
+                | HandleKind::ObjcSync
+                | HandleKind::ObjcMain,
             ) => false,
             // Function values are Send whatever they capture, so they hold only values that may
             // move to another tzroutine: an `Arc` whose value tzroutines may share, never an `Rc` (C10).
@@ -1214,7 +1219,10 @@ impl Type {
             | Self::Partial(_)
             | Self::Application(..)
             | Self::Reference(..)
-            | Self::Handle(_, HandleKind::Local | HandleKind::ObjcLocal) => false,
+            | Self::Handle(
+                _,
+                HandleKind::Local | HandleKind::Main | HandleKind::ObjcLocal | HandleKind::ObjcMain,
+            ) => false,
             Self::Dyn(dyn_type) => dyn_type.send && !dyn_type.borrowed,
             // Rc counts are not atomic. As in Rust, an `Arc<T>` is Send when `T` is Send and
             // Sync: every owner reads the value through a shared borrow, and the last one drops it
@@ -1300,6 +1308,31 @@ impl Type {
         found.into_inner()
     }
 
+    /// M09: whether this type reaches a handle bound to the process main thread (`extern type
+    /// main`, `extern class main`), including through borrows.
+    pub(crate) fn reaches_main_handle(&self, types: &TypeContext<'_>) -> bool {
+        types.reaches(
+            self,
+            |ty| matches!(ty, Type::Handle(_, kind) if kind.main_thread()),
+        )
+    }
+
+    /// M09: the display name of the first main-thread handle this type reaches.
+    pub(crate) fn first_main_handle_name(&self, types: &TypeContext<'_>) -> Option<String> {
+        let found = std::cell::RefCell::new(None);
+        types.reaches(self, |ty| {
+            if matches!(ty, Type::Handle(_, kind) if kind.main_thread()) {
+                let display = ty.display(types);
+                let shown = display.strip_prefix("Main.").unwrap_or(&display).to_owned();
+                *found.borrow_mut() = Some(shown);
+                true
+            } else {
+                false
+            }
+        });
+        found.into_inner()
+    }
+
     /// W23: whether a value of this type owns an `Anchor<T>`.
     pub(crate) fn holds_thread_bound(&self, types: &TypeContext<'_>) -> bool {
         !types.stored_all(self, |ty| !ty.is_unsend_record(types))
@@ -1330,9 +1363,14 @@ impl Type {
             Self::Variable(_) | Self::Infer(_) | Self::Partial(_) | Self::Application(..) => false,
             Self::Reference(_, true)
             | Self::Once(_)
-            | Self::Handle(_, HandleKind::Owned | HandleKind::Local | HandleKind::ObjcLocal) => {
-                false
-            }
+            | Self::Handle(
+                _,
+                HandleKind::Owned
+                | HandleKind::Local
+                | HandleKind::Main
+                | HandleKind::ObjcLocal
+                | HandleKind::ObjcMain,
+            ) => false,
             Self::Handle(_, HandleKind::Copy | HandleKind::ObjcSync) => true,
             Self::Reference(value, false) => value.can_sync(types),
             // A Copy dyn value holds plain data; any other may hide a host handle.
@@ -1715,6 +1753,8 @@ pub enum Builtin {
     OsArgs,
     /// `Os.__os_version :: unit -> (i64 * [ubyte])` (M17): the host operating-system version string.
     OsVersion,
+    /// `Os.__executable_path :: unit -> (i64 * [ubyte])` (M15): the absolute path of the running executable.
+    OsExecutablePath,
     /// `Os.__write :: i32 -> ref utf8string -> ref [ubyte] -> i64`: writes a file, or creates or removes a file or directory.
     OsWrite,
     /// `Os.__random :: i64 -> (i64 * [ubyte])`: operating-system random bytes.
@@ -1786,6 +1826,18 @@ pub enum Builtin {
     AnchorRead,
     AnchorUpdate,
     AnchorRelease,
+    /// `Anchor.create_shared :: (Send<'a>, Sync<'a>) => 'a -> Anchor.Shared<'a>` (M09 Phase 3):
+    /// stores the value in the anchor table for every thread to read.
+    AnchorCreateShared,
+    /// `Anchor.read_shared :: (ref 'a -> 'b) -> i64 -> Result<'b, Anchor.Error>`: reads a shared
+    /// anchor on any thread, also one that has not joined the runtime.
+    AnchorReadShared,
+    /// `Anchor.__detach :: i64 -> unit`: the body of `Anchor.detach_shared`, private to
+    /// `std/Anchor.tz`: the value stays until `Anchor.release_shared` names its token.
+    AnchorDetach,
+    /// `Anchor.release_shared :: i64 -> bool`: drops the value of a detached shared anchor once no
+    /// read holds it; whether the token named one.
+    AnchorReleaseShared,
     /// W20: `ZString.literal :: string -> ref ZString`, rewritten to a borrow of static UTF-16+NUL data.
     ZStringLiteral,
     /// M06: `ZUtf8String.literal :: string -> ref ZUtf8String`, rewritten to a borrow of static UTF-8+NUL data.
@@ -2061,6 +2113,14 @@ pub enum Builtin {
     /// `Routine.with_locked_thread :: (unit -> 'a) -> 'a` (TZ08): calls the function with the calling
     /// tzroutine kept on its OS thread (Go's `runtime.LockOSThread`), for host APIs bound to a thread.
     RoutineWithLockedThread,
+    /// `MainThread.post :: own Owned.Function<unit, unit> -> unit` (M09): queues the owned function
+    /// for the process main thread, which calls it once and drops it when it handles its queue.
+    MainThreadPost,
+    /// `MainThread.after :: i64 -> own Owned.Function<unit, unit> -> unit`: the same, at least that
+    /// many nanoseconds later.
+    MainThreadAfter,
+    /// `MainThread.is_current :: unit -> bool`: whether the calling thread is the process main thread.
+    MainThreadIsCurrent,
     /// `Channel.make :: Send<'a> => i64 -> Channel<'a>` (TZ03): Go's `make(chan T, n)`; 0 is unbuffered.
     ChannelMake,
     /// `Channel.send :: ref Channel<'a> -> 'a -> unit`: waits for a receiver or room; traps on a
@@ -2398,6 +2458,7 @@ impl Builtin {
         Self::OsRead,
         Self::OsArgs,
         Self::OsVersion,
+        Self::OsExecutablePath,
         Self::OsWrite,
         Self::OsRandom,
         Self::OsClock,
@@ -2434,6 +2495,10 @@ impl Builtin {
         Self::AnchorRead,
         Self::AnchorUpdate,
         Self::AnchorRelease,
+        Self::AnchorCreateShared,
+        Self::AnchorReadShared,
+        Self::AnchorDetach,
+        Self::AnchorReleaseShared,
         Self::ZStringLiteral,
         Self::ZUtf8StringLiteral,
         Self::ObjcRetain,
@@ -2605,6 +2670,9 @@ impl Builtin {
         Self::RoutineMaxProcs,
         Self::RoutineCpuCount,
         Self::RoutineWithLockedThread,
+        Self::MainThreadPost,
+        Self::MainThreadAfter,
+        Self::MainThreadIsCurrent,
         Self::ChannelMake,
         Self::ChannelSend,
         Self::ChannelRecv,
@@ -2791,6 +2859,7 @@ impl Builtin {
             Self::OsRead => "Os.__read",
             Self::OsArgs => "Os.__args",
             Self::OsVersion => "Os.__os_version",
+            Self::OsExecutablePath => "Os.__executable_path",
             Self::OsWrite => "Os.__write",
             Self::OsRandom => "Os.__random",
             Self::OsClock => "Os.__clock",
@@ -2827,6 +2896,10 @@ impl Builtin {
             Self::AnchorRead => "Anchor.read",
             Self::AnchorUpdate => "Anchor.update",
             Self::AnchorRelease => "Anchor.__release",
+            Self::AnchorCreateShared => "Anchor.create_shared",
+            Self::AnchorReadShared => "Anchor.read_shared",
+            Self::AnchorDetach => "Anchor.__detach",
+            Self::AnchorReleaseShared => "Anchor.release_shared",
             Self::ZStringLiteral => "ZString.literal",
             Self::ZUtf8StringLiteral => "ZUtf8String.literal",
             Self::ObjcRetain => "ObjC.retain",
@@ -2969,6 +3042,9 @@ impl Builtin {
             Self::RoutineMaxProcs => "Routine.max_procs",
             Self::RoutineCpuCount => "Routine.cpu_count",
             Self::RoutineWithLockedThread => "Routine.with_locked_thread",
+            Self::MainThreadPost => "MainThread.post",
+            Self::MainThreadAfter => "MainThread.after",
+            Self::MainThreadIsCurrent => "MainThread.is_current",
             Self::ChannelMake => "Channel.make",
             Self::ChannelSend => "Channel.send",
             Self::ChannelRecv => "Channel.recv",
@@ -3122,7 +3198,11 @@ impl Builtin {
                 Concrete(Type::Integer(32, true)),
                 Vec::new(),
             ),
-            Self::OsRead | Self::OsArgs | Self::OsVersion | Self::OsRandom => {
+            Self::OsRead
+            | Self::OsArgs
+            | Self::OsVersion
+            | Self::OsExecutablePath
+            | Self::OsRandom => {
                 let owned = || {
                     BuiltinType::Tuple(vec![
                         Concrete(Type::I64),
@@ -3134,7 +3214,9 @@ impl Builtin {
                         Concrete(Type::Integer(32, true)),
                         Reference(Box::new(Concrete(Type::Utf8String)), false),
                     ],
-                    Self::OsArgs | Self::OsVersion => vec![Concrete(Type::Unit)],
+                    Self::OsArgs | Self::OsVersion | Self::OsExecutablePath => {
+                        vec![Concrete(Type::Unit)]
+                    }
                     _ => vec![Concrete(Type::I64)],
                 };
                 (parameters, owned(), Vec::new())
@@ -3614,9 +3696,14 @@ impl Builtin {
             // The classes of the expected `dyn` type become constraints in `Checker::dyn_of`.
             Self::DynOf => (vec![a()], Var("b"), Vec::new()),
             Self::FnPtrOf => (vec![a()], BuiltinType::FnPtr(Box::new(a())), Vec::new()),
-            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease => {
-                self.anchor_scheme()
-            }
+            Self::AnchorCreate
+            | Self::AnchorRead
+            | Self::AnchorUpdate
+            | Self::AnchorRelease
+            | Self::AnchorCreateShared
+            | Self::AnchorReadShared
+            | Self::AnchorDetach
+            | Self::AnchorReleaseShared => self.anchor_scheme(),
             // M01: the type arguments are Objective-C classes, which `validate_objc_builtins`
             // checks where the program calls them; a scheme cannot say it.
             Self::ObjcRetain => (vec![Reference(Box::new(a()), false)], a(), Vec::new()),
@@ -4250,6 +4337,30 @@ impl Builtin {
                 Var("a"),
                 Vec::new(),
             ),
+            Self::MainThreadPost => (
+                vec![BuiltinType::Std {
+                    module: "Owned",
+                    name: "Function",
+                    args: vec![Concrete(Type::Unit), Concrete(Type::Unit)],
+                }],
+                Concrete(Type::Unit),
+                Vec::new(),
+            ),
+            Self::MainThreadAfter => (
+                vec![
+                    Concrete(Type::I64),
+                    BuiltinType::Std {
+                        module: "Owned",
+                        name: "Function",
+                        args: vec![Concrete(Type::Unit), Concrete(Type::Unit)],
+                    },
+                ],
+                Concrete(Type::Unit),
+                Vec::new(),
+            ),
+            Self::MainThreadIsCurrent => {
+                (vec![Concrete(Type::Unit)], Concrete(Type::Bool), Vec::new())
+            }
             Self::ChannelMake
             | Self::ChannelSend
             | Self::ChannelRecv
@@ -4503,7 +4614,14 @@ impl Builtin {
     pub(crate) fn is_anchor(self) -> bool {
         matches!(
             self,
-            Self::AnchorCreate | Self::AnchorRead | Self::AnchorUpdate | Self::AnchorRelease
+            Self::AnchorCreate
+                | Self::AnchorRead
+                | Self::AnchorUpdate
+                | Self::AnchorRelease
+                | Self::AnchorCreateShared
+                | Self::AnchorReadShared
+                | Self::AnchorDetach
+                | Self::AnchorReleaseShared
         )
     }
 
@@ -4521,7 +4639,7 @@ impl Builtin {
         let result_of = |ok| std("Result", "Result", vec![ok, error()]);
         match self {
             Self::AnchorCreate => (vec![a()], std("Anchor", "Anchor", vec![a()]), Vec::new()),
-            Self::AnchorRead => (
+            Self::AnchorRead | Self::AnchorReadShared => (
                 vec![
                     Function(vec![Reference(Box::new(a()), false)], Box::new(b())),
                     Concrete(Type::I64),
@@ -4529,6 +4647,25 @@ impl Builtin {
                 result_of(b()),
                 Vec::new(),
             ),
+            // Every thread may read the value at once, and the thread of the last read drops it.
+            Self::AnchorCreateShared => (
+                vec![a()],
+                std("Anchor", "Shared", vec![a()]),
+                vec![
+                    BuiltinConstraint {
+                        class: "Send",
+                        ty: a(),
+                    },
+                    BuiltinConstraint {
+                        class: "Sync",
+                        ty: a(),
+                    },
+                ],
+            ),
+            Self::AnchorDetach => (vec![Concrete(Type::I64)], Concrete(Type::Unit), Vec::new()),
+            Self::AnchorReleaseShared => {
+                (vec![Concrete(Type::I64)], Concrete(Type::Bool), Vec::new())
+            }
             Self::AnchorUpdate => (
                 vec![Function(vec![a()], Box::new(a())), Concrete(Type::I64)],
                 result_of(Concrete(Type::Unit)),
@@ -4633,6 +4770,15 @@ impl Builtin {
             Self::ChannelReceiveOnly => (vec![borrowed()], receive_only(), Vec::new()),
             _ => unreachable!("not a Channel builtin"),
         }
+    }
+
+    /// Whether this builtin is an operation of `MainThread` (M09), lowered to calls of the
+    /// main-thread runtime (`src/runtime/mainthread-darwin.c`).
+    pub(crate) fn is_main_thread(self) -> bool {
+        matches!(
+            self,
+            Self::MainThreadPost | Self::MainThreadAfter | Self::MainThreadIsCurrent
+        )
     }
 
     /// Whether this builtin is a `Routine` operation, lowered to calls of the tzroutine runtime (TZ02).
@@ -5209,6 +5355,9 @@ pub struct CheckedModule {
     pub uses_dyn: bool,
     /// W19: some module declares an `extern type local`, so `pinned` effect confinement runs.
     pub thread_bound: bool,
+    /// M09: some module declares an `extern type main` or an `extern class main`, so the
+    /// confinement of the effect `main_thread` runs too. It implies `thread_bound`.
+    pub main_bound: bool,
     /// F09 Phase 2: the kernels that the program embeds for non-CPU backends. Empty unless the
     /// program builds a non-CPU `Gpu.Backend`.
     pub gpu: crate::gpu_devices::GpuProgram,
@@ -9460,6 +9609,8 @@ fn check_modules_collect(
             }
             names.handle_kinds.push(if class.sync.is_some() {
                 HandleKind::ObjcSync
+            } else if class.main.is_some() {
+                HandleKind::ObjcMain
             } else {
                 HandleKind::ObjcLocal
             });
@@ -11385,7 +11536,7 @@ fn check_modules_collect(
                 .program
                 .extern_types
                 .iter()
-                .any(|decl| decl.kind == HandleKind::Local)
+                .any(|decl| decl.kind.thread_bound())
                 || input
                     .program
                     .extern_classes
@@ -11394,6 +11545,18 @@ fn check_modules_collect(
         }) || names
             .objc_object_used
             .load(std::sync::atomic::Ordering::Relaxed),
+        main_bound: modules.iter().any(|input| {
+            input
+                .program
+                .extern_types
+                .iter()
+                .any(|decl| decl.kind.main_thread())
+                || input
+                    .program
+                    .extern_classes
+                    .iter()
+                    .any(|class| class.main.is_some())
+        }),
         gpu: Default::default(),
         statics,
         effects: None,
@@ -12408,6 +12571,7 @@ fn recovery_module(
         dyn_layouts: BTreeMap::new(),
         uses_dyn: false,
         thread_bound: false,
+        main_bound: false,
         gpu: Default::default(),
         statics: BTreeMap::new(),
         effects: None,
@@ -12679,6 +12843,7 @@ fn resolve_objc_classes(
                     runtime_name,
                     base,
                     sync: class.sync.is_some(),
+                    main: class.main.is_some(),
                     trusted: class.trusted.is_some(),
                     weak: class.weak.is_some(),
                     depth: 0,
@@ -12747,6 +12912,26 @@ fn resolve_objc_classes(
                 DiagnosticKind::ObjcClassSyncBase,
                 format!(
                     "extern class '{}' has the 'sync' base '{}', so it must be 'sync' too: 'ObjC.upcast' would let another thread use it; write 'extern class sync {}'",
+                    type_display(name),
+                    type_display(base),
+                    name.rsplit('.').next().unwrap_or(name)
+                ),
+                info.span,
+            ));
+        }
+    }
+    // M09: an object of a class is an object of its base. A class with a `main` base that is not
+    // `main` itself would let another thread use what only the main thread may.
+    for name in &names_in_order {
+        let info = &classes[name];
+        if !info.main
+            && let Some(base) = &info.base
+            && classes.get(base).is_some_and(|base| base.main)
+        {
+            diagnostics.push(Diagnostic::of(
+                DiagnosticKind::ObjcClassMainBase,
+                format!(
+                    "extern class '{}' has the 'main' base '{}', so it must be 'main' too: its objects are objects of that class, which only the main thread may use; write 'extern class main {}'",
                     type_display(name),
                     type_display(base),
                     name.rsplit('.').next().unwrap_or(name)
@@ -13092,6 +13277,7 @@ fn declare_objc_sends(
                     display,
                     owner: owner.clone(),
                     declaring,
+                    main_thread: names.objc.classes.get(&class).is_some_and(|info| info.main),
                 })),
             },
         );

@@ -183,6 +183,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Linalg",
     // M01: Objective-C classes, selectors and ownership; a built-in module without a std file.
     "ObjC",
+    // M09: handing work to the process main thread; a built-in module without a std file.
+    "MainThread",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -247,6 +249,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "Context.AfterFunc"
             | "ErrGroup.ErrGroup"
             | "Anchor.Anchor"
+            | "Anchor.Shared"
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
             | "ExternAddr.ExternAddr"
@@ -1023,7 +1026,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 82);
+        assert_eq!(RESERVED_MODULES.len(), 83);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

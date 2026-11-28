@@ -2666,3 +2666,174 @@ fn publish_prints_index_entries() {
         );
     }
 }
+
+/// M15: the bundle keys of `[macos]`. Their form is checked whenever the manifest is read, whatever the
+/// output; only `--emit app` uses the values.
+#[test]
+fn manifest_macos_bundle_keys_parse() {
+    let all = "[macos]\nmin_version = \"13.0\"\nbundle_id = \"dev.example.probe-2\"\nname = \"Probe App\"\nversion = \"1.2.3\"\nbuild = \"42\"\nicon = \"assets/Probe.icns\"\nresources = [\"assets/help\", \"assets/en.lproj\"]\nembed = [\"vendor/libfoo.dylib\", \"vendor/Bar.framework\"]\ninfo_plist = \"Extra.plist\"\ncategory = \"public.app-category.developer-tools\"\nui_element = true\n";
+    let manifest = parse_manifest(&format!("{GEOMETRY}{all}"), 0).unwrap();
+    let macos = manifest.macos;
+    assert!(macos.min_version.is_some());
+    assert_eq!(macos.bundle_id.as_deref(), Some("dev.example.probe-2"));
+    assert_eq!(macos.name.as_deref(), Some("Probe App"));
+    assert_eq!(macos.version.as_deref(), Some("1.2.3"));
+    assert_eq!(macos.build.as_deref(), Some("42"));
+    assert_eq!(macos.icon.as_deref(), Some(Path::new("assets/Probe.icns")));
+    assert_eq!(
+        macos.resources,
+        [Path::new("assets/help"), Path::new("assets/en.lproj")]
+    );
+    assert_eq!(
+        macos.embed,
+        [
+            Path::new("vendor/libfoo.dylib"),
+            Path::new("vendor/Bar.framework")
+        ]
+    );
+    assert_eq!(macos.info_plist.as_deref(), Some(Path::new("Extra.plist")));
+    assert_eq!(
+        macos.category.as_deref(),
+        Some("public.app-category.developer-tools")
+    );
+    assert_eq!(macos.ui_element, Some(true));
+    // A key that is left out stays unset: nothing comes from `[package]`.
+    let only = parse_manifest(
+        &format!("{GEOMETRY}[macos]\nui_element = false\nresources = []\n"),
+        0,
+    )
+    .unwrap()
+    .macos;
+    assert_eq!(only.ui_element, Some(false));
+    assert_eq!(
+        (only.name, only.version, only.bundle_id),
+        (None, None, None)
+    );
+    assert!(only.resources.is_empty());
+    for good in [
+        "bundle_id = \"a\"",
+        "bundle_id = \"A-1.b-2.C3\"",
+        "version = \"7\"",
+        "version = \"1.0\"",
+        "build = \"0.0.2147483647\"",
+        "icon = \"Probe.ICNS\"",
+        "category = \"public.app-category.role-playing-games\"",
+    ] {
+        parse_manifest(&format!("{GEOMETRY}[macos]\n{good}\n"), 0)
+            .unwrap_or_else(|error| panic!("{good}: {}", error.message));
+    }
+
+    const BUNDLE_ID: &str = "bundle_id must be a reverse-DNS name of letters, digits, '-' and '.', such as \"dev.example.app\"";
+    const NAME: &str = "name must be nonempty and must not contain '/' or control characters";
+    const VERSION: &str =
+        "version must be one to three integers separated by '.', such as \"1.2.3\"";
+    const BUILD: &str = "build must be one to three integers separated by '.', such as \"1.2.3\"";
+    const ICON: &str = "icon must be a relative path to an .icns file";
+    const PATHS: &str = "macos paths must be nonempty relative paths";
+    const CATEGORY: &str = "category must start with \"public.app-category.\", such as \"public.app-category.developer-tools\"";
+    const ARRAY: &str = "resources and embed must be arrays of relative paths on one line, such as [\"assets/help\"]";
+    for (text, message) in [
+        ("bundle_id = \"\"", BUNDLE_ID),
+        ("bundle_id = \".dev.example\"", BUNDLE_ID),
+        ("bundle_id = \"dev.example.\"", BUNDLE_ID),
+        ("bundle_id = \"dev..example\"", BUNDLE_ID),
+        ("bundle_id = \"dev.example_app\"", BUNDLE_ID),
+        ("bundle_id = \"dev.exämple\"", BUNDLE_ID),
+        ("name = \"\"", NAME),
+        ("name = \"a/b\"", NAME),
+        ("name = \"a\\tb\"", NAME),
+        ("version = \"\"", VERSION),
+        ("version = \"1.2.3.4\"", VERSION),
+        ("version = \"1..2\"", VERSION),
+        ("version = \"1.2b\"", VERSION),
+        ("version = \"-1\"", VERSION),
+        ("version = \"2147483648\"", VERSION),
+        ("build = \"v1\"", BUILD),
+        ("icon = \"assets/Probe.png\"", ICON),
+        ("icon = \"/abs/Probe.icns\"", ICON),
+        ("icon = \"\"", ICON),
+        ("resources = [\"\"]", PATHS),
+        ("resources = [\"/etc\"]", PATHS),
+        ("resources = [\"assets/..\"]", PATHS),
+        ("embed = [\"/usr/lib/libz.dylib\"]", PATHS),
+        ("info_plist = \"\"", PATHS),
+        ("info_plist = \"/Extra.plist\"", PATHS),
+        ("resources = \"assets\"", ARRAY),
+        ("embed = [\"a\" \"b\"]", ARRAY),
+        ("category = \"developer-tools\"", CATEGORY),
+        ("category = \"public.app-category.\"", CATEGORY),
+        ("category = \"public.app-category.Games\"", CATEGORY),
+        ("ui_element = \"true\"", "ui_element must be true or false"),
+        ("ui_element = 1", "ui_element must be true or false"),
+        (
+            "icon = \"a/Probe.icns\"\nresources = [\"b/Probe.icns\"]",
+            "resources and icon must not repeat the file name 'Probe.icns'",
+        ),
+        (
+            "resources = [\"a/help\", \"b/HELP\"]",
+            "resources and icon must not repeat the file name 'HELP'",
+        ),
+        (
+            "embed = [\"a/libx.dylib\", \"b/libx.dylib\"]",
+            "embed must not repeat the file name 'libx.dylib'",
+        ),
+    ] {
+        let error = parse_manifest(&format!("{GEOMETRY}[macos]\n{text}\n"), 3).unwrap_err();
+        assert_eq!(error.code, "E0002", "{text}: {}", error.message);
+        assert_eq!(error.kind, Some("invalid_macos_setting"), "{text}");
+        assert_eq!(error.message, message, "{text}");
+        assert_eq!(error.span.source, Some(3), "{text}");
+    }
+    // The same name may be a resource and an embedded library: they go to different directories.
+    parse_manifest(
+        &format!("{GEOMETRY}[macos]\nresources = [\"a/x\"]\nembed = [\"b/x\"]\n"),
+        0,
+    )
+    .unwrap();
+    for (text, kind, message) in [
+        (
+            "identifier = \"dev.example\"",
+            "unknown_manifest_key",
+            "unknown macos key; expected min_version, bundle_id, name, version, build, icon, resources, embed, info_plist, category, or ui_element",
+        ),
+        (
+            "name = \"A\"\nname = \"B\"",
+            "duplicate_manifest_key",
+            "macos keys must occur at most once",
+        ),
+        (
+            "embed = []\nembed = []",
+            "duplicate_manifest_key",
+            "macos keys must occur at most once",
+        ),
+        (
+            "ui_element = true\nui_element = true",
+            "duplicate_manifest_key",
+            "macos keys must occur at most once",
+        ),
+    ] {
+        let error = parse_manifest(&format!("{GEOMETRY}[macos]\n{text}\n"), 0).unwrap_err();
+        assert_eq!(error.code, "E0002", "{text}: {}", error.message);
+        assert_eq!(error.kind, Some(kind), "{text}");
+        assert_eq!(error.message, message, "{text}");
+    }
+
+    // Only the root package's section is read.
+    let scratch = Scratch::new("macos-bundle-keys");
+    scratch.write(
+        "app/Tsuzuri.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\ndep = { path = \"../dep\" }\n[macos]\nbundle_id = \"dev.example.app\"\n",
+    );
+    scratch.write(
+        "app/Main.tz",
+        "def main :: unit -> i32 = \\() -> Dep::Lib.val ()\n",
+    );
+    scratch.write(
+        "dep/Tsuzuri.toml",
+        "[package]\nname = \"dep\"\nversion = \"0.1.0\"\n[macos]\nbundle_id = \"dev.example.dep\"\nname = \"Dep\"\n",
+    );
+    scratch.write("dep/Lib.tz", "def val :: unit -> i32 = \\() -> 0i32\n");
+    let project = tsuzuri::driver::Project::load(&scratch.path("app")).expect("project loads");
+    assert_eq!(project.macos.bundle_id.as_deref(), Some("dev.example.app"));
+    assert_eq!(project.macos.name, None);
+}

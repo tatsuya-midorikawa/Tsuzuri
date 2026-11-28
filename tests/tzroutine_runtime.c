@@ -3552,6 +3552,128 @@ static void test_anchor_threads(void) {
     printf("anchor threads: ok\n");
 }
 
+/* ---------------------------------------------------------------- shared anchors (M09 Phase 3) */
+
+static int64_t anchor_new_shared_i64(int64_t v) {
+    int64_t *box = anchor_test_alloc(sizeof(int64_t));
+    *box = v;
+    return tsuzuri_tz_anchor_create_shared(box, &anchor_desc_i64, anchor_box_drop, anchor_test_alloc, anchor_test_free);
+}
+
+enum { SHARED_READERS = 2 };
+static _Atomic int64_t shared_token;
+static _Atomic int shared_reading; /* the readers that hold a borrow */
+static _Atomic int shared_retired; /* the anchor was retired while they held it */
+static _Atomic int shared_failures;
+
+/* A thread that has not joined the runtime: it begins a read, keeps the borrow while another thread
+ * retires the anchor, and ends the read afterwards. */
+static void shared_reader_body(void) {
+    int64_t tok = atomic_load(&shared_token);
+    void *box = NULL;
+    if (tsuzuri_tz_anchor_begin_shared(tok, &anchor_desc_i64, &box) != 0) {
+        atomic_fetch_add(&shared_failures, 1);
+        atomic_fetch_add(&shared_reading, 1);
+        return;
+    }
+    atomic_fetch_add(&shared_reading, 1);
+    while (!atomic_load(&shared_retired)) tzr_os_yield();
+    /* The borrow that began before the retirement still reads the value, which nothing has dropped
+     * while this thread holds it; a read that begins now is Stale. */
+    if (*(int64_t *)box != 4242) atomic_fetch_add(&shared_failures, 1);
+    if (atomic_load(&anchor_drops) != 0) atomic_fetch_add(&shared_failures, 1);
+    void *again = NULL;
+    if (tsuzuri_tz_anchor_begin_shared(tok, &anchor_desc_i64, &again) != 1) atomic_fetch_add(&shared_failures, 1);
+    (void)tsuzuri_tz_anchor_end(tok, 0);
+}
+#if defined(_WIN32)
+static DWORD WINAPI shared_reader_win(LPVOID p) { (void)p; shared_reader_body(); return 0; }
+#else
+static void *shared_reader_posix(void *p) { (void)p; shared_reader_body(); return NULL; }
+#endif
+
+/* `by_token` 0: the owner's drop retires the anchor. 1: the owner detached it, its drop leaves it, and
+ * Anchor.release_shared retires it by its token. Either way two readers of other threads hold a borrow
+ * across the retirement, and the value is dropped once, after the last of them ends. */
+static void shared_retire_under_readers(int by_token) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    atomic_store(&shared_reading, 0);
+    atomic_store(&shared_retired, 0);
+    atomic_store(&shared_failures, 0);
+    int64_t tok = anchor_new_shared_i64(4242);
+    CHECK(tok > 0);
+    atomic_store(&shared_token, tok);
+#if defined(_WIN32)
+    HANDLE th[SHARED_READERS];
+    for (int i = 0; i < SHARED_READERS; i++) {
+        th[i] = CreateThread(NULL, 0, shared_reader_win, NULL, 0, NULL);
+        CHECK(th[i] != NULL);
+    }
+#else
+    pthread_t th[SHARED_READERS];
+    for (int i = 0; i < SHARED_READERS; i++) {
+        CHECK(pthread_create(&th[i], NULL, shared_reader_posix, NULL) == 0);
+    }
+#endif
+    while (atomic_load(&shared_reading) < SHARED_READERS) tzr_os_yield();
+    CHECK(atomic_load(&shared_failures) == 0);
+    void *box = NULL;
+    if (by_token) {
+        /* A token that still has its owner is not released by its number. */
+        CHECK(tsuzuri_tz_anchor_release_shared(tok) == 0);
+        tsuzuri_tz_anchor_detach(tok);
+        /* The drop of the owner that gave the anchor up leaves it readable. */
+        tsuzuri_tz_anchor_release(tok);
+        CHECK(tsuzuri_tz_anchor_begin_shared(tok, &anchor_desc_i64, &box) == 0);
+        CHECK(*(int64_t *)box == 4242);
+        CHECK(tsuzuri_tz_anchor_end(tok, 0) == 1);
+        CHECK(tsuzuri_tz_anchor_release_shared(tok) == 1);
+        CHECK(tsuzuri_tz_anchor_release_shared(tok) == 0);
+    } else {
+        tsuzuri_tz_anchor_release(tok);
+    }
+    /* Retired under two borrows: no new read begins, and the value is still there for the readers. */
+    CHECK(tsuzuri_tz_anchor_begin_shared(tok, &anchor_desc_i64, &box) == 1);
+    CHECK(atomic_load(&anchor_drops) == 0);
+    CHECK(atomic_load(&anchor_live_allocs) > 0);
+    atomic_store(&shared_retired, 1);
+#if defined(_WIN32)
+    for (int i = 0; i < SHARED_READERS; i++) {
+        CHECK(WaitForSingleObject(th[i], INFINITE) == WAIT_OBJECT_0 && CloseHandle(th[i]));
+    }
+#else
+    for (int i = 0; i < SHARED_READERS; i++) CHECK(pthread_join(th[i], NULL) == 0);
+#endif
+    CHECK(atomic_load(&shared_failures) == 0);
+    CHECK(atomic_load(&anchor_drops) == 1);
+    CHECK(atomic_load(&anchor_live_allocs) == 0);
+    CHECK(tsuzuri_tz_anchor_begin_shared(tok, &anchor_desc_i64, &box) == 1);
+}
+
+static void test_anchor_shared(void) {
+    atomic_store(&anchor_live_allocs, 0);
+    atomic_store(&anchor_drops, 0);
+    /* The two kinds of anchor do not read each other, and a shared one checks its type. */
+    int64_t shared = anchor_new_shared_i64(7);
+    int64_t own = anchor_new_i64(8);
+    void *box = NULL;
+    CHECK(tsuzuri_tz_anchor_begin_shared(shared, &anchor_desc_str, &box) == 2);
+    CHECK(tsuzuri_tz_anchor_begin(shared, &anchor_desc_i64, 0, &box) == 2);
+    CHECK(tsuzuri_tz_anchor_begin_shared(own, &anchor_desc_i64, &box) == 2);
+    CHECK(tsuzuri_tz_anchor_begin_shared(shared, &anchor_desc_i64, &box) == 0);
+    CHECK(*(int64_t *)box == 7);
+    CHECK(tsuzuri_tz_anchor_end(shared, 0) == 1);
+    /* Only a shared anchor is detached: an anchor of one thread keeps its owner's drop. */
+    tsuzuri_tz_anchor_detach(own);
+    tsuzuri_tz_anchor_release(own);
+    tsuzuri_tz_anchor_release(shared);
+    CHECK(atomic_load(&anchor_drops) == 2 && atomic_load(&anchor_live_allocs) == 0);
+    shared_retire_under_readers(0);
+    shared_retire_under_readers(1);
+    printf("anchor shared: ok\n");
+}
+
 static void anchor_pin_worker(void *env) {
     (void)env;
     int64_t tok = anchor_new_i64(314);
@@ -3703,6 +3825,7 @@ int main(int argc, char **argv) {
     RUN("anchor_generation_retire", test_anchor_generation_retire());
     RUN("anchor_threads", test_anchor_threads());
     RUN("anchor_pin", test_anchor_pin());
+    RUN("anchor_shared", test_anchor_shared());
     RUN("long_sleep", test_long_sleep()); /* last: its sleeper never ends */
     printf("all passed\n");
     return 0;

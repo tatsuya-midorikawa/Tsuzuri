@@ -132,6 +132,79 @@ pub struct WindowsSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MacosSettings {
     pub min_version: Option<(crate::target::MacosVersion, Span)>,
+    /// `bundle_id` (M15): the `CFBundleIdentifier` of `--emit app`, which that output requires.
+    pub bundle_id: Option<String>,
+    /// `name`: `CFBundleName`.
+    pub name: Option<String>,
+    /// `version`: `CFBundleShortVersionString`.
+    pub version: Option<String>,
+    /// `build`: `CFBundleVersion`.
+    pub build: Option<String>,
+    /// `icon`: an `.icns` file, copied to `Contents/Resources` and named by `CFBundleIconFile`.
+    pub icon: Option<PathBuf>,
+    /// `resources`: files and directories copied to `Contents/Resources` under their own names.
+    pub resources: Vec<PathBuf>,
+    /// `embed`: Mach-O files and `.framework` directories copied to `Contents/Frameworks`.
+    pub embed: Vec<PathBuf>,
+    /// `info_plist`: a property list whose keys are added to the generated `Info.plist`.
+    pub info_plist: Option<PathBuf>,
+    /// `category`: `LSApplicationCategoryType`.
+    pub category: Option<String>,
+    /// `ui_element`: `LSUIElement`.
+    pub ui_element: Option<bool>,
+}
+
+/// The `[macos]` keys, in the order that the error for an unknown key lists them.
+const MACOS_KEYS: &str = "min_version, bundle_id, name, version, build, icon, resources, embed, info_plist, category, or ui_element";
+
+/// A bundle identifier: letters, digits, `-` and `.`, without an empty component.
+fn valid_bundle_id(text: &str) -> bool {
+    text.split('.').all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+/// A bundle version: one to three integers of 0 to 2147483647, separated by `.`.
+fn valid_bundle_version(text: &str) -> bool {
+    let mut parts = 0;
+    text.split('.').all(|part| {
+        parts += 1;
+        !part.is_empty()
+            && part.len() <= 10
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && part
+                .parse::<u32>()
+                .is_ok_and(|value| value <= i32::MAX as u32)
+    }) && parts <= 3
+}
+
+/// An application category: `public.app-category.` and then lower-case letters and `-`.
+fn valid_category(text: &str) -> bool {
+    text.strip_prefix("public.app-category.")
+        .is_some_and(|rest| {
+            !rest.is_empty()
+                && rest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'-')
+        })
+}
+
+/// A `[macos]` path: relative, and with a last component, which names the copy in the bundle.
+fn macos_path(path: String) -> Option<PathBuf> {
+    relative_path(path).filter(|path| path.file_name().is_some())
+}
+
+/// The first path whose file name an earlier one of `paths` already has, with that name. Names that
+/// differ only in ASCII case count as the same: the default macOS volume keeps one file for both.
+fn repeated_file_name(paths: &[(PathBuf, Span)]) -> Option<(String, Span)> {
+    let mut seen = BTreeSet::new();
+    paths.iter().find_map(|(path, span)| {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        (!seen.insert(name.to_ascii_lowercase())).then_some((name, *span))
+    })
 }
 
 /// Parses a byte count with an optional binary `KiB`, `MiB`, or `GiB` suffix.
@@ -912,6 +985,10 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut macos = MacosSettings::default();
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
+    let mut macos_keys = BTreeSet::new();
+    // The names that `icon` and `resources` take in `Contents/Resources`, and `embed` in `Contents/Frameworks`.
+    let mut macos_resource_names: Vec<(PathBuf, Span)> = Vec::new();
+    let mut macos_embed_names: Vec<(PathBuf, Span)> = Vec::new();
     let mut registry: Option<(Option<String>, Option<String>, Span)> = None;
     let mut capabilities: Option<(Option<CapabilitySet>, Span)> = None;
     let mut offset = 0;
@@ -1217,24 +1294,160 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 }
             }
             "macos" => {
-                if key != "min_version" {
+                if !matches!(
+                    key.as_str(),
+                    "min_version"
+                        | "bundle_id"
+                        | "name"
+                        | "version"
+                        | "build"
+                        | "icon"
+                        | "resources"
+                        | "embed"
+                        | "info_plist"
+                        | "category"
+                        | "ui_element"
+                ) {
                     return Err(at_key(
                         DiagnosticKind::UnknownManifestKey,
-                        "unknown macos key; expected min_version",
+                        &format!("unknown macos key; expected {MACOS_KEYS}"),
                     ));
                 }
-                let (text, value_span) = cursor.string()?;
-                let Some(value) = crate::target::MacosVersion::parse(&text) else {
-                    return Err(Diagnostic::of(
-                        DiagnosticKind::InvalidMacosSetting,
-                        "min_version must be a macOS version 12.0 or later, such as \"13.0\"",
-                        value_span,
-                    ));
+                let invalid = |message: &str, span: Span| {
+                    Diagnostic::of(DiagnosticKind::InvalidMacosSetting, message, span)
                 };
-                if macos.min_version.replace((value, value_span)).is_some() {
+                const PATHS: &str = "macos paths must be nonempty relative paths";
+                match key.as_str() {
+                    "ui_element" => {
+                        cursor.space();
+                        let at = cursor.here();
+                        macos.ui_element = Some(if cursor.take("true") {
+                            true
+                        } else if cursor.take("false") {
+                            false
+                        } else {
+                            return Err(invalid("ui_element must be true or false", at));
+                        });
+                    }
+                    "resources" | "embed" => {
+                        const FORM: &str = "resources and embed must be arrays of relative paths on one line, such as [\"assets/help\"]";
+                        let values =
+                            cursor.string_array_of(DiagnosticKind::InvalidMacosSetting, FORM)?;
+                        let names = if key == "embed" {
+                            &mut macos_embed_names
+                        } else {
+                            &mut macos_resource_names
+                        };
+                        let mut paths = Vec::new();
+                        for (value, span) in values {
+                            let path = macos_path(value).ok_or_else(|| invalid(PATHS, span))?;
+                            names.push((path.clone(), span));
+                            paths.push(path);
+                        }
+                        if key == "embed" {
+                            macos.embed = paths;
+                        } else {
+                            macos.resources = paths;
+                        }
+                    }
+                    _ => {
+                        let (text, value_span) = cursor.string()?;
+                        match key.as_str() {
+                            "min_version" => {
+                                let Some(value) = crate::target::MacosVersion::parse(&text) else {
+                                    return Err(invalid(
+                                        "min_version must be a macOS version 12.0 or later, such as \"13.0\"",
+                                        value_span,
+                                    ));
+                                };
+                                macos.min_version = Some((value, value_span));
+                            }
+                            "bundle_id" => {
+                                if !valid_bundle_id(&text) {
+                                    return Err(invalid(
+                                        "bundle_id must be a reverse-DNS name of letters, digits, '-' and '.', such as \"dev.example.app\"",
+                                        value_span,
+                                    ));
+                                }
+                                macos.bundle_id = Some(text);
+                            }
+                            "name" => {
+                                if text.is_empty()
+                                    || text.contains('/')
+                                    || text.chars().any(char::is_control)
+                                {
+                                    return Err(invalid(
+                                        "name must be nonempty and must not contain '/' or control characters",
+                                        value_span,
+                                    ));
+                                }
+                                macos.name = Some(text);
+                            }
+                            "version" | "build" => {
+                                if !valid_bundle_version(&text) {
+                                    return Err(invalid(
+                                        &format!(
+                                            "{key} must be one to three integers separated by '.', such as \"1.2.3\""
+                                        ),
+                                        value_span,
+                                    ));
+                                }
+                                if key == "version" {
+                                    macos.version = Some(text);
+                                } else {
+                                    macos.build = Some(text);
+                                }
+                            }
+                            "icon" => {
+                                let path = macos_path(text).filter(|path| {
+                                    path.extension().is_some_and(|extension| {
+                                        extension.eq_ignore_ascii_case("icns")
+                                    })
+                                });
+                                let Some(path) = path else {
+                                    return Err(invalid(
+                                        "icon must be a relative path to an .icns file",
+                                        value_span,
+                                    ));
+                                };
+                                macos_resource_names.push((path.clone(), value_span));
+                                macos.icon = Some(path);
+                            }
+                            "info_plist" => {
+                                macos.info_plist = Some(
+                                    macos_path(text).ok_or_else(|| invalid(PATHS, value_span))?,
+                                );
+                            }
+                            "category" => {
+                                if !valid_category(&text) {
+                                    return Err(invalid(
+                                        "category must start with \"public.app-category.\", such as \"public.app-category.developer-tools\"",
+                                        value_span,
+                                    ));
+                                }
+                                macos.category = Some(text);
+                            }
+                            _ => unreachable!("the key was checked above"),
+                        }
+                    }
+                }
+                // After the value, as before: a repeated key with a malformed value reports the value.
+                if !macos_keys.insert(key.clone()) {
                     return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "macos keys must occur at most once",
+                    ));
+                }
+                if let Some((name, span)) = repeated_file_name(&macos_resource_names) {
+                    return Err(invalid(
+                        &format!("resources and icon must not repeat the file name '{name}'"),
+                        span,
+                    ));
+                }
+                if let Some((name, span)) = repeated_file_name(&macos_embed_names) {
+                    return Err(invalid(
+                        &format!("embed must not repeat the file name '{name}'"),
+                        span,
                     ));
                 }
             }
@@ -1486,14 +1699,23 @@ impl<'a> Line<'a> {
 
     /// A one-line array of strings and their spans; `form` is the error for anything else.
     fn string_array(&mut self, form: &str) -> Result<Vec<(String, Span)>, Diagnostic> {
+        self.string_array_of(DiagnosticKind::InvalidNativeSection, form)
+    }
+
+    /// [`Self::string_array`] for another section: `kind` is the kind of the error `form`.
+    fn string_array_of(
+        &mut self,
+        kind: DiagnosticKind,
+        form: &str,
+    ) -> Result<Vec<(String, Span)>, Diagnostic> {
         if !self.take("[") {
-            return Err(self.error(DiagnosticKind::InvalidNativeSection, form));
+            return Err(self.error(kind, form));
         }
         let mut values = Vec::new();
         while !self.take("]") {
             values.push(self.string()?);
             if !self.take(",") && !self.rest.trim_start().starts_with(']') {
-                return Err(self.error(DiagnosticKind::InvalidNativeSection, form));
+                return Err(self.error(kind, form));
             }
         }
         Ok(values)

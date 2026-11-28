@@ -31,6 +31,11 @@ export const mathObjectSource = source => source.replace(/^define internal (.*?@
   (line, signature, name) => /^tz_math_.*_f(32|64)$/.test(name) && !inlineMath(name)
     ? `define hidden ${signature}` : line);
 
+/** The objects of a full bundle: numeric/math (native and two WebAssembly variants) and the three C combinations of
+ * cpu.c and io.c at O0-O3; on macOS also the two combinations with cpu.c built to report through unified logging at
+ * O0-O3, and the report destination itself (M19). */
+export const runtimeObjectCount = platform => platform === 'darwin' ? 45 : 36;
+
 /** Build the exact generic objects selected by driver::compile_runtime_object. */
 export async function bundleRuntime(destination, { clang = null, native = true } = {}) {
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -74,8 +79,19 @@ export async function bundleRuntime(destination, { clang = null, native = true }
           const source = ['', '', '', '', '', '', mask & 2 ? cpu : '', mask & 4 ? io : '', ''].join('\n');
           const args = ['-std=c11', '-c', ...nativeArgs, `-O${optimization}`, ...sections];
           await compile('native-c', source, args, `native-c-${mask}-O${optimization}`, 'c');
+          // M19: a macOS executable builds a unit with cpu.c with TZ_REPORT_OSLOG, which the driver passes after
+          // the optimization level; the objects above stay the ones of `--emit object`.
+          if (process.platform === 'darwin' && mask & 2) {
+            const reporting = ['-std=c11', '-c', ...nativeArgs, `-O${optimization}`, '-DTZ_REPORT_OSLOG', ...sections];
+            await compile('native-c', source, reporting, `native-c-${mask}-oslog-O${optimization}`, 'c');
+          }
         }
       }
+    }
+    // M19: the report destination of a macOS executable, with the arguments of the driver's `report-darwin` unit.
+    if (native && process.platform === 'darwin') {
+      await compile('report-darwin', await runtime('oslog-darwin.c'), ['-std=c11', '-c', '-O1', ...nativeArgs],
+        'report-darwin', 'c');
     }
     const tools = {};
     for (const name of [`bin/tsuzuri-clang${suffix}`, `bin/clang${suffix}`,

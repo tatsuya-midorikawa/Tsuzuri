@@ -83,6 +83,7 @@ impl FunctionEmitter<'_, '_> {
             Builtin::OsRead => ("read", "ptr, i32, ptr, i64"),
             Builtin::OsArgs => ("args", "ptr"),
             Builtin::OsVersion => ("version", "ptr"),
+            Builtin::OsExecutablePath => ("executable_path", "ptr"),
             Builtin::OsWrite => ("write", "i32, ptr, i64, ptr, i64"),
             Builtin::OsRandom => ("random", "ptr, i64"),
             Builtin::OsClock => ("clock", "i32"),
@@ -100,6 +101,7 @@ impl FunctionEmitter<'_, '_> {
             Builtin::OsRead
                 | Builtin::OsArgs
                 | Builtin::OsVersion
+                | Builtin::OsExecutablePath
                 | Builtin::OsRandom
                 | Builtin::OsHandle
                 | Builtin::OsSpawn
@@ -128,6 +130,12 @@ impl FunctionEmitter<'_, '_> {
             Builtin::OsVersion => {
                 format!(
                     "call i64 @tsuzuri_os_version(ptr {})",
+                    slot.as_ref().unwrap()
+                )
+            }
+            Builtin::OsExecutablePath => {
+                format!(
+                    "call i64 @tsuzuri_os_executable_path(ptr {})",
                     slot.as_ref().unwrap()
                 )
             }

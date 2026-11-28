@@ -2966,15 +2966,16 @@ fn sink_flags(module: &CheckedModule, stores: &[StoreFacts], failed: &[bool]) ->
                 // (`Routine.go`, `WaitGroup.go`, `Time.after_func`).
                 E::Function(_) => {
                     use crate::check::Builtin::{
-                        AnchorCreate, AnchorUpdate, ChannelSend, ChannelTrySend, DataChannelSend,
-                        OnceValueGet, OwnedCall, OwnedFunction, SendOnlySend, SendOnlyTrySend,
+                        AnchorCreate, AnchorCreateShared, AnchorUpdate, ChannelSend,
+                        ChannelTrySend, DataChannelSend, OnceValueGet, OwnedCall, OwnedFunction,
+                        SendOnlySend, SendOnlyTrySend,
                     };
                     let builtin = builtin_called(module, expression);
                     if let (Some(builtin), Type::Function(parameters, _)) =
                         (builtin, &expression.ty)
                     {
                         let kept = match builtin {
-                            AnchorCreate | OnceValueGet => {
+                            AnchorCreate | AnchorCreateShared | OnceValueGet => {
                                 parameters.types.first().map(without_views)
                             }
                             AnchorUpdate => match parameters.types.first() {
@@ -6839,18 +6840,20 @@ impl<'a, 'run> Checker<'a, 'run> {
     /// `Cond.wait_with`. Also the index of that callback among the arguments.
     fn locked_result(&self, callee: &TypedExpr) -> Option<(Type, usize)> {
         use crate::check::Builtin::{
-            AnchorRead, AnchorUpdate, CondWaitWith, MutexWith, OnceValueGet, RwMutexWithRead,
-            RwMutexWithWrite,
+            AnchorRead, AnchorReadShared, AnchorUpdate, CondWaitWith, MutexWith, OnceValueGet,
+            RwMutexWithRead, RwMutexWithWrite,
         };
         let builtin = self.builtin_called(callee)?;
         let callback = match builtin {
-            AnchorRead | AnchorUpdate => 0,
+            AnchorRead | AnchorReadShared | AnchorUpdate => 0,
             MutexWith | RwMutexWithRead | RwMutexWithWrite | OnceValueGet => 1,
             CondWaitWith => 3,
             _ => return None,
         };
         match &callee.ty {
-            Type::Function(parameters, _) if builtin == AnchorRead && parameters.len() >= 2 => {
+            Type::Function(parameters, _)
+                if matches!(builtin, AnchorRead | AnchorReadShared) && parameters.len() >= 2 =>
+            {
                 Some((callee.ty.after_arguments(2), callback))
             }
             Type::Function(parameters, _) if builtin == AnchorUpdate && !parameters.is_empty() => {
@@ -6885,7 +6888,13 @@ impl<'a, 'run> Checker<'a, 'run> {
     fn anchored_value(&self, callee: &TypedExpr) -> Option<Type> {
         match &callee.ty {
             Type::Function(parameters, _)
-                if self.builtin_called(callee) == Some(crate::check::Builtin::AnchorCreate) =>
+                if matches!(
+                    self.builtin_called(callee),
+                    Some(
+                        crate::check::Builtin::AnchorCreate
+                            | crate::check::Builtin::AnchorCreateShared
+                    )
+                ) =>
             {
                 parameters.first().cloned()
             }
@@ -12520,6 +12529,7 @@ impl<'a, 'run> Checker<'a, 'run> {
         let locks = matches!(
             builtin,
             crate::check::Builtin::AnchorRead
+                | crate::check::Builtin::AnchorReadShared
                 | crate::check::Builtin::MutexWith
                 | crate::check::Builtin::RwMutexWithRead
                 | crate::check::Builtin::RwMutexWithWrite
@@ -15054,7 +15064,9 @@ impl<'a, 'run> Checker<'a, 'run> {
                             "{name} callbacks must return values proven free of borrowed environments: the anchor table keeps the value beyond borrowed scopes; return an owned value, or a function that captures a copy"
                         ),
                     ),
-                    Some(crate::check::Builtin::AnchorRead) => (
+                    Some(
+                        crate::check::Builtin::AnchorRead | crate::check::Builtin::AnchorReadShared,
+                    ) => (
                         DiagnosticKind::AnchorResultRetainsBorrow,
                         format!(
                             "{name} results must be proven free of borrowed environments: a reference or function borrowing the anchored value would use it after the read ends; return an owned value, or a function that captures a copy"
@@ -16027,7 +16039,13 @@ impl<'a, 'run> Checker<'a, 'run> {
                     return Err(self.owned_function_holds_borrow(left, &value, &expression.ty));
                 }
                 let anchor_create = *operator == BinaryOp::Pipe
-                    && self.builtin_called(right) == Some(crate::check::Builtin::AnchorCreate);
+                    && matches!(
+                        self.builtin_called(right),
+                        Some(
+                            crate::check::Builtin::AnchorCreate
+                                | crate::check::Builtin::AnchorCreateShared
+                        )
+                    );
                 if anchor_create
                     && left.ty.carries_loans(&self.module.types())
                     && !value.loans.is_empty()

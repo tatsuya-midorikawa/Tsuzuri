@@ -4,6 +4,11 @@ const ANCHOR_CREATE: &str = "declare i64 @tsuzuri_tz_anchor_create(ptr, ptr, ptr
 const ANCHOR_BEGIN: &str = "declare i32 @tsuzuri_tz_anchor_begin(i64, ptr, i32, ptr)";
 const ANCHOR_END: &str = "declare i32 @tsuzuri_tz_anchor_end(i64, i32)";
 const ANCHOR_RELEASE: &str = "declare void @tsuzuri_tz_anchor_release(i64)";
+const ANCHOR_CREATE_SHARED: &str =
+    "declare i64 @tsuzuri_tz_anchor_create_shared(ptr, ptr, ptr, ptr, ptr)";
+const ANCHOR_BEGIN_SHARED: &str = "declare i32 @tsuzuri_tz_anchor_begin_shared(i64, ptr, ptr)";
+const ANCHOR_DETACH: &str = "declare void @tsuzuri_tz_anchor_detach(i64)";
+const ANCHOR_RELEASE_SHARED: &str = "declare i32 @tsuzuri_tz_anchor_release_shared(i64)";
 
 /// Emits the unique type descriptor (`unnamed_addr` omitted so `llvm_split` keeps one symbol
 /// across codegen units) and box drop helper for an anchored value type `value`.
@@ -49,7 +54,22 @@ impl FunctionEmitter<'_, '_> {
                 self.instruction("call void @tsuzuri_tz_anchor_release(i64 %arg0)");
                 "0".to_owned()
             }
-            Builtin::AnchorCreate => {
+            Builtin::AnchorDetach => {
+                self.intrinsics.insert(ANCHOR_DETACH.into());
+                self.instruction("call void @tsuzuri_tz_anchor_detach(i64 %arg0)");
+                "0".to_owned()
+            }
+            Builtin::AnchorReleaseShared => {
+                self.intrinsics.insert(ANCHOR_RELEASE_SHARED.into());
+                let released = self.value("call i32 @tsuzuri_tz_anchor_release_shared(i64 %arg0)");
+                self.value(format!("icmp ne i32 {released}, 0"))
+            }
+            Builtin::AnchorCreate | Builtin::AnchorCreateShared => {
+                let (declaration, create) = if instance.builtin == Builtin::AnchorCreateShared {
+                    (ANCHOR_CREATE_SHARED, "tsuzuri_tz_anchor_create_shared")
+                } else {
+                    (ANCHOR_CREATE, "tsuzuri_tz_anchor_create")
+                };
                 let value_ty = codegen_identity(&instance.types[0]);
                 let mangled = mangled_type(&value_ty, self.module);
                 self.globals.anchor_types.insert(value_ty.clone());
@@ -60,9 +80,9 @@ impl FunctionEmitter<'_, '_> {
                 let size = self.value(format!("select i1 {empty}, i64 1, i64 {raw}"));
                 let boxed = self.value(format!("call ptr @tz.alloc(i64 {size})"));
                 self.instruction(format!("store {llvm_val} %arg0, ptr {boxed}"));
-                self.intrinsics.insert(ANCHOR_CREATE.into());
+                self.intrinsics.insert(declaration.into());
                 let token = self.value(format!(
-                    "call i64 @tsuzuri_tz_anchor_create(ptr {boxed}, ptr @tz.anchor.type.{mangled}, ptr @tz.anchor.drop.{mangled}, ptr @tz.alloc, ptr @tz.free)"
+                    "call i64 @{create}(ptr {boxed}, ptr @tz.anchor.type.{mangled}, ptr @tz.anchor.drop.{mangled}, ptr @tz.alloc, ptr @tz.free)"
                 ));
                 let handle = self.value(format!(
                     "insertvalue {} zeroinitializer, i64 {token}, 0",
@@ -70,20 +90,28 @@ impl FunctionEmitter<'_, '_> {
                 ));
                 self.mark_live(&result, handle)
             }
-            Builtin::AnchorRead => {
+            Builtin::AnchorRead | Builtin::AnchorReadShared => {
                 let value_ty = codegen_identity(&instance.types[0]);
                 let out_ty = &instance.types[1];
                 let mangled = mangled_type(&value_ty, self.module);
                 self.globals.anchor_types.insert(value_ty.clone());
-                self.intrinsics.insert(ANCHOR_BEGIN.into());
                 self.intrinsics.insert(ANCHOR_END.into());
                 let box_slot = self.fresh();
                 self.allocas
                     .push(format!("{box_slot} = alloca ptr, align 8"));
                 self.instruction(format!("store ptr null, ptr {box_slot}"));
-                let status = self.value(format!(
-                    "call i32 @tsuzuri_tz_anchor_begin(i64 %arg1, ptr @tz.anchor.type.{mangled}, i32 0, ptr {box_slot})"
-                ));
+                // A shared read begins on any thread; its end is the end of a read (M09 Phase 3).
+                let status = if instance.builtin == Builtin::AnchorReadShared {
+                    self.intrinsics.insert(ANCHOR_BEGIN_SHARED.into());
+                    self.value(format!(
+                        "call i32 @tsuzuri_tz_anchor_begin_shared(i64 %arg1, ptr @tz.anchor.type.{mangled}, ptr {box_slot})"
+                    ))
+                } else {
+                    self.intrinsics.insert(ANCHOR_BEGIN.into());
+                    self.value(format!(
+                        "call i32 @tsuzuri_tz_anchor_begin(i64 %arg1, ptr @tz.anchor.type.{mangled}, i32 0, ptr {box_slot})"
+                    ))
+                };
                 let ok_cond = self.value(format!("icmp eq i32 {status}, 0"));
                 let ok_bb = self.label();
                 let err_bb = self.label();
