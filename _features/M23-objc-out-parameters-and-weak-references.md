@@ -86,7 +86,7 @@ def main :: unit -> i32 = \() ->
 - **人間が求めない限り Phase 1 だけを実装する**（GUIDE §0）。承認が記録されるまで、該当する Phase に着手しない（`grep -n '利用者が決めた点' _features/GUIDE.md`）。
 - Phase 1: D1・D2 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み、2026-11-26）。[M01](_completed/M01-objc-class-types.md) と [M02](_completed/M02-objc-typed-message-send.md) の Phase 1 が done（`grep -nE "^\| M0[12] " _features/README.md`）。`extern def` の形は M01 だけで足りるが、テストと完了の例がメンバーを使う。
 - Phase 2: D8・D9 の承認と D-55 の登録（D-67 の分岐 1 は X′ で承認済み）、M01 が done。Phase 1 が done でなくてもよい。
-- 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](_completed/M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
+- 任意: [M05](M05-objc-exception-boundary.md) があれば例外の経路のテストを足す。[M10](_completed/M10-objc-autorelease-pools.md) があれば E2E のプールを `ObjC.with_autorelease_pool` で書く（なければ `extern` の `objc_autoreleasePoolPush`・`Pop`）。[M03](M03-objc-classes-defined-in-tsuzuri.md) のプロトコルの型と [M09](_completed/M09-main-thread-dispatch-and-handles.md) の Phase 2 の `main` のクラスも、入っていれば `C` に含める。[M04](M04-objc-blocks.md) が先なら、型引数を持つ std の record の仕組み（M04 の D10）を Phase 2 が使う。
 - 環境: arm64 の macOS と Apple clang と SDK。Rust のテストはどのホストでも走る。
 - ベースライン: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target aarch64-apple-darwin`・`--target wasm32`）・`--emit header`・`check --json` を `target/scratch/m23/base/` に保存する。`node scripts/repo-kb.mjs brief M23`。
 
@@ -339,7 +339,7 @@ ARC の pass-by-writeback（`out` の印のない引数。「現状」6）と同
 | M05 の例外の経路 | 書き戻さない（M05 の仕様 2 がそのまま効く） | 場所は前の値のまま。投げる前に書かれた物体はプールが持つ |
 
 - 呼ばれた側が書かなければ場所は前の値のまま（W13 の in/out と同じ）。`out` の印のある引数（Foundation と AppKit の `NSError` の出力引数のうち 20 か所）では ARC は nil で始めるので、ARC と違うのは「呼ぶ前が `Some` で、呼ばれた側が書かなかった」ときだけ。宣言は `out` を表さない。ARC と同じにしたければ呼ぶ前に `None` を入れる。
-- 書かれた物体は retain するので、プールの pop の後も場所に残る（「現状」7）。呼ばれた側の autorelease の分はプールに残るので、プールのない tzroutine では解放されずに溜まる（M10 の再現 1）。
+- 書かれた物体は retain するので、プールの pop の後も場所に残る（「現状」7）。呼ばれた側の autorelease の分はプールに残るので、プールのない tzroutine では解放されずに溜まる（M10 の再現 1）。M10（2026-11-29）の後は、Objective-C のイメージの tzroutine にランタイムの実行区間のプールがあり、tzroutine がスレッドを手放すと解放される。だから、書かれた物体の retain は、呼び出しと同じブロッキングの包み（`tsuzuri_tz_blocking_enter`・`_exit`）の中で済ませる（M10 の D11。包みの外で retain すると、その間の横取りで区間の pop が物体を解放しうる）。
 - `Maybe<C>` は NS01 の niche（M01 の仕様 2）なので、場所のアドレスを `objc_storeStrong` にそのまま渡す（S1）。
 - 順序: `call`（+0 の結果は M01 の D6 の bundle が `call` の一部として retain する）→ 書き戻し（宣言の順。W13 の record・スカラーと同じ表）→ `free_copies` → 結果の `Maybe` の変換か NULL の検査。M01 の D6 が W14 の正準形が `i64` の結果に使う素の `objc_retainAutoreleasedReturnValue`（と、その前の `inttoptr`）も、物体の出力引数を持つ呼び出しでは書き戻しの前に置く（落とし穴）。物体の出力引数のない呼び出しの並びは M01 のまま変えない（S3）。
 
@@ -467,7 +467,7 @@ def stop :: ref Controller -> unit = \controller ->
 - [M01](_completed/M01-objc-class-types.md): 物体の型の判定（`HandleKind::ObjcLocal`・`ObjcSync` と述語）、`Maybe<C>` の niche、位置の検査と kind `objc_object_position`・`objc_target_not_class`・`objc_builtin_not_called`・`abi_apple_only`、`validate_objc_target`、`objc_used`、`declare` の 1 行の規則、D6、監査の行。名前が違えば止めて報告する（GUIDE-LITE §11）。
 - [M02](_completed/M02-objc-typed-message-send.md): `abi::objc_parameter`、セレクターの数の `c`、`host_call` の分割、`ObjcCallSite`。
 - [W13](_completed/W13-extern-ref-mut-and-mutable-buffers.md): `CopyOut`・`finish_copy_outs`・`uses_w13_native_only`。[W15](_completed/W15-abi-nullable-handles.md): `nullable_to_c`、`abi_nullable_payload`。[W23](_completed/W23-anchor-state.md): `Anchor<T>` に入れる規則。
-- 任意: [M04](M04-objc-blocks.md) の D10（Phase 2）、[M05](M05-objc-exception-boundary.md) の例外の経路、[M10](M10-objc-autorelease-pools.md) の `ObjC.with_autorelease_pool`。
+- 任意: [M04](M04-objc-blocks.md) の D10（Phase 2）、[M05](M05-objc-exception-boundary.md) の例外の経路、[M10](_completed/M10-objc-autorelease-pools.md) の `ObjC.with_autorelease_pool`。
 
 ## 他チケットへ提供するインターフェース
 

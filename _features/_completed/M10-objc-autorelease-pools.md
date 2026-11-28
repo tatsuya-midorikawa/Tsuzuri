@@ -5,14 +5,25 @@
 | ID | M10 |
 | 優先度 | P2 |
 | 規模 | M（Phase 1・2） |
-| 依存 | [M01](_completed/M01-objc-class-types.md), ([M02](_completed/M02-objc-typed-message-send.md)) |
+| 依存 | [M01](M01-objc-class-types.md), ([M02](M02-objc-typed-message-send.md)) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（2026-11-29。Phase 1・2。組み込みの関数 `ObjC.with_autorelease_pool :: (unit -> 'a) -> 'a`（スケジューラーを使うプログラムでは push の前から pop の後までスレッドに固定する。固定する境界で、効果は `extern`、権限は `ffi`）、Objective-C を使うプログラムの実行ファイルの `@main` の pool（pop は tzroutine の境界の待ちの後で `@tz.main.done` の前）、Objective-C のイメージの tzroutine のランタイムだけが回す実行区間の pool（`-DTZR_OBJC_POOLS`。yield と終了では tzroutine が次へ進む前に pop する）。W14 の `i64` の結果の素の retain は、呼び出しと同じブロッキングの包みの中に入れた。Objective-C を使わないプログラムの IR とランタイムは変わらない。「実装と検証（2026-11-29）」） |
 | 起票 | 2026-11-26（D-67。利用者の依頼「「どのチケットにもない壁」と「調査中に見つけたコンパイラの不具合（自分で再現済み）」のそれぞれについて @_features/ に開発チケットまたは修正チケットを作成して」から起票。調査で報告した「壁 4（プールのない tzroutine で Foundation を使うと永久に漏れる。200 万個で maxrss が 5.6 から 51.8 MiB。Foundation をリンクした -O3）」に当たる。HEAD `804b7970` で確認） |
-| 承認 | [GUIDE D-67](GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）は承認済み（2026-11-26）。要承認（D-55（`ObjC.with_autorelease_pool`）。Phase 2（ランタイムが自動でプールを回す）は別に承認する）。決定事項の D3・D4 が要承認、ほかは既定案 |
+| 承認 | [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の分岐 1（X′）は承認済み（2026-11-26）。要承認（D-55（`ObjC.with_autorelease_pool`）。Phase 2（ランタイムが自動でプールを回す）は別に承認する）。決定事項の D3・D4 が要承認、ほかは既定案。D3・D4 は 2026-11-29 に D-67 の委任（利用者の指示「実装完了までに複数フェーズある場合には、すべてのフェーズを完了させること」「現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して最新化して」「何か判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」）で決め、着手前のレビューで D8〜D11 を足した。台帳は [GUIDE D-67](../GUIDE.md#d-67-tsuzuri-だけで-macos-のデスクトップアプリを書くm01m22) の「委任による決定（2026-11-29、M10）」 |
 | 改善する劣位 | Objective-C（`@autoreleasepool { }`）・Swift（`autoreleasepool { }`）比: tzroutine の中で Foundation の便利なコンストラクタや +0 の結果を受けると、プールのない OS スレッドで autorelease された物体が永久に漏れる（200 万個で maxrss が 5.6 MiB から 51.8 MiB）。プールを置く言語の手段がなく、SDK のヘッダーに宣言のない `objc_autoreleasePoolPush`・`Pop` を `extern` で宣言し、`Routine.with_locked_thread` の中で対にする手書きの回避策しかない。固定を忘れると、待った後に別のスレッドで pop して abort する |
 | 手本にする既存実装 | `Routine.with_locked_thread` の下げ方（`src/llvm.rs:7371-7393` の `routine_builtin`、`tsuzuri_tz_lock_thread`・`unlock`）と効果の辺の除外（`src/effects.rs` の `pinning_argument_mask`、`src/pinned_rules.rs:33-35` の `Position::Pinning`。D-53）。生成した `@main` の `TZROUTINE_SCOPE_ENTER`・`LEAVE` を足す所（`src/llvm.rs:9994-10006`・`10017-10018`）。ランタイムの機能のマクロ（`src/driver.rs:4915-4923` の `-DTZ_TRAP_BOUNDARY`・`-DTZ_STACK_GUARD`・`-DTZ_ASYNC_PREEMPT`） |
 | 主な影響ファイル | `src/check.rs`, `src/llvm.rs`, `src/llvm_objc.rs`（M01 が作る ObjC の生成）, `src/effects.rs`, `src/pure_rules.rs`, `src/kg/effects.rs`, `src/pinned_rules.rs`, `src/capabilities.rs`, `src/driver.rs`（Phase 2）, `src/runtime/tzroutine.c`（Phase 2）, `tests/objc_pools.rs`（新規）, `tests/objc_pools.mjs`（新規）, `tests/fixtures/objc_pools/Main.tz`（新規）, `_tsuzuri/language-reference/compiler/objective-c.md`（M01 が作る）, `_tsuzuri/language-reference/built-in-types-and-modules/routine.md`, `_tsuzuri/language-reference/compiler/native-interop.md`, `docs/language.md`, `docs/architecture.md` |
+
+## 改訂（2026-11-29。着手前のレビュー、HEAD `a198b995`）
+
+起票（HEAD `804b7970`）の後に M01・M02・M09 が入り、次の点が HEAD と食い違っていたので、実装の前に改めた。下の本文のうち、この節と食い違う記述はこの節が正である（決定事項の D8〜D11）。
+
+- **早見の例は漏れの検査にならない**: `+[NSMutableArray array]` は +0 の結果だが、M01 の D6 の bundle（`clang.arc.attachedcall`）でハンドシェイクが効き、物体はプールを経ない。プールで包まずに `Routine.with_locked_thread` の中で 200 万回呼んでも、maxrss は 5.6 MiB で `MISSING POOLS` は 0 行だった（`-O3`、Foundation をリンク。実測）。早見の「+0 の結果なので、M02 が直後に retain しても物体はプールを経る」は、手書きの `extern` の送信（再現 3）にだけ当たる。漏れの検査は、ARC なしのホスト（`tests/objc_pools_host.m`）が確実に autorelease する物体で行う（D8）。
+- **Phase 2 の pop は任意の `dealloc` を g0 の上で走らせる**: M のスレッドのスタックは 256 KiB（`tzr_startm`。「g0 runs only the scheduler」）で、G の既定（1 MiB）より小さい。`TZR_OBJC_POOLS` のランタイムでは M のスタックを 1 MiB にする（D9）。
+- **pop の位置**: 「G から g0 に戻った直後」ではなく、yield と終了では `after` の前、待ちでは `after`（R1 の待ちのロックの解放）の後にする（D10）。待ちのロック（`tzr_lock`）を持ったまま `dealloc` を走らせない。yield と終了では `after` まで誰も G を走らせられないので、G が次へ進む前（終了では、境界へ終了が伝わる前）に解放が済み、振る舞いが決定的になる。
+- **停止条件 S4 の決め方**: 「残りの窓を横取りの対象から外す」を採った（D11）。W14 の `i64` の結果の fallback の素の retain を、`host_call` が自分で出す `tsuzuri_tz_blocking_enter`・`_exit` の中に、呼び出しと一緒に入れる。包みの中では非同期の横取りが起きず（`syscall_depth > 0`）、`tsuzuri_tz_blocking_exit` は G を M から離さない（`tzr_exitsyscall` は P を待つだけ）。非同期の横取りは止めない。利用者が手で書いた `i64` の id は、文書の規律（`ObjC.with_autorelease_pool` の中に置くか、型付きの宣言に書き換える）で扱う。型付きの宣言だけのプログラムは、内部ポインター（`const char *` の結果など）を型で持てない（`ref ZUtf8String` は引数だけ）ので、区間の pop で壊れる値を持たない。
+- **`emit_typed_builtin` の `Globals`**: 「`objc_used` を戻す処理を足す」ではなく、`objc` の表そのものを共有の `Globals` から持ち込んで戻す。selref と定数の NSString の番号が続き、release だけをする組み込みの本体（`ignore` など）の `declare` も残る。
+- **行番号と文書の場所**: `src/` の行番号は M01・M02・M09 でずれている（`routine_builtin` は `src/llvm.rs` の 8155 行付近、`console_main` は 10895 行付近、`Builtin::ALL.len()` は 397 → 398）。「ドキュメント」の `_tsuzuri/language-reference/...` は別リポジトリ Tsuzuri-Reference の `docs/compiler/objective-c.md`・`docs/stdlib/sync/routine.md`・`docs/compiler/native-interop.md` に読み替える。
 
 ## 実装者向け早見
 
@@ -55,7 +66,7 @@ M01 の `extern def` と M02 の型付きの送信は、+0 の物体の結果を
 ### 着手条件
 
 - **人間が求めない限り Phase 1 だけを実装する。** **承認が記録されるまで、該当する Phase に着手しない。** D-67 の分岐 1（X′）は承認済み（2026-11-26）。Phase 1 は決定事項 D4（D-55 の登録）、Phase 2 は加えて D3 の承認が要る。
-- [M01](_completed/M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、ObjC を使うプログラムの判定、`-lobjc`、`abi_apple_only`）。[M02](_completed/M02-objc-typed-message-send.md) は弱い依存で、Phase 1 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。Phase 2 は M02 の Phase 1 が done であること（安全の根拠が M02 の直後の retain だから）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
+- [M01](M01-objc-class-types.md) が done（組み込みのモジュール `ObjC`、ObjC を使うプログラムの判定、`-lobjc`、`abi_apple_only`）。[M02](M02-objc-typed-message-send.md) は弱い依存で、Phase 1 と同じ時期に入れる（+0 の結果が tzroutine のプールで漏れるため）。Phase 2 は M02 の Phase 1 が done であること（安全の根拠が M02 の直後の retain だから）。確認: `grep -nE "^\| M0[12] " _features/README.md`。
 - 「現状」の再現を着手時の HEAD で実行し、食い違えばこのチケットを直してから始める。
 - ベースライン: `tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の `--emit llvm`（native、`--target aarch64-apple-darwin`、`--target wasm32`）、`--emit header`、`check --json`、`--emit exe` の `@main`（Rust のテストで `llvm::emit(&module, Entry::Console)`）を `target/scratch/m10/base/` に保存する。M01 の fixture（ObjC を使う）も含める。
 
@@ -286,7 +297,7 @@ entry:
 
 - `with_locked_thread` と違い、closure の drop を pop の前に置く（捕捉した値の drop で走る dealloc が autorelease する物体もプールに入れるため）。
 - `ObjC.with_autorelease_pool` に到達した IR にも M01 のモジュールのフラグを出す。プールだけを使うプログラムでも `uses_objc` が真になり、`-lobjc` と `@main` のプールが同じ判定にそろう（フラグがないと `objc_autoreleasePoolPush` が未解決の `E2002` になる）。
-- 「スケジューラーを使う」は `src/llvm.rs:1646` の `spawning` と同じ条件にする。`FunctionEmitter` からは `Globals` に値を足して読む（今の `Globals.spawns` は `spawns(module)` だけで、`Parallel.*` の `scheduler_parallel` を含まない）。`with_locked_thread` と同じく組み込みの本体は `emit_typed_builtin` の `local_globals`（`src/llvm.rs:8711-8722`）で作られうるので、足す値はそこで写す一覧にも足す。足さないと `..Globals::default()` の偽になり、固定が黙って消えて再現 2 の abort になる。[M05](M05-objc-exception-boundary.md) のブロッキングの包みも同じ値を要る（先に入れたほうが足す）。
+- 「スケジューラーを使う」は `src/llvm.rs:1646` の `spawning` と同じ条件にする。`FunctionEmitter` からは `Globals` に値を足して読む（今の `Globals.spawns` は `spawns(module)` だけで、`Parallel.*` の `scheduler_parallel` を含まない）。`with_locked_thread` と同じく組み込みの本体は `emit_typed_builtin` の `local_globals`（`src/llvm.rs:8711-8722`）で作られうるので、足す値はそこで写す一覧にも足す。足さないと `..Globals::default()` の偽になり、固定が黙って消えて再現 2 の abort になる。[M05](../M05-objc-exception-boundary.md) のブロッキングの包みも同じ値を要る（先に入れたほうが足す）。
 - 宣言 `declare ptr @objc_autoreleasePoolPush()`・`declare void @objc_autoreleasePoolPop(ptr)` は D-67 の共通の規則に従う。利用者の `extern` が同じ symbol を宣言していれば（再現 1 の `i64` の形）その行を残し、コンパイラは自分の関数型で `call` する（LLVM は型の違う 2 つ目の `declare` を拒み、debug ビルドでは driver の `debug_assert!` の `duplicate_declarations` の検査（`src/driver.rs:4239-4245`）も落ちる）。
 
 ### Phase 1 の `@main`
@@ -331,15 +342,15 @@ void objc_autoreleasePoolPop(void *pool);
 
 ## 前提とする他チケットのインターフェース
 
-- [M01](_completed/M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`HandleKind::ObjcLocal`・`ObjcSync`、`llvm::uses_objc(text)`（IR が `!"Objective-C Version"` を含むか）とモジュールのフラグを出す条件、`-lobjc` の自動の追加（5 つのリンク行）、`abi_apple_only`、`ObjC` の名前の登録の表。判定が利用者の手書きの宣言で真になるなら止めて報告する（S2）。
-- [M02](_completed/M02-objc-typed-message-send.md)（弱い依存）: +0 の物体の結果の retain（M01 の D6 の `clang.arc.attachedcall` の bundle。M02 の D6 がこれに従う。Phase 2 の安全の根拠）。ハンドシェイクが効けば返された物体はプールを経ないが、呼ばれた側の内部の autorelease は残るので、Phase 1 の規律は変わらない。
+- [M01](M01-objc-class-types.md): 組み込みのモジュール `ObjC`、`HandleKind::ObjcLocal`・`ObjcSync`、`llvm::uses_objc(text)`（IR が `!"Objective-C Version"` を含むか）とモジュールのフラグを出す条件、`-lobjc` の自動の追加（5 つのリンク行）、`abi_apple_only`、`ObjC` の名前の登録の表。判定が利用者の手書きの宣言で真になるなら止めて報告する（S2）。
+- [M02](M02-objc-typed-message-send.md)（弱い依存）: +0 の物体の結果の retain（M01 の D6 の `clang.arc.attachedcall` の bundle。M02 の D6 がこれに従う。Phase 2 の安全の根拠）。ハンドシェイクが効けば返された物体はプールを経ないが、呼ばれた側の内部の autorelease は残るので、Phase 1 の規律は変わらない。
 - W19 の `Position::Pinning`・`pinning_argument_mask`・`E1013`（`pinned_code_spawned`）。TZ08 の `tsuzuri_tz_lock_thread`・`unlock`。D-61 の `TZROUTINE_SCOPE_ENTER`・`LEAVE`。
 
 ## 他チケットへ提供するインターフェース
 
-- [M05](M05-objc-exception-boundary.md): 例外の物体の多くは autorelease されてから投げられる。tzroutine で境界を繰り返し呼ぶ処理は `ObjC.with_autorelease_pool` で包む（M05 の文書が参照する）。
-- [M04](M04-objc-blocks.md)・[M09](_completed/M09-main-thread-dispatch-and-handles.md): GCD のスレッドで呼ばれる Block とコールバックは擬似 G で、固定は何もせず push と pop だけが走る。
-- [M08](_completed/M08-macos-main-thread-docs-and-e1013.md)・W28: routine.md:130 と native-interop.md:630 の同じ段落に触れる。後に入るほうが文を合わせる。
+- [M05](../M05-objc-exception-boundary.md): 例外の物体の多くは autorelease されてから投げられる。tzroutine で境界を繰り返し呼ぶ処理は `ObjC.with_autorelease_pool` で包む（M05 の文書が参照する）。
+- [M04](../M04-objc-blocks.md)・[M09](M09-main-thread-dispatch-and-handles.md): GCD のスレッドで呼ばれる Block とコールバックは擬似 G で、固定は何もせず push と pop だけが走る。
+- [M08](M08-macos-main-thread-docs-and-e1013.md)・W28: routine.md:130 と native-interop.md:630 の同じ段落に触れる。後に入るほうが文を合わせる。
 
 ## 実装手順
 
@@ -429,8 +440,67 @@ void objc_autoreleasePoolPop(void *pool);
 | --- | --- | --- | --- |
 | D1 | `ObjC.with_autorelease_pool` は、スケジューラーを使うプログラムでは固定してから push し、本体と closure の drop の後で pop して固定を外す。スケジューラーを使わないプログラムでは push と pop だけ。トラップでは pop が飛ぶ | 再現 2 のとおり、固定しない pop は別のスレッドのプールに対して行われて abort する。擬似 G では固定は何もしないので、lock を出すと tzroutine のランタイムを連結するだけになる。1 引数なので D-59 の例外は要らない。退けた案: (a) プールのトークンの型と push・pop の 2 つの関数（LIFO を守らない使い方を型で止められず、対を書き忘れる）。(b) `autoreleasepool { }` の構文（新しい語が要る。予約語を足さない方針）。(c) 今の手書きの回避策を文書にするだけ（SDK にない宣言を各自が書き、固定を忘れると abort する） | 既定案（実装者はこの案に従う） |
 | D2 | `@main` のプールは、M01 の判定で ObjC を使うプログラムにだけ足す。push は本体の呼び出しの直前、pop は境界の待ちの後で `@tz.main.done` の前。宣言はコンパイラが生成し、`declare` の共通の規則に従う | ほかのプログラムの IR を変えない。Xcode の `main` と同じく本体の全体を包む。退けた案: macOS のすべてのプログラムを包む（全プログラムの IR が変わる）、`objc_` の `declare` の有無で判定する（利用者の手書きの宣言を拾う） | 既定案（実装者はこの案に従う） |
-| D3 | Phase 2: ObjC を使うプログラムだけ、ランタイムを `TZR_OBJC_POOLS` でコンパイルし、`tzr_execute` の切り替えの前後で push と pop をする。費用は計測して書く。`i64` で id を持つ古い書き方の危険と、非同期の横取りの扱い（S4）を先に決める | プールを書き忘れても tzroutine の漏れが区間で止まる。マクロで分けるので ObjC を使わないプログラムのランタイムは変わらない。退けた案: すべてのランタイムで常に回す（全 tzroutine のプログラムの費用と object が変わる）、`@main` が関数の pointer を登録する（ランタイムの object と切り替えごとの分岐が全プログラムに入る） | 要承認（承認前は Phase 2 に着手しない） |
-| D4 | 名前は `ObjC.with_autorelease_pool`（D-55 の登録） | `Routine.with_locked_thread`・`Mutex.with_lock` と同じ `with_` の形で、関数を 1 つ取る。退けた案: Swift と同じ `ObjC.autoreleasepool`（Tsuzuri の std の名前の付け方と合わない） | 要承認（D-55。承認前は手順 2 に着手しない） |
+| D3 | Phase 2: ObjC を使うプログラムだけ、ランタイムを `TZR_OBJC_POOLS` でコンパイルし、`tzr_execute` の切り替えの前後で push と pop をする。費用は計測して書く。`i64` で id を持つ古い書き方の危険と、非同期の横取りの扱い（S4）を先に決める | プールを書き忘れても tzroutine の漏れが区間で止まる。マクロで分けるので ObjC を使わないプログラムのランタイムは変わらない。退けた案: すべてのランタイムで常に回す（全 tzroutine のプログラムの費用と object が変わる）、`@main` が関数の pointer を登録する（ランタイムの object と切り替えごとの分岐が全プログラムに入る） | 承認済み（D-67 の委任で決定、2026-11-29。D9〜D11 で形を改めた） |
+| D4 | 名前は `ObjC.with_autorelease_pool`（D-55 の登録） | `Routine.with_locked_thread`・`Mutex.with_lock` と同じ `with_` の形で、関数を 1 つ取る。退けた案: Swift と同じ `ObjC.autoreleasepool`（Tsuzuri の std の名前の付け方と合わない） | 承認済み（D-67 の委任で決定、2026-11-29） |
 | D5 | 固定の位置は W19 の `Position::Pinning` と効果の辺の除外に足す。効果は `extern`、権限は `ffi`、`W1010` は出さない | 本体は固定されたスレッドで走るので、`local` のクラスに触れる関数を呼べるのが正しい。組み込みの関数には利用者の宣言がない。退けた案: `Position::Inline`（`pinned` が呼び出し元に広がり、`local` のクラスに触れる本体を包んだ関数を tzroutine で呼べなくなる）、`W1010` を出す（利用者が書いた `extern` の宣言がなく、`@trusted` を付ける場所がない） | 既定案（実装者はこの案に従う） |
 | D6 | wasm は `abi_native_only`、Apple でない native は `abi_apple_only`（M01 の kind）を build のときに出す | D-67 の共通の規則。退けた案: wasm と Apple でない native では黙って本体だけを呼ぶ（ObjC のない環境への移植の誤りを隠す） | 既定案（実装者はこの案に従う） |
 | D7 | 漏れのテストは maxrss の閾値（20 MiB）と `MISSING POOLS` の有無で行い、速度の閾値は置かない | プールのある版（5.6 MiB）とない版（48〜113 MiB）の差が大きく、閾値に余裕がある。AGENTS.md は共有の CI に速度の合否を置かない。退けた案: 閾値を基準の数倍に狭く取る（CI の機械と SDK の版で基準の maxrss がぶれる）、dealloc の数で数える（ホストのクラスが要り、漏れそのものではなく解放の有無しか見ない） | 既定案（実装者はこの案に従う） |
+| D8 | 漏れの E2E は、ARC なしのホスト（`tests/objc_pools_host.m`）が `[[[TzPooled alloc] init] autorelease]` で確実にプールへ入れる物体で行う。maxrss の対照は、同じ 200 万個を `main` のスレッドで 1 つのプール（`@main` のプール）に溜めた実行（30 MiB を超える）にする | 型付きの +0 の結果はハンドシェイクでプールを経ないので、早見の例では、プールがあってもなくても maxrss が変わらない（検査にならない）。ARC のホストの +0 の結果も同じ。退けた案: 早見の例のまま（何も確かめない検査になる）、手書きの `extern "objc_msgSend"` で autorelease を送る（Objective-C のイメージで手書きの id を使う形を fixture に残す） | 決定（D-67 の委任、2026-11-29） |
+| D9 | `TZR_OBJC_POOLS` のランタイムでは、M のスレッドのスタック（g0）を 256 KiB から G の既定と同じ 1 MiB にする | 区間の pop は `dealloc` を g0 の上で走らせる。明示のプール（G のスタックの上で pop する）と同じ深さを持たせる。予約するのはアドレス空間だけで、触れたページしか使わない。退けた案: 256 KiB のまま（Foundation・AppKit の `dealloc` の連鎖でスケジューラーのスレッドのスタックがあふれうる）、pop を G のスタックの上で行う（待ちに入る G は R1 のロックを持っていて、その下で `dealloc` を走らせることになる） | 決定（D-67 の委任、2026-11-29） |
+| D10 | 区間の pop は、yield（`tzr_after_yield`）と終了（`tzr_after_exit`）では `after` の前、待ち（`tzr_after_park`）では `after` の後に行う | 待ちの `after` は R1 のロックを外す。その前に pop すると、ランタイムのロック（spin）を持ったまま任意の `dealloc` が走る。yield と終了では、`after` まで G は走れず、ロックもないので、先に pop して「yield から戻ったら解放済み」「境界の待ちが終わったら解放済み」を決定的にする。待ちでは、起こし手が速ければ G は pop より先に再開する（文書に書く）。退けた案: いつも `after` の後（yield の直後の観測が競合する）、いつも `after` の前（ロックの下の `dealloc`） | 決定（D-67 の委任、2026-11-29） |
+| D11 | S4: W14 の `i64` の結果の素の `objc_retainAutoreleasedReturnValue` を、`host_call` が出す `tsuzuri_tz_blocking_enter`・`_exit` の中に、呼び出し・`inttoptr` と一緒に入れる（`Globals::blocking_externs` のプログラムだけ）。非同期の横取りは止めない。手書きの `i64` の id は文書の規律で扱う | 包みの中では横取りが起きず、exit は G を M から離さないので、呼び出しから retain までに区間の pop は起きない。bundle 付きの呼び出しは retain が同じ行にあり、行の単位の包みで足りる。退けた案: ObjC を使うプログラムで非同期の横取りを止める（検査のないループの公平さを失い、協調的な検査の yield では結局 pop が起きるので、手書きの id は守れない）、手書きの `extern` の組も守る（コンパイラは利用者の 2 つの `extern` の呼び出しの間の関係を知らない） | 決定（D-67 の委任、2026-11-29） |
+
+## 実装と検証（2026-11-29）
+
+Phase 1・2 を 1 つのブランチ（`feat/m10-objc-autorelease-pools`）で実装した。D3・D4 は D-67 の委任で決め、着手前のレビューで D8〜D11 を足した（上の「改訂」と、GUIDE D-67 の「委任による決定（2026-11-29、M10）」）。
+
+### 着手前の再現（HEAD `a198b995`、arm64 macOS 27.2、Apple clang 21）
+
+- 再現 1（手書きの `extern`。プールのない tzroutine で 200 万個）: `-O3`・`-l objc` で maxrss 50,348,032 バイト（48.0 MiB）、`OBJC_DEBUG_MISSING_POOLS=YES` で `MISSING POOLS` の行が出た。起票時と同じ。
+- `ObjC.with_autorelease_pool (\() -> 0)` は `E1002`（`module 'ObjC' has no function or union case 'with_autorelease_pool'`。M01 がモジュールを足したので、起票時の `unknown value 'ObjC'` から文が変わっていた）。
+- 早見の例を、プールの代わりに `Routine.with_locked_thread` で包んで動かすと、maxrss 5,914,624 バイト、`MISSING POOLS` 0 行だった（漏れない。D8 の根拠）。
+
+### 実装したもの
+
+- **組み込みの関数**（`src/check.rs`）: `Builtin::ObjcWithAutoreleasePool`（名前 `ObjC.with_autorelease_pool`、型は `Routine.with_locked_thread` と同じ）。`is_objc`（直接の呼び出しだけで、その場で下げる組み込み）には入れず、普通の `$builtin` の包みを持つ（関数値にできる）。`Builtin::needs_objc_runtime` を足し、`validate_objc_target` が使う。
+- **効果・固定・権限**: `effects::builtin_facts`（`extern` と callbacks）、`pure_rules`（`Outside`）、`kg/effects`（`extern`）、`pinned_rules::builtin_position`（`Position::Pinning`）、`effects::pinning_argument_mask`（直接の呼び出しと `$builtin` の包みの 2 か所）と `boundary_of`（`Boundary::Locked`: `pinned` は止まり、`main_thread` は進む）、`capabilities`（`ffi` の site。クラスを名指さないので `ObjC.Object` の下に置く）。`Builtin::ALL.len()` の pin は 397 → 398。
+- **生成**（`src/llvm_objc.rs`・`src/llvm.rs`）: `objc_with_autorelease_pool` が lock → push → 適用 → 関数値の drop → pop → unlock を出す。lock と unlock は `Globals::scheduler`（native で、spawn するか `Parallel.*` を呼ぶ）のプログラムだけ。`ObjcGlobals::pool` が 2 つの libobjc の関数を `RUNTIME` の表から宣言し（利用者の `extern` の行があれば使い回す）、`used` を立てる。`emit_typed_builtin` は、組み込みの本体を別の `Globals` で作るとき、`objc` の表を共有の表から持ち込んで戻す。
+- **`@main`**: `console_main`・`console_def_main` に `objc_pool` を足した（3 つの形）。判定は、`console_main` を呼ぶ時点の `Globals::objc` の `used`（後から変われば `debug_assert!` が落ちる）。
+- **S4**（`src/llvm_imports.rs`）: `host_call` が、W14 の `i64` の結果の素の retain を、自分で出す `tsuzuri_tz_blocking_enter`・`_exit` の中に入れる（`bracket_retain`）。
+- **ランタイム**（`src/runtime/tzroutine.c`）: `TZR_OBJC_POOLS` のとき、`tzr_execute` が g0 の上で push し、yield と終了では `after` の前、待ちでは `after` の後に pop する。M のスタック（`TZR_G0_STACK`）は、このマクロのときだけ 1 MiB。マクロがなければ、プリプロセスの後の本文は `256 * 1024` が `(256u * 1024u)` になるだけである。
+- **driver**（`src/driver.rs`）: `objc_pools`（tzroutine のランタイムを連結する native の Mach-O で、`llvm::uses_objc(&text)`）のときだけ `-DTZR_OBJC_POOLS` を足す。tzroutine のランタイムを含む単位は事前ビルドの対象でない（`scripts/toolchain/runtime.mjs` は cpu.c・io.c の単位だけを作る）ので、事前ビルドの束は変わらない。キャッシュは引数の列で区別される。
+- **テスト**: `tests/objc_pools.rs`（10 件）、`tests/objc_pools.mjs` と `tests/objc/pools/Main.tz`・`tests/objc/pingpong/Main.tz`・`tests/objc_pools_host.m`、`tests/tzroutine_runtime.c` の `objc_pools` と `tests/tzroutine_runtime.mjs` の macOS の build（`-DTZR_OBJC_POOLS`、`-lobjc`、`-O0`・`-O3` × P 1・4 で全 case）。`.github/workflows/targets.yml` の darwin-arm64 の `suites` の段に `objc_pools.mjs` を足し、README の「変更の種類 → テスト」の表に行を足した。
+
+### 検証（arm64 macOS 27.2、Apple clang 21、開発版 `target/debug/tsuzuri`）
+
+- **S1（変わらないこと）**: `main`（`a198b995`）の開発版を別の worktree で作り、`tests/fixtures`・`examples` の `Main.tz` を持つ 176 個のプロジェクトを、`--emit llvm`（native・`--target x86_64-unknown-linux-gnu`・`--target wasm32`）と `--emit object --no-cache`（native）、それぞれ `-O0`・`-O3` で比べた。1,408 個のうち、作れた 1,368 個がすべてバイト単位で一致し、39 個は両方が同じ終了コードと同じ文で拒否した。残りの 1 個（`tests/fixtures/net_wasm` の wasm32 `-O3`。両方とも `E2000` で拒否する）は、T1 と並行して走らせた回だけ標準エラーが食い違い、単独で 3 回やり直すと 3 回とも一致した。手書きの宣言だけのプログラムは、E2E の `legacy` の段（`nm -u` に `autoreleasePool` がなく、`MISSING POOLS` が今までどおり出る）と、Rust の `main_pool_only_in_programs_that_use_objc`（`@main` が宣言のないプログラムと同じ行）で確かめた（S2）。
+- **Rust**: `cargo test --locked --test objc_pools` が `running 10 tests`、10 件通過（型、固定の境界と `main_thread`、効果と `E1029`・`E1031`、権限 `ffi`、スケジューラーの有無と lock、利用者の宣言との `declare` の共有、`@main` の 3 つの形と宣言だけのプログラム、release だけの組み込みの本体の `declare`、target の `E1008`、包みの中の retain）。`cargo nextest run --locked` は `3853 tests run: 3849 passed (21 slow), 4 failed, 4 skipped` で、落ちた 4 件は組み込みの数を固定する単体テスト（`effects` の 2 件、`pure_rules`、`kg::effects`。効果を持つ組み込み 183 → 184、callbacks 34 → 35、Level B 182 → 183）だった。数を直した後、`cargo test --locked --lib` が `795 passed; 0 failed; 1 ignored`、関連する 7 つのテストファイル（`objc_pools`・`objc_classes`・`objc_send`・`blocking`・`main_thread_handles`・`thread_bound_handles`・`capabilities`）が 88 件通過した。直したのはテストの期待値とコメントだけなので、全体はやり直していない（CI が走らせる）。
+- **ランタイムの C**: `node tests/tzroutine_runtime.mjs` が `tzroutine runtime: 950 runs passed`（今までの build に加えて、`-DTZR_OBJC_POOLS`・`-lobjc` の `-O0`・`-O3` × P 1・4 で全 case と `objc_pools`）。`objc_pools` は、yield の後に 0 個、待ちの後に 0 個（待って数える）、境界の待ちが終わった時点で 0 個、固定された G が自分のプールを持ったまま yield と sleep をして 5 個のまま、固定を外した後の yield で 0 個、400 KiB を超えるスタックを使う `dealloc` が g0 の上で走ることを確かめる。
+- **E2E**: `node tests/objc_pools.mjs target/debug/tsuzuri` が `objc_pools: ok (86 checks)`（同梱のツールチェーンの段を含む）。`-O0`・`-O3` × P 1・4 で 14 個の case の出力がホストの数と一致し、`main_pool`（`5`、終了時 `exit 0`）と `main_wait`（待ちの間は `1`、終了時 `exit 0`）、`OBJC_DEBUG_MISSING_POOLS=YES` で 6 つの case の `MISSING POOLS` が 0 行だった。
+  - **maxrss**: 200 万個を 1 つのプール（`@main` のプール）に溜めると 51.8 MiB、1000 個ごとに `ObjC.with_autorelease_pool` で包むと 5.7 MiB、プールを書かずに 1000 個ごとに `Routine.yield ()` すると（区間のプール）5.7 MiB（`-O0`・`-O3` とも）。閾値は 20 MiB 未満と 30 MiB 超で、速度の閾値は置いていない（D7）。
+  - **`stack`**: Foundation の書式（`+[NSString stringWithFormat:]` に辞書・配列・日付を渡すのを 1 万回）を既定の大きさ（1 MiB）の tzroutine で動かし、あふれなかった。Foundation が `-description` を呼び返した深さは、tzroutine の本体から 6,528 バイト（`-O3` は 6,512 バイト）下だった（その地点の深さで、Foundation の最も深いフレームではない。閾値にしていない）。
+  - **`phase2_cost`**: 無バッファーのチャンネルの 20 万往復（プロセス全体の時間、5 回の中央値、`-O3`）は、区間のプールのあるプログラムで 1,528 ms、Objective-C を使わないプログラムで 1,536 ms（別の実行では 1,593 ms と 1,559 ms）。この機械は計測の間 load average が 20〜50 で、差は実行ごとのぶれの中にあった。切り替えごとの push と pop の費用は、この計測では見分けられなかった。静かな機械での計測はしていない。
+- **既存の suite**（開発版）: `objc_classes.mjs`（33 checks）、`objc_send.mjs`（90 checks）、`main_thread.mjs`（53 checks）、`tzroutine.mjs`（179 runs）、`macos_bundle.mjs`、`macos_report.mjs`（60 cases）が通過。`weak_import.mjs` は同梱のツールチェーンの `minos 13.0` の検査で落ちたが、`main` の開発版でも同じ検査で落ちる（この機械の `target/toolchain` の状態によるもので、この変更とは関係がない）。
+- **T0 と文書**: `cargo fmt --all -- --check` と `cargo clippy --all-targets -- -D warnings` が通過。`node scripts/gen-docs.mjs --check`（11 blocks、0 stale）、`node scripts/check-cli-docs.mjs`（4 checks、0 failed）、`sh scripts/check-runtime-includes.sh`（66 files）、`node scripts/check-guide-lite.mjs`（87 references、0 failed）。Tsuzuri-Reference は `node scripts/check-docs.mjs docs/compiler/objective-c.md docs/stdlib/sync/routine.md docs/compiler/native-interop.md` が `3 pages, 50 links, 14 checked examples, 14 native runs`。
+- **確かめていないこと**: CI の `macos-15` のランナーでの `objc_pools.mjs`（PR に `ci:full` を付けて走らせる）。非同期の横取りが W14 の fallback の呼び出しと retain の間に入る実行そのもの（窓が包みの中にあることは、Rust の `a_plain_retain_is_inside_the_blocking_call` が IR の行の順で確かめる。実行での再現は試していない）。AppKit の run loop の中の tzroutine。
+
+### チケットから外れた判断
+
+- **D8〜D11**（上の「改訂」）: 漏れの検査の物体、g0 のスタック、pop の位置、S4 の決め方。
+- **`is_objc` に入れない**: 仕様のとおり関数値にできる普通の組み込みにしたので、M01 の「直接の呼び出しだけ」の検査（`objc_builtin_not_called`）の対象ではない。target の検査は `needs_objc_runtime` で広げた。
+- **`objc` の表の持ち回り**: 設計の「`objc_used` を戻す」の代わりに表ごと持ち回る。M01・M02 の組み込みの本体（`ignore` の release など）にも効く（今までは、同じ関数をプログラムのほかの所が使っていたので表に出ていなかった）。
+- **E2E の case**: テスト計画の `leak`・`missing_pools`・`main_pool`・`migrate`・`nested`・`parallel`・`stack`・`phase2_auto`・`phase2_cost` に当たるものに加えて、`main_wait`（pop が境界の待ちの後であること）、`held_by_main`（maxrss の対照）、`auto_sleep`・`auto_exit`・`locked`・`owned`（区間のプールの境目）、`legacy`（手書きの宣言だけのプログラムが変わらないこと）、Objective-C を使わないプログラムの `nm -u` を足した。`parallel` は `Parallel.for_each_chunk` でなく `Parallel.map` で書いた（各要素の関数の本体を包む形は同じ）。
+- **`tests/tzroutine_runtime.c` の case**: 設計は「マクロの有無の両方の build」だけを求める。libobjc の C の API でクラスを作って数える `objc_pools` を足した。
+- **ほかのチケットへの追記**: M03（落とし穴）・M05・M23 に、区間のプールとの契約（retain までを包みの中に置く、区間のプールが呼ぶ `dealloc` は待たない）を 1 か所ずつ書いた。
+
+### 更新した文書
+
+- `docs/language.md`: 「Objective-C のクラスとメッセージ送信」に `ObjC.with_autorelease_pool` の行と段落「autorelease pool（M10）」（3 つの pool、所有しない物体だけを解放すること、手書きの `i64` の id、`dealloc` の走る場所、target）。固定する境界の一覧（`extern type local`・`main` の段落）と `Routine` の段落。制限の段落から、手書きの push・pop の手順と「解放されません」を除いた。
+- `docs/architecture.md`: 「`def main` の入口」（`@main` のプールの位置）、「tzroutine のランタイム」（区間のプール、`TZR_OBJC_POOLS`、g0 のスタック、検証の build）、「Objective-C の連携」（組み込みの関数の生成と表、包みの中の retain）。
+- `README.md`: 「変更の種類 → テスト」の表に行を足した。機能の一覧と CLI は変わらない。
+- `_features/README.md`・`_features/GUIDE.md`（D-67 の「委任による決定（2026-11-29、M10）」）・M03・M05・M23。
+- Tsuzuri-Reference（ブランチ `docs/m10-objc-autorelease-pools`）: `docs/compiler/objective-c.md`（要点、節「Autorelease Pool」、`ObjC` の表、効果と権限、運用上の注意点）、`docs/stdlib/sync/routine.md`、`docs/compiler/native-interop.md`。
+
+### 変更したファイル
+
+`src/check.rs`、`src/effects.rs`、`src/pure_rules.rs`、`src/kg/effects.rs`、`src/pinned_rules.rs`、`src/capabilities.rs`、`src/llvm.rs`、`src/llvm_objc.rs`、`src/llvm_imports.rs`、`src/driver.rs`、`src/runtime/tzroutine.c`、`tests/objc_pools.rs`（新規）、`tests/objc_pools.mjs`（新規）、`tests/objc_pools_host.m`（新規）、`tests/objc/pools/Main.tz`（新規）、`tests/objc/pingpong/Main.tz`（新規）、`tests/objc/classes/Main.tz`（コメント）、`tests/tzroutine_runtime.c`、`tests/tzroutine_runtime.mjs`、`.github/workflows/targets.yml`、`docs/language.md`、`docs/architecture.md`、`README.md`、`_features/README.md`、`_features/GUIDE.md`、`_features/M03-objc-classes-defined-in-tsuzuri.md`、`_features/M05-objc-exception-boundary.md`、`_features/M23-objc-out-parameters-and-weak-references.md`、`_features/_completed/M01-objc-class-types.md`・`M02-objc-typed-message-send.md`（リンク）、このチケット。

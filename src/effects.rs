@@ -325,7 +325,8 @@ const UNRESOLVED: usize = 17;
 const VALUE_CALL: usize = 18;
 
 /// What an edge to a function carries to the function that refers to it (W19, M09). The edge of a
-/// function value that goes straight to `Routine.with_locked_thread` does not carry `pinned`: the
+/// function value that goes straight to `Routine.with_locked_thread` (or to
+/// `ObjC.with_autorelease_pool`, which keeps the thread too; M10) does not carry `pinned`: the
 /// thread is fixed there, but it is whichever thread the tzroutine runs on, so `main_thread` goes
 /// on. The edge of one that goes to a callback `extern`, to `FnPtr.of` or to `MainThread.post`
 /// carries neither: the thread is fixed, and it is the main thread or the wrapper checks that it
@@ -340,7 +341,7 @@ enum Boundary {
     /// Anywhere else: the function's effects are those of whoever refers to it.
     #[default]
     None,
-    /// `Routine.with_locked_thread`: some one thread.
+    /// `Routine.with_locked_thread`, `ObjC.with_autorelease_pool`: some one thread.
     Locked,
     /// A callback `extern`, `FnPtr.of`, `MainThread.post` or `MainThread.after`: one thread, and
     /// the main thread where the function needs it.
@@ -2554,7 +2555,8 @@ fn posted_argument_mask(builtin: Builtin, arg_count: usize) -> u64 {
 }
 
 /// W19, M09: which boundary the positions of `pinning_argument_mask` of `callee` are.
-/// `Routine.with_locked_thread` fixes the thread without saying which one it is.
+/// `Routine.with_locked_thread` and `ObjC.with_autorelease_pool` fix the thread without saying
+/// which one it is.
 fn boundary_of(module: &CheckedModule, mut callee: &TypedExpr) -> Boundary {
     while let TypedExprKind::Cast(inner)
     | TypedExprKind::BorrowOperand(inner)
@@ -4226,7 +4228,8 @@ mod tests {
         // M09 added 3 MainThread builtins, all of the effect `task`.
         // M09 Phase 3 added 4 Anchor builtins of the shared anchors.
         // NC11 added 2 Os builtins of the mappings and 3 pure ones.
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 183);
+        // M10 added `ObjC.with_autorelease_pool`, of the effect `extern`.
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 184);
         assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 214);
     }
 
@@ -4262,7 +4265,8 @@ mod tests {
 
     #[test]
     fn callback_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.callbacks), 34);
+        // M10: `ObjC.with_autorelease_pool` calls the function that it takes.
+        assert_eq!(count(|facts| facts.callbacks), 35);
     }
 
     fn checked(source: &str) -> CheckedModule {

@@ -1606,8 +1606,9 @@ mod tests {
                 .iter()
                 .filter(|&&builtin| builtin_impure(builtin))
                 .count(),
-            183
+            184
         );
+        assert!(builtin_impure(Builtin::ObjcWithAutoreleasePool));
         assert!(!builtin_impure(Builtin::ArrayUpdate));
         assert!(!builtin_impure(Builtin::ZUtf8StringLiteral));
         assert!(builtin_impure(Builtin::OsVersion));

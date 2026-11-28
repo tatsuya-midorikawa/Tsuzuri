@@ -1,8 +1,9 @@
 // M01: `extern class`, the built-in module `ObjC`, and the ownership of Objective-C objects.
 // tests/objc_classes.mjs links this program with tests/objc_classes_host.m and runs one case for each
 // argument. The host counts its probe objects between init and dealloc (`tzobjc_live`), so the expected
-// output of every case comes from the host, not from this compiler. The autorelease pool is pushed and
-// popped through `extern` until M10 gives the module a function for it.
+// output of every case comes from the host, not from this compiler. The autorelease pools of the cases
+// are pushed and popped through `extern` declarations, which share their symbols with the calls that the
+// compiler writes for the pool of `@main` (M10); tests/objc/pools uses `ObjC.with_autorelease_pool`.
 
 @trusted
 extern class NSObject : ObjC.Object
