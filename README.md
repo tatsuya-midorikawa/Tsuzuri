@@ -497,6 +497,7 @@ def main :: unit -> i32 = \() ->
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
+| `TensorCodec`, `TensorIO` | テンソルのファイル（`.npy`・`.npz`・Safetensors・CSV）の変換、読み書き、読み取り専用のメモリーマップ |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Routine.scope`、`Arc` と組み合わせる） |
 | `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |
@@ -1175,6 +1176,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
 | 乱数（`Random.Pcg64`・`SeedSequence`・確率分布、opt-in の `RandomTensor`。NC10） | `tests/random_distributions.rs`（NumPy が出した列との一致、分布の積率と確率、native・WASM の `-O0`・`-O3` のビット一致、opt-in の IR） | `features.mjs random`・`random_tensor`（期待値は `tests/random-cases.mjs` の BigInt のモデルが作り、モデルは NumPy の出力と照合する） |
+| テンソルのファイル（`TensorCodec`・`TensorIO`） | `tests/tensor_codec.rs`（参照は `python3 -I tests/fixtures/tensor_codec/generate.py` が NumPy で作り直す） | `features.mjs tensor_codec`、`tensor_io.mjs`（NumPy のある Python があれば、書いたファイルを `np.load` でも読む。`TSUZURI_PYTHON`） |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs`、`tests/c_layout.rs`、`tests/c_layout_by_value.rs`（`@c_layout` の値渡し。W36） | `host_imports.mjs`、`c_layout.mjs`、`c_layout_by_value.mjs`（C のホストでの実行と、全 target の `declare` の Clang との突き合わせ） |
 | `MainThread`・`extern type main`・共有の `Anchor`（M09） | `tests/main_thread.rs`、`tests/main_thread_handles.rs`、`tests/shared_anchor.rs` | `main_thread.mjs`（arm64 の macOS だけ。CFRunLoop の上の場面、C のホスト `tests/main_thread_host.c` の pthread、ランタイムを C から直接動かす `tests/main_thread_runtime.c`（順序・境界の終わり・投入ごとのメモリが残らないこと。ASan・UBSan のビルドでも）。ほかのホストでは理由を出して飛ばす）、`features.mjs anchor`（共有の `Anchor`。native と既定の WebAssembly）、`tzroutine_runtime.mjs anchor_shared`（読み取り中の共有の `Anchor` を別のスレッドが退かせる） |

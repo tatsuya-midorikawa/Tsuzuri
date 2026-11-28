@@ -92,6 +92,8 @@ impl FunctionEmitter<'_, '_> {
             Builtin::OsHandle => ("handle", "ptr, i32, i64, i64, ptr, i64"),
             Builtin::OsClose => ("close", "i64"),
             Builtin::OsSpawn => ("spawn", "ptr, ptr, i64, ptr, i64, ptr, i64"),
+            Builtin::OsMap => ("map", "ptr, ptr, i64"),
+            Builtin::OsUnmap => ("unmap", "i64, i64"),
             _ => unreachable!(),
         };
         self.intrinsics
@@ -105,6 +107,7 @@ impl FunctionEmitter<'_, '_> {
                 | Builtin::OsRandom
                 | Builtin::OsHandle
                 | Builtin::OsSpawn
+                | Builtin::OsMap
         );
         let bytes = Type::Array(Box::new(Type::Integer(8, false)));
         let slot = owned.then(|| self.host_result_slot(&bytes));
@@ -122,6 +125,16 @@ impl FunctionEmitter<'_, '_> {
                     )
                 }
             }
+            Builtin::OsMap => {
+                let text = self.value("load %tz.utf8string, ptr %arg0");
+                let pointer = self.value(format!("extractvalue %tz.utf8string {text}, 0"));
+                let length = self.value(format!("extractvalue %tz.utf8string {text}, 1"));
+                format!(
+                    "call i64 @tsuzuri_os_map(ptr {}, ptr {pointer}, i64 {length})",
+                    slot.as_ref().unwrap()
+                )
+            }
+            Builtin::OsUnmap => "call i64 @tsuzuri_os_unmap(i64 %arg0, i64 %arg1)".to_owned(),
             Builtin::OsArgs => {
                 self.intrinsics
                     .insert("declare void @tsuzuri_os_set_args(i32, ptr)".to_owned());

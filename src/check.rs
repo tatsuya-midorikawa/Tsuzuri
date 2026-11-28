@@ -1772,6 +1772,13 @@ pub enum Builtin {
     /// `Os.__spawn :: ref utf8string -> ref [ubyte] -> ref [ubyte] -> (i64 * [ubyte])`: runs a program without a
     /// shell, given its NUL-terminated arguments and its input, and returns the encoded outcome.
     OsSpawn,
+    /// `Os.__map :: ref utf8string -> (i64 * [ubyte])` (NC11): maps a file read-only. The 16 bytes are the address
+    /// and the length of the mapping as little-endian `i64`s (0 and 0 for an empty file). Private to the std
+    /// `TensorIO` module.
+    OsMap,
+    /// `Os.__unmap :: i64 -> i64 -> i64` (NC11): releases the mapping at the address with the length that
+    /// `Os.__map` returned. Private to the std `TensorIO` module.
+    OsUnmap,
     /// `Net.__resolve :: ref utf8string -> i64 -> (i64 * [ubyte])` (E09): host names to 20-byte address records.
     NetResolve,
     /// `Net.__open :: i32 -> i64 -> i64 -> i64 -> i64 -> (i64 * [ubyte])`: connects, listens, or binds UDP; a
@@ -1919,6 +1926,18 @@ pub enum Builtin {
     /// elements of an owned array into their place (`RemoveRange` and `InsertRange` of .NET's `List<T>`). Private to
     /// the std `Vec` module.
     VecSplice,
+    /// `TensorCodec.__to_bytes :: Numeric<'a> => ref ['a] -> [ubyte]` (NC11) copies the storage of the elements,
+    /// in the byte order of the target (little-endian on every supported one). Private to the std `TensorCodec`
+    /// module.
+    TensorCodecToBytes,
+    /// `TensorCodec.__of_bytes :: Numeric<'a> => i64 -> i64 -> ref [ubyte] -> ['a]` (NC11) copies `count` elements
+    /// from the bytes that start at the offset; a range outside the bytes traps. Private to the std `TensorCodec`
+    /// module.
+    TensorCodecOfBytes,
+    /// `TensorIO.__mmap_slice :: i64 -> i64 -> ref 'b -> ref ['a]` (NC11) is the shared slice of `count` elements
+    /// at an address inside a read-only mapping that the borrowed owner keeps mapped. The result holds the loan of
+    /// the owner, and nothing owns the elements. Private to the std `TensorIO` module.
+    TensorIOMmapSlice,
     CharToU16,
     CharOfU16,
     Utf8CharToU32,
@@ -2467,6 +2486,8 @@ impl Builtin {
         Self::OsHandle,
         Self::OsClose,
         Self::OsSpawn,
+        Self::OsMap,
+        Self::OsUnmap,
         Self::NetResolve,
         Self::NetOpen,
         Self::NetAccept,
@@ -2560,6 +2581,9 @@ impl Builtin {
         Self::VecSetCapacity,
         Self::VecInsert,
         Self::VecSplice,
+        Self::TensorCodecToBytes,
+        Self::TensorCodecOfBytes,
+        Self::TensorIOMmapSlice,
         Self::CharToU16,
         Self::CharOfU16,
         Self::Utf8CharToU32,
@@ -2868,6 +2892,8 @@ impl Builtin {
             Self::OsHandle => "Os.__handle",
             Self::OsClose => "Os.__close",
             Self::OsSpawn => "Os.__spawn",
+            Self::OsMap => "Os.__map",
+            Self::OsUnmap => "Os.__unmap",
             Self::NetResolve => "Net.__resolve",
             Self::NetOpen => "Net.__open",
             Self::NetAccept => "Net.__accept",
@@ -2961,6 +2987,9 @@ impl Builtin {
             Self::VecSetCapacity => "Vec.__set_capacity",
             Self::VecInsert => "Vec.__insert",
             Self::VecSplice => "Vec.__splice",
+            Self::TensorCodecToBytes => "TensorCodec.__to_bytes",
+            Self::TensorCodecOfBytes => "TensorCodec.__of_bytes",
+            Self::TensorIOMmapSlice => "TensorIO.__mmap_slice",
             Self::CharToU16 => "Char.to_u16",
             Self::CharOfU16 => "Char.of_u16",
             Self::Utf8CharToU32 => "Utf8Char.to_u32",
@@ -3241,6 +3270,51 @@ impl Builtin {
             Self::OsSleep | Self::OsClose => {
                 (vec![Concrete(Type::I64)], Concrete(Type::I64), Vec::new())
             }
+            Self::OsMap => (
+                vec![Reference(Box::new(Concrete(Type::Utf8String)), false)],
+                BuiltinType::Tuple(vec![
+                    Concrete(Type::I64),
+                    Array(Box::new(Concrete(Type::Integer(8, false)))),
+                ]),
+                Vec::new(),
+            ),
+            Self::OsUnmap => (
+                vec![Concrete(Type::I64), Concrete(Type::I64)],
+                Concrete(Type::I64),
+                Vec::new(),
+            ),
+            Self::TensorCodecToBytes => (
+                vec![Reference(Box::new(Array(Box::new(a()))), false)],
+                Array(Box::new(Concrete(Type::Integer(8, false)))),
+                vec![BuiltinConstraint {
+                    class: "Numeric",
+                    ty: a(),
+                }],
+            ),
+            Self::TensorCodecOfBytes => (
+                vec![
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Reference(
+                        Box::new(Array(Box::new(Concrete(Type::Integer(8, false))))),
+                        false,
+                    ),
+                ],
+                Array(Box::new(a())),
+                vec![BuiltinConstraint {
+                    class: "Numeric",
+                    ty: a(),
+                }],
+            ),
+            Self::TensorIOMmapSlice => (
+                vec![
+                    Concrete(Type::I64),
+                    Concrete(Type::I64),
+                    Reference(Box::new(Var("b")), false),
+                ],
+                Reference(Box::new(Array(Box::new(a()))), false),
+                Vec::new(),
+            ),
             Self::OsOpen => (
                 vec![
                     Concrete(Type::Integer(32, true)),

@@ -141,6 +141,11 @@ jobs:
       - name: End-to-end compiler tests (e2e)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/e2e.mjs target/debug/tsuzuri
+      - name: Tensor files (NC11)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node scripts/slot.mjs -- node tests/features.mjs target/debug/tsuzuri tensor_codec
+          node scripts/slot.mjs -- node tests/tensor_io.mjs target/debug/tsuzuri
       - name: Ordered containers
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:

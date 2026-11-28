@@ -432,16 +432,16 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         | Default | Hash | HashMix | VecEmpty | SimdSplat | SimdOfLanes2 | SimdOfLanes4
         | SimdOfLanes8 | SimdOfLanes16 | SimdOfLanes32 | SimdSum | SimdEq | SimdNe | SimdLt
         | SimdLe | SimdGt | SimdGe | SimdSelect | SimdAll | SimdAny | VecLength | VecCapacity
-        | VecIsEmpty | VecPop | VecOfArray | VecToArray | VecView | CharToU16 | CharOfU16
-        | Utf8CharToU32 | Utf8CharOfU32 | Utf8StringToBytes | Utf8StringFromBytes
-        | StringCompare | Utf8StringCompare | IntMin | IntMax | IntAbs | IntUnsignedAbs
-        | IntAbsDiff | IntCountOnes | IntLeadingZeros | IntTrailingZeros | IntRotateLeft
-        | IntRotateRight | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo | IntCheckedAdd
-        | IntCheckedSub | IntCheckedMul | IntCheckedDiv | IntCheckedRem | IntCheckedNeg
-        | IntSaturatingAdd | IntSaturatingSub | IntSaturatingMul | IntWrappingAdd
-        | IntWrappingSub | IntWrappingMul | IntWrappingNeg | IntCheckedPow | IntWideningMul
-        | IntGcd | IntLcm | IntCheckedGcd | IntCheckedLcm | OwnedDrop | OwnedFunction | Not
-        | Ignore => facts(None, false, false, false, false, false, None),
+        | VecIsEmpty | VecPop | VecOfArray | VecToArray | VecView | TensorIOMmapSlice
+        | CharToU16 | CharOfU16 | Utf8CharToU32 | Utf8CharOfU32 | Utf8StringToBytes
+        | Utf8StringFromBytes | StringCompare | Utf8StringCompare | IntMin | IntMax | IntAbs
+        | IntUnsignedAbs | IntAbsDiff | IntCountOnes | IntLeadingZeros | IntTrailingZeros
+        | IntRotateLeft | IntRotateRight | IntSwapBytes | IntReverseBits | IntIsPowerOfTwo
+        | IntCheckedAdd | IntCheckedSub | IntCheckedMul | IntCheckedDiv | IntCheckedRem
+        | IntCheckedNeg | IntSaturatingAdd | IntSaturatingSub | IntSaturatingMul
+        | IntWrappingAdd | IntWrappingSub | IntWrappingMul | IntWrappingNeg | IntCheckedPow
+        | IntWideningMul | IntGcd | IntLcm | IntCheckedGcd | IntCheckedLcm | OwnedDrop
+        | OwnedFunction | Not | Ignore => facts(None, false, false, false, false, false, None),
         #[cfg(test)]
         TestAdd | TestUnsigned | TestWiden => facts(None, false, false, false, false, false, None),
         // B2: the index is checked before the bounds guard, which never fails.
@@ -483,9 +483,10 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         CloneString | CloneUtf8String | StringFromUtf8 | Utf8StringFromString
         | StringToWellFormed | ToString | Display | Parse | DisplayQuoted | ListCons
         | ArrayConcat | ArrayToList | ListReverse | ListToArray | VecWithCapacity | VecPush
-        | VecPushMut | VecReserve | VecClone | StringToCodeUnits | StringFromCodeUnits => {
-            facts(None, true, false, false, false, false, None)
-        }
+        | VecPushMut | VecReserve | VecClone | StringToCodeUnits | StringFromCodeUnits
+        | TensorCodecToBytes => facts(None, true, false, false, false, false, None),
+        // NC11: the range of the bytes is checked, and the std module checks it first.
+        TensorCodecOfBytes => facts(None, true, true, false, false, false, None),
         // B7
         ArraySortBy | ListMap | ListMapRef => facts(None, true, false, false, true, false, None),
         // B8
@@ -506,7 +507,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         BenchNow | GenSeed => facts(Some(Effect::Os), false, false, false, false, false, None),
         // B15
         // TZ06: a sleep may hold the G's lock, so no sleep traps (TZ05's guard is gone).
-        OsClock | OsSleep | OsClose => facts(
+        OsClock | OsSleep | OsClose | OsUnmap => facts(
             Some(Effect::Os),
             false,
             false,
@@ -527,7 +528,7 @@ pub(crate) fn builtin_facts(builtin: Builtin) -> BuiltinFacts {
         ),
         // B17: `Os.__write` and `Os.__open` copy the path into a buffer of the C heap, and opening
         // a FIFO waits for its other end (review of #63).
-        OsRead | OsHandle | OsSpawn | OsWrite | OsOpen => facts(
+        OsRead | OsHandle | OsSpawn | OsWrite | OsOpen | OsMap => facts(
             Some(Effect::Os),
             true,
             false,
@@ -4206,20 +4207,21 @@ mod tests {
                 "{builtin:?} both traps and is exempt"
             );
         }
-        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path.
-        assert_eq!(Builtin::ALL.len(), 392);
+        // TZ13 removed the 8 builtins of Async and the 5 of Net's async operations; W22 added FnPtr.of; W23 added 4 Anchor builtins; W20 added ZString.literal; M06 added ZUtf8String.literal; NC01 added 23 Math and 6 Int builtins; M15 added Os.__executable_path; NC11 added Os.__map, Os.__unmap, 2 TensorCodec builtins and TensorIO.__mmap_slice.
+        assert_eq!(Builtin::ALL.len(), 397);
         // M01 added 6 ObjC builtins, of which `ObjC.retain` and `ObjC.downcast` call the runtime.
         // M09 added 3 MainThread builtins, all of the effect `task`.
         // M09 Phase 3 added 4 Anchor builtins of the shared anchors.
-        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 181);
-        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 211);
+        // NC11 added 2 Os builtins of the mappings and 3 pure ones.
+        assert_eq!(count(|facts| facts.effect.is_some() || facts.dynamic), 183);
+        assert_eq!(count(|facts| facts.effect.is_none() && !facts.dynamic), 214);
     }
 
     #[test]
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 2);
-        assert_eq!(by(Effect::Os), 23);
+        assert_eq!(by(Effect::Os), 25);
         assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 20);
         assert_eq!(by(Effect::Atomic), 100);
@@ -4231,18 +4233,18 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 82);
+        assert_eq!(count(|facts| facts.alloc), 85);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.trap), 61);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 29);
+        assert_eq!(count(|facts| facts.trap), 62);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 31);
     }
 
     #[test]
     fn diverge_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.diverge), 26);
+        assert_eq!(count(|facts| facts.diverge), 27);
     }
 
     #[test]

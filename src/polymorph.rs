@@ -7503,6 +7503,29 @@ impl Checker<'_> {
         }
         if matches!(
             builtin,
+            Builtin::TensorCodecToBytes | Builtin::TensorCodecOfBytes
+        ) && !(self.module == "TensorCodec"
+            && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                "the byte primitives are private to the standard TensorCodec module; use its API instead (TensorCodec.to_raw, TensorCodec.of_raw, TensorCodec.encode_npy, ...)",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
+            Builtin::OsMap | Builtin::OsUnmap | Builtin::TensorIOMmapSlice
+        ) && !(self.module == "TensorIO" && self.names.origin(self.module) == ModuleOrigin::Std)
+        {
+            return Err(Diagnostic::of(
+                DiagnosticKind::PrivateStdPrimitive,
+                "the mapping primitives are private to the standard TensorIO module; map a file with TensorIO.open_mmap_npy or TensorIO.with_mmap_npy",
+                span,
+            ));
+        }
+        if matches!(
+            builtin,
             Builtin::VecView | Builtin::VecSetCapacity | Builtin::VecInsert | Builtin::VecSplice
         ) && !(self.module == "Vec" && self.names.origin(self.module) == ModuleOrigin::Std)
         {

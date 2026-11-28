@@ -89,6 +89,12 @@ pub const SOURCES: &[(&str, &str)] = &[
         "std/RandomTensor.tz",
         include_str!("../std/RandomTensor.tz"),
     ),
+    ("std/TensorCodec.tz", include_str!("../std/TensorCodec.tz")),
+    (
+        "std/TensorElement.tt",
+        include_str!("../std/TensorElement.tt"),
+    ),
+    ("std/TensorIO.tz", include_str!("../std/TensorIO.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -191,6 +197,10 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ObjC",
     // M09: handing work to the process main thread; a built-in module without a std file.
     "MainThread",
+    // NC11: tensor files as bytes (.npy, .npz, Safetensors, CSV), their element class, and files and mappings.
+    "TensorCodec",
+    "TensorElement",
+    "TensorIO",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -261,6 +271,9 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
             | "ExternAddr.ExternAddr"
+            | "TensorCodec.Archive"
+            | "TensorCodec.ElementType"
+            | "TensorIO.MappedTensor"
     )
 }
 
@@ -536,6 +549,25 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["RandomTensor"],
         aliases: &[],
         uses: &["Tensor", "Linalg"],
+    },
+    // NC11: the instances of `TensorElement` are in `TensorCodec`, so naming the class loads both.
+    OptIn {
+        module: "TensorCodec",
+        names: &["TensorCodec", "TensorElement"],
+        aliases: &[],
+        uses: &["Complex", "Json", "Tensor", "TensorElement"],
+    },
+    OptIn {
+        module: "TensorElement",
+        names: &["TensorElement"],
+        aliases: &[],
+        uses: &["TensorCodec"],
+    },
+    OptIn {
+        module: "TensorIO",
+        names: &["TensorIO"],
+        aliases: &[],
+        uses: &["Tensor", "TensorCodec", "TensorElement"],
     },
 ];
 
@@ -1040,7 +1072,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 84);
+        assert_eq!(RESERVED_MODULES.len(), 87);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
@@ -1054,6 +1086,23 @@ mod tests {
         assert!(!names_of(&["Matrix.rows (ref m)"]).contains(&"MatrixView"));
         assert!(!names_of(&["Slice.all()"]).contains(&"MatrixView"));
         assert!(names_of(&["Matrix.of_array 1 1 [1]", "Slice.all()"]).contains(&"MatrixView"));
+        // NC11: naming TensorIO or the class TensorElement loads TensorCodec, which holds the instances; a
+        // program that names only Tensor loads none of the three.
+        for name in ["TensorCodec", "TensorElement", "TensorIO"] {
+            assert!(is_reserved_module(name));
+        }
+        let with_files = names_of(&["TensorIO.load_npz path"]);
+        assert!(
+            ["Tensor", "Json", "TensorCodec", "TensorElement", "TensorIO"]
+                .iter()
+                .all(|name| with_files.contains(name))
+        );
+        assert!(
+            names_of(&["def f :: TensorElement.TensorElement<'a> => 'a -> 'a"])
+                .contains(&"TensorCodec")
+        );
+        assert!(!names_of(&["TensorCodec.crc32 bytes"]).contains(&"TensorIO"));
+        assert!(!names_of(&["Tensor.zeros [1]"]).contains(&"TensorCodec"));
         assert!(is_reserved_module("Text"));
         assert!(is_reserved_module("RegexText"));
         assert!(!is_reserved_module("Task"));

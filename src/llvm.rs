@@ -9327,6 +9327,11 @@ fn emit_builtin(
         | Builtin::OsHandle
         | Builtin::OsClose
         | Builtin::OsSpawn
+        | Builtin::OsMap
+        | Builtin::OsUnmap
+        | Builtin::TensorCodecToBytes
+        | Builtin::TensorCodecOfBytes
+        | Builtin::TensorIOMmapSlice
         | Builtin::NetResolve
         | Builtin::NetOpen
         | Builtin::NetAccept
@@ -9639,8 +9644,15 @@ fn emit_typed_builtin(
             | Builtin::OsHandle
             | Builtin::OsClose
             | Builtin::OsSpawn
+            | Builtin::OsMap
+            | Builtin::OsUnmap
     ) {
         emitter.os_builtin(instance.builtin, ty)
+    } else if matches!(
+        instance.builtin,
+        Builtin::TensorCodecToBytes | Builtin::TensorCodecOfBytes | Builtin::TensorIOMmapSlice
+    ) {
+        emitter.tensor_storage_builtin(instance)
     } else if matches!(
         instance.builtin,
         Builtin::NetResolve
