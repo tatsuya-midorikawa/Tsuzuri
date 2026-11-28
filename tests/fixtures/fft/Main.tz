@@ -1,0 +1,222 @@
+// NC09: `Fft` on native and WebAssembly at -O0 and -O3. Every export folds its results, rounded to a fixed
+// scale, into an i64; tests/fft-polynomial-cases.mjs computes the same numbers from the definition of the
+// transform in JavaScript and checks that none of them sits near a rounding boundary.
+
+private def mix :: own i64 -> own i64 -> i64
+fn mix total x = total * 31 + x
+
+private def rounded :: own f64 -> own f64 -> i64
+fn rounded scale value = (Math.round (value * scale)) as i64
+
+private def signal :: own i64 -> [Complex<f64>]
+fn signal n = new [Complex<f64>](n, \j -> Complex.of (((j * 7 + 3) % 11 - 5) as f64) (((j * 5 + 1) % 13 - 6) as f64))
+
+private def samples :: own i64 -> [f64]
+fn samples n = new [f64](n, \j -> ((j * 7 + 3) % 11 - 5) as f64)
+
+private def digest :: own f64 -> Result<Tensor<Complex<f64>>, Fft.Error> -> i64
+fn digest scale result =
+    match result with
+    | Result.Ok tensor ->
+        let values = Tensor.as_array (ref tensor)
+        let mut total = values.length
+        for index in 0i64 ..< values.length do
+            total = mix (mix total (rounded scale values[index].re)) (rounded scale values[index].im)
+        total
+    | Result.Error _ -> -1
+
+private def digest_real :: own f64 -> Result<Tensor<f64>, Fft.Error> -> i64
+fn digest_real scale result =
+    match result with
+    | Result.Ok tensor ->
+        let values = Tensor.as_array (ref tensor)
+        let mut total = values.length
+        for index in 0i64 ..< values.length do
+            total = mix total (rounded scale values[index])
+        total
+    | Result.Error _ -> -1
+
+private def same :: Result<Tensor<Complex<f64>>, Fft.Error> -> Result<Tensor<Complex<f64>>, Fft.Error> -> bool
+fn same left right =
+    match (left, right) with
+    | (Result.Ok a, Result.Ok b) -> a == b
+    | _ -> false
+
+export def fft_digest :: own i64 -> i64
+fn fft_digest n =
+    let t = Tensor.of_array [n] (signal n)
+    digest 1024.0 (Fft.fft (Tensor.view (ref t)))
+
+export def ifft_digest :: own i64 -> i64
+fn ifft_digest n =
+    let t = Tensor.of_array [n] (signal n)
+    digest 65536.0 (Fft.ifft (Tensor.view (ref t)))
+
+export def ortho_digest :: own i64 -> i64
+fn ortho_digest n =
+    let t = Tensor.of_array [n] (signal n)
+    let v = Tensor.view (ref t)
+    let forward = digest 4096.0 (Fft.fft_with (Fft.Options { axis: -1, n: Maybe.None, norm: Fft.Norm.Ortho }) (ref v))
+    let scaled = digest 4096.0 (Fft.fft_with (Fft.Options { axis: 0, n: Maybe.None, norm: Fft.Norm.Forward }) (ref v))
+    mix forward scaled
+
+export def padded_digest :: own i64 -> own i64 -> i64
+fn padded_digest n length =
+    let t = Tensor.of_array [n] (signal n)
+    digest 1024.0 (Fft.fft_with (Fft.Options { axis: -1, n: Maybe.Some length, norm: Fft.Norm.Backward }) (Tensor.view (ref t)))
+
+export def rfft_digest :: own i64 -> i64
+fn rfft_digest n =
+    let t = Tensor.of_array [n] (samples n)
+    digest 1024.0 (Fft.rfft (Tensor.view (ref t)))
+
+// The first n / 2 + 1 values of the signal as a half spectrum.
+export def irfft_digest :: own i64 -> i64
+fn irfft_digest n =
+    let t = Tensor.of_array [n / 2 + 1] (signal (n / 2 + 1))
+    digest_real 65536.0 (Fft.irfft_len n (Tensor.view (ref t)))
+
+export def hfft_digest :: own i64 -> i64
+fn hfft_digest n =
+    let t = Tensor.of_array [n / 2 + 1] (signal (n / 2 + 1))
+    digest_real 1024.0 (Fft.hfft_len n (Tensor.view (ref t)))
+
+export def fft2_digest :: own i64 -> own i64 -> i64
+fn fft2_digest rows cols =
+    let t = Tensor.of_array [rows, cols] (signal (rows * cols))
+    let v = Tensor.view (ref t)
+    mix (digest 1024.0 (Fft.fft2 (ref v))) (digest 65536.0 (Fft.ifftn (ref v)))
+
+export def axis_digest :: own i64 -> own i64 -> i64
+fn axis_digest rows cols =
+    let t = Tensor.of_array [rows, cols] (signal (rows * cols))
+    digest 1024.0 (Fft.fft_axis 0 (Tensor.view (ref t)))
+
+export def rfft2_digest :: own i64 -> own i64 -> i64
+fn rfft2_digest rows cols =
+    let t = Tensor.of_array [rows, cols] (samples (rows * cols))
+    digest 1024.0 (Fft.rfft2 (Tensor.view (ref t)))
+
+// rfft2 and back: the number of samples that do not return within 1e-9.
+export def real_round_trip :: own i64 -> own i64 -> i64
+fn real_round_trip rows cols =
+    let source = samples (rows * cols)
+    let t = Tensor.of_array [rows, cols] (Array.copy (ref source))
+    match Fft.rfft2 (Tensor.view (ref t)) with
+    | Result.Error _ -> -1
+    | Result.Ok spectrum ->
+        let options = Fft.NdOptions { axes: Maybe.Some [0, 1], shape: Maybe.Some [rows, cols], norm: Fft.Norm.Backward }
+        match Fft.irfftn_with options (Tensor.view (ref spectrum)) with
+        | Result.Error _ -> -2
+        | Result.Ok back ->
+            let values = Tensor.as_array (ref back)
+            let mut wrong = 0
+            for index in 0i64 ..< values.length do
+                if !(Math.abs (values[index] - source[index]) < 1e-9) then wrong = wrong + 1
+            wrong
+
+export def f32_digest :: own i64 -> i64
+fn f32_digest n =
+    let source = signal n
+    let t = Tensor.of_array [n] (new [Complex<f32>](n, \j -> Complex.of (source[j].re as f32) (source[j].im as f32)))
+    match Fft.fft (Tensor.view (ref t)) with
+    | Result.Ok spectrum ->
+        let values = Tensor.as_array (ref spectrum)
+        let mut total = values.length
+        for index in 0i64 ..< values.length do
+            total = mix (mix total (rounded 16.0 (values[index].re as f64))) (rounded 16.0 (values[index].im as f64))
+        total
+    | Result.Error _ -> -1
+
+export def shift_digest :: own i64 -> own i64 -> i64
+fn shift_digest rows cols =
+    let t = Tensor.init [rows, cols] (\index -> index)
+    let v = Tensor.view (ref t)
+    let shifted = Fft.fftshift (ref v)
+    let unshifted = Fft.ifftshift (ref v)
+    let mut total = 0
+    for value in Tensor.as_array (ref shifted) do
+        total = mix total value
+    for value in Tensor.as_array (ref unshifted) do
+        total = mix total value
+    match Fft.fftshift_axes [-1] (ref v) with
+    | Result.Ok last ->
+        for value in Tensor.as_array (ref last) do
+            total = mix total value
+        total
+    | Result.Error _ -> -1
+
+// fftfreq and rfftfreq times n with the spacing 1/4: the integers 4 k.
+export def freq_digest :: own i64 -> i64
+fn freq_digest n =
+    let all = Fft.fftfreq 0.25 n
+    let half = Fft.rfftfreq 0.25 n
+    let mut total = 0
+    for value in Tensor.as_array (ref all) do
+        total = mix total (rounded (n as f64) value)
+    for value in Tensor.as_array (ref half) do
+        total = mix total (rounded (n as f64) value)
+    total
+
+// 1 when a plan gives the values of `fft`, through `execute`, `execute_into` and `execute_in_place`.
+export def plan_agrees :: own i64 -> i64
+fn plan_agrees n =
+    let source = signal n
+    let t = Tensor.of_array [n] (Array.copy (ref source))
+    let v = Tensor.view (ref t)
+    let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan n Fft.Direction.Direct
+    match (made, Fft.fft (ref v)) with
+    | (Result.Ok plan, Result.Ok expected) ->
+        let needed = Fft.plan_work_length (ref plan)
+        let mut work = new [Complex<f64>](needed, \_ -> Complex.of 0.0 0.0)
+        let mut output = new [Complex<f64>](n, \_ -> Complex.of 0.0 0.0)
+        let mut data = Array.copy (ref source)
+        match (Fft.execute_into (ref plan) (ref source) (ref mut work) (ref mut output), Fft.execute_in_place (ref plan) (ref mut work) (ref mut data)) with
+        | (Result.Ok _, Result.Ok _) ->
+            let wanted = Tensor.as_array (ref expected)
+            let mut agree = same (Fft.execute (ref plan) (ref v)) (Fft.fft (ref v))
+            for index in 0i64 ..< n do
+                if !(output[index] == wanted[index] && data[index] == wanted[index]) then agree = false
+            if agree then 1 else 0
+        | _ -> -2
+    | _ -> -1
+
+// 1 when the parallel transforms give the values of the serial ones.
+export def parallel_agrees :: own i64 -> own i64 -> own i64 -> i64
+fn parallel_agrees batch rows cols =
+    let t = Tensor.of_array [batch, rows, cols] (signal (batch * rows * cols))
+    let v = Tensor.view (ref t)
+    let line = same (Fft.fft_parallel (ref v)) (Fft.fft (ref v)) && same (Fft.ifft_parallel (ref v)) (Fft.ifft (ref v))
+    let plane = same (Fft.fft2_parallel (ref v)) (Fft.fft2 (ref v)) && same (Fft.ifft2_parallel (ref v)) (Fft.ifft2 (ref v))
+    if line && plane then 1 else 0
+
+private def code :: Result<Tensor<Complex<f64>>, Fft.Error> -> i64
+fn code result =
+    match result with
+    | Result.Ok _ -> 0
+    | Result.Error (Fft.Error.EmptyAxis axis) -> 100 + axis
+    | Result.Error (Fft.Error.InvalidAxis (axis, rank)) -> 200 + 10 * rank + (axis + 5)
+    | Result.Error (Fft.Error.RepeatedAxis axis) -> 300 + (axis + 5)
+    | Result.Error (Fft.Error.InvalidLength length) -> 400 + (length + 50)
+    | Result.Error (Fft.Error.LengthMismatch (expected, found)) -> 500 + 10 * expected + found
+    | Result.Error (Fft.Error.ShapeMismatch _) -> 600
+
+export def error_codes :: own i64 -> i64
+fn error_codes which =
+    let t = Tensor.of_array [2, 3] (signal 6)
+    let v = Tensor.view (ref t)
+    let empty: Tensor<Complex<f64>> = Tensor.of_array [2, 0] []
+    let ev = Tensor.view (ref empty)
+    if which == 0 then code (Fft.fft (ref ev))
+    elif which == 1 then code (Fft.fft_axis 0 (ref ev))
+    elif which == 2 then code (Fft.fft_axis 2 (ref v))
+    elif which == 3 then code (Fft.fftn_with (Fft.NdOptions { axes: Maybe.Some [0, -2], shape: Maybe.None, norm: Fft.Norm.Backward }) (ref v))
+    elif which == 4 then code (Fft.fft_with (Fft.Options { axis: -1, n: Maybe.Some (-7), norm: Fft.Norm.Backward }) (ref v))
+    elif which == 5 then code (Fft.fftn_with (Fft.NdOptions { axes: Maybe.Some [0, 1], shape: Maybe.Some [4], norm: Fft.Norm.Backward }) (ref v))
+    elif which == 6 then code (Fft.fft2_parallel (ref ev))
+    else code (Fft.fft2 (ref v))
+
+export def trap_fftfreq_without_samples :: own i64 -> i64
+fn trap_fftfreq_without_samples n =
+    let frequencies = Fft.fftfreq 1.0 n
+    (Tensor.as_array (ref frequencies)).length

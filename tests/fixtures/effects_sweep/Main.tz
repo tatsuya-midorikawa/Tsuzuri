@@ -472,6 +472,47 @@ export def tensors :: i64 -> i64 = \_n ->
     let _eq = upd == tensor
     (Tensor.data (ref view)).length
 
+// NC09: Fft (Phase 1)
+export def spectra :: i64 -> i64 = \_n ->
+    let signal = Tensor.of_array [2, 4] [Complex.of 1.0 0.0, Complex.of 2.0 0.5, Complex.of 3.0 0.0, Complex.of 4.0 1.0, Complex.of 0.0 0.0, Complex.of 1.0 0.0, Complex.of 0.0 2.0, Complex.of 1.0 0.0]
+    let sv = Tensor.view (ref signal)
+    let samples = Tensor.of_array [2, 4] [1.0, 2.0, 3.0, 4.0, 0.5, 1.5, 2.5, 3.5]
+    let rv = Tensor.view (ref samples)
+    let _f1 = (Fft.options(), Fft.nd_options(), Fft.fft (ref sv), Fft.fft_axis 0 (ref sv), Fft.fft_with (Fft.options()) (ref sv), Fft.ifft (ref sv), Fft.ifft_axis 0 (ref sv), Fft.ifft_with (Fft.options()) (ref sv))
+    let _f2 = (Fft.fft2 (ref sv), Fft.ifft2 (ref sv), Fft.fftn (ref sv), Fft.ifftn (ref sv), Fft.fftn_with (Fft.nd_options()) (ref sv), Fft.ifftn_with (Fft.nd_options()) (ref sv))
+    let _f3 = (Fft.rfft (ref rv), Fft.rfft_axis 0 (ref rv), Fft.rfft_with (Fft.options()) (ref rv), Fft.irfft (ref sv), Fft.irfft_len 5 (ref sv), Fft.irfft_with (Fft.options()) (ref sv))
+    let _f4 = (Fft.hfft (ref sv), Fft.hfft_len 5 (ref sv), Fft.hfft_with (Fft.options()) (ref sv), Fft.ihfft (ref rv), Fft.ihfft_with (Fft.options()) (ref rv))
+    let _f5 = (Fft.rfft2 (ref rv), Fft.irfft2 (ref sv), Fft.rfftn (ref rv), Fft.irfftn (ref sv), Fft.rfftn_with (Fft.nd_options()) (ref rv), Fft.irfftn_with (Fft.nd_options()) (ref sv))
+    let _f6 = (Fft.fftfreq 1.0 4, Fft.rfftfreq 1.0 4, Fft.fftshift (ref rv), Fft.ifftshift (ref rv), Fft.fftshift_axes [0] (ref rv), Fft.ifftshift_axes [0] (ref rv))
+    let _f7 = (Fft.fft_parallel (ref sv), Fft.ifft_parallel (ref sv), Fft.fft2_parallel (ref sv), Fft.ifft2_parallel (ref sv))
+    let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 4 Fft.Direction.Direct
+    let scaled: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan_with Fft.Norm.Ortho 4 Fft.Direction.Inverse
+    let line = [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 4.0 0.0]
+    let mut work = [Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+    let mut output = [Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+    match (made, scaled) with
+    | (Result.Ok direct, Result.Ok _) ->
+        let _f8 = (Fft.execute (ref direct) (ref sv), Fft.execute_into (ref direct) (ref line) (ref mut work) (ref mut output))
+        let _f9 = Fft.execute_in_place (ref direct) (ref mut work) (ref mut output)
+        Fft.plan_length (ref direct) + Fft.plan_work_length (ref direct)
+    | _ -> 0
+
+// NC09: Polynomial (Phase 2)
+export def polynomials :: i64 -> i64 = \_n ->
+    let p = [1.0, 2.0, 3.0]
+    let q = [3.0, 5.0]
+    let points = Tensor.of_array [3] [0.0, 1.0, 2.0]
+    let values = Tensor.of_array [3] [1.0, 3.0, 7.0]
+    let pv = Tensor.view (ref points)
+    let vv = Tensor.view (ref values)
+    let _p1 = (Polynomial.trim 0.0 (ref p), Polynomial.eval 2.0 (ref p), Polynomial.eval_complex (Complex.of 0.0 1.0) (ref p), Polynomial.eval_tensor (ref p) (ref pv))
+    let _p2 = (Polynomial.add (ref p) (ref q), Polynomial.sub (ref p) (ref q), Polynomial.mul (ref p) (ref q), Polynomial.divmod (ref p) (ref q), Polynomial.pow 2 (ref q))
+    let _p3 = (Polynomial.deriv (ref p), Polynomial.deriv_n 2 (ref p), Polynomial.integ (ref p), Polynomial.integ_const 1.0 (ref p))
+    let _p4 = (Polynomial.from_roots (ref q), Polynomial.from_roots_complex [Complex.of 0.0 1.0, Complex.of 0.0 (-1.0)], Polynomial.roots (ref p))
+    let _p5 = (Polynomial.vander 2 (ref pv), Polynomial.fit 2 (ref pv) (ref vv), Polynomial.fit_weighted 1 (ref pv) (ref pv) (ref vv))
+    let _p6 = (Polynomial.cheb_eval 0.5 (ref p), Polynomial.cheb_fit 2 (ref pv) (ref vv), Polynomial.leg_eval 0.5 (ref p), Polynomial.leg_fit 2 (ref pv) (ref vv))
+    p.length
+
 test "generators" =
     Gen.for_all (Gen.array Gen.i64()) (\xs -> xs.length >= 0)
     Gen.for_all (Gen.map (\x -> Int.wrapping_add x 1) Gen.i32()) (\_x -> true)

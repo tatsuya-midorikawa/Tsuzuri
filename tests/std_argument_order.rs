@@ -82,6 +82,8 @@ const MODULES: &[(&str, Kind)] = &[
     ("ErrGroup", Exempt(BUILTIN_HANDLE)),
     ("Exception", SingleArgument),
     ("ExternAddr", subject(&["ExternAddr"])),
+    // `execute_into` and `execute_in_place` write an exclusive slice, their last parameter.
+    ("Fft", subject(&["Tensor.View", "Tensor", "Plan", "[]"])),
     ("File", Exempt(HANDLE)),
     ("Format", subject(&["string"])),
     (
@@ -129,6 +131,7 @@ const MODULES: &[(&str, Kind)] = &[
     ("Owned", Exempt(BUILTIN_HANDLE)),
     ("Parallel", SingleArgument),
     ("Path", subject(&["string"])),
+    ("Polynomial", subject(&["Tensor.View", "Tensor", "[]"])),
     ("Process", Exempt(HANDLE)),
     ("Random", subject(&["Pcg"])),
     ("ReceiveOnly", Exempt(BUILTIN_HANDLE)),

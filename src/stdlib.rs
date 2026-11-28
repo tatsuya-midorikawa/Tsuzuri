@@ -85,6 +85,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/ExternAddr.tz", include_str!("../std/ExternAddr.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
     ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
+    ("std/Fft.tz", include_str!("../std/Fft.tz")),
+    ("std/Polynomial.tz", include_str!("../std/Polynomial.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -185,6 +187,10 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ObjC",
     // M09: handing work to the process main thread; a built-in module without a std file.
     "MainThread",
+    // NC09: fast Fourier transforms of any length.
+    "Fft",
+    // NC09: polynomial arithmetic, least-squares fits and roots.
+    "Polynomial",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -253,6 +259,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "ZString.ZString"
             | "ZUtf8String.ZUtf8String"
             | "ExternAddr.ExternAddr"
+            | "Fft.Plan"
     )
 }
 
@@ -522,6 +529,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Linalg"],
         aliases: &[],
         uses: &["Complex", "Tensor"],
+    },
+    OptIn {
+        module: "Fft",
+        names: &["Fft"],
+        aliases: &[],
+        uses: &["Complex", "Tensor"],
+    },
+    OptIn {
+        module: "Polynomial",
+        names: &["Polynomial"],
+        aliases: &[],
+        uses: &["Complex", "Tensor", "Linalg"],
     },
 ];
 
@@ -1026,7 +1045,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 83);
+        assert_eq!(RESERVED_MODULES.len(), 85);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));
