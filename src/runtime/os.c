@@ -1008,7 +1008,9 @@ static int64_t tz_os_map_now(struct tz_os_buffer *output, const unsigned char *p
     int64_t status = 0;
     char *name = tz_os_name(path, length, &status);
     if (name == NULL) return status;
-    int descriptor = tz_os_open(name, O_RDONLY);
+    // `O_NONBLOCK` changes nothing for a regular file, and it keeps the open of a FIFO without a writer from
+    // waiting: the check below refuses the FIFO at once.
+    int descriptor = tz_os_open(name, O_RDONLY | O_NONBLOCK);
     int error = errno;
     free(name);
     if (descriptor < 0) return tz_os_error(error);

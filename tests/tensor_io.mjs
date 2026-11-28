@@ -289,7 +289,14 @@ try {
     "in_zero_bytes.npy": "codec:InvalidMagic",
     missing: "io",
     directory: "io",
+    // A FIFO without a writer on POSIX (the open must not wait for one); the path does not exist elsewhere.
+    pipe: "io",
   };
+  if (!windows) {
+    const made = spawnSync("mkfifo", [join(inputs, "pipe.npy")], { encoding: "utf8" });
+    assert.equal(made.status, 0, `mkfifo: ${made.stderr}`);
+    checks += 1;
+  }
 
   for (const optimization of optimizations) {
     const executable = join(root, `tensor_io${optimization}${windows ? ".exe" : ""}`);
@@ -373,7 +380,7 @@ match (saved, loaded) with
     const runWasi = (mode) => execute(process.execPath, ["--no-warnings", wasiHost, module, "/work", outputs, mode, "/work"]);
     expectLines(report(runWasi("read")), expectedRead, `wasi read ${optimization}`);
     const mapped = report(runWasi("mmap"));
-    expectLines(mapped, Object.fromEntries(Object.keys(expectedMapped).map((key) => [key, key.startsWith("safetensors") || key.startsWith("in_") || key === "with" || key.startsWith("as ") || key === "missing" || key === "directory" ? "io" : expectedMapped[key]])), `wasi mmap ${optimization}`);
+    expectLines(mapped, Object.fromEntries(Object.keys(expectedMapped).map((key) => [key, key.startsWith("safetensors") || key.startsWith("in_") || key === "with" || key.startsWith("as ") || key === "missing" || key === "directory" || key === "pipe" ? "io" : expectedMapped[key]])), `wasi mmap ${optimization}`);
     const written = report(runWasi("write"));
     expectLines(written, { "out_f64.npy": "ok", "out.npz": "ok", "out.safetensors": "ok", "out.csv": "ok", nowhere: "io" }, `wasi write ${optimization}`);
     checkWritten(outputs, `wasi write ${optimization}`);

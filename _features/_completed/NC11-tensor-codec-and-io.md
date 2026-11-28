@@ -254,3 +254,9 @@ Phase 1（`.npy`・無圧縮の `.npz`・Safetensors・CSV）、Phase 1b（Defla
 
 - このリポジトリ: `docs/language.md`（新しい節「TensorCodec / TensorIO」、予約モジュール名）、`docs/architecture.md`（新しい節「テンソルのファイル（NC11）」、OS API の `-DTZ_OS_MAP`）、`README.md`（標準ライブラリの表）、`_features/GUIDE.md`（D-55 の行、D-65 の委任による決定）、`_features/README.md`、`.github/workflows/ci.yml`・`targets.yml`・`windows.yml`（suite の手順）。
 - Tsuzuri-Reference（ブランチ `docs/nc11-tensor-codec-io`）: `docs/stdlib/encoding/tensor-codec.md`・`tensor-io.md`（新規）、`docs/index.md`、`docs/stdlib/conventions.md`、`scripts/check-cli-docs.mjs`（`STD_PAGES`）。
+
+### レビュー後の修正（2026-11-28、PR #153）
+
+- **FIFO で開く段階が止まる**（Copilot の指摘）: POSIX の `tsuzuri_os_map` は `O_RDONLY` だけでファイルを開いていたので、書き手のいない FIFO を `TensorIO.open_mmap_npy`・`open_mmap_safetensors`・`with_mmap_npy` に渡すと、通常のファイルかどうかの検査に届く前に `open` が待ち続けた。`O_RDONLY | O_NONBLOCK` で開くようにした（通常のファイルには影響がなく、FIFO は直後の `fstat` の検査で `Io` のエラーになる）。Windows の `CreateFileW` は名前付きパイプで待たず、`GetFileType` の検査で拒否する。
+- 確認: 修正前のランタイムでは `tests/fixtures/tensor_io` の `mmap` の段が FIFO で 10 秒たっても終わらず、修正後は `pipe=io` を出して終わる。`tests/tensor_io.mjs` に FIFO の段を足した（POSIX で `mkfifo`。Windows と WASI ではそのパスが無いので同じ `io`）: 347 checks（native と WASI、`-O0`・`-O3`）。`docs/language.md` とリファレンスの `tensor-io.md` に 1 文を足した。
+

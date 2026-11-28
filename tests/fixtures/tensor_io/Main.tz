@@ -254,6 +254,8 @@ fn map_files dir =
     do! IO.writeln $"in_zero_bytes.npy={mapped_text empty}"
     let! missing = TensorIO.open_mmap_npy $"{dir}/missing.npy"
     do! IO.writeln $"missing={mapped_text missing}"
+    let! pipe = TensorIO.open_mmap_npy $"{dir}/pipe.npy"
+    do! IO.writeln $"pipe={mapped_text pipe}"
     let! folder = TensorIO.open_mmap_npy dir
     do! IO.writeln $"directory={mapped_text folder}"
     0
