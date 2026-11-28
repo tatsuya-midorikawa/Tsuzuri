@@ -1,0 +1,1294 @@
+/// The element type of a stored tensor: `bool`, the signed and unsigned integers of 8 to 64 bits, the binary
+/// floating-point types of 16 to 64 bits, and the complex numbers of two `f32` or two `f64`.
+union Dtype = Bool | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64 | F16 | F32 | F64 | Complex64 | Complex128 deriving (Eq)
+
+/// Why encoding or decoding failed. Malformed, truncated and hostile input always gives one of these; decoding
+/// never traps on its input and never allocates more than the input justifies.
+union Error =
+    | InvalidMagic
+    | UnsupportedVersion of (i64 * i64)
+    | InvalidHeader of string
+    | DtypeMismatch of (string * string)
+    | UnsupportedDtype of string
+    | TruncatedData
+    | ShapeOverflow
+    | EntryNotFound of string
+    | UnsupportedCompression of i64
+    | CsvParseError of (i64 * string)
+    | InvalidArchive of string
+    | CorruptData of string
+    | UnsupportedRank of i64
+    deriving (Eq)
+
+/// A tensor without its element type: the dtype, the shape, and the elements in row-major (C) order as
+/// little-endian bytes. It carries tensors of different element types in one list (`encode_npz`,
+/// `encode_safetensors`) and holds a tensor whose dtype is only known when it is read (`decode_npy_raw`).
+/// `data.length` is the product of the shape times `dtype_size`; a `Raw` that breaks this is rejected where it
+/// is used.
+record Raw { dtype: Dtype, shape: [i64], data: [ubyte] } deriving (Eq)
+
+/// What the header of an `.npy` file says: the dtype, the shape, whether the elements are stored in
+/// column-major (Fortran) order, whether they are big-endian, and the byte offset of the first element.
+record Header { dtype: Dtype, shape: [i64], fortran_order: bool, big_endian: bool, data_offset: i64 } deriving (Eq)
+
+instance Display<Dtype> {
+    fn display dtype = dtype_name dtype
+}
+
+instance Display<Error> {
+    fn display error =
+        match error with
+        | InvalidMagic -> "not a tensor file: the magic bytes are wrong"
+        | UnsupportedVersion (major, minor) -> $"unsupported format version {major}.{minor}"
+        | InvalidHeader reason -> $"invalid header: {reason}"
+        | DtypeMismatch (expected, found) -> $"expected dtype {expected}, found {found}"
+        | UnsupportedDtype name -> $"unsupported dtype {name}"
+        | TruncatedData -> "the data ends before the header says it does"
+        | ShapeOverflow -> "the shape is too large"
+        | EntryNotFound name -> $"no entry named {name}"
+        | UnsupportedCompression method -> $"unsupported compression method {method}"
+        | CsvParseError (line, reason) -> $"line {line}: {reason}"
+        | InvalidArchive reason -> $"invalid archive: {reason}"
+        | CorruptData reason -> $"corrupt data: {reason}"
+        | UnsupportedRank rank -> $"a tensor of rank {rank} has no table form"
+}
+
+/// The NumPy name of a dtype (`float64`, `int8`, `complex128`...).
+///
+/// ```tsuzuri run=float64%20uint8%20complex64
+/// $"{TensorCodec.dtype_name TensorCodec.F64} {TensorCodec.dtype_name TensorCodec.U8} {TensorCodec.dtype_name TensorCodec.Complex64}"
+/// ```
+def dtype_name :: ref Dtype -> string
+fn dtype_name dtype =
+    match dtype with
+    | Bool -> "bool"
+    | I8 -> "int8"
+    | I16 -> "int16"
+    | I32 -> "int32"
+    | I64 -> "int64"
+    | U8 -> "uint8"
+    | U16 -> "uint16"
+    | U32 -> "uint32"
+    | U64 -> "uint64"
+    | F16 -> "float16"
+    | F32 -> "float32"
+    | F64 -> "float64"
+    | Complex64 -> "complex64"
+    | Complex128 -> "complex128"
+
+/// The number of bytes of one element.
+///
+/// ```tsuzuri run=1%208%2016
+/// $"{TensorCodec.dtype_size TensorCodec.Bool} {TensorCodec.dtype_size TensorCodec.F64} {TensorCodec.dtype_size TensorCodec.Complex128}"
+/// ```
+def dtype_size :: ref Dtype -> i64
+fn dtype_size dtype =
+    match dtype with
+    | Bool -> 1
+    | I8 -> 1
+    | U8 -> 1
+    | I16 -> 2
+    | U16 -> 2
+    | F16 -> 2
+    | I32 -> 4
+    | U32 -> 4
+    | F32 -> 4
+    | I64 -> 8
+    | U64 -> 8
+    | F64 -> 8
+    | Complex64 -> 8
+    | Complex128 -> 16
+
+// The bytes that change places together when the byte order changes: a complex number is two numbers.
+private def dtype_unit :: ref Dtype -> i64
+fn dtype_unit dtype =
+    match dtype with
+    | Complex64 -> 4
+    | Complex128 -> 8
+    | _ -> dtype_size dtype
+
+// The NumPy type string of a little-endian dtype (`<f8`, `|b1`).
+private def dtype_descr :: ref Dtype -> utf8string
+fn dtype_descr dtype =
+    match dtype with
+    | Bool -> u8"|b1"
+    | I8 -> u8"|i1"
+    | I16 -> u8"<i2"
+    | I32 -> u8"<i4"
+    | I64 -> u8"<i8"
+    | U8 -> u8"|u1"
+    | U16 -> u8"<u2"
+    | U32 -> u8"<u4"
+    | U64 -> u8"<u8"
+    | F16 -> u8"<f2"
+    | F32 -> u8"<f4"
+    | F64 -> u8"<f8"
+    | Complex64 -> u8"<c8"
+    | Complex128 -> u8"<c16"
+
+instance TensorElement<bool> {
+    fn dtype _values = Bool
+    fn to_le_bytes values = new [ubyte](values.length, \index -> if values[index] then 1ubyte else 0ubyte)
+    fn of_le_bytes offset count bytes = new [bool](count, \index -> bytes[offset + index] != 0ubyte)
+}
+
+instance TensorElement<i8> {
+    fn dtype _values = I8
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i16> {
+    fn dtype _values = I16
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i32> {
+    fn dtype _values = I32
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i64> {
+    fn dtype _values = I64
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i8u> {
+    fn dtype _values = U8
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i16u> {
+    fn dtype _values = U16
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i32u> {
+    fn dtype _values = U32
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<i64u> {
+    fn dtype _values = U64
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<f16> {
+    fn dtype _values = F16
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<f32> {
+    fn dtype _values = F32
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+instance TensorElement<f64> {
+    fn dtype _values = F64
+    fn to_le_bytes values = TensorCodec.__to_bytes values
+    fn of_le_bytes offset count bytes = TensorCodec.__of_bytes offset count bytes
+}
+
+// A complex number is stored as its real part and then its imaginary part.
+instance TensorElement<Complex<f32>> {
+    fn dtype _values = Complex64
+    fn to_le_bytes values =
+        let parts = new [f32](values.length * 2, \index -> if index % 2 == 0 then values[index / 2].re else values[index / 2].im)
+        TensorCodec.__to_bytes (ref parts)
+    fn of_le_bytes offset count bytes =
+        let parts: [f32] = TensorCodec.__of_bytes offset (count * 2) bytes
+        new [Complex<f32>](count, \index -> Complex.of parts[index * 2] parts[index * 2 + 1])
+}
+
+instance TensorElement<Complex<f64>> {
+    fn dtype _values = Complex128
+    fn to_le_bytes values =
+        let parts = new [f64](values.length * 2, \index -> if index % 2 == 0 then values[index / 2].re else values[index / 2].im)
+        TensorCodec.__to_bytes (ref parts)
+    fn of_le_bytes offset count bytes =
+        let parts: [f64] = TensorCodec.__of_bytes offset (count * 2) bytes
+        new [Complex<f64>](count, \index -> Complex.of parts[index * 2] parts[index * 2 + 1])
+}
+
+// The largest number of elements and of bytes that a decoder accepts: every size stays far inside `i64`.
+private def size_limit :: unit -> i64
+fn size_limit _unit = 4611686018427387904
+
+// The number of elements of a shape, or -1 when the rank is above 64, an extent is negative, or the product
+// reaches `size_limit`.
+private def checked_count :: ref [i64] -> i64
+fn checked_count shape =
+    if shape.length > 64 then -1 else
+        let limit = size_limit ()
+        let mut count = 1
+        let mut empty = false
+        let mut bad = false
+        for axis in 0i64 ..< shape.length do
+            let extent = shape[axis]
+            if extent < 0 then bad = true
+            elif extent == 0 then empty = true
+            elif !bad && count > limit / extent then bad = true
+            elif !bad then count = count * extent
+        if bad then -1 elif empty then 0 else count
+
+// The number of data bytes of `count` elements, or -1 when it reaches `size_limit`.
+private def checked_bytes :: own i64 -> ref Dtype -> i64
+fn checked_bytes count dtype =
+    let size = dtype_size dtype
+    if count < 0 || count > size_limit () / size then -1 else count * size
+
+// Checks that the parts of a `Raw` agree and returns its number of elements.
+private def raw_count :: ref Raw -> Result<i64, Error>
+fn raw_count raw =
+    if raw.shape.length > 64 then Result.Error (InvalidHeader "a tensor has at most 64 axes") else
+        let count = checked_count (ref raw.shape)
+        let bytes = if count < 0 then -1 else checked_bytes count (ref raw.dtype)
+        if bytes < 0 then Result.Error ShapeOverflow
+        elif bytes != raw.data.length then Result.Error (InvalidHeader "the data length is not the product of the shape times the element size")
+        else Result.Ok count
+
+/// The dtype of the elements of a window.
+///
+/// ```tsuzuri run=int32
+/// let t = Tensor.of_array [2] [1i32, 2i32]
+/// TensorCodec.dtype_name (TensorCodec.dtype_of (Tensor.view (ref t)))
+/// ```
+def dtype_of :: TensorElement<'a> => ref Tensor.View<'a> -> Dtype
+fn dtype_of _view =
+    let none: ['a] = []
+    TensorElement.dtype (ref none)
+
+/// Copies a window into a `Raw`: its dtype, its shape, and its elements in row-major order as little-endian
+/// bytes. A contiguous window is one copy of its storage.
+///
+/// ```tsuzuri run=int16%20[2]%20[1,%200,%202,%201]
+/// let t = Tensor.of_array [2] [1i16, 258i16]
+/// let raw = TensorCodec.to_raw (Tensor.view (ref t))
+/// $"{TensorCodec.dtype_name (ref raw.dtype)} {raw.shape} {raw.data}"
+/// ```
+def to_raw :: (TensorElement<'a>, Copy<'a>) => ref Tensor.View<'a> -> Raw
+fn to_raw view =
+    let none: ['a] = []
+    let count = Tensor.count view
+    let shape = Array.copy (Tensor.shape view)
+    if count == 0 then Raw { dtype: TensorElement.dtype (ref none), shape: shape, data: [] }
+    elif Tensor.is_c_contiguous view then
+        let data = Tensor.data view
+        let start = Tensor.offset view
+        Raw { dtype: TensorElement.dtype (ref none), shape: shape, data: TensorElement.to_le_bytes (ref data[start ..< start + count]) }
+    else
+        let packed = Tensor.to_tensor view
+        Raw { dtype: TensorElement.dtype (ref none), shape: shape, data: TensorElement.to_le_bytes (Tensor.as_array (ref packed)) }
+
+/// Builds the tensor of a `Raw`. The element type must be the one of its dtype (`DtypeMismatch` otherwise),
+/// and its parts must agree.
+///
+/// ```tsuzuri run=[1,%20258]
+/// let raw = TensorCodec.Raw { dtype: TensorCodec.I16, shape: [2], data: [1ubyte, 0ubyte, 2ubyte, 1ubyte] }
+/// let decoded: Result<Tensor<i16>, TensorCodec.Error> = TensorCodec.of_raw (ref raw)
+/// match decoded with
+/// | Result.Ok tensor -> Tensor.to_array tensor
+/// | Result.Error _ -> []
+/// ```
+def of_raw :: TensorElement<'a> => ref Raw -> Result<Tensor<'a>, Error>
+fn of_raw raw =
+    let none: ['a] = []
+    let expected = TensorElement.dtype (ref none)
+    if expected != raw.dtype then Result.Error (DtypeMismatch (dtype_name (ref expected), dtype_name (ref raw.dtype))) else
+        match raw_count raw with
+        | Result.Error error -> Result.Error error
+        | Result.Ok count -> Result.Ok (Tensor.of_array (Array.copy (ref raw.shape)) (TensorElement.of_le_bytes 0 count (ref raw.data)))
+
+// ---- little-endian integers ----
+
+private def u16_at :: own i64 -> ref [ubyte] -> i64
+fn u16_at offset bytes = (bytes[offset] as i64) ||| ((bytes[offset + 1] as i64) <<< 8)
+
+private def u32_at :: own i64 -> ref [ubyte] -> i64
+fn u32_at offset bytes = u16_at offset bytes ||| (u16_at (offset + 2) bytes <<< 16)
+
+// Eight bytes as a number; a value of 2^63 or more reads as negative, which every caller rejects.
+private def u64_at :: own i64 -> ref [ubyte] -> i64
+fn u64_at offset bytes = u32_at offset bytes ||| (u32_at (offset + 4) bytes <<< 32)
+
+private def push_u16 :: own i64 -> own Vec<ubyte> -> Vec<ubyte>
+fn push_u16 value output = Vec.push_owned ((value >>> 8) as ubyte) (Vec.push_owned (value as ubyte) output)
+
+private def push_u32 :: own i64 -> own Vec<ubyte> -> Vec<ubyte>
+fn push_u32 value output = push_u16 (value >>> 16) (push_u16 value output)
+
+private def push_u64 :: own i64 -> own Vec<ubyte> -> Vec<ubyte>
+fn push_u64 value output = push_u32 (value >>> 32) (push_u32 value output)
+
+private def push_text :: ref utf8string -> own Vec<ubyte> -> Vec<ubyte>
+fn push_text text output =
+    let mut bytes = output
+    for index in 0i64 ..< text.length do bytes = Vec.push_owned text[index] bytes
+    bytes
+
+private def push_number :: own i64 -> own Vec<ubyte> -> Vec<ubyte>
+fn push_number value output = push_text (ref (Utf8String.from_string (to_string value))) output
+
+private def push_spaces :: own i64 -> own Vec<ubyte> -> Vec<ubyte>
+fn push_spaces count output =
+    let mut bytes = output
+    for _step in 0i64 ..< count do bytes = Vec.push_owned 32ubyte bytes
+    bytes
+
+// The bytes `[start, start + count)` of `bytes` as text; the range is inside the bytes.
+private def ascii_text :: own i64 -> own i64 -> ref [ubyte] -> string
+fn ascii_text start count bytes =
+    let units = new [i16u](count, \index -> if bytes[start + index] < 128ubyte then bytes[start + index] as i16u else 63i16u)
+    String.from_code_units units
+
+// ---- the .npy format ----
+
+private def is_space :: own ubyte -> bool
+fn is_space byte = byte == 32ubyte || byte == 9ubyte || byte == 10ubyte || byte == 13ubyte
+
+private def skip_space :: own i64 -> own i64 -> ref [ubyte] -> i64
+fn skip_space start end bytes =
+    let mut index = start
+    let mut scanning = true
+    while scanning do
+        if index < end && is_space bytes[index] then index = index + 1 else scanning = false
+    index
+
+// The index of the quote that closes the string opened at `start`, or -1. The format writes no escapes.
+private def string_end :: own i64 -> own i64 -> ref [ubyte] -> i64
+fn string_end start end bytes =
+    let quote = bytes[start]
+    let mut index = start + 1
+    let mut found = -1
+    while found < 0 && index < end do
+        if bytes[index] == quote then found = index
+        elif bytes[index] == 92ubyte then index = end
+        else index = index + 1
+    found
+
+// Whether the bytes at `start` are the ASCII `word`.
+private def word_at :: own i64 -> own i64 -> ref utf8string -> ref [ubyte] -> bool
+fn word_at start end word bytes =
+    if start + word.length > end then false else
+        let mut same = true
+        for index in 0i64 ..< word.length do
+            if bytes[start + index] != word[index] then same = false
+        same
+
+// The dtype and whether it is big-endian of the NumPy type string in `[start, start + count)`, such as
+// `<f8`, `>i4` or `|b1`.
+private def parse_descr :: own i64 -> own i64 -> ref [ubyte] -> Result<(Dtype * bool), Error>
+fn parse_descr start count bytes =
+    if count < 2 then Result.Error (UnsupportedDtype (ascii_text start count bytes)) else
+        let first = bytes[start] as i64
+        let ordered = first == 60 || first == 62 || first == 124 || first == 61
+        let kind = (if ordered then bytes[start + 1] else bytes[start]) as i64
+        let digits = if ordered then 2 else 1
+        let mut size = 0
+        let mut bad = count <= digits || count > digits + 2
+        for index in digits ..< count do
+            let unit = bytes[start + index] as i64
+            if unit < 48 || unit > 57 then bad = true else size = size * 10 + (unit - 48)
+        let big = first == 62
+        if bad then Result.Error (UnsupportedDtype (ascii_text start count bytes))
+        elif kind == 98 && size == 1 then Result.Ok (Bool, false)
+        elif kind == 105 && size == 1 then Result.Ok (I8, false)
+        elif kind == 105 && size == 2 then Result.Ok (I16, big)
+        elif kind == 105 && size == 4 then Result.Ok (I32, big)
+        elif kind == 105 && size == 8 then Result.Ok (I64, big)
+        elif kind == 117 && size == 1 then Result.Ok (U8, false)
+        elif kind == 117 && size == 2 then Result.Ok (U16, big)
+        elif kind == 117 && size == 4 then Result.Ok (U32, big)
+        elif kind == 117 && size == 8 then Result.Ok (U64, big)
+        elif kind == 102 && size == 2 then Result.Ok (F16, big)
+        elif kind == 102 && size == 4 then Result.Ok (F32, big)
+        elif kind == 102 && size == 8 then Result.Ok (F64, big)
+        elif kind == 99 && size == 8 then Result.Ok (Complex64, big)
+        elif kind == 99 && size == 16 then Result.Ok (Complex128, big)
+        else Result.Error (UnsupportedDtype (ascii_text start count bytes))
+
+// The extents of the tuple that opens at `start`, and the index after its `)`.
+private def parse_shape :: own i64 -> own i64 -> ref [ubyte] -> Result<([i64] * i64), Error>
+fn parse_shape start end bytes =
+    let mut extents: Vec<i64> = Vec.empty()
+    let mut index = skip_space (start + 1) end bytes
+    let mut problem: Maybe<Error> = Maybe.None
+    let mut open = true
+    while open && Maybe.is_none (ref problem) do
+        if index >= end then problem = Maybe.Some (InvalidHeader "the shape is not closed")
+        elif bytes[index] == 41ubyte then
+            index = index + 1
+            open = false
+        else
+            let first = index
+            let mut extent = 0
+            let mut overflow = false
+            while index < end && bytes[index] >= 48ubyte && bytes[index] <= 57ubyte do
+                let digit = (bytes[index] as i64) - 48
+                if extent > (9223372036854775807 - digit) / 10 then overflow = true else extent = extent * 10 + digit
+                index = index + 1
+            if index == first then problem = Maybe.Some (InvalidHeader "the shape holds something that is not a size")
+            elif overflow then problem = Maybe.Some ShapeOverflow
+            elif Vec.length (ref extents) >= 64 then problem = Maybe.Some (InvalidHeader "a tensor has at most 64 axes")
+            else
+                extents = Vec.push_owned extent extents
+                // Python 2 wrote a long as `3L`.
+                if index < end && bytes[index] == 76ubyte then index = index + 1
+                index = skip_space index end bytes
+                if index < end && bytes[index] == 44ubyte then index = skip_space (index + 1) end bytes
+                elif index < end && bytes[index] != 41ubyte then problem = Maybe.Some (InvalidHeader "the sizes of the shape are not separated by commas")
+    match problem with
+    | Maybe.Some error -> Result.Error error
+    | Maybe.None -> Result.Ok (Vec.to_array extents, index)
+
+// The dictionary of an .npy header in `[start, end)`: exactly the keys `descr`, `fortran_order` and `shape`,
+// in any order. Nothing is evaluated: a value of another form is an error.
+private def parse_dictionary :: own i64 -> own i64 -> ref [ubyte] -> Result<(Dtype * bool * bool * [i64]), Error>
+fn parse_dictionary start end bytes =
+    let mut index = skip_space start end bytes
+    let mut problem: Maybe<Error> = Maybe.None
+    let mut descr: Maybe<(Dtype * bool)> = Maybe.None
+    let mut fortran: Maybe<bool> = Maybe.None
+    let mut shape: Maybe<[i64]> = Maybe.None
+    if index >= end || bytes[index] != 123ubyte then problem = Maybe.Some (InvalidHeader "the header is not a dictionary")
+    else index = skip_space (index + 1) end bytes
+    let mut open = Maybe.is_none (ref problem)
+    while open && Maybe.is_none (ref problem) do
+        if index >= end then problem = Maybe.Some (InvalidHeader "the dictionary is not closed")
+        elif bytes[index] == 125ubyte then
+            index = index + 1
+            open = false
+        elif bytes[index] != 39ubyte && bytes[index] != 34ubyte then problem = Maybe.Some (InvalidHeader "a key is not a string")
+        else
+            let key_end = string_end index end bytes
+            if key_end < 0 then problem = Maybe.Some (InvalidHeader "a key is not closed") else
+                let key = ascii_text (index + 1) (key_end - index - 1) bytes
+                index = skip_space (key_end + 1) end bytes
+                if index >= end || bytes[index] != 58ubyte then problem = Maybe.Some (InvalidHeader "a key has no value") else
+                    index = skip_space (index + 1) end bytes
+                    if index >= end then problem = Maybe.Some (InvalidHeader "a key has no value")
+                    elif key == "descr" then
+                        if Maybe.is_some (ref descr) then problem = Maybe.Some (InvalidHeader "the key descr is repeated")
+                        elif bytes[index] == 91ubyte || bytes[index] == 40ubyte then problem = Maybe.Some (UnsupportedDtype "a structured dtype")
+                        elif bytes[index] != 39ubyte && bytes[index] != 34ubyte then problem = Maybe.Some (InvalidHeader "descr is not a string")
+                        else
+                            let value_end = string_end index end bytes
+                            if value_end < 0 then problem = Maybe.Some (InvalidHeader "descr is not closed") else
+                                match parse_descr (index + 1) (value_end - index - 1) bytes with
+                                | Result.Ok found -> descr = Maybe.Some found
+                                | Result.Error error -> problem = Maybe.Some error
+                                index = value_end + 1
+                    elif key == "fortran_order" then
+                        if Maybe.is_some (ref fortran) then problem = Maybe.Some (InvalidHeader "the key fortran_order is repeated")
+                        elif word_at index end u8"True" bytes then
+                            fortran = Maybe.Some true
+                            index = index + 4
+                        elif word_at index end u8"False" bytes then
+                            fortran = Maybe.Some false
+                            index = index + 5
+                        else problem = Maybe.Some (InvalidHeader "fortran_order is not True or False")
+                    elif key == "shape" then
+                        if Maybe.is_some (ref shape) then problem = Maybe.Some (InvalidHeader "the key shape is repeated")
+                        elif bytes[index] != 40ubyte then problem = Maybe.Some (InvalidHeader "the shape is not a tuple")
+                        else
+                            match parse_shape index end bytes with
+                            | Result.Ok (extents, after) ->
+                                shape = Maybe.Some extents
+                                index = after
+                            | Result.Error error -> problem = Maybe.Some error
+                    else problem = Maybe.Some (InvalidHeader ("unexpected key " + key))
+                    if Maybe.is_none (ref problem) then
+                        index = skip_space index end bytes
+                        if index < end && bytes[index] == 44ubyte then index = skip_space (index + 1) end bytes
+                        elif index < end && bytes[index] != 125ubyte then problem = Maybe.Some (InvalidHeader "the entries are not separated by commas")
+    if Maybe.is_none (ref problem) && skip_space index end bytes != end then problem = Maybe.Some (InvalidHeader "text follows the dictionary")
+    match (problem, descr, fortran, shape) with
+    | (Maybe.Some error, _, _, _) -> Result.Error error
+    | (Maybe.None, Maybe.Some (dtype, big), Maybe.Some order, Maybe.Some extents) -> Result.Ok (dtype, big, order, extents)
+    | _ -> Result.Error (InvalidHeader "descr, fortran_order and shape are all required")
+
+/// Reads and checks the header of an `.npy` file (format versions 1.0, 2.0 and 3.0) without touching the
+/// elements: the magic bytes, the version, the dictionary, the dtype, the shape, and that the bytes after the
+/// header hold every element.
+///
+/// ```tsuzuri run=float64%20[2,%203]%20128
+/// let t = Tensor.init [2, 3] (\i -> to_float i)
+/// let bytes = Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))
+/// match TensorCodec.inspect_npy (ref bytes) with
+/// | Result.Ok header -> $"{TensorCodec.dtype_name (ref header.dtype)} {header.shape} {header.data_offset}"
+/// | Result.Error error -> Display.display (ref error)
+/// ```
+def inspect_npy :: ref [ubyte] -> Result<Header, Error>
+fn inspect_npy bytes =
+    let magic = bytes.length >= 6 && bytes[0] == 147ubyte && bytes[1] == 78ubyte && bytes[2] == 85ubyte && bytes[3] == 77ubyte && bytes[4] == 80ubyte && bytes[5] == 89ubyte
+    if !magic then Result.Error InvalidMagic
+    elif bytes.length < 10 then Result.Error TruncatedData
+    else
+        let major = bytes[6] as i64
+        let minor = bytes[7] as i64
+        if minor != 0 || major < 1 || major > 3 then Result.Error (UnsupportedVersion (major, minor))
+        elif major > 1 && bytes.length < 12 then Result.Error TruncatedData
+        else
+            let start = if major == 1 then 10 else 12
+            let length = if major == 1 then u16_at 8 bytes else u32_at 8 bytes
+            if length > bytes.length - start then Result.Error TruncatedData else
+                match parse_dictionary start (start + length) bytes with
+                | Result.Error error -> Result.Error error
+                | Result.Ok (dtype, big, order, shape) ->
+                    let count = checked_count (ref shape)
+                    let needed = if count < 0 then -1 else checked_bytes count (ref dtype)
+                    if needed < 0 then Result.Error ShapeOverflow
+                    elif needed > bytes.length - start - length then Result.Error TruncatedData
+                    else Result.Ok (Header { dtype: dtype, shape: shape, fortran_order: order, big_endian: big, data_offset: start + length })
+
+// The position in column-major storage of the element at the row-major position `element`.
+private def fortran_position :: own i64 -> ref [i64] -> i64
+fn fortran_position element shape =
+    let mut rest = element
+    let mut position = 0
+    let mut stride = 1
+    let mut strides = new [i64](shape.length, \_ -> 1)
+    for axis in 0i64 ..< shape.length do
+        Array.write axis stride (ref mut strides)
+        stride = stride * shape[axis]
+    for back in 0i64 ..< shape.length do
+        let axis = shape.length - 1 - back
+        position = position + (rest % shape[axis]) * strides[axis]
+        rest = rest / shape[axis]
+    position
+
+// The elements of a checked header in row-major order as little-endian bytes.
+private def npy_data :: ref Header -> ref [ubyte] -> [ubyte]
+fn npy_data header bytes =
+    let size = dtype_size (ref header.dtype)
+    let unit = dtype_unit (ref header.dtype)
+    let count = checked_count (ref header.shape)
+    let start = header.data_offset
+    let reorder = header.fortran_order && header.shape.length > 1
+    if !reorder && !header.big_endian then Array.copy (ref bytes[start ..< start + count * size])
+    elif !reorder then new [ubyte](count * size, \index -> bytes[start + (index / unit) * unit + (unit - 1 - index % unit)])
+    else
+        let mut output = new [ubyte](count * size, \_ -> 0ubyte)
+        for element in 0i64 ..< count do
+            let source = start + fortran_position element (ref header.shape) * size
+            for part in 0i64 ..< size do
+                let from = if header.big_endian then (part / unit) * unit + (unit - 1 - part % unit) else part
+                Array.write (element * size + part) bytes[source + from] (ref mut output)
+        output
+
+/// Decodes an `.npy` file whose dtype is only known from the file: little- or big-endian, row-major or
+/// column-major, format version 1.0, 2.0 or 3.0. The result is always row-major and little-endian. Object
+/// (pickle), string, date and structured dtypes are `UnsupportedDtype`; nothing is ever evaluated or unpickled.
+///
+/// ```tsuzuri run=int16%20[2]
+/// let t = Tensor.of_array [2] [7i16, 9i16]
+/// let bytes = Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))
+/// match TensorCodec.decode_npy_raw (ref bytes) with
+/// | Result.Ok raw -> $"{TensorCodec.dtype_name (ref raw.dtype)} {raw.shape}"
+/// | Result.Error error -> Display.display (ref error)
+/// ```
+def decode_npy_raw :: ref [ubyte] -> Result<Raw, Error>
+fn decode_npy_raw bytes =
+    match inspect_npy bytes with
+    | Result.Error error -> Result.Error error
+    | Result.Ok header ->
+        let data = npy_data (ref header) bytes
+        Result.Ok (Raw { dtype: header.dtype, shape: Array.copy (ref header.shape), data: data })
+
+/// Decodes an `.npy` file into a tensor of the element type that the context asks for; a file of another
+/// dtype is `DtypeMismatch`. A little-endian row-major file is one copy of its elements.
+///
+/// ```tsuzuri run=[2,%202]%20[1.5,%202.5,%203.5,%204.5]
+/// let t = Tensor.of_array [2, 2] [1.5, 2.5, 3.5, 4.5]
+/// let bytes = Result.get (TensorCodec.encode_npy (Tensor.view (ref t)))
+/// let decoded: Result<Tensor<f64>, TensorCodec.Error> = TensorCodec.decode_npy (ref bytes)
+/// match decoded with
+/// | Result.Ok tensor -> $"{Tensor.shape (Tensor.view (ref tensor))} {Tensor.as_array (ref tensor)}"
+/// | Result.Error error -> Display.display (ref error)
+/// ```
+def decode_npy :: TensorElement<'a> => ref [ubyte] -> Result<Tensor<'a>, Error>
+fn decode_npy bytes =
+    let none: ['a] = []
+    let expected = TensorElement.dtype (ref none)
+    match inspect_npy bytes with
+    | Result.Error error -> Result.Error error
+    | Result.Ok header ->
+        if expected != header.dtype then Result.Error (DtypeMismatch (dtype_name (ref expected), dtype_name (ref header.dtype)))
+        else
+            let count = checked_count (ref header.shape)
+            if header.big_endian || (header.fortran_order && header.shape.length > 1) then
+                let data = npy_data (ref header) bytes
+                Result.Ok (Tensor.of_array (Array.copy (ref header.shape)) (TensorElement.of_le_bytes 0 count (ref data)))
+            else Result.Ok (Tensor.of_array (Array.copy (ref header.shape)) (TensorElement.of_le_bytes header.data_offset count bytes))
+
+// The header of an .npy file as NumPy writes it: the dictionary, spare room so that the first extent can
+// grow in place, spaces up to a multiple of 64 bytes, and a newline.
+private def npy_header :: ref Dtype -> ref [i64] -> Vec<ubyte>
+fn npy_header dtype shape =
+    let mut text = push_text u8"{'descr': '" (Vec.empty())
+    text = push_text (ref (dtype_descr dtype)) text
+    text = push_text u8"', 'fortran_order': False, 'shape': (" text
+    for axis in 0i64 ..< shape.length do
+        if axis > 0 then text = push_text u8", " text
+        text = push_number shape[axis] text
+    if shape.length == 1 then text = push_text u8"," text
+    text = push_text u8"), }" text
+    if shape.length > 0 then text = push_spaces (21 - (to_string shape[0]).length) text
+    let body = Vec.length (ref text) + 1
+    let wide = body + (64 - (10 + body) % 64) >= 65536
+    let prefix = if wide then 12 else 10
+    let padding = 64 - (prefix + body) % 64
+    let mut output = Vec.with_capacity (prefix + body + padding)
+    output = Vec.push_owned 147ubyte output
+    output = push_text u8"NUMPY" output
+    output = Vec.push_owned (if wide then 2ubyte else 1ubyte) output
+    output = Vec.push_owned 0ubyte output
+    output = if wide then push_u32 (body + padding) output else push_u16 (body + padding) output
+    for index in 0i64 ..< Vec.length (ref text) do output = Vec.push_owned text[index] output
+    output = push_spaces padding output
+    Vec.push_owned 10ubyte output
+
+/// Encodes a `Raw` as an `.npy` file, byte for byte what NumPy's `np.save` writes for the same array
+/// (format version 1.0, little-endian, row-major).
+///
+/// ```tsuzuri run=130
+/// let raw = TensorCodec.Raw { dtype: TensorCodec.U8, shape: [2], data: [7ubyte, 9ubyte] }
+/// match TensorCodec.encode_npy_raw (ref raw) with
+/// | Result.Ok bytes -> bytes.length
+/// | Result.Error _ -> -1
+/// ```
+def encode_npy_raw :: ref Raw -> Result<[ubyte], Error>
+fn encode_npy_raw raw =
+    match raw_count raw with
+    | Result.Error error -> Result.Error error
+    | Result.Ok _ ->
+        let header = npy_header (ref raw.dtype) (ref raw.shape)
+        Result.Ok (Vec.to_array (Vec.add_range (ref raw.data) (Vec.ensure_capacity (Vec.length (ref header) + raw.data.length) header)))
+
+/// Encodes a window as an `.npy` file, byte for byte what NumPy's `np.save` writes for the same array.
+///
+/// ```tsuzuri run=152%20147
+/// let t = Tensor.of_array [3] [1.0, 2.0, 3.0]
+/// match TensorCodec.encode_npy (Tensor.view (ref t)) with
+/// | Result.Ok bytes -> $"{bytes.length} {bytes[0]}"
+/// | Result.Error error -> Display.display (ref error)
+/// ```
+def encode_npy :: (TensorElement<'a>, Copy<'a>) => ref Tensor.View<'a> -> Result<[ubyte], Error>
+fn encode_npy view = encode_npy_raw (ref (to_raw view))
+
+// ---- CRC-32, Inflate and Deflate (the compression of .npz) ----
+
+private def crc_table :: unit -> [i64]
+fn crc_table _unit =
+    new [i64](256, \index ->
+        let mut value = index
+        for _bit in 0i64 ..< 8 do
+            value = if (value &&& 1) == 1 then 3988292384 ^ (value >>> 1) else value >>> 1
+        value)
+
+// The CRC-32 of the bytes `[start, start + count)`.
+private def crc_range :: own i64 -> own i64 -> ref [ubyte] -> i64
+fn crc_range start count bytes =
+    let table = crc_table ()
+    let mut value = 4294967295
+    for index in start ..< start + count do
+        value = table[(value ^ (bytes[index] as i64)) &&& 255] ^ (value >>> 8)
+    value ^ 4294967295
+
+/// The CRC-32 of the bytes (the polynomial of ZIP, PNG and zlib's `crc32`).
+///
+/// ```tsuzuri run=3421780262
+/// TensorCodec.crc32 (Utf8String.to_bytes u8"123456789")
+/// ```
+def crc32 :: ref [ubyte] -> i32u
+fn crc32 bytes = crc_range 0 bytes.length bytes as i32u
+
+// Up to 16 bits that start at the bit `position`, the first bit lowest; bits past the end read as zero.
+private def peek_bits :: own i64 -> own i64 -> ref [ubyte] -> i64
+fn peek_bits position count bytes =
+    let index = position >>> 3
+    let first = if index < bytes.length then bytes[index] as i64 else 0
+    let second = if index + 1 < bytes.length then bytes[index + 1] as i64 else 0
+    let third = if index + 2 < bytes.length then bytes[index + 2] as i64 else 0
+    ((first ||| (second <<< 8) ||| (third <<< 16)) >>> (position &&& 7)) &&& ((1 <<< count) - 1)
+
+// A canonical Huffman code: how many codes each length has, and the symbols in the order of their codes.
+private record Huffman { counts: [i64], symbols: [i64] }
+
+// The code of the lengths `[start, start + count)` and what is left over: 0 for a complete code, a positive
+// number for an incomplete one, and -1 for more codes than the lengths allow.
+private def huffman :: own i64 -> own i64 -> ref [i64] -> (Huffman * i64)
+fn huffman start count lengths =
+    let mut counts = new [i64](16, \_ -> 0)
+    for index in 0i64 ..< count do
+        let length = lengths[start + index]
+        Array.write length (counts[length] + 1) (ref mut counts)
+    let mut left = 1
+    let mut over = false
+    for length in 1i64 ..= 15 do
+        left = left * 2 - counts[length]
+        if left < 0 then over = true
+    let mut offsets = new [i64](16, \_ -> 0)
+    for length in 1i64 ..< 15 do Array.write (length + 1) (offsets[length] + counts[length]) (ref mut offsets)
+    let mut symbols = new [i64](count, \_ -> 0)
+    for symbol in 0i64 ..< count do
+        let length = lengths[start + symbol]
+        if length != 0 then
+            Array.write offsets[length] symbol (ref mut symbols)
+            Array.write length (offsets[length] + 1) (ref mut offsets)
+    (Huffman { counts: counts, symbols: symbols }, if over then -1 else left)
+
+// The next symbol of `code` at the bit `position` and the position after it, or -1 when no code matches.
+private def decode_symbol :: own i64 -> ref Huffman -> ref [ubyte] -> (i64 * i64)
+fn decode_symbol position code bytes =
+    let window = peek_bits position 15 bytes
+    let mut value = 0
+    let mut first = 0
+    let mut index = 0
+    let mut length = 1
+    let mut symbol = -1
+    let mut searching = true
+    while searching do
+        value = value ||| ((window >>> (length - 1)) &&& 1)
+        let count = code.counts[length]
+        if value - count < first then
+            symbol = code.symbols[index + (value - first)]
+            searching = false
+        elif length == 15 then searching = false
+        else
+            index = index + count
+            first = (first + count) <<< 1
+            value = value <<< 1
+            length = length + 1
+    (symbol, position + length)
+
+private def length_base :: unit -> [i64]
+fn length_base _unit = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
+
+private def length_extra :: unit -> [i64]
+fn length_extra _unit = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0]
+
+private def distance_base :: unit -> [i64]
+fn distance_base _unit = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577]
+
+private def distance_extra :: unit -> [i64]
+fn distance_extra _unit = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13]
+
+// The code lengths of a fixed block: 288 literal and length symbols, then 30 distance symbols.
+private def fixed_lengths :: unit -> [i64]
+fn fixed_lengths _unit = new [i64](318, \symbol -> if symbol < 144 then 8 elif symbol < 256 then 9 elif symbol < 280 then 7 elif symbol < 288 then 8 else 5)
+
+// The order in which a dynamic block stores the lengths of its code-length code.
+private def length_order :: unit -> [i64]
+fn length_order _unit = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
+
+// Why a stream stopped: -2 is output above the limit, -3 input that ends early, and -1 anything else.
+private def inflate_failure :: own i64 -> Error
+fn inflate_failure code =
+    if code == -2 then CorruptData "the decompressed data is larger than expected"
+    elif code == -3 then TruncatedData
+    else CorruptData "the compressed stream is not valid"
+
+// Decodes the symbols of one block with its two codes. Returns the bit position after the end-of-block
+// symbol, or the negative code of `inflate_failure`.
+private def inflate_codes :: own i64 -> own i64 -> ref Huffman -> ref Huffman -> ref [ubyte] -> own Vec<ubyte> -> (i64 * Vec<ubyte>)
+fn inflate_codes start limit literals distances bytes output =
+    let total = bytes.length * 8
+    let bases = length_base ()
+    let extras = length_extra ()
+    let far_bases = distance_base ()
+    let far_extras = distance_extra ()
+    let mut out = output
+    let mut position = start
+    let mut running = true
+    while running do
+        match decode_symbol position literals bytes with
+        | (symbol, after) ->
+            if symbol < 0 then
+                position = if after > total then -3 else -1
+                running = false
+            elif after > total then
+                position = -3
+                running = false
+            elif symbol < 256 then
+                if Vec.length (ref out) >= limit then
+                    position = -2
+                    running = false
+                else
+                    out = Vec.push_owned (symbol as ubyte) out
+                    position = after
+            elif symbol == 256 then
+                position = after
+                running = false
+            elif symbol > 285 then
+                position = -1
+                running = false
+            else
+                let slot = symbol - 257
+                let length = bases[slot] + peek_bits after extras[slot] bytes
+                match decode_symbol (after + extras[slot]) distances bytes with
+                | (far, beyond) ->
+                    if far < 0 || far > 29 then
+                        position = if beyond > total then -3 else -1
+                        running = false
+                    else
+                        let distance = far_bases[far] + peek_bits beyond far_extras[far] bytes
+                        let next = beyond + far_extras[far]
+                        if next > total then
+                            position = -3
+                            running = false
+                        elif distance > Vec.length (ref out) then
+                            position = -1
+                            running = false
+                        elif Vec.length (ref out) + length > limit then
+                            position = -2
+                            running = false
+                        else
+                            for _step in 0i64 ..< length do
+                                let byte = out[Vec.length (ref out) - distance]
+                                out = Vec.push_owned byte out
+                            position = next
+    (position, out)
+
+// Reads the two codes of a dynamic block at `start`: the position after them (or the negative code of
+// `inflate_failure`) and the codes.
+private def inflate_tables :: own i64 -> ref [ubyte] -> (i64 * Huffman * Huffman)
+fn inflate_tables start bytes =
+    let total = bytes.length * 8
+    let literal_count = peek_bits start 5 bytes + 257
+    let distance_count = peek_bits (start + 5) 5 bytes + 1
+    let order_count = peek_bits (start + 10) 4 bytes + 4
+    let order = length_order ()
+    let mut position = start + 14
+    let mut failure = 0
+    if position + order_count * 3 > total then failure = -3
+    elif literal_count > 286 || distance_count > 30 then failure = -1
+    let mut lengths = new [i64](19, \_ -> 0)
+    if failure == 0 then
+        for index in 0i64 ..< order_count do Array.write order[index] (peek_bits (position + index * 3) 3 bytes) (ref mut lengths)
+        position = position + order_count * 3
+    let (coder, coder_left) = huffman 0 19 (ref lengths)
+    if failure == 0 && coder_left != 0 then failure = -1
+    let mut all = new [i64](320, \_ -> 0)
+    let mut filled = 0
+    while failure == 0 && filled < literal_count + distance_count do
+        match decode_symbol position (ref coder) bytes with
+        | (symbol, after) ->
+            if after > total then failure = -3
+            elif symbol < 0 then failure = -1
+            elif symbol < 16 then
+                Array.write filled symbol (ref mut all)
+                filled = filled + 1
+                position = after
+            else
+                let previous = if filled > 0 then all[filled - 1] else 0
+                let value = if symbol == 16 then previous else 0
+                let extra = if symbol == 16 then 2 elif symbol == 17 then 3 else 7
+                let repeat = (if symbol == 18 then 11 else 3) + peek_bits after extra bytes
+                if after + extra > total then failure = -3
+                elif (symbol == 16 && filled == 0) || filled + repeat > literal_count + distance_count then failure = -1
+                else
+                    for step in 0i64 ..< repeat do Array.write (filled + step) value (ref mut all)
+                    filled = filled + repeat
+                    position = after + extra
+    if failure == 0 && all[256] == 0 then failure = -1
+    let literal_total = if failure == 0 then literal_count else 0
+    let distance_total = if failure == 0 then distance_count else 0
+    let (literals, literal_left) = huffman 0 literal_total (ref all)
+    let (distances, distance_left) = huffman literal_total distance_total (ref all)
+    // An incomplete code is only valid when it has a single symbol.
+    let literal_used = literal_total - literals.counts[0]
+    let distance_used = distance_total - distances.counts[0]
+    let invalid = literal_left < 0 || distance_left < 0 || (literal_left > 0 && literal_used != 1) || (distance_left > 0 && distance_used > 1)
+    (if failure != 0 then failure elif invalid then -1 else position, literals, distances)
+
+/// Decompresses a raw DEFLATE stream (RFC 1951, as `.npz` and ZIP store it; no zlib or gzip wrapper).
+/// `limit` is the largest output that the caller accepts: a stream that would give more is `CorruptData`, so
+/// the output is never larger than that, and never larger than 1032 times the input. A stream that is not
+/// valid is `CorruptData`, and one that ends early is `TruncatedData`.
+///
+/// ```tsuzuri run=[97,%2097,%2097,%2097,%2097,%2097]
+/// // A fixed-Huffman block: the literal `a` and a match of length 5 at distance 1.
+/// match TensorCodec.inflate 100 [75ubyte, 76ubyte, 4ubyte, 2ubyte, 0ubyte] with
+/// | Result.Ok bytes -> bytes
+/// | Result.Error _ -> []
+/// ```
+def inflate :: own i64 -> ref [ubyte] -> Result<[ubyte], Error>
+fn inflate limit bytes =
+    let total = bytes.length * 8
+    let fixed = fixed_lengths ()
+    let (fixed_literals, _) = huffman 0 288 (ref fixed)
+    let (fixed_distances, _) = huffman 288 30 (ref fixed)
+    let mut output: Vec<ubyte> = Vec.empty()
+    let mut position = 0
+    let mut last = false
+    while position >= 0 && !last do
+        if position + 3 > total then position = -3 else
+            last = peek_bits position 1 bytes == 1
+            let kind = peek_bits (position + 1) 2 bytes
+            position = position + 3
+            if kind == 0 then
+                let start = (position + 7) >>> 3
+                if start + 4 > bytes.length then position = -3 else
+                    let length = u16_at start bytes
+                    if u16_at (start + 2) bytes != (length ^ 65535) then position = -1
+                    elif start + 4 + length > bytes.length then position = -3
+                    elif Vec.length (ref output) + length > limit then position = -2
+                    else
+                        output = Vec.add_range (ref bytes[start + 4 ..< start + 4 + length]) output
+                        position = (start + 4 + length) * 8
+            elif kind == 1 then
+                match inflate_codes position limit (ref fixed_literals) (ref fixed_distances) bytes output with
+                | (after, grown) ->
+                    position = after
+                    output = grown
+            elif kind == 2 then
+                match inflate_tables position bytes with
+                | (after, literals, distances) ->
+                    if after < 0 then position = after else
+                        match inflate_codes after limit (ref literals) (ref distances) bytes output with
+                        | (beyond, grown) ->
+                            position = beyond
+                            output = grown
+            else position = -1
+    if position < 0 then Result.Error (inflate_failure position) else Result.Ok (Vec.to_array output)
+
+// The bits of a stream that is being written: whole bytes, and fewer than 8 bits that wait for more.
+private record BitWriter { bytes: Vec<ubyte>, pending: i64, held: i64 }
+
+// Appends the low `count` (at most 32) bits of `value`, the lowest bit first.
+private def put_bits :: own i64 -> own i64 -> own BitWriter -> BitWriter
+fn put_bits value count writer =
+    let mut pending = writer.pending ||| (value <<< writer.held)
+    let mut held = writer.held + count
+    let mut bytes = writer.bytes
+    while held >= 8 do
+        bytes = Vec.push_owned (pending as ubyte) bytes
+        pending = pending >>> 8
+        held = held - 8
+    BitWriter { bytes: bytes, pending: pending, held: held }
+
+// Fills the last byte with zero bits.
+private def align_bits :: own BitWriter -> BitWriter
+fn align_bits writer = if writer.held == 0 then writer else put_bits 0 (8 - writer.held) writer
+
+// The depth of every leaf of the Huffman tree of the weights; a weight of 0 has no leaf and depth 0. At
+// least two weights are positive.
+private def huffman_depths :: ref [i64] -> [i64]
+fn huffman_depths weights =
+    let count = weights.length
+    let mut weight = new [i64](count * 2, \node -> if node < count then weights[node] else 0)
+    let mut parent = new [i64](count * 2, \_ -> -1)
+    let mut alive = new [bool](count * 2, \node -> node < count && weights[node] > 0)
+    let mut next = count
+    let mut remaining = 0
+    for node in 0i64 ..< count do
+        if weights[node] > 0 then remaining = remaining + 1
+    while remaining > 1 do
+        let mut first = -1
+        let mut second = -1
+        for node in 0i64 ..< next do
+            if alive[node] then
+                if first < 0 || weight[node] < weight[first] then
+                    second = first
+                    first = node
+                elif second < 0 || weight[node] < weight[second] then second = node
+        Array.write first false (ref mut alive)
+        Array.write second false (ref mut alive)
+        Array.write first next (ref mut parent)
+        Array.write second next (ref mut parent)
+        Array.write next (weight[first] + weight[second]) (ref mut weight)
+        Array.write next true (ref mut alive)
+        next = next + 1
+        remaining = remaining - 1
+    let mut depths = new [i64](count, \_ -> 0)
+    for leaf in 0i64 ..< count do
+        if weights[leaf] > 0 then
+            let mut depth = 0
+            let mut node = leaf
+            while parent[node] >= 0 do
+                node = parent[node]
+                depth = depth + 1
+            Array.write leaf depth (ref mut depths)
+    depths
+
+// Code lengths of at most `limit` bits for the frequencies. A symbol that does not occur gets no code,
+// except that two symbols always get one, as zlib does, so that the code is complete.
+private def code_lengths :: own i64 -> ref [i64] -> [i64]
+fn code_lengths limit frequencies =
+    let mut weights = Array.copy frequencies
+    let mut used = 0
+    for symbol in 0i64 ..< weights.length do
+        if weights[symbol] > 0 then used = used + 1
+    if used < 2 && weights[0] == 0 then
+        Array.write 0 1 (ref mut weights)
+        used = used + 1
+    if used < 2 then Array.write 1 1 (ref mut weights)
+    let mut lengths = huffman_depths (ref weights)
+    let mut deepest = 0
+    for symbol in 0i64 ..< lengths.length do
+        if lengths[symbol] > deepest then deepest = lengths[symbol]
+    // Halving the weights flattens the tree; equal weights give a tree of the smallest depth.
+    while deepest > limit do
+        for symbol in 0i64 ..< weights.length do
+            if weights[symbol] > 1 then Array.write symbol ((weights[symbol] + 1) / 2) (ref mut weights)
+        lengths = huffman_depths (ref weights)
+        deepest = 0
+        for symbol in 0i64 ..< lengths.length do
+            if lengths[symbol] > deepest then deepest = lengths[symbol]
+    lengths
+
+// The canonical codes of the lengths, each with its bits reversed: Huffman codes are written from their
+// first bit, and `put_bits` writes the lowest bit first.
+private def canonical_codes :: ref [i64] -> [i64]
+fn canonical_codes lengths =
+    let mut counts = new [i64](16, \_ -> 0)
+    for symbol in 0i64 ..< lengths.length do
+        let length = lengths[symbol]
+        if length > 0 then Array.write length (counts[length] + 1) (ref mut counts)
+    let mut next = new [i64](16, \_ -> 0)
+    let mut code = 0
+    for length in 1i64 ..= 15 do
+        code = (code + counts[length - 1]) <<< 1
+        Array.write length code (ref mut next)
+    let mut codes = new [i64](lengths.length, \_ -> 0)
+    for symbol in 0i64 ..< lengths.length do
+        let length = lengths[symbol]
+        if length > 0 then
+            let straight = next[length]
+            Array.write length (straight + 1) (ref mut next)
+            let mut reversed = 0
+            for bit in 0i64 ..< length do
+                if ((straight >>> bit) &&& 1) == 1 then reversed = reversed ||| (1 <<< (length - 1 - bit))
+            Array.write symbol reversed (ref mut codes)
+    codes
+
+// The index of the last base that is not above `value`.
+private def slot_of :: own i64 -> ref [i64] -> i64
+fn slot_of value bases =
+    let mut slot = bases.length - 1
+    let mut searching = true
+    while searching do
+        if slot > 0 && bases[slot] > value then slot = slot - 1 else searching = false
+    slot
+
+// Writes the tokens of a block and its end-of-block symbol with the given codes. A token below 256 is a
+// literal; any other is `256 + ((distance - 1) <<< 8) + (length - 3)`.
+private def write_tokens :: ref [i64] -> ref [i64] -> ref [i64] -> ref [i64] -> ref [i64] -> own BitWriter -> BitWriter
+fn write_tokens codes lengths far_codes far_lengths tokens writer =
+    let bases = length_base ()
+    let extras = length_extra ()
+    let far_bases = distance_base ()
+    let far_extras = distance_extra ()
+    let mut out = writer
+    for index in 0i64 ..< tokens.length do
+        let token = tokens[index]
+        if token < 256 then out = put_bits codes[token] lengths[token] out
+        else
+            let length = ((token - 256) &&& 255) + 3
+            let distance = ((token - 256) >>> 8) + 1
+            let slot = slot_of length (ref bases)
+            let far = slot_of distance (ref far_bases)
+            out = put_bits codes[257 + slot] lengths[257 + slot] out
+            out = put_bits (length - bases[slot]) extras[slot] out
+            out = put_bits far_codes[far] far_lengths[far] out
+            out = put_bits (distance - far_bases[far]) far_extras[far] out
+    put_bits codes[256] lengths[256] out
+
+// The code-length symbols of a dynamic block for the lengths `[0, count)`: each entry is
+// `symbol + (extra <<< 8)`, where 16 repeats the previous length, and 17 and 18 repeat zero.
+private def run_lengths :: own i64 -> ref [i64] -> [i64]
+fn run_lengths count lengths =
+    let mut output: Vec<i64> = Vec.empty()
+    let mut index = 0
+    while index < count do
+        let value = lengths[index]
+        let mut run = 1
+        let mut counting = true
+        while counting do
+            if index + run < count && lengths[index + run] == value then run = run + 1 else counting = false
+        let mut left = run
+        if value == 0 then
+            while left >= 11 do
+                let step = if left > 138 then 138 else left
+                output = Vec.push_owned (18 + ((step - 11) <<< 8)) output
+                left = left - step
+            if left >= 3 then
+                output = Vec.push_owned (17 + ((left - 3) <<< 8)) output
+                left = 0
+        else
+            output = Vec.push_owned value output
+            left = left - 1
+            while left >= 3 do
+                let step = if left > 6 then 6 else left
+                output = Vec.push_owned (16 + ((step - 3) <<< 8)) output
+                left = left - step
+        while left > 0 do
+            output = Vec.push_owned value output
+            left = left - 1
+        index = index + run
+    Vec.to_array output
+
+// Writes one block: the bytes `[start, end)` of the input, which the tokens stand for. It takes the smallest
+// of the three forms: stored, fixed codes, or codes of its own.
+private def write_block :: own bool -> own i64 -> own i64 -> ref [i64] -> ref [ubyte] -> own BitWriter -> BitWriter
+fn write_block last start end tokens bytes writer =
+    let bases = length_base ()
+    let extras = length_extra ()
+    let far_bases = distance_base ()
+    let far_extras = distance_extra ()
+    let mut frequencies = new [i64](286, \_ -> 0)
+    let mut far_frequencies = new [i64](30, \_ -> 0)
+    Array.write 256 1 (ref mut frequencies)
+    let mut extra_bits = 0
+    for index in 0i64 ..< tokens.length do
+        let token = tokens[index]
+        if token < 256 then Array.write token (frequencies[token] + 1) (ref mut frequencies)
+        else
+            let slot = slot_of (((token - 256) &&& 255) + 3) (ref bases)
+            let far = slot_of (((token - 256) >>> 8) + 1) (ref far_bases)
+            Array.write (257 + slot) (frequencies[257 + slot] + 1) (ref mut frequencies)
+            Array.write far (far_frequencies[far] + 1) (ref mut far_frequencies)
+            extra_bits = extra_bits + extras[slot] + far_extras[far]
+    let lengths = code_lengths 15 (ref frequencies)
+    let far_lengths = code_lengths 15 (ref far_frequencies)
+    let mut literal_count = 286
+    let mut trimming = true
+    while trimming do
+        if literal_count > 257 && lengths[literal_count - 1] == 0 then literal_count = literal_count - 1 else trimming = false
+    let mut distance_count = 30
+    trimming = true
+    while trimming do
+        if distance_count > 1 && far_lengths[distance_count - 1] == 0 then distance_count = distance_count - 1 else trimming = false
+    let all = new [i64](literal_count + distance_count, \index -> if index < literal_count then lengths[index] else far_lengths[index - literal_count])
+    let runs = run_lengths all.length (ref all)
+    let mut coder_frequencies = new [i64](19, \_ -> 0)
+    for index in 0i64 ..< runs.length do
+        let symbol = runs[index] &&& 255
+        Array.write symbol (coder_frequencies[symbol] + 1) (ref mut coder_frequencies)
+    let coder_lengths = code_lengths 7 (ref coder_frequencies)
+    let order = length_order ()
+    let mut order_count = 19
+    trimming = true
+    while trimming do
+        if order_count > 4 && coder_lengths[order[order_count - 1]] == 0 then order_count = order_count - 1 else trimming = false
+    let fixed = fixed_lengths ()
+    let mut dynamic_cost = 17 + order_count * 3 + extra_bits
+    let mut fixed_cost = 3 + extra_bits
+    for index in 0i64 ..< runs.length do
+        let symbol = runs[index] &&& 255
+        dynamic_cost = dynamic_cost + coder_lengths[symbol] + (if symbol == 16 then 2 elif symbol == 17 then 3 elif symbol == 18 then 7 else 0)
+    for symbol in 0i64 ..< 286 do
+        dynamic_cost = dynamic_cost + frequencies[symbol] * lengths[symbol]
+        fixed_cost = fixed_cost + frequencies[symbol] * fixed[symbol]
+    for symbol in 0i64 ..< 30 do
+        dynamic_cost = dynamic_cost + far_frequencies[symbol] * far_lengths[symbol]
+        fixed_cost = fixed_cost + far_frequencies[symbol] * 5
+    let size = end - start
+    let stored_cost = (size + ((size + 65534) / 65535) * 5) * 8 + 7
+    let final = if last then 1 else 0
+    if stored_cost <= dynamic_cost && stored_cost <= fixed_cost then
+        let mut out = writer
+        let mut from = start
+        while from < end do
+            let step = if end - from > 65535 then 65535 else end - from
+            out = put_bits (if from + step == end then final else 0) 3 out
+            out = align_bits out
+            out = put_bits step 16 out
+            out = put_bits (step ^ 65535) 16 out
+            match out with
+            | BitWriter { bytes: written, pending: pending, held: held } ->
+                out = BitWriter { bytes: Vec.add_range (ref bytes[from ..< from + step]) written, pending: pending, held: held }
+            from = from + step
+        out
+    elif fixed_cost <= dynamic_cost then
+        let codes = canonical_codes (ref fixed[0 ..< 288])
+        let far_codes = canonical_codes (ref fixed[288 ..< 318])
+        write_tokens (ref codes) (ref fixed[0 ..< 288]) (ref far_codes) (ref fixed[288 ..< 318]) tokens (put_bits (final ||| 2) 3 writer)
+    else
+        let codes = canonical_codes (ref lengths)
+        let far_codes = canonical_codes (ref far_lengths)
+        let coder_codes = canonical_codes (ref coder_lengths)
+        let mut out = put_bits (final ||| 4) 3 writer
+        out = put_bits (literal_count - 257) 5 out
+        out = put_bits (distance_count - 1) 5 out
+        out = put_bits (order_count - 4) 4 out
+        for index in 0i64 ..< order_count do out = put_bits coder_lengths[order[index]] 3 out
+        for index in 0i64 ..< runs.length do
+            let symbol = runs[index] &&& 255
+            out = put_bits coder_codes[symbol] coder_lengths[symbol] out
+            if symbol >= 16 then out = put_bits (runs[index] >>> 8) (if symbol == 16 then 2 elif symbol == 17 then 3 else 7) out
+        write_tokens (ref codes) (ref lengths) (ref far_codes) (ref far_lengths) tokens out
+
+// The hash of the three bytes at `position`.
+private def hash_at :: own i64 -> ref [ubyte] -> i64
+fn hash_at position bytes = (((bytes[position] as i64) <<< 10) ^ ((bytes[position + 1] as i64) <<< 5) ^ (bytes[position + 2] as i64)) &&& 32767
+
+/// Compresses the bytes into a raw DEFLATE stream (RFC 1951, as `.npz` and ZIP store it; no zlib or gzip
+/// wrapper): greedy matches in a window of 32768 bytes, and for each block the smallest of the stored form,
+/// the fixed codes and codes of its own. The stream is the same for the same bytes on every target.
+/// `TensorCodec.inflate` and zlib (`zlib.decompress(data, -15)` in Python) read it.
+///
+/// ```tsuzuri run=true%20true
+/// let text = Utf8String.to_bytes (Utf8String.repeat 100 u8"tensor ")
+/// let packed = TensorCodec.deflate (ref text)
+/// let back = Result.get (TensorCodec.inflate text.length (ref packed))
+/// $"{packed.length < 40} {back == text}"
+/// ```
+def deflate :: ref [ubyte] -> [ubyte]
+fn deflate bytes =
+    let size = bytes.length
+    let mut writer = BitWriter { bytes: Vec.empty(), pending: 0, held: 0 }
+    if size == 0 then writer = put_bits 3 10 writer
+    let mut head = new [i64](32768, \_ -> -1)
+    let mut chain = new [i64](32768, \_ -> -1)
+    let mut position = 0
+    while position < size do
+        let start = position
+        let mut tokens: Vec<i64> = Vec.with_capacity 16384
+        while position < size && Vec.length (ref tokens) < 16384 do
+            let mut best = 0
+            let mut distance = 0
+            if position + 3 <= size then
+                let hash = hash_at position bytes
+                let longest = if size - position > 258 then 258 else size - position
+                let mut candidate = head[hash]
+                let mut tries = 0
+                while candidate >= 0 && position - candidate <= 32768 && tries < 48 && best < longest do
+                    let mut same = 0
+                    let mut comparing = true
+                    while comparing do
+                        if same < longest && bytes[candidate + same] == bytes[position + same] then same = same + 1 else comparing = false
+                    if same > best then
+                        best = same
+                        distance = position - candidate
+                    let older = chain[candidate &&& 32767]
+                    candidate = if older < candidate then older else -1
+                    tries = tries + 1
+                Array.write (position &&& 32767) head[hash] (ref mut chain)
+                Array.write hash position (ref mut head)
+            if best >= 3 then
+                tokens = Vec.push_owned (256 + ((distance - 1) <<< 8) + (best - 3)) tokens
+                for step in 1i64 ..< best do
+                    let inside = position + step
+                    if inside + 3 <= size then
+                        let hash = hash_at inside bytes
+                        Array.write (inside &&& 32767) head[hash] (ref mut chain)
+                        Array.write hash inside (ref mut head)
+                position = position + best
+            else
+                tokens = Vec.push_owned (bytes[position] as i64) tokens
+                position = position + 1
+        let block = Vec.to_array tokens
+        writer = write_block (position >= size) start position (ref block) bytes writer
+    let done = align_bits writer
+    Vec.to_array done.bytes

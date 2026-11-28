@@ -1706,6 +1706,79 @@ TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
 }
 #endif
 
+// TensorIO (NC11): a read-only view of a whole file. The driver defines the macro only for a program that
+// reaches the functions. The record is the address and the length as little-endian 64-bit integers; an
+// empty file has no view (0 and 0). The file and the mapping object are closed at once: the view keeps both.
+#if defined(TZ_OS_MAP)
+static int64_t tz_os_map_now(struct tz_os_buffer *output, const unsigned char *path, int64_t length) {
+    int64_t status = 0;
+    char *name = tz_os_name(path, length, &status);
+    if (name == NULL) return status;
+    wchar_t *wpath = tz_os_wide(name, NULL, &status);
+    free(name);
+    if (wpath == NULL) return status;
+    HANDLE file = tz_os_open_file(wpath, GENERIC_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
+    if (file == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        int is_dir = (err == ERROR_ACCESS_DENIED) && tz_os_is_directory_path(wpath);
+        free(wpath);
+        return is_dir ? tz_os_invalid_input() : tz_os_win_error(err);
+    }
+    free(wpath);
+    if (GetFileType(file) != FILE_TYPE_DISK) {
+        CloseHandle(file);
+        return tz_os_invalid_input();
+    }
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(file, &size)) {
+        DWORD err = GetLastError();
+        CloseHandle(file);
+        return tz_os_win_error(err);
+    }
+    if (size.QuadPart < 0 || (uint64_t)size.QuadPart > (uint64_t)SIZE_MAX / 2) {
+        CloseHandle(file);
+        return tz_os_status(TZ_OS_OTHER, ERROR_FILE_TOO_LARGE);
+    }
+    void *address = NULL;
+    if (size.QuadPart > 0) {
+        HANDLE mapping = CreateFileMappingW(file, NULL, PAGE_READONLY, 0, 0, NULL);
+        if (mapping == NULL) {
+            DWORD err = GetLastError();
+            CloseHandle(file);
+            return tz_os_win_error(err);
+        }
+        address = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+        DWORD err = GetLastError();
+        CloseHandle(mapping);
+        if (address == NULL) {
+            CloseHandle(file);
+            return tz_os_win_error(err);
+        }
+    }
+    CloseHandle(file);
+    unsigned char record[16];
+    tz_os_put_i64(record, (int64_t)(intptr_t)address);
+    tz_os_put_i64(record + 8, (int64_t)size.QuadPart);
+    return tz_os_deliver(output, record, sizeof record);
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_map(struct tz_os_buffer *output, const unsigned char *path, int64_t length) {
+    tz_os_clear(output);
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_map_now(output, path, length);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
+// Releases what `tsuzuri_os_map` returned; the record of an empty file has nothing to release.
+TZ_OS_API int64_t tsuzuri_os_unmap(int64_t address, int64_t length) {
+    (void)length;
+    if (address == 0) return 0;
+    return UnmapViewOfFile((const void *)(intptr_t)address) ? 0 : tz_os_win_error(GetLastError());
+}
+#endif
+
 // Env.executable_path (M15): the path of the module of the process as the system reports it; it is not
 // normalized. The driver defines the macro only for a program that reaches the function.
 #if defined(TZ_OS_EXECUTABLE_PATH)

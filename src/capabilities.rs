@@ -453,7 +453,7 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
             "File" | "Dir" => Fs,
             _ => return None,
         },
-        "Os.__open" | "Os.__handle" | "Os.__close" => Fs,
+        "Os.__open" | "Os.__handle" | "Os.__close" | "Os.__map" => Fs,
         "Os.__args" | "Os.__os_version" | "Os.__executable_path" => Env,
         "Os.__random" => Random,
         "Os.__clock"
@@ -478,8 +478,13 @@ pub fn primitive(name: &str, file: &str) -> Option<Capability> {
 }
 
 /// The private builtins that touch only the CPU and memory (appendix A.2 and the ones added since).
-pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 46] = [
+pub const PRIVATE_WITHOUT_CAPABILITY: [&str; 50] = [
     "Net.__classify",
+    // NC11: releasing a mapping, copying element storage and lending mapped memory touch only memory.
+    "Os.__unmap",
+    "TensorCodec.__to_bytes",
+    "TensorCodec.__of_bytes",
+    "TensorIO.__mmap_slice",
     "Unicode.__table_length",
     "Unicode.__table_entry",
     "Array.__set",

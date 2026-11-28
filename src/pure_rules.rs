@@ -187,8 +187,9 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
     match builtin {
         DebugPrintString | AllocCounter => Some(Debug),
         IOReadLine | IOWrite | OsRead | OsArgs | OsVersion | OsExecutablePath | OsWrite
-        | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose | OsSpawn | NetResolve
-        | NetOpen | NetAccept | NetRead | NetWrite | NetClose | NetClassify => Some(Outside),
+        | OsRandom | OsClock | OsSleep | OsOpen | OsHandle | OsClose | OsSpawn | OsMap
+        | OsUnmap | NetResolve | NetOpen | NetAccept | NetRead | NetWrite | NetClose
+        | NetClassify => Some(Outside),
         BenchNow | BenchConsume | GenSeed => Some(Clock),
         RoutineScope
         | ParallelInit
@@ -437,6 +438,9 @@ fn builtin_effect(builtin: Builtin) -> Option<Category> {
         | VecSetCapacity
         | VecInsert
         | VecSplice
+        | TensorCodecToBytes
+        | TensorCodecOfBytes
+        | TensorIOMmapSlice
         | CharToU16
         | CharOfU16
         | Utf8CharToU32

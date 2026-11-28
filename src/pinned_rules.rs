@@ -158,6 +158,8 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::OsOpen
         | Builtin::OsHandle
         | Builtin::OsClose
+        | Builtin::OsMap
+        | Builtin::OsUnmap
         | Builtin::OsSpawn
         | Builtin::NetResolve
         | Builtin::NetOpen
@@ -248,6 +250,9 @@ pub(crate) fn builtin_position(builtin: Builtin) -> Position {
         | Builtin::VecSetCapacity
         | Builtin::VecInsert
         | Builtin::VecSplice
+        | Builtin::TensorCodecToBytes
+        | Builtin::TensorCodecOfBytes
+        | Builtin::TensorIOMmapSlice
         | Builtin::CharToU16
         | Builtin::CharOfU16
         | Builtin::Utf8CharToU32

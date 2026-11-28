@@ -85,6 +85,11 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/ExternAddr.tz", include_str!("../std/ExternAddr.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
     ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
+    ("std/TensorCodec.tz", include_str!("../std/TensorCodec.tz")),
+    (
+        "std/TensorElement.tt",
+        include_str!("../std/TensorElement.tt"),
+    ),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -185,6 +190,10 @@ pub const RESERVED_MODULES: &[&str] = &[
     "ObjC",
     // M09: handing work to the process main thread; a built-in module without a std file.
     "MainThread",
+    // NC11: tensor files as bytes (.npy, .npz, Safetensors, CSV), their element class, and files and mappings.
+    "TensorCodec",
+    "TensorElement",
+    "TensorIO",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -522,6 +531,19 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Linalg"],
         aliases: &[],
         uses: &["Complex", "Tensor"],
+    },
+    // NC11: the instances of `TensorElement` are in `TensorCodec`, so naming the class loads both.
+    OptIn {
+        module: "TensorCodec",
+        names: &["TensorCodec", "TensorElement"],
+        aliases: &[],
+        uses: &["Complex", "Tensor", "TensorElement"],
+    },
+    OptIn {
+        module: "TensorElement",
+        names: &["TensorElement"],
+        aliases: &[],
+        uses: &["TensorCodec"],
     },
 ];
 
@@ -1026,7 +1048,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 83);
+        assert_eq!(RESERVED_MODULES.len(), 86);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

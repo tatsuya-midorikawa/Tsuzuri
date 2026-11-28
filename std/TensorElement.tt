@@ -1,0 +1,26 @@
+/// The element types that `TensorCodec` and `TensorIO` read and write: `bool`, the integers of 8 to 64 bits, `f16`,
+/// `f32`, `f64`, `Complex<f32>` and `Complex<f64>`. The instances are in `TensorCodec`; the functions of that module
+/// (`TensorCodec.encode_npy`, `TensorCodec.decode_npy`, `TensorCodec.to_raw`, `TensorIO.view`...) call the methods,
+/// so write those. User code names the class `TensorElement.TensorElement`, since `TensorElement` is an opt-in std
+/// module.
+///
+/// ```tsuzuri run=float32%2012
+/// def describe :: (TensorElement.TensorElement<'a>, Copy<'a>) => ref Tensor.View<'a> -> string
+/// fn describe view =
+///     let raw = TensorCodec.to_raw view
+///     $"{TensorCodec.dtype_name (ref raw.dtype)} {raw.data.length}"
+///
+/// let t = Tensor.of_array [3] [1.0f32, 2.0f32, 3.0f32]
+/// describe (Tensor.view (ref t))
+/// ```
+class TensorElement<'a> {
+    /// The dtype of the element type; the array only names the type and is not read.
+    def dtype :: ref ['a] -> TensorCodec.Dtype
+
+    /// The elements as bytes, each element little-endian, in the order of the array.
+    def to_le_bytes :: ref ['a] -> [ubyte]
+
+    /// `count` elements from the little-endian bytes that start at `offset`. The range is inside the bytes:
+    /// `TensorCodec` checks it before it calls, and a range outside traps.
+    def of_le_bytes :: i64 -> i64 -> ref [ubyte] -> ['a]
+}
