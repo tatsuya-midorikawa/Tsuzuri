@@ -5,11 +5,11 @@
 | ID | NC11 |
 | 優先度 | P2（他ツール・Python/NumPy・機械学習モデルとのデータ交換に必須） |
 | 規模 | L（2 Phase: Phase 1 純粋 `[ubyte]` コーデック `TensorCodec`、Phase 2 ファイル読み書き・ネイティブ `mmap` の `TensorIO`） |
-| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([W11](_completed/W11-windows-os-api.md)) |
+| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), ([W11](W11-windows-os-api.md)) |
 | 後続 | – |
-| 状態 | todo |
-| 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
-| 承認 | 要承認（新規 opt-in std モジュール `TensorCodec`・`TensorIO` の `RESERVED_MODULES` 登録と Phase 2 の `mmap` 専用組み込み。決定事項 D1・D2 が要承認、ほかは既定案） |
+| 状態 | done（Phase 1・1b・2。2026-11-28） |
+| 起票 | 2026-11-24（[GUIDE D-65](../GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
+| 承認 | 承認済み（D-65 の委任で決定、2026-11-28。D1・D2 と D-55 の登録。「方針の最新化」と決定事項の D4〜D8）。起票時の記述: 要承認（新規 opt-in std モジュール `TensorCodec`・`TensorIO` の `RESERVED_MODULES` 登録と Phase 2 の `mmap` 専用組み込み。決定事項 D1・D2 が要承認、ほかは既定案） |
 | 手本にする既存実装 | `std/Json.tz`・`std/Cbor.tz`（ファイル I/O 非依存の純粋 `encode`/`decode` 設計）、`std/File.tz`（`read_bytes`/`write_bytes`・`fs` 権限）、`src/runtime/os.c`（ネイティブ OS API）、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt` |
 | 主な影響ファイル | `std/TensorCodec.tz`（新規）、`std/TensorIO.tz`（新規）、`src/stdlib.rs`、`src/check.rs`（Phase 2 `mmap` スライス合成組み込み）、`src/llvm.rs`、`src/capabilities.rs`、`src/runtime/os.c`（Phase 2 の `mmap` のみ）、`tests/capabilities.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/tensor_codec.rs`（新規）、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/features.mjs`、`tests/fixtures/effects_sweep/`、`tests/fixtures/`、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`vsc/src/core.ts`、`_tsuzuri/language-reference/built-in-types-and-modules/tensor-codec.md`（新規）、`_tsuzuri/language-reference/built-in-types-and-modules/tensor-io.md`（新規）、`_tsuzuri/language-reference/index.md`、`docs/language.md` |
 
@@ -88,8 +88,8 @@
 
 ### 着手条件
 
-- [NC01](_completed/NC01-complex-and-extended-math.md) と [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done。
-- Phase 2 の Windows 側 `mmap` は [W11](_completed/W11-windows-os-api.md) が done（現行 `src/target.rs:397` の `os_apis()` は macOS/Linux のみ対応。macOS/Linux の Phase 2 は W11 なしでも着手可能）。
+- [NC01](NC01-complex-and-extended-math.md) と [NC02](NC02-tensor-core-views-and-broadcasting.md) が done。
+- Phase 2 の Windows 側 `mmap` は [W11](W11-windows-os-api.md) が done（現行 `src/target.rs:397` の `os_apis()` は macOS/Linux のみ対応。macOS/Linux の Phase 2 は W11 なしでも着手可能）。
 - 決定事項 D1・D2 の承認。
 
 ### 停止条件
@@ -143,9 +143,9 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC01](_completed/NC01-complex-and-extended-math.md): `Complex<f32>`, `Complex<f64>`。
-- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `is_f_contiguous`, 64 軸。
-- 弱い依存 [W11](_completed/W11-windows-os-api.md): Phase 2 の Windows 側 `mmap`。
+- [NC01](NC01-complex-and-extended-math.md): `Complex<f32>`, `Complex<f64>`。
+- [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `is_f_contiguous`, 64 軸。
+- 弱い依存 [W11](W11-windows-os-api.md): Phase 2 の Windows 側 `mmap`。
 
 ## 他チケットへ提供するインターフェース
 
@@ -193,3 +193,64 @@
 - **D1（要承認）**: モジュール名は NumPy 固有の `Npy` とせず、中立な **`TensorCodec`**（純粋バイト変換）と **`TensorIO`**（ファイル I/O＋読み取り専用 `mmap`）を採用し、`RESERVED_MODULES`（および `D-55`）へ登録する。
 - **D2（要承認）**: `.npy` の Python `object`（pickle）dtype はセキュリティ上絶対にサポートせず `UnsupportedDtype` で拒否する。また Phase 2 の読み取り専用 `mmap` 用に非公開の借用スライス合成組み込みを追加する。
 - **D3（既定案）**: 要素型ディスパッチは組み込み型クラスを増やさず、`TensorCodec.encode_npy_f64` 等の型付き入口または `std/TensorCodec.tz` 内の `.tt` 型クラス（`NpyElement`）で提供する。
+
+### 委任による決定（2026-11-28）
+
+利用者の委任（「あなたが考える最高の選択肢で実装することを常に許可します」）で決めた。GUIDE D-65 の「委任による決定（2026-11-28、NC11）」と D-55 の表に記録した。
+
+- **D1・D2**: 起票の案のとおり承認した。モジュール名は `TensorCodec`・`TensorIO`、pickle の dtype は拒否、`mmap` には非公開の組み込みを足す。
+- **D4**: D3 は `.tt` の型クラスの案を採り、名前は `TensorElement`（`std/TensorElement.tt`）にする。`RESERVED_MODULES` は 3 つ増える。型別の入口は 14 の dtype × 形式の数だけ関数が要るので採らない。
+- **D5**: `TensorElement` は `TensorCodec.ElementType<'a>`（不透明なレコード）を返すメソッドで封じ、利用者の instance を持てなくする。`TensorIO.view` がマップしたメモリーを要素型として読むので、ポインターを持つ型の instance があると健全でなくなる（S2 の一部）。
+- **D6**: 浮動小数点のビットを保つために、非公開の組み込み `TensorCodec.__to_bytes`・`TensorCodec.__of_bytes`（数値の配列とバイト列の間の 1 回の複写）を足す。HEAD にはビット列を取り出す手段がなく、算術の変換は NaN の payload を保てない。
+- **D7**: マップと解除は `Os.__map`・`Os.__unmap`（`-DTZ_OS_MAP`）にする。M15 の D13 と同じ形で、既存の `Os.__read` などに操作を足さない。W24 の `extern view` は複写なので使えない。
+- **D8**: API を整理する。`.npz` と Safetensors は同じ `Archive`（バイト列を所有する）を返す。型を消した `Raw` を足す。`Error` に `InvalidArchive`・`CorruptData`・`UnsupportedRank` を足す。`deflate`・`inflate`・`crc32` を公開する。`view` は 1 つの総称関数にし、`with_mmap_npy`・`open_mmap_safetensors`・`inspect_safetensors`・`archive_inspect`・`encode_npz_with`（`NpzOptions`）を足す。CSV の読み込みは `Parse` による総称の `decode_csv` 1 つにする。Safetensors の複素数は書かない。
+
+## 実装と検証（2026-11-28）
+
+Phase 1（`.npy`・無圧縮の `.npz`・Safetensors・CSV）、Phase 1b（Deflate／Inflate）、Phase 2（ファイルの読み書きと読み取り専用のマップ。POSIX・Windows・WASI）をすべて実装した。macOS 27.2（arm64）、Apple clang、`target/debug/tsuzuri`（dev profile）、Python 3.14.7 と NumPy 2.5.1 で確かめた。Windows の実行は手元ではできず、CI（`ci:full`）に任せた（下の「確かめていないこと」）。
+
+### 実装した内容
+
+- **コンパイラ**: 非公開の組み込み 5 つ（`Os.__map`・`Os.__unmap`・`TensorCodec.__to_bytes`・`TensorCodec.__of_bytes`・`TensorIO.__mmap_slice`。`Builtin::ALL` は 392 → 397）。`src/check.rs`（宣言・名前・署名）、`src/polymorph.rs`（呼び出し元のモジュールの検査、`E1022`）、`src/llvm.rs`・`src/llvm_io.rs`・`src/llvm_bulk.rs`（生成）、`src/effects.rs`・`src/kg/effects.rs`・`src/pure_rules.rs`・`src/pinned_rules.rs`（分類）、`src/capabilities.rs`（`Os.__map` は `fs`、ほかの 4 つは権限なし）、`src/driver.rs`・`src/test_runner.rs`（`-DTZ_OS_MAP`）、`src/stdlib.rs`（`SOURCES`・`RESERVED_MODULES` 83 → 86・`OPT_IN`・`opaque_record`）。
+- **ランタイム**: `src/runtime/os.c`（`mmap`・`munmap`）、`src/runtime/os-windows.h`（`CreateFileMappingW`・`MapViewOfFile`・`UnmapViewOfFile`）、`src/runtime/os-wasi.c`（ENOSYS）。どれも `#if defined(TZ_OS_MAP)` の中。
+- **std**: `std/TensorCodec.tz`（2,136 行。公開関数 31）、`std/TensorElement.tt`（型クラス 1、メソッド 3）、`std/TensorIO.tz`（391 行。公開関数 19）。
+- **テスト**: `tests/tensor_codec.rs`（13 件）、`tests/fixtures/tensor_codec/generate.py` と `reference.json`（NumPy・zlib・zipfile の出力）、`tests/fixtures/tensor_codec/Main.tz` と `tests/tensor-codec-cases.mjs`（`tests/features.mjs` の suite `tensor_codec`）、`tests/fixtures/tensor_io/Main.tz` と `tests/tensor_io.mjs`。
+
+### 実行したコマンドと結果
+
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`: 差分・警告なし。
+- `cargo nextest run --locked`: 3813 tests run: 3813 passed (34 slow), 4 skipped。
+- `cargo test --locked --test tensor_codec`: 13 passed。中で `tsuzuri test` が動かす Tsuzuri のテストは 162 件（`.npy` 54 ファイル（14 の dtype × 行優先・列優先・big-endian、0〜3 階、空、形式 1.0・2.0・3.0、NaN の payload と符号・`-0.0`・非正規化数、Python 2 の書式）を読み、同じ配列の `np.save` の出力とバイト単位で同じに書く。窓 5 種。不正な `.npy` 34 種と、接頭辞・1 バイトの変更。`np.savez`・`np.savez_compressed`・ZIP64 を強制した zipfile のアーカイブ 3 つ。不正な `.npz` 19 種。zlib の流れ 30 本（無圧縮・固定符号・動的符号）と 400 回の変更。形式の記述から作った Safetensors と不正な 27 種。`np.savetxt` の 7 種）。
+- `cargo test --locked --test std_argument_order --test std_examples --test std_tags --test stdlib --test capabilities`: 22・5・3・7・18 passed。`cargo test --locked --lib -- effects:: capabilities:: kg::effects pure_rules pinned_rules stdlib::`: 38 passed。
+- `target/debug/tsuzuri test --doc std --filter TensorCodec`／`TensorElement`／`TensorIO`（`-O0` と `-O3`）: 31・1・19 passed。
+- `node tests/features.mjs target/debug/tsuzuri tensor_codec`: 52 cases passed（native と wasm32 の `-O0`・`-O3`、`live == 0`、wasm は import なし）。
+- `node tests/tensor_io.mjs target/debug/tsuzuri`: 342 checks passed（native と WASI の `-O0`・`-O3`。NumPy が書いたファイルの読み込みとマップ、マップできないファイルの拒否、要素型の違う `view` のトラップ、書いたファイルのバイト比較と独立した ZIP・Safetensors の読み手、NumPy 2.5.1 による `np.load`・`np.loadtxt`・`zlib` での読み込み、4 GiB の疎なファイルを 100,000 回マップして解除する漏れの検査）。
+- `node scripts/gen-docs.mjs --check`: 11 blocks checked, 0 stale。`node scripts/check-cli-docs.mjs`: 4 checks, 0 failed。`node scripts/check-guide-lite.mjs`: 87 references checked, 0 failed。`sh scripts/check-runtime-includes.sh`: 66 files。
+- Tsuzuri-Reference: `node scripts/check-docs.mjs` を新しい 2 ページと `index.md`・`conventions.md` に実行し、4 pages, 239 links, 13 checked examples, 26 native runs。
+- `TensorCodec`・`TensorIO` を名指さないプログラムの IR: fixture と example の 172 個の `--emit llvm -O1`（native と wasm32）の出力 340 個（`.ll` 323、診断 17）が、変更の前後でバイト単位で同じ（増えたのは新しい 2 つの fixture の 4 個だけ）。
+
+### チケットから外れた判断
+
+「方針の最新化」と「委任による決定」のとおり。実装中に足したもの:
+
+- `TensorIO.MappedTensor` は `Mapping`（`Drop` を持つ非公開の record）を包む 2 段にした。ヘッダーの検証が失敗した経路でも、解除は drop glue が 1 回だけ行う。
+- `bool` のファイルは、マップするときに全バイトが 0・1 であることを確かめる。`view_bool` を別にする代わりである。
+- `.npz` の名前の `.npy` の判定は、`String.ends_with` ではなくバイトの比較にした。`String.matches_at` の `while` に付く展開の指示（`llvm.loop.unroll.enable`）が、インライン化の文脈によって clang の `loop not unrolled` の警告を標準エラーへ出すためである（下の「見つけたこと」）。
+
+### 確かめていないこと
+
+- **Windows の実行**: `os-windows.h` の `tsuzuri_os_map`・`tsuzuri_os_unmap` は、手元にヘッダーも実行環境もないのでコンパイルも実行もしていない。`cargo check --target x86_64-pc-windows-msvc` も、手元の Rust（Homebrew）にその target の標準ライブラリがなく実行できなかった（Rust の側の変更に target ごとの分岐はない。CI の `lint` が確かめる）。`windows.yml` に `node tests/tensor_io.mjs` の手順を足したので、`ci:full` の実行で確かめる。Windows では漏れの検査は 64 KiB のファイルを 2,000 回マップするだけで、漏れを検出できない（NTFS は疎なファイルを割り当てるため）。
+- **Linux**: 手元では動かしていない（`targets.yml` と `ci.yml` に手順を足した）。
+- **Python の `safetensors` パッケージ**: 入っていないので、Safetensors は公開されている形式の記述から作ったファイルと独立した読み手で確かめた。参照実装とのバイト一致は確かめていない。
+- **4 GiB を超える `.npz`**: ZIP64 の読み書きは、zipfile に ZIP64 を強制したアーカイブと `zip64: true` の出力（NumPy が読む）で確かめた。実際に 4 GiB を超えるアーカイブは作っていない。
+- **性能**: 速さの主張はしない。`.npy` の読み書きは連続した領域の 1 回の `memcpy`、Deflate の出力の大きさは zlib の水準 6 とほぼ同じ（試した 10 種で ±1%）であることだけを確かめた。
+
+### 見つけたこと（このチケットの外）
+
+- `while` の本体の代入が 1 つで、終了がデータに依る繰り返し（例: `while index < end && is_space bytes[index] do index = index + 1`、`for` の中の `Array.write` と 1 つのカウンター）に `llvm.loop.unroll.enable` が付き、clang が `warning: loop not unrolled` を標準エラーへ出すことがある（利用者のコードでも起きる。`std/String.tz` の `matches_at` も、インライン化の文脈によって出す）。std の 2 つのモジュールでは書き方を変えて避け、`tests/tensor_codec.rs` と `tests/tensor_io.mjs` が警告のないことを検査する。コンパイラの側の修正は別のチケットにする。
+- `scripts/check-cli-docs.mjs --reference-dir` は、このチケットと無関係な失敗を `main` でも出す（Tsuzuri-Reference に `Linalg`・`ExternAddr`・`ZUtf8String` のページがない、`Tensor` の 4 関数、`--framework`・`--rpath`、`W1011`）。
+
+### 更新した文書
+
+- このリポジトリ: `docs/language.md`（新しい節「TensorCodec / TensorIO」、予約モジュール名）、`docs/architecture.md`（新しい節「テンソルのファイル（NC11）」、OS API の `-DTZ_OS_MAP`）、`README.md`（標準ライブラリの表）、`_features/GUIDE.md`（D-55 の行、D-65 の委任による決定）、`_features/README.md`、`.github/workflows/ci.yml`・`targets.yml`・`windows.yml`（suite の手順）。
+- Tsuzuri-Reference（ブランチ `docs/nc11-tensor-codec-io`）: `docs/stdlib/encoding/tensor-codec.md`・`tensor-io.md`（新規）、`docs/index.md`、`docs/stdlib/conventions.md`、`scripts/check-cli-docs.mjs`（`STD_PAGES`）。

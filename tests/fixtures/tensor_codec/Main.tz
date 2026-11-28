@@ -238,7 +238,7 @@ fn safetensors_round_trip _unused =
     if Result.get third == middle then held = held + 1
     if place.data_offset % 8 == 0 && place.shape == [4] then held = held + 1
     if TensorCodec.archive_metadata (ref archive) == [("format", "pt"), ("step", "3")] then held = held + 1
-    if TensorCodec.archive_names (ref archive) == ["narrow", "wide", "middle"] then held = held + 1
+    if TensorCodec.archive_names (ref archive) == ["wide", "middle", "narrow"] then held = held + 1
     if plain.length < archive_bytes (ref archive) then held = held + 1
     held
 
