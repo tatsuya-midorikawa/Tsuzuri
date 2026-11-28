@@ -1,9 +1,11 @@
 // The arguments of a `def main :: Array<string> -> i32`: the command-line arguments after the
 // program name, each as a UTF-16 string. UTF-8 is decoded, and each maximal invalid subsequence
 // becomes one U+FFFD. POSIX systems and WASI hosts pass arguments that the shell or the host has
-// already split. On Windows a process receives one command line, which this file splits: spaces
-// and tabs separate arguments, except between a pair of double quotes, so `"a b c"` is the one
-// argument `a b c`. The quotes are removed, and backslashes have no special meaning.
+// already split. On Windows a process receives one command line, which this file splits using the
+// UCRT (Visual Studio 2008 and later) wmain argv[1..] rules: spaces and tabs outside quotes
+// separate arguments, 2n backslashes before `"` become n backslashes and open/close quoting,
+// 2n + 1 backslashes before `"` become n backslashes and a literal `"`, `""` inside quotes becomes
+// one literal `"`, and other backslashes stay literal.
 // On WASI this file is compiled after os-wasi.c and uses its imports.
 #include <stdint.h>
 #if defined(_WIN32)
@@ -107,8 +109,7 @@ static void tz_arguments_from_utf8(int64_t count, char **values, struct tz_argum
 // The arguments of a command line after the program name.
 static void tz_arguments_split(const uint16_t *line, struct tz_arguments_array *output) {
     int64_t length = 0;
-    const uint16_t *start = tz_arguments_blank(line);
-    if (*start != 0) start = tz_arguments_blank(tz_arguments_token(start, 0, &length));
+    const uint16_t *start = tz_arguments_blank(tz_arguments_program(line));
     int64_t count = 0;
     for (const uint16_t *at = start; *at != 0; count++) {
         at = tz_arguments_blank(tz_arguments_token(at, 0, &length));

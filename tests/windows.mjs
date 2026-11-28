@@ -147,6 +147,37 @@ function runGuiStage(compiler, clang, directory) {
     const ioTrapCode = launchWithoutHandles(ioTrapExe, [], { launcher });
     assert.ok(allowedTrapCodes.includes(ioTrapCode), `io_trap without handles ${optimization}: 0x${ioTrapCode.toString(16)}`);
 
+    // W32: top-level expression display fails with status 1 without handles; --overflow-report falls back to OutputDebugStringW.
+    const topGuiDir = join(directory, `gui-top${optimization}`);
+    mkdirSync(topGuiDir, { recursive: true });
+    writeFileSync(join(topGuiDir, "Main.tz"), "42\n");
+    const topGuiExe = join(directory, `gui-top${optimization}.exe`);
+    execute(compiler, ["build", topGuiDir, "--no-cache", optimization, "-o", topGuiExe]);
+    const topWithHandles = execute(topGuiExe, [], false);
+    assert.equal(topWithHandles.status, 0, `top with handles status ${optimization}`);
+    assert.equal(topWithHandles.stdout, "42\n", `top with handles stdout ${optimization}`);
+    assert.equal(launchWithoutHandles(topGuiExe, [], { launcher }), 1, `top without handles ${optimization}`);
+
+    const ovfGuiDir = join(directory, `gui-ovf${optimization}`);
+    mkdirSync(ovfGuiDir, { recursive: true });
+    writeFileSync(
+      join(ovfGuiDir, "Main.tz"),
+      "def grow :: i32u -> i32u = \\x -> x * 3i32u\ndef main :: unit -> i32 = \\() -> if grow 4000000000i32u == 3410065408i32u then 0 else 1\n",
+    );
+    const ovfGuiExe = join(directory, `gui-ovf${optimization}.exe`);
+    execute(compiler, ["build", ovfGuiDir, "--no-cache", "--overflow-report", optimization, "-o", ovfGuiExe]);
+    const ovfOds = join(directory, `gui-ovf-ods${optimization}.txt`);
+    assert.equal(launchWithoutHandles(ovfGuiExe, [], { launcher, debugStrings: ovfOds }), 0, `ovf without handles + debugStrings ${optimization}`);
+    const ovfOdsLines = readFileSync(ovfOds, "utf8").trimEnd().split("\n");
+    assert.equal(ovfOdsLines.length, 1, `ovf debugStrings lines ${optimization}: ${JSON.stringify(ovfOdsLines)}`);
+    assert.ok(ovfOdsLines[0].startsWith("warning: integer overflow wrapped at "), `ovf debugStrings text ${optimization}: ${ovfOdsLines[0]}`);
+    assert.equal(launchWithoutHandles(ovfGuiExe, [], { launcher }), 0, `ovf without handles no debugger ${optimization}`);
+    const ovfPipeOds = join(directory, `gui-ovf-pipe-ods${optimization}.txt`);
+    const ovfWithHandles = execute(launcher, ["--debug-strings", ovfPipeOds, "--", ovfGuiExe]);
+    assert.match(ovfWithHandles.stdout.trim(), /^exit=0x00000000$/);
+    assert.ok(ovfWithHandles.stderr.trim().startsWith("warning: integer overflow wrapped at "), `ovf with handles stderr ${optimization}: ${ovfWithHandles.stderr}`);
+    assert.equal(readFileSync(ovfPipeOds, "utf8"), "", `ovf with handles should not write debugStrings ${optimization}`);
+
     // 5. message_window
     const pumpExe = buildGui("pump", [optimization], { compiler, clang, directory });
     assert.equal(execute(pumpExe, [], false).status, 3, `pump with handles ${optimization}`);
@@ -303,6 +334,108 @@ function runGuiStage(compiler, clang, directory) {
   const resources = peResources(resExe);
   assert.ok(resources.some((r) => r.type === 24 && r.name === 1 && r.language === 1033), JSON.stringify(resources));
   assert.ok(resources.some((r) => r.type === 16 && r.name === 1 && r.language === 1033), JSON.stringify(resources));
+  assert.deepEqual(peResources(manifestGuiExe), [], "executable without [windows] resource keys must have no .rsrc");
+
+  // 11b. W10: [windows] manifest, icon, version, resources (.rc / .res), icon renumbering, cache, and diagnostics.
+  const winResFixtures = join(repository, "tests/fixtures/windows_resources");
+  const w10AppDir = join(directory, "w10-app");
+  mkdirSync(w10AppDir, { recursive: true });
+  writeFileSync(join(w10AppDir, "app.manifest"), readFileSync(join(winResFixtures, "app.manifest")));
+  const baseIcoBytes = Buffer.from(readFileSync(join(winResFixtures, "app.ico")));
+  writeFileSync(join(w10AppDir, "app.ico"), baseIcoBytes);
+  writeFileSync(
+    join(w10AppDir, "Tsuzuri.toml"),
+    '[package]\nname = "w10-app"\nversion = "0.1.0"\nedition = "2027"\n\n[windows]\nsubsystem = "windows"\nmanifest = "app.manifest"\nicon = "app.ico"\nversion = "1.2.3.4"\n',
+  );
+  writeFileSync(
+    join(w10AppDir, "Main.tz"),
+    '@trusted\nextern "GetACP" def get_acp :: unit -> i32u\nexport def check_wasm :: i32 = 42i32\ndef main :: unit -> i32 = \\() -> (get_acp ()) as i32\n\ntest "runner ignores windows resources" = assert (1 + 1 == 2)\n',
+  );
+  const w10CacheDir = join(directory, "w10-cache");
+  mkdirSync(w10CacheDir, { recursive: true });
+  const w10CacheEnv = { TSUZURI_CACHE_DIR: w10CacheDir, TSUZURI_RC: "" };
+  const countW10Cache = () => readdirSync(w10CacheDir).filter((name) => /^[0-9a-f]{64}$/.test(name)).length;
+  for (const optimization of ["-O0", "-O3"]) {
+    const w10Exe = join(directory, `w10-app${optimization}.exe`);
+    // Even with TSUZURI_RC="" (no resource compiler), pure-Rust manifest + icon + version succeed and hit cache.
+    execute(compiler, ["build", w10AppDir, optimization, "-o", w10Exe], true, w10CacheEnv);
+    const entries = peResources(w10Exe);
+    assert.equal(entries.filter((r) => r.type === 24).length, 1, `expected single RT_MANIFEST: ${JSON.stringify(entries)}`);
+    assert.ok(entries.some((r) => r.type === 24 && r.name === 1 && r.language === 1033));
+    assert.ok(entries.some((r) => r.type === 3 && r.name === 1 && r.language === 1033));
+    assert.ok(entries.some((r) => r.type === 3 && r.name === 2 && r.language === 1033));
+    assert.ok(entries.some((r) => r.type === 14 && r.name === 1 && r.language === 1033));
+    assert.ok(entries.some((r) => r.type === 16 && r.name === 1 && r.language === 1033));
+    assert.equal(launchWithoutHandles(w10Exe, [], { launcher }), 65001, `GetACP UTF-8 manifest ${optimization}`);
+  }
+  assert.equal(countW10Cache(), 2);
+  execute(compiler, ["build", w10AppDir, "-O0", "-o", join(directory, "w10-app-hit.exe")], true, w10CacheEnv);
+  assert.equal(countW10Cache(), 2, "second identical W10 build must hit BuildCache");
+  const tweakedIco = Buffer.from(baseIcoBytes);
+  tweakedIco[tweakedIco.length - 1] ^= 0xff;
+  writeFileSync(join(w10AppDir, "app.ico"), tweakedIco);
+  execute(compiler, ["build", w10AppDir, "-O0", "-o", join(directory, "w10-app-miss.exe")], true, w10CacheEnv);
+  assert.equal(countW10Cache(), 3, "1-byte change in app.ico must invalidate BuildCache");
+  writeFileSync(join(w10AppDir, "app.ico"), baseIcoBytes);
+
+  // Output overwrite protection (E2003) on resource input.
+  const overwriteRes = execute(compiler, ["build", w10AppDir, "--no-cache", "--json", "-o", join(w10AppDir, "app.ico")], false);
+  assert.equal(JSON.parse(overwriteRes.stderr.trim().split("\n").filter((l) => l.startsWith("{")).pop()).code, "E2003");
+
+  // `tsuzuri test` and `--target wasm32` ignore `[windows]` resource keys.
+  execute(compiler, ["test", w10AppDir]);
+  execute(compiler, ["build", w10AppDir, "--no-cache", "--target", "wasm32", "-o", join(directory, "w10-app.wasm")]);
+
+  // `.rc` compilation + icon renumbering (`icon` + `dialog.rc`) and duplicate detection (`version` + `version.rc`).
+  const w10RcDir = join(directory, "w10-rc");
+  mkdirSync(w10RcDir, { recursive: true });
+  writeFileSync(join(w10RcDir, "app.ico"), baseIcoBytes);
+  writeFileSync(join(w10RcDir, "dialog.rc"), readFileSync(join(winResFixtures, "dialog.rc")));
+  writeFileSync(join(w10RcDir, "version.rc"), readFileSync(join(winResFixtures, "version.rc")));
+  writeFileSync(join(w10RcDir, "Main.tz"), "def main :: unit -> i32 = \\() -> 0\n");
+  writeFileSync(
+    join(w10RcDir, "Tsuzuri.toml"),
+    '[package]\nname = "w10-rc"\nversion = "0.1.0"\nedition = "2027"\n\n[windows]\nicon = "app.ico"\nresources = ["dialog.rc"]\n',
+  );
+  const parseLastDiag = (res) => JSON.parse(res.stderr.trim().split("\n").filter((l) => l.startsWith("{")).pop());
+  const missingRc = execute(compiler, ["build", w10RcDir, "--no-cache", "--json", "-o", join(directory, "w10-no-rc.exe")], false, { TSUZURI_RC: "" });
+  const missingDiag = parseLastDiag(missingRc);
+  assert.equal(missingDiag.code, "E2002");
+  assert.equal(missingDiag.kind, "resource_compiler_missing");
+
+  const bundledWithoutZig = isBundledClang(clang) && !existsSync(join(dirname(clang), "..", "zig", "zig.exe"));
+  const rcBuildEnv = {};
+  if (bundledWithoutZig) {
+    const armNoRc = execute(compiler, ["build", w10RcDir, "--no-cache", "--json", "-o", join(directory, "w10-arm-no-rc.exe")], false, { PATH: "" });
+    const armDiag = parseLastDiag(armNoRc);
+    assert.equal(armDiag.code, "E2002");
+    assert.equal(armDiag.kind, "resource_compiler_missing");
+    if (process.env.LLVM_PREFIX && existsSync(join(process.env.LLVM_PREFIX, "bin", "llvm-rc.exe"))) {
+      rcBuildEnv.TSUZURI_RC = join(process.env.LLVM_PREFIX, "bin", "llvm-rc.exe");
+    }
+  }
+  if (!bundledWithoutZig || rcBuildEnv.TSUZURI_RC) {
+    for (const optimization of ["-O0", "-O3"]) {
+      const rcExe = join(directory, `w10-rc${optimization}.exe`);
+      execute(compiler, ["build", w10RcDir, "--no-cache", optimization, "-o", rcExe], true, rcBuildEnv);
+      const rcEntries = peResources(rcExe);
+      for (const iconId of [1, 2, 3, 4]) {
+        assert.ok(rcEntries.some((r) => r.type === 3 && r.name === iconId && r.language === 1033), `missing RT_ICON ${iconId}: ${JSON.stringify(rcEntries)}`);
+      }
+      assert.ok(rcEntries.some((r) => r.type === 14 && r.name === 1 && r.language === 1033));
+      assert.ok(rcEntries.some((r) => r.type === 14 && r.name === 2 && r.language === 1033));
+      assert.ok(rcEntries.some((r) => r.type === 5 && r.name === 100 && r.language === 1033));
+    }
+
+    writeFileSync(
+      join(w10RcDir, "Tsuzuri.toml"),
+      '[package]\nname = "w10-rc"\nversion = "0.1.0"\nedition = "2027"\n\n[windows]\nversion = "1.2.3.4"\nresources = ["version.rc"]\n',
+    );
+    const conflictRes = execute(compiler, ["build", w10RcDir, "--no-cache", "--json", "-o", join(directory, "w10-conflict.exe")], false, rcBuildEnv);
+    const conflictDiag = parseLastDiag(conflictRes);
+    assert.equal(conflictDiag.code, "E2000");
+    assert.equal(conflictDiag.kind, "windows_resource_conflict");
+  }
 
   // 12. unwind_functions
   const unwindC = join(directory, "unwind_probe.c");
@@ -457,7 +590,106 @@ function runGuiStage(compiler, clang, directory) {
   }
   console.log(`Windows (${toolchainLabel}): W16 @last_error (CloseHandle=6, SetLastError(0) clear, tzroutines, WASM E1008) passed`);
 
+  runUcrtArgumentsDifferential(compiler, clang, directory);
+
   console.log(`Windows GUI: launcher, message-only windows, callbacks, tzroutine wake and PE checks passed with ${toolchainLabel}`);
+}
+
+function runUcrtArgumentsDifferential(compiler, clang, directory) {
+  const toolchainLabel = isBundledClang(clang) ? "bundled MinGW" : "LLVM MSVC";
+  const refFlags = isBundledClang(clang) ? [...cCompileFlags(clang), "-municode"] : cCompileFlags(clang);
+  const refExe = join(directory, "arguments_reference.exe");
+  execute(clang, [...refFlags, "-O1", join(repository, "tests/arguments_reference.c"), "-o", refExe]);
+
+  const tzDir = join(directory, "w33-arguments");
+  mkdirSync(tzDir, { recursive: true });
+  writeFileSync(
+    join(tzDir, "Main.tz"),
+    'def main :: Array<string> -> i32 = \\args ->\n    let separator = "]["\n    do! IO.writeln ("[" + String.join (ref separator) (ref args) + "]")\n    args.length as i32\n',
+  );
+  const tzExes = ["-O0", "-O3"].map((optimization) => {
+    const out = join(directory, `w33-arguments${optimization}.exe`);
+    execute(compiler, ["build", tzDir, "--no-cache", optimization, "-o", out]);
+    return [optimization, out];
+  });
+
+  const argv0Cases = [
+    ["app", ""],
+    ["  app", "x"],
+    ['"C:\\Program Files\\app.exe"', "a"],
+    ['C:\\dir\\"x y"', "z"],
+    ['""', "a"],
+  ];
+  const tails = [
+    "",
+    "a b",
+    "\t a\t\tb ",
+    '"arg1 arg2 arg3"',
+    'a "b c d" e',
+    '""arg1 arg2 arg3""',
+    'a "" b',
+    'a"b c"d',
+    'a\\"b',
+    '"a\\" b"',
+    '"a\\" b',
+    '"C:\\dir\\"',
+    '"C:\\dir\\\\"',
+    'C:\\dir\\ x',
+    'C:\\dir\\ "x\\\\"',
+    'a\\\\\\\\"b c"',
+    '"a\\\\\\"b c"',
+    '\\\\"',
+    '\\"',
+    '"',
+    '"""',
+    '""""',
+    '"""""',
+    '"a""b"',
+    '"x""y"z"',
+    '"a"" b"',
+    '"a\\\\""b"',
+    'a\\\\"b',
+    'x\\y \\\\server\\share',
+    "a\\",
+    "a\nb",
+    '"unterminated b',
+    "\u65e5\u672c \"\u{1F600} x\"",
+  ];
+  const pairs = [
+    ...argv0Cases,
+    ...tails.map((tail) => ["app", tail]),
+  ];
+  const runRaw = (exe, argv0, tail) => {
+    const childArgs = tail === "" ? [""] : [tail];
+    const res = spawnSync(exe, childArgs, {
+      encoding: "utf8",
+      windowsVerbatimArguments: true,
+      argv0,
+      timeout: 60_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    assert.ifError(res.error);
+    return res;
+  };
+
+  for (const [argv0, tail] of pairs) {
+    const refRes = runRaw(refExe, argv0, tail);
+    assert.ok(refRes.status !== null && refRes.status < 250, `reference failed on ${JSON.stringify([argv0, tail])}: status=${refRes.status}`);
+    for (const [optimization, tzExe] of tzExes) {
+      const tzRes = runRaw(tzExe, argv0, tail);
+      assert.equal(
+        tzRes.stdout,
+        refRes.stdout,
+        `W33 stdout mismatch (${toolchainLabel} ${optimization}) for argv0=${JSON.stringify(argv0)} tail=${JSON.stringify(tail)}`,
+      );
+      assert.equal(
+        tzRes.status,
+        refRes.status,
+        `W33 exit code mismatch (${toolchainLabel} ${optimization}) for argv0=${JSON.stringify(argv0)} tail=${JSON.stringify(tail)}`,
+      );
+    }
+  }
+  console.log(`Windows (${toolchainLabel}): W33 command-line splitting matches UCRT wmain across ${pairs.length} raw command lines at -O0 and -O3`);
 }
 
 if (isMain) {
@@ -944,6 +1176,7 @@ if (isMain) {
     assert.equal(execute(nullExe, [], false).status, 3, `nullable-win ${optimization}`);
   }
   console.log("Windows MSVC: Maybe<H> NULL ABI passed");
+  runUcrtArgumentsDifferential(compiler, clang, directory);
 
   // W21: @c_layout structs match real Win32 headers (LOGFONTW, DLGTEMPLATE, GUID, MSG, WNDCLASSEXW)
   // and CreateFontIndirectW succeeds with ref LogFont.

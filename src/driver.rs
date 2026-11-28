@@ -530,6 +530,43 @@ fn macos_sdk_error(framework_name: &str) -> Diagnostic {
     )
 }
 
+/// Refuses an output that would replace a `[windows]` resource input file (W10).
+fn protect_windows_resources(project: &Project, output: &Path) -> Result<(), Diagnostic> {
+    if !project.windows.has_resources() {
+        return Ok(());
+    }
+    let Ok(metadata) = fs::symlink_metadata(output) else {
+        return Ok(());
+    };
+    let root_raw = project
+        .root_package
+        .as_ref()
+        .map_or_else(|| Path::new("."), |package| package.root.as_path());
+    let root = crate::cache::real_path(root_raw).unwrap_or_else(|_| root_raw.to_path_buf());
+    for relative in project
+        .windows
+        .manifest
+        .iter()
+        .chain(project.windows.icon.iter())
+        .chain(project.windows.resources.iter())
+    {
+        let input = root.join(relative);
+        let same = fs::canonicalize(&input).ok() == fs::canonicalize(output).ok()
+            || same_file(&input, output, &metadata).unwrap_or(false);
+        if same {
+            return Err(driver_error_of(
+                DiagnosticKind::OutputOverwritesLinkInput,
+                format!(
+                    "output '{}' would overwrite Windows resource '{}'; choose a different -o path",
+                    output.display(),
+                    relative.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Refuses an output that would replace a link input.
 pub(crate) fn protect_links(links: &LinkInputs, output: &Path) -> Result<(), Diagnostic> {
     let Ok(metadata) = fs::symlink_metadata(output) else {
@@ -5206,8 +5243,15 @@ fn build_complete_keyed(
             "Windows COFF objects with embedded tzroutine, CPU, IO, Net, or operating-system runtime are not supported; emit LLVM and link the runtime once, or build an executable",
         ));
     }
+    let windows_resources_apply = matches!(action, "build" | "run")
+        && options.target == Target::Native
+        && options.emit == Emit::Executable
+        && platform.windows();
     protect_sources(project, output)?;
     protect_links(links, output)?;
+    if windows_resources_apply {
+        protect_windows_resources(project, output)?;
+    }
     let sidecar = options.trap_info.then(|| trap_sidecar_path(output));
     // A23: WebAssembly cannot write the report, so its sites are described next to the module.
     let overflow_sidecar = (options.overflow_report && options.target.is_wasm())
@@ -5226,6 +5270,9 @@ fn build_complete_keyed(
     if let Some(sidecar) = &sidecar {
         protect_sources(project, sidecar)?;
         protect_links(links, sidecar)?;
+        if windows_resources_apply {
+            protect_windows_resources(project, sidecar)?;
+        }
     }
     if let Some(sidecar) = &overflow_sidecar {
         protect_sources(project, sidecar)?;
@@ -5253,6 +5300,9 @@ fn build_complete_keyed(
     if let Some(pdb) = &pdb {
         protect_sources(project, pdb)?;
         protect_links(links, pdb)?;
+        if windows_resources_apply {
+            protect_windows_resources(project, pdb)?;
+        }
     }
     let parent = output
         .parent()
@@ -5333,6 +5383,11 @@ fn build_complete_keyed(
     }
     // The cache key does not cover the contents of link inputs, so a build with them is never cached. A
     // SPIR-V module is never cached either: no tool runs for it, and its bytes are not in the key's text.
+    let staged_resources = if windows_resources_apply {
+        windows_resources(project, &temporary.path)?
+    } else {
+        None
+    };
     // Bitcode is not cached (PR08 D7): it runs `llvm-link`, whose identity the key does not hold, and its
     // C runtime is merged as IR, which the runtime object cache does not hold.
     let cache_time = crate::timings::Phase::start("cache");
@@ -5368,6 +5423,7 @@ fn build_complete_keyed(
                 staged_profile
                     .as_ref()
                     .map(profile::PreparedProfile::cache_field),
+                staged_resources.as_ref().map(|(_, bytes)| bytes.as_slice()),
             )?;
             let cache = crate::cache::BuildCache::open(&root)?;
             Ok((cache, key))
@@ -6193,6 +6249,9 @@ fn build_complete_keyed(
         }
         if options.emit == Emit::Executable && dwarf_sidecar.is_none() {
             links.add_to(&mut clang, link_extras)?;
+            if let Some((res_path, _)) = &staged_resources {
+                clang.args(["-x", "none"]).arg(res_path);
+            }
         }
         if options.emit == Emit::Executable
             && let Some(pdb) = &pdb
@@ -6917,6 +6976,254 @@ fn subsystem_link_args(subsystem: Option<Subsystem>, msvc: bool) -> Vec<OsString
         .collect(),
         Some(Subsystem::Windows) => vec![OsString::from("-Wl,--subsystem,windows")],
     }
+}
+
+/// W10: builds and merges all `[windows]` resources (`manifest`, `icon`, `version`, `resources`)
+/// into `directory/resources.res`, returning its path and exact bytes for the build cache key.
+fn windows_resources(
+    project: &Project,
+    directory: &Path,
+) -> Result<Option<(PathBuf, Vec<u8>)>, Diagnostic> {
+    let settings = &project.windows;
+    if !settings.has_resources() {
+        return Ok(None);
+    }
+    let root_raw = project
+        .root_package
+        .as_ref()
+        .map_or_else(|| Path::new("."), |package| package.root.as_path());
+    let root = crate::cache::real_path(root_raw).unwrap_or_else(|_| root_raw.to_path_buf());
+    let read_input = |relative: &Path| -> Result<Vec<u8>, Diagnostic> {
+        let full = root.join(relative);
+        let metadata = fs::metadata(&full).map_err(|error| {
+            driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': {error}",
+                    relative.display()
+                ),
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': not a regular file",
+                    relative.display()
+                ),
+            ));
+        }
+        fs::read(&full).map_err(|error| {
+            driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': {error}",
+                    relative.display()
+                ),
+            )
+        })
+    };
+    let invalid = |relative: &Path, detail: String| -> Diagnostic {
+        driver_error_of(
+            DiagnosticKind::WindowsResourceInvalid,
+            format!("'{}' is {detail}", relative.display()),
+        )
+    };
+
+    let mut inputs = Vec::new();
+    if let Some(manifest_rel) = &settings.manifest {
+        let bytes = read_input(manifest_rel)?;
+        let res = crate::winres::manifest(&bytes).map_err(|err| invalid(manifest_rel, err))?;
+        inputs.push(("[windows] manifest".to_owned(), vec![res]));
+    }
+    if let Some(icon_rel) = &settings.icon {
+        let bytes = read_input(icon_rel)?;
+        let res = crate::winres::icon(&bytes).map_err(|err| invalid(icon_rel, err))?;
+        inputs.push(("[windows] icon".to_owned(), res));
+    }
+    if let Some((version_text, parts)) = &settings.version {
+        let res = crate::winres::version_info(version_text, *parts);
+        inputs.push(("[windows] version".to_owned(), vec![res]));
+    }
+    for (index, relative) in settings.resources.iter().enumerate() {
+        let full = root.join(relative);
+        let metadata = fs::metadata(&full).map_err(|error| {
+            driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': {error}",
+                    relative.display()
+                ),
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(driver_error_of(
+                DiagnosticKind::IoFailure,
+                format!(
+                    "cannot read windows resource '{}': not a regular file",
+                    relative.display()
+                ),
+            ));
+        }
+        let is_rc = relative
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("rc"));
+        let res_bytes = if is_rc {
+            let (program, prefix_args) = resource_compiler(&relative.display().to_string())?;
+            let staged_res = directory.join(format!("rc-{index}.res"));
+            let abs_rc = crate::cache::real_path(&full).unwrap_or(full);
+            let rc_cwd = abs_rc
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(&root);
+            let mut cmd = Command::new(&program);
+            cmd.current_dir(rc_cwd)
+                .args(&prefix_args)
+                .args(["/nologo", "/fo"])
+                .arg(&staged_res)
+                .arg(&abs_rc);
+            run_tool(
+                &mut cmd,
+                "compiling a .rc resource needs llvm-rc, rc.exe, or zig rc; set TSUZURI_RC or use the bundled toolchain",
+            )?;
+            fs::read(&staged_res)
+                .map_err(|error| io_error("read compiled .res", &staged_res, error))?
+        } else {
+            read_input(relative)?
+        };
+        let parsed = crate::winres::read(&res_bytes).map_err(|err| invalid(relative, err))?;
+        inputs.push((format!("'{}'", relative.display()), parsed));
+    }
+
+    let merged = crate::winres::merge(inputs)
+        .map_err(|message| driver_error_of(DiagnosticKind::WindowsResourceConflict, message))?;
+    let bytes = crate::winres::write(&merged);
+    let res_path = directory.join("resources.res");
+    fs::write(&res_path, &bytes)
+        .map_err(|error| io_error("write Windows resources", &res_path, error))?;
+    Ok(Some((res_path, bytes)))
+}
+
+/// W10: resolves the resource compiler for `.rc` inputs (`TSUZURI_RC` -> bundled `zig rc` ->
+/// `llvm-rc` beside Clang or on `PATH` -> `rc.exe` on `PATH`).
+fn resource_compiler(rc_name: &str) -> Result<(OsString, Vec<OsString>), Diagnostic> {
+    resource_compiler_from(
+        rc_name,
+        env::var_os("TSUZURI_RC"),
+        &tool("TSUZURI_CLANG", "clang"),
+        env::var_os("TSUZURI_ZIG"),
+        distribution_root().as_deref(),
+        env::var_os("PATH").as_deref(),
+    )
+}
+
+fn resource_compiler_from(
+    rc_name: &str,
+    rc_env: Option<OsString>,
+    clang: &OsStr,
+    zig_env: Option<OsString>,
+    dist_root: Option<&Path>,
+    path_env: Option<&OsStr>,
+) -> Result<(OsString, Vec<OsString>), Diagnostic> {
+    let missing = || {
+        driver_error_of(
+            DiagnosticKind::ResourceCompilerMissing,
+            format!(
+                "compiling '{rc_name}' needs a resource compiler; set TSUZURI_RC to llvm-rc or rc.exe, or use the bundled toolchain"
+            ),
+        )
+    };
+    if let Some(rc) = rc_env {
+        if rc.is_empty() {
+            return Err(missing());
+        }
+        return Ok((rc, Vec::new()));
+    }
+    if bundled_launcher(clang) {
+        if let Some(zig) = zig_env.filter(|value| !value.is_empty()) {
+            if Path::new(&zig).is_file() {
+                return Ok((zig, vec![OsString::from("rc")]));
+            }
+        } else {
+            let clang_root = Path::new(clang).parent().and_then(Path::parent);
+            for root in [clang_root, dist_root].into_iter().flatten() {
+                for name in [
+                    format!("zig{}", env::consts::EXE_SUFFIX),
+                    "zig.exe".to_owned(),
+                    "zig".to_owned(),
+                ] {
+                    let candidate = root.join("zig").join(name);
+                    if candidate.is_file() {
+                        return Ok((candidate.into_os_string(), vec![OsString::from("rc")]));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(beside_clang) = beside_clang_executable(clang, "llvm-rc", path_env) {
+        return Ok((beside_clang.into_os_string(), Vec::new()));
+    }
+    if let Some(on_path) = find_tool_on_path(
+        &[
+            &format!("llvm-rc{}", env::consts::EXE_SUFFIX),
+            "llvm-rc.exe",
+            "llvm-rc",
+        ],
+        path_env,
+    ) {
+        return Ok((on_path.into_os_string(), Vec::new()));
+    }
+    if let Some(rc_exe) = find_tool_on_path(&["rc.exe"], path_env) {
+        return Ok((rc_exe.into_os_string(), Vec::new()));
+    }
+    Err(missing())
+}
+
+fn beside_clang_executable(clang: &OsStr, name: &str, path_env: Option<&OsStr>) -> Option<PathBuf> {
+    let invoked = if Path::new(clang).components().count() > 1 {
+        Some(PathBuf::from(clang))
+    } else {
+        find_tool_on_path(
+            &[
+                &format!("{}{}", clang.to_string_lossy(), env::consts::EXE_SUFFIX),
+                &clang.to_string_lossy(),
+            ],
+            path_env,
+        )
+    }?;
+    let resolved = crate::cache::real_path(&invoked).ok();
+    for candidate_clang in [resolved.as_deref(), Some(invoked.as_path())]
+        .into_iter()
+        .flatten()
+    {
+        let Some(directory) = candidate_clang.parent() else {
+            continue;
+        };
+        for file_name in [
+            format!("{name}{}", env::consts::EXE_SUFFIX),
+            format!("{name}.exe"),
+            name.to_owned(),
+        ] {
+            let tool_path = directory.join(file_name);
+            if tool_path.is_file() {
+                return Some(tool_path);
+            }
+        }
+    }
+    None
+}
+
+fn find_tool_on_path(names: &[&str], path_env: Option<&OsStr>) -> Option<PathBuf> {
+    let paths = path_env?;
+    for directory in env::split_paths(paths) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 /// The PDB of the `-g` executable `output` on Windows: `<output>` with the extension `.pdb`.
@@ -9430,6 +9737,7 @@ mod tests {
 
         let manifest = crate::package::WindowsSettings {
             subsystem: Some(Subsystem::Windows),
+            ..Default::default()
         };
         assert_eq!(
             BuildOptions {
@@ -9450,6 +9758,156 @@ mod tests {
             .subsystem,
             None
         );
+    }
+
+    #[test]
+    fn resource_compiler_follows_the_five_step_search_order() {
+        let root = env::temp_dir().join(format!(
+            "tsuzuri-w10-rc-order-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dist = root.join("dist");
+        let dist_bin = dist.join("bin");
+        let dist_zig = dist.join("zig");
+        let llvm_bin = root.join("llvm/bin");
+        let path_llvm = root.join("path-llvm");
+        let path_msvc = root.join("path-msvc");
+        for dir in [&dist_bin, &dist_zig, &llvm_bin, &path_llvm, &path_msvc] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let root = crate::cache::real_path(&root).unwrap_or(root);
+        let dist = root.join("dist");
+        let dist_bin = dist.join("bin");
+        let dist_zig = dist.join("zig");
+        let llvm_bin = root.join("llvm").join("bin");
+        let path_llvm = root.join("path-llvm");
+        let path_msvc = root.join("path-msvc");
+        let touch = |path: &Path| {
+            fs::write(path, b"stub").unwrap();
+            path.to_path_buf()
+        };
+        let launcher = touch(&dist_bin.join("tsuzuri-clang.exe"));
+        let bundled_zig = touch(&dist_zig.join("zig.exe"));
+        let clang = touch(&llvm_bin.join("clang.exe"));
+        let beside_rc = touch(&llvm_bin.join("llvm-rc.exe"));
+        let path_llvm_rc = touch(&path_llvm.join("llvm-rc.exe"));
+        let path_rc_exe = touch(&path_msvc.join("rc.exe"));
+        let search_both = env::join_paths([&path_llvm, &path_msvc]).unwrap();
+        let search_msvc = env::join_paths([&path_msvc]).unwrap();
+
+        // 1. TSUZURI_RC wins over everything, and an empty value stops without falling back.
+        assert_eq!(
+            resource_compiler_from(
+                "dialogs.rc",
+                Some(OsString::from("C:/custom/rc.exe")),
+                launcher.as_os_str(),
+                None,
+                Some(&dist),
+                Some(&search_both),
+            )
+            .unwrap(),
+            (OsString::from("C:/custom/rc.exe"), Vec::new())
+        );
+        let empty_err = resource_compiler_from(
+            "dialogs.rc",
+            Some(OsString::new()),
+            launcher.as_os_str(),
+            None,
+            Some(&dist),
+            Some(&search_both),
+        )
+        .unwrap_err();
+        assert_eq!(empty_err.code, "E2002");
+        assert_eq!(
+            empty_err.kind,
+            Some(DiagnosticKind::ResourceCompilerMissing.id())
+        );
+
+        // 2. Bundled launcher with zig/zig.exe runs `zig rc`.
+        assert_eq!(
+            resource_compiler_from(
+                "dialogs.rc",
+                None,
+                launcher.as_os_str(),
+                None,
+                None,
+                Some(&search_both),
+            )
+            .unwrap(),
+            (
+                bundled_zig.clone().into_os_string(),
+                vec![OsString::from("rc")]
+            )
+        );
+
+        // ARM64 bundled layout (no zig/zig.exe and no llvm-rc in bin/ or PATH) fails with resource_compiler_missing.
+        fs::remove_file(&bundled_zig).unwrap();
+        let arm_err = resource_compiler_from(
+            "dialogs.rc",
+            None,
+            launcher.as_os_str(),
+            None,
+            Some(&dist),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(arm_err.code, "E2002");
+        assert_eq!(
+            arm_err.kind,
+            Some(DiagnosticKind::ResourceCompilerMissing.id())
+        );
+        assert!(
+            arm_err.message.contains("'dialogs.rc'"),
+            "{}",
+            arm_err.message
+        );
+
+        // 3. llvm-rc beside Clang wins over PATH; then llvm-rc on PATH wins over rc.exe.
+        assert_eq!(
+            resource_compiler_from(
+                "dialogs.rc",
+                None,
+                clang.as_os_str(),
+                None,
+                None,
+                Some(&search_both),
+            )
+            .unwrap(),
+            (beside_rc.clone().into_os_string(), Vec::new())
+        );
+        fs::remove_file(&beside_rc).unwrap();
+        assert_eq!(
+            resource_compiler_from(
+                "dialogs.rc",
+                None,
+                clang.as_os_str(),
+                None,
+                None,
+                Some(&search_both),
+            )
+            .unwrap(),
+            (path_llvm_rc.into_os_string(), Vec::new())
+        );
+
+        // 4. rc.exe on PATH when llvm-rc is absent.
+        assert_eq!(
+            resource_compiler_from(
+                "dialogs.rc",
+                None,
+                clang.as_os_str(),
+                None,
+                None,
+                Some(&search_msvc),
+            )
+            .unwrap(),
+            (path_rc_exe.into_os_string(), Vec::new())
+        );
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

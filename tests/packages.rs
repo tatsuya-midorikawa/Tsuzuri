@@ -1746,12 +1746,54 @@ fn manifest_accepts_registry_dependencies_and_index() {
             "[registry]\nindex = \"https://e.org/a.git\"\n[registry]",
             "expected [package] followed by optional [dependencies], [wasm], [native], [registry], [capabilities], [windows] and [macos], each once",
         ),
+        (
+            "[windows]\nunknown = \"x\"",
+            "unknown windows key; expected subsystem, manifest, icon, version, or resources",
+        ),
+        (
+            "[windows]\nmanifest = \"/abs.manifest\"",
+            "windows paths must be nonempty relative paths",
+        ),
+        (
+            "[windows]\nversion = \"1.2.3.4.5\"",
+            "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.BUILD with each part from 0 to 65535",
+        ),
+        (
+            "[windows]\nresources = [\"dialog.rc\", \"bad.ico\"]",
+            "windows resources must be .rc or .res files",
+        ),
     ] {
         let error = parse_manifest(&format!("{GEOMETRY}{text}\n"), 3).unwrap_err();
         assert_eq!(error.code, "E0002", "{text}: {}", error.message);
         assert_eq!(error.message, message, "{text}");
         assert_eq!(error.span.source, Some(3), "{text}");
     }
+
+    let win = parse_manifest(
+        &format!(
+            "{GEOMETRY}\n[windows]\nsubsystem = \"windows\"\nmanifest = \"app.manifest\"\nicon = \"assets/app.ico\"\nversion = \"1.2.3\"\nresources = [\"dialogs.rc\", \"extra.RES\"]\n"
+        ),
+        0,
+    )
+    .unwrap()
+    .windows;
+    assert_eq!(win.subsystem, Some(tsuzuri::driver::Subsystem::Windows));
+    assert_eq!(
+        win.manifest.as_deref(),
+        Some(std::path::Path::new("app.manifest"))
+    );
+    assert_eq!(
+        win.icon.as_deref(),
+        Some(std::path::Path::new("assets/app.ico"))
+    );
+    assert_eq!(win.version, Some(("1.2.3".to_owned(), [1, 2, 3, 0])));
+    assert_eq!(
+        win.resources,
+        vec![
+            std::path::PathBuf::from("dialogs.rc"),
+            std::path::PathBuf::from("extra.RES"),
+        ]
+    );
 }
 
 #[test]

@@ -75,20 +75,42 @@ int main(void) {
     // The first entry of each list is a placeholder, so a line may have no arguments.
     SPLIT(u"", 0);
     SPLIT(u"app", 0);
-    SPLIT(u"  app  ", 0);
+    SPLIT(u"  app  ", 0, u"app");
+    SPLIT(u"  app x", 0, u"app", u"x");
+    SPLIT(u"\tapp\tx", 0, u"app", u"x");
     SPLIT(u"app a b", 0, u"a", u"b");
     SPLIT(u"app \t a\t\tb ", 0, u"a", u"b");
     SPLIT(u"\"C:\\Program Files\\app.exe\" a", 0, u"a");
+    SPLIT(u"C:\\dir\\\"x y\" z", 0, u"z");
     SPLIT(u"app \"arg1 arg2 arg3\"", 0, u"arg1 arg2 arg3");
     SPLIT(u"app a \"b c d\" e", 0, u"a", u"b c d", u"e");
-    // `""` is an empty pair of quotes, not a delimiter of its own.
+    // Inside quotes, `""` is one literal quote and quoting continues; outside quotes, `""` opens and closes.
     SPLIT(u"app \"\"arg1 arg2 arg3\"\"", 0, u"arg1", u"arg2", u"arg3");
     SPLIT(u"app a \"\" b", 0, u"a", u"", u"b");
     SPLIT(u"app a\"b c\"d", 0, u"ab cd");
-    SPLIT(u"app \"a\\\" b", 0, u"a\\", u"b");
-    SPLIT(u"app C:\\dir\\ \"x\\\\\"", 0, u"C:\\dir\\", u"x\\\\");
+    SPLIT(u"app a\\\"b", 0, u"a\"b");
+    SPLIT(u"app \"a\\\" b\"", 0, u"a\" b");
+    SPLIT(u"app \"a\\\" b", 0, u"a\" b");
+    SPLIT(u"app \"C:\\dir\\\"", 0, u"C:\\dir\"");
+    SPLIT(u"app \"C:\\dir\\\\\"", 0, u"C:\\dir\\");
+    SPLIT(u"app C:\\dir\\ x", 0, u"C:\\dir\\", u"x");
+    SPLIT(u"app C:\\dir\\ \"x\\\\\"", 0, u"C:\\dir\\", u"x\\");
+    SPLIT(u"app a\\\\\\\\\"b c\"", 0, u"a\\\\b c");
+    SPLIT(u"app \"a\\\\\\\"b c\"", 0, u"a\\\"b c");
+    SPLIT(u"app \\\\\"", 0, u"\\");
+    SPLIT(u"app \\\"", 0, u"\"");
+    SPLIT(u"app \"", 0, u"");
+    SPLIT(u"app \"\"\"", 0, u"\"");
+    SPLIT(u"app \"\"\"\"", 0, u"\"");
+    SPLIT(u"app \"\"\"\"\"", 0, u"\"\"");
+    SPLIT(u"app \"a\"\"b\"", 0, u"a\"b");
+    SPLIT(u"app \"x\"\"y\"z\"", 0, u"x\"yz");
+    SPLIT(u"app \"a\"\" b\"", 0, u"a\" b");
+    SPLIT(u"app a\\\\\"b", 0, u"a\\b");
+    SPLIT(u"app x\\y \\\\server\\share", 0, u"x\\y", u"\\\\server\\share");
+    SPLIT(u"app a\\", 0, u"a\\");
+    SPLIT(u"app a\nb", 0, u"a\nb");
     SPLIT(u"app \"unterminated b", 0, u"unterminated b");
-    SPLIT(u"app \"\"\"\"", 0, u"");
     SPLIT(u"\"\" a", 0, u"a");
     SPLIT(u"app \u65e5\u672c \"\U0001F600 x\"", 0, u"\u65e5\u672c", u"\U0001F600 x");
 

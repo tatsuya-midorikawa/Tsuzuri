@@ -420,6 +420,59 @@ IO {
   }
   console.log("IO: try_ writers give InvalidEncoding/WriteFailed and the trapping writers trap on native/WASM -O0/-O3");
 
+  // W32: top-level expression display writes directly through `write(1, ...)` and exits with status 1
+  // (without trapping or writing to stderr) when stdout is unwritable or closed, while non-displaying
+  // entry forms keep their exit codes.
+  for (const optimization of ["-O0", "-O3"]) {
+    for (const [index, expr, expectedStdout] of [
+      [0, "42", "42\n"],
+      [1, '"hello"', "hello\n"],
+      [2, '""', "\n"],
+      [3, "true", "true\n"],
+      [4, "'a'", "a\n"],
+    ]) {
+      writeFileSync(probeSource, `${expr}\n`);
+      const topExe = join(probeRoot, `top-${index}${optimization}.exe`);
+      execute(compiler, ["build", probeSource, optimization, "-o", topExe]);
+      const normal = execute(topExe, []);
+      assert.equal(normal.stdout, expectedStdout, `${expr} normal ${optimization}`);
+      assert.equal(normal.stderr, "", `${expr} normal stderr ${optimization}`);
+      const readOnly = openSync(probeSource, "r");
+      try {
+        const unwritable = execute(topExe, [], { stdio: ["pipe", readOnly, "pipe"] }, false);
+        assert.equal(unwritable.status, 1, `${expr} read-only stdout ${optimization}`);
+        assert.equal(unwritable.signal, null, `${expr} read-only signal ${optimization}`);
+        assert.equal(unwritable.stdout ?? "", "", `${expr} read-only stdout text ${optimization}`);
+        assert.equal(unwritable.stderr, "", `${expr} read-only stderr ${optimization}`);
+      } finally {
+        closeSync(readOnly);
+      }
+      if (process.platform !== "win32" && index === 0) {
+        const closed = execute("sh", ["-c", 'exec "$1" >&-', "sh", topExe], {}, false);
+        assert.equal(closed.status, 1, `42 >&- ${optimization}`);
+        assert.equal(closed.signal, null, `42 >&- signal ${optimization}`);
+        assert.equal(closed.stderr, "", `42 >&- stderr ${optimization}`);
+      }
+    }
+    for (const [index, code, expectedStatus] of [
+      [0, "let _ = 1\n", 0],
+      [1, "IO.pure 3\n", 3],
+      [2, "def main :: unit -> i32 = \\() -> 7\n", 7],
+    ]) {
+      writeFileSync(probeSource, code);
+      const entryExe = join(probeRoot, `entry-${index}${optimization}.exe`);
+      execute(compiler, ["build", probeSource, optimization, "-o", entryExe]);
+      const readOnly = openSync(probeSource, "r");
+      try {
+        const res = execute(entryExe, [], { stdio: ["pipe", readOnly, "pipe"] }, false);
+        assert.equal(res.status, expectedStatus, `entry ${index} ${optimization}`);
+        assert.equal(res.signal, null, `entry ${index} signal ${optimization}`);
+      } finally {
+        closeSync(readOnly);
+      }
+    }
+  }
+
   writeFileSync(join(root, "Gate.tc"), `union Value<'a> = Stop of string | Next of 'a
 def Return :: own 'a -> Value<'a>
 fn Return value = Next value

@@ -270,7 +270,9 @@ fn emits_windows_exports_without_changing_default_or_wasm() {
         llvm::ExportStyle::Dllexport,
     )
     .unwrap();
-    assert!(ir.contains("%binary_mode = call i32 @_setmode(i32 1, i32 32768)"));
+    assert!(ir.contains("define internal i64 @write("));
+    assert!(ir.contains("declare i32 @_write(i32, ptr, i32)"));
+    assert!(!ir.contains("%binary_mode"));
 }
 
 #[test]

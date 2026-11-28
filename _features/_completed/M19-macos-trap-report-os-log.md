@@ -47,7 +47,7 @@ macOS の標準の記録先は unified logging（`os_log`）である。Objectiv
 - macOS（arm64）の開発機で、`/usr/bin/log show` が sudo なしで自分のプロセスの記録を読める（起票時の機械では読めた）。
 - CI の macOS のランナー（`targets.yml` の `macos-15`）で `log show` が使えるかを、最初の PR の試しの段で確かめる。使えなければ、テスト計画の「差し替えの口」で判定を確かめ、`log show` の段は手元の確認にする（S4）。
 - 同梱の zig のツールチェーン（macOS のホストと、Linux のホストからの `--target aarch64-apple-darwin`）が `<os/log.h>` を含めて `src/runtime/oslog-darwin.c` をコンパイルできるかを確かめる。起票時は確かめていない（この機械に同梱のツールチェーンがなかった）。できなければ S3。
-- [W32](../W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
+- [W32](W32-silent-write-failures.md) の状態を見る。W32 は Windows の `--overflow-report` を W04 の書き手へ送る。このチケットは `src/llvm_overflow.rs` を変えないので、どちらが先でもよい。
 
 ### 停止条件
 
