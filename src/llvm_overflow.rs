@@ -179,18 +179,11 @@ impl Report {
              write:\n  call void @tz.overflow.write(ptr %message, i64 %length)\n  ret void\n\
              last:\n  %stop = icmp eq i32 %count, {printed}\n  br i1 %stop, label %stopped, label %done\n\
              stopped:\n  call void @tz.overflow.write(ptr @tz.overflow.stopped, i64 {length})\n  br label %done\n\
-             done:\n  ret void\n}}\n\
-             define internal void @tz.overflow.write(ptr %data, i64 %length) cold nounwind {{\nentry:\n  \
-             br label %loop\nloop:\n  %offset = phi i64 [0, %entry], [%next, %advance]\n  \
-             %finished = icmp eq i64 %offset, %length\n  br i1 %finished, label %exit, label %write\n\
-             write:\n  %pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  \
-             %remaining = sub i64 %length, %offset\n  \
-             %written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  \
-             %progress = icmp sgt i64 %written, 0\n  br i1 %progress, label %advance, label %exit\n\
-             advance:\n  %next = add i64 %offset, %written\n  br label %loop\nexit:\n  ret void\n}}\n",
+             done:\n  ret void\n}}\n",
             length = stopped.len(),
             printed = overflow::MAX_PRINTED,
         );
+        output.push_str(OVERFLOW_WRITE);
         Ok(output)
     }
 
@@ -200,6 +193,27 @@ impl Report {
         self.scope.publish(self.order.clone());
     }
 }
+
+pub(crate) const OVERFLOW_WRITE: &str = "\
+define internal void @tz.overflow.write(ptr %data, i64 %length) cold nounwind {\n\
+entry:\n  \
+br label %loop\n\
+loop:\n  \
+%offset = phi i64 [0, %entry], [%next, %advance]\n  \
+%finished = icmp eq i64 %offset, %length\n  \
+br i1 %finished, label %exit, label %write\n\
+write:\n  \
+%pointer = getelementptr inbounds i8, ptr %data, i64 %offset\n  \
+%remaining = sub i64 %length, %offset\n  \
+%written = call i64 @write(i32 2, ptr %pointer, i64 %remaining)\n  \
+%progress = icmp sgt i64 %written, 0\n  \
+br i1 %progress, label %advance, label %exit\n\
+advance:\n  \
+%next = add i64 %offset, %written\n  \
+br label %loop\n\
+exit:\n  \
+ret void\n\
+}\n";
 
 impl FunctionEmitter<'_, '_> {
     /// Whether the range proof shows that the integer `left operator right` cannot overflow in the

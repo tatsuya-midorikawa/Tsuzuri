@@ -122,10 +122,45 @@ pub struct WasmSettings {
     pub stack_size: Option<u64>,
 }
 
-/// The `[windows]` section of the root manifest (W09; W10 adds the resource keys).
+/// The `[windows]` section of the root manifest (W09, W10).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WindowsSettings {
     pub subsystem: Option<crate::driver::Subsystem>,
+    pub manifest: Option<PathBuf>,
+    pub icon: Option<PathBuf>,
+    pub version: Option<(String, [u16; 4])>,
+    pub resources: Vec<PathBuf>,
+}
+
+impl WindowsSettings {
+    pub fn has_resources(&self) -> bool {
+        self.manifest.is_some()
+            || self.icon.is_some()
+            || self.version.is_some()
+            || !self.resources.is_empty()
+    }
+}
+
+/// The `[windows]` keys, in the order that the error for an unknown key lists them.
+const WINDOWS_KEYS: &str = "subsystem, manifest, icon, version, or resources";
+
+/// Parses a `[windows] version` (`MAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH.BUILD`, each 0..=65535
+/// without leading zeros). An omitted fourth part defaults to 0.
+fn parse_windows_version(text: &str) -> Option<[u16; 4]> {
+    let mut parts = [0u16; 4];
+    let mut count = 0usize;
+    for part in text.split('.') {
+        if count == 4
+            || part.is_empty()
+            || (part.len() > 1 && part.starts_with('0'))
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        parts[count] = part.parse::<u16>().ok()?;
+        count += 1;
+    }
+    matches!(count, 3 | 4).then_some(parts)
 }
 
 /// The `[macos]` section of the root manifest (M17; M15/M16 add bundle and signing keys).
@@ -982,6 +1017,7 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
     let mut dependencies = BTreeMap::new();
     let mut wasm = WasmSettings::default();
     let mut windows = WindowsSettings::default();
+    let mut windows_keys = BTreeSet::new();
     let mut macos = MacosSettings::default();
     let mut native: Option<(crate::driver::LinkInputs, Span)> = None;
     let mut native_keys = BTreeSet::new();
@@ -1268,29 +1304,80 @@ pub fn parse_manifest(source: &str, source_id: usize) -> Result<Manifest, Diagno
                 }
             }
             "windows" => {
-                if key != "subsystem" {
+                if !matches!(
+                    key.as_str(),
+                    "subsystem" | "manifest" | "icon" | "version" | "resources"
+                ) {
                     return Err(at_key(
                         DiagnosticKind::UnknownManifestKey,
-                        "unknown windows key; expected subsystem",
+                        &format!("unknown windows key; expected {WINDOWS_KEYS}"),
                     ));
                 }
-                let (text, value_span) = cursor.string()?;
-                let value = match text.as_str() {
-                    "console" => crate::driver::Subsystem::Console,
-                    "windows" => crate::driver::Subsystem::Windows,
-                    _ => {
-                        return Err(Diagnostic::of(
-                            DiagnosticKind::InvalidWindowsSetting,
-                            "subsystem must be \"console\" or \"windows\"",
-                            value_span,
-                        ));
-                    }
-                };
-                if windows.subsystem.replace(value).is_some() {
+                if !windows_keys.insert(key.clone()) {
                     return Err(at_key(
                         DiagnosticKind::DuplicateManifestKey,
                         "windows keys must occur at most once",
                     ));
+                }
+                let invalid = |message: &str, span: Span| {
+                    Diagnostic::of(DiagnosticKind::InvalidWindowsSetting, message, span)
+                };
+                const PATHS: &str = "windows paths must be nonempty relative paths";
+                match key.as_str() {
+                    "subsystem" => {
+                        let (text, value_span) = cursor.string()?;
+                        let value = match text.as_str() {
+                            "console" => crate::driver::Subsystem::Console,
+                            "windows" => crate::driver::Subsystem::Windows,
+                            _ => {
+                                return Err(invalid(
+                                    "subsystem must be \"console\" or \"windows\"",
+                                    value_span,
+                                ));
+                            }
+                        };
+                        windows.subsystem = Some(value);
+                    }
+                    "manifest" | "icon" => {
+                        let (text, value_span) = cursor.string()?;
+                        let path = relative_path(text).ok_or_else(|| invalid(PATHS, value_span))?;
+                        if key == "manifest" {
+                            windows.manifest = Some(path);
+                        } else {
+                            windows.icon = Some(path);
+                        }
+                    }
+                    "version" => {
+                        let (text, value_span) = cursor.string()?;
+                        let Some(parts) = parse_windows_version(&text) else {
+                            return Err(invalid(
+                                "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.BUILD with each part from 0 to 65535",
+                                value_span,
+                            ));
+                        };
+                        windows.version = Some((text, parts));
+                    }
+                    "resources" => {
+                        const FORM: &str = "resources must be an array of relative paths on one line, such as [\"dialogs.rc\"]";
+                        let values =
+                            cursor.string_array_of(DiagnosticKind::InvalidWindowsSetting, FORM)?;
+                        let mut paths = Vec::with_capacity(values.len());
+                        for (value, span) in values {
+                            let path = relative_path(value).ok_or_else(|| invalid(PATHS, span))?;
+                            let valid_ext = path.extension().is_some_and(|ext| {
+                                ext.eq_ignore_ascii_case("rc") || ext.eq_ignore_ascii_case("res")
+                            });
+                            if !valid_ext {
+                                return Err(invalid(
+                                    "windows resources must be .rc or .res files",
+                                    span,
+                                ));
+                            }
+                            paths.push(path);
+                        }
+                        windows.resources = paths;
+                    }
+                    _ => unreachable!(),
                 }
             }
             "macos" => {
@@ -2538,7 +2625,47 @@ mod tests {
             (
                 "[windows]\nfoo = \"bar\"\n",
                 "unknown_manifest_key",
-                "unknown windows key; expected subsystem",
+                "unknown windows key; expected subsystem, manifest, icon, version, or resources",
+            ),
+            (
+                "[windows]\nmanifest = \"\"\n",
+                "invalid_windows_setting",
+                "windows paths must be nonempty relative paths",
+            ),
+            (
+                "[windows]\nicon = \"/abs/app.ico\"\n",
+                "invalid_windows_setting",
+                "windows paths must be nonempty relative paths",
+            ),
+            (
+                "[windows]\nversion = \"01.2.3\"\n",
+                "invalid_windows_setting",
+                "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.BUILD with each part from 0 to 65535",
+            ),
+            (
+                "[windows]\nversion = \"1.2.65536\"\n",
+                "invalid_windows_setting",
+                "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.BUILD with each part from 0 to 65535",
+            ),
+            (
+                "[windows]\nversion = \"1.2\"\n",
+                "invalid_windows_setting",
+                "version must be MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH.BUILD with each part from 0 to 65535",
+            ),
+            (
+                "[windows]\nresources = [\"notes.txt\"]\n",
+                "invalid_windows_setting",
+                "windows resources must be .rc or .res files",
+            ),
+            (
+                "[windows]\nresources = [\"\"]\n",
+                "invalid_windows_setting",
+                "windows paths must be nonempty relative paths",
+            ),
+            (
+                "[windows]\nversion = \"1.0.0\"\nversion = \"1.0.1\"\n",
+                "duplicate_manifest_key",
+                "windows keys must occur at most once",
             ),
             (
                 "[windows]\nsubsystem = \"efi\"\n",

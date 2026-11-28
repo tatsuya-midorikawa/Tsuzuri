@@ -144,6 +144,8 @@ Array／List の `map`・`mapi`・`iter`・`iteri`・`fold`・`fold_back` は 20
 
 - **`@c_layout` レコードの `extern def` での値渡し（W36）**: `ref` のない `@c_layout` レコードを `extern def` の引数・結果に書いたときの C の ABI が変わりました。以前は、引数を `const T *`、結果を先頭の out 引数（`T *out`。戻り値は `void`）で受け渡していました。今は C の構造体の値渡し・値返し（C の `T`）で、ターゲットの C の ABI のとおりにレジスターかメモリーで受け渡します。ソースはそのままコンパイルでき、診断は出ません。ポインターを取る C の関数をこの形で宣言していたプログラムは、引数を `ref R` に、out 引数を `ref mut R` の引数に書き直してください（書き直さないと、C の側は構造体の中身をポインターとして読みます）。`@c_layout` の付かないレコード、`ref R`・`ref mut R`、`export def`、コールバックは変わりません。WebAssembly では、この形は到達したときに `E1008`（`abi_native_only`）になります（以前はポインターで渡していました。`ref R` は引き続き使えます）。リンク名のない `extern def` の C ヘッダーのプロトタイプも、値渡しの形（`tz_record_… f(tz_record_… arg0)`）に変わります。`--backend fast`（既定ではない高速バックエンド）は、そのターゲットでスカラー 1 つ（整数か浮動小数点数）に下がらない値渡し・値返しを `E2002`（`fast_backend_unsupported_construct`）で拒みます。以前のポインターの形は翻訳できていたので、そのプログラムは既定の `--backend llvm` でビルドしてください。
 
+- **Windows の `def main :: Array<string> -> i32` と `Env.args` のコマンドライン分割の UCRT 準拠（W33）**: Windows の実行ファイルが `GetCommandLineW()` を分割する規則を、UCRT（Visual Studio 2008 以降の `wmain` の `argv[1..]`）と同じ規則にしました。`"` の直前のバックスラッシュ（`\"` など）と引用中の `""`、および先頭の空白の扱いが変わり、`"C:\dir\"` は以前は `C:\dir\` でしたが、UCRT と同じく `C:\dir"` になります（末尾にバックスラッシュを含むパスを引用符で囲む場合は `"C:\dir\\"` または `"C:\dir"` と指定してください）。生成される LLVM IR は変わりません。
+
 edition ごとに std を複製することはしません。型と instance が edition の数だけ分かれ、パッケージの間で値を渡せなくなるからです。
 
 ## 公開 API の差分

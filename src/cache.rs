@@ -494,6 +494,7 @@ fn compiler_digest() -> io::Result<[u8; 32]> {
     crate::resident::compiler_digest(|| file_digest(&executable))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_key(
     project: &crate::driver::Project,
     options: crate::driver::BuildOptions,
@@ -502,6 +503,7 @@ pub(crate) fn build_key(
     output: &Path,
     clang: Option<&ToolIdentity>,
     profile: Option<(&str, &[u8])>,
+    windows_resources: Option<&[u8]>,
 ) -> io::Result<String> {
     use crate::driver::{Emit, Target};
     let mut hash = Sha256::new();
@@ -518,6 +520,9 @@ pub(crate) fn build_key(
     // build without one adds nothing, so its key is the one that there was before.
     if let Some((tag, bytes)) = profile {
         hash.field(tag, bytes);
+    }
+    if let Some(bytes) = windows_resources {
+        hash.field("windows-resources", bytes);
     }
     for source in project.sources.iter().chain(&project.manifests) {
         hash.field("path", source.path.as_os_str().as_encoded_bytes());
@@ -1559,5 +1564,72 @@ mod tests {
             runtime_key("native-c", b"source", &args, &changed_resource).unwrap()
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn build_key_tracks_windows_resource_bytes_without_changing_builds_without_them() {
+        use crate::check::ModuleOrigin;
+        use crate::driver::{BuildOptions, Project, SourceFile};
+        let project = Project {
+            sources: vec![SourceFile {
+                path: PathBuf::from("Main.tz"),
+                relative_path: PathBuf::from("Main.tz"),
+                name: "Main".into(),
+                text: "42\n".into(),
+                origin: ModuleOrigin::User,
+                package: None,
+                namespace: String::new(),
+                edition: crate::syntax::Edition::LATEST,
+            }],
+            manifests: Vec::new(),
+            root: 0,
+            root_package: None,
+            wasm: Default::default(),
+            native: Default::default(),
+            capabilities: None,
+            windows: Default::default(),
+            macos: Default::default(),
+        };
+        let options = BuildOptions::default();
+        let out = Path::new("app.exe");
+        let without = build_key(&project, options, "build", "; ir", out, None, None, None).unwrap();
+        let res_a = build_key(
+            &project,
+            options,
+            "build",
+            "; ir",
+            out,
+            None,
+            None,
+            Some(&[1, 2, 3]),
+        )
+        .unwrap();
+        let res_b = build_key(
+            &project,
+            options,
+            "build",
+            "; ir",
+            out,
+            None,
+            None,
+            Some(&[1, 2, 4]),
+        )
+        .unwrap();
+        assert_ne!(without, res_a);
+        assert_ne!(res_a, res_b);
+        assert_eq!(
+            res_a,
+            build_key(
+                &project,
+                options,
+                "build",
+                "; ir",
+                out,
+                None,
+                None,
+                Some(&[1, 2, 3]),
+            )
+            .unwrap()
+        );
     }
 }

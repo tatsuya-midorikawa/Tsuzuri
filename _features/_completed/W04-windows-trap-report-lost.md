@@ -126,7 +126,7 @@ exit:
 ## 他チケットへ提供するインターフェース
 
 - IR `@tz.debugger.write(ptr %data, i64 %length)`（Windows だけ、internal・cold・nounwind、UTF-8 をデバッガーの出力へ）。W07（スタック枯渇の報告）と W08（標準エラーの無い `Debug.print`）が使う。デバッガーへ送る補助はこの 1 つだけにする。W08 が先に入ったときは、W08 がこの名前・型・仕様の `DEBUGGER_WRITE` を足しているので、このチケットはそれを使い、定義を重ねない。
-- `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write`）。W07 は `--trap-info` のないビルドでも、VEH の報告のためにこれを足す（定義が無いときだけ）。[W32](../W32-silent-write-failures.md) は、Windows の `--overflow-report` の `@tz.overflow.write` をこれへの転送に置き換え、無ければ同じく足す（W07 と共有する 1 つの補助。W32 の D6）。どちらも、このチケットの `TRAP_WRITE` → `TRAP_WRITE_WINDOWS` の置き換えの後に足す。このチケットが先に無ければ、W32 が同じ名前・同じ本文の定数を足し、このチケットはそれを使う。
+- `TRAP_WRITE_WINDOWS`（Windows の `@tz.trap.write`）。W07 は `--trap-info` のないビルドでも、VEH の報告のためにこれを足す（定義が無いときだけ）。[W32](W32-silent-write-failures.md) は、Windows の `--overflow-report` の `@tz.overflow.write` をこれへの転送に置き換え、無ければ同じく足す（W07 と共有する 1 つの補助。W32 の D6）。どちらも、このチケットの `TRAP_WRITE` → `TRAP_WRITE_WINDOWS` の置き換えの後に足す。このチケットが先に無ければ、W32 が同じ名前・同じ本文の定数を足し、このチケットはそれを使う。
 - ランタイム C の `tzr_report(const char *, size_t)`。W07 のランタイムのトラップが使う。
 - W04 が W06 より先に入ったときは、W06 の起動器の一部（上の 4 つの引数）。
 
@@ -173,7 +173,7 @@ exit:
 ## 対象外
 
 - トラップの終わり方（fail-fast、VEH、`uwtable`）と、`tzr_fatal` の `abort()` の 0xC0000409 を 0xC000001D にそろえるかどうか（[W07](../W07-windows-trap-fail-fast.md)）。
-- `Debug.print`・`Debug.trace`・`IO.*` の、標準ストリームが無いとき（閉じた fd で静的な UCRT が `_setmode` の中で終わる件を含む）の意味（[W08](../W08-io-without-std-streams.md)）。結果の表示と `--overflow-report` の、書けないときの扱い（今は黙って捨てる）は、W08 の決定に従って [W32](../W32-silent-write-failures.md) が直す。shim の `_setmode` の変更は仕様 4 だけ。
+- `Debug.print`・`Debug.trace`・`IO.*` の、標準ストリームが無いとき（閉じた fd で静的な UCRT が `_setmode` の中で終わる件を含む）の意味（[W08](../W08-io-without-std-streams.md)）。結果の表示と `--overflow-report` の、書けないときの扱い（今は黙って捨てる）は、W08 の決定に従って [W32](W32-silent-write-failures.md) が直す。shim の `_setmode` の変更は仕様 4 だけ。
 - 自前のダイアログ（`MessageBoxW`）。GPU のランタイムの診断の文（`gpu.c`・`gpu-vulkan.c`。致命的な報告ではなく状態を返す）。
 - POSIX で標準エラーが閉じているときの届け先（`syslog` など）。
 

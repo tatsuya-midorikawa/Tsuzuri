@@ -48,7 +48,11 @@ for (const [name, text] of Object.entries(files)) writeFileSync(join(root, name)
 expect(tsuzuri(["script", "hello.tz"]), 0, "hello, script\n");
 
 // Everything after the file goes to the program unchanged, including options and `--`.
-expect(tsuzuri(["script", "-O3", "--no-cache", "args.tz", "a", "b c", "--", "--help", "-O0", ""]), 0, "a|b c|--|--help|-O0|\n");
+expect(
+  tsuzuri(["script", "-O3", "--no-cache", "args.tz", "a", "b c", "a\"b", "C:\\dir with space\\", "--", "--help", "-O0", ""]),
+  0,
+  "a|b c|a\"b|C:\\dir with space\\|--|--help|-O0|\n",
+);
 expect(tsuzuri(["script", "args.tz"]), 0, "\n");
 expect(tsuzuri(["script", "--", "args.tz", "x"]), 0, "x\n");
 

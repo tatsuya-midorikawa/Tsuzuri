@@ -75,13 +75,22 @@ fn executables_receive_their_command_line_arguments() {
         );
         // The value of `main` is the exit code, and the program name is not an argument.
         let run = Command::new(&executable)
-            .args(["a", "b c", "", "\u{65e5}\u{672c}"])
+            .args([
+                "a",
+                "b c",
+                "",
+                "\u{65e5}\u{672c}",
+                "a\"b",
+                "C:\\dir with space\\",
+                "\"\"",
+                "x\\\\y",
+            ])
             .output()
             .unwrap();
-        assert_eq!(run.status.code(), Some(4));
+        assert_eq!(run.status.code(), Some(8));
         assert_eq!(
             String::from_utf8(run.stdout).unwrap(),
-            "[a][b c][][\u{65e5}\u{672c}]\n"
+            "[a][b c][][\u{65e5}\u{672c}][a\"b][C:\\dir with space\\][\"\"][x\\\\y]\n"
         );
         let none = Command::new(&executable).output().unwrap();
         assert_eq!(none.status.code(), Some(0));

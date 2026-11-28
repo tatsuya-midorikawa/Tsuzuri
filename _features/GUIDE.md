@@ -1863,7 +1863,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | 属性 | `@trusted` | E15 | `extern` の信頼の表明 |
 | 属性 | `@count` | W13 | リンク名付き `extern` のスライスバッファ長さ引数（`i32`・`i32u`・`i64`・`i64u`・`none`） |
 | 属性 | `@link`・`@link(framework = ...)`・`@weak` | W17・M20・M17 | `extern` ごとのシステムライブラリ／macOS framework リンク要求と Windows `dllimport`、Mach-O 弱い import |
-| CLI・manifest | `--subsystem console\|windows`・`[windows] subsystem` | W09 | Windows の実行ファイルの PE サブシステム |
+| CLI・manifest | `--subsystem console\|windows`・`[windows]` の `subsystem`・`manifest`・`icon`・`version`・`resources`、環境変数 `TSUZURI_RC` | W09・W10 | Windows の実行ファイルの PE サブシステムとリソース埋め込み。kind は `windows_resource_conflict`（`E2000`）、`windows_resource_invalid`（`E2001`）、`resource_compiler_missing`（`E2002`） |
 | CLI・manifest | `--framework`・`-F`・`--rpath`・`[native] frameworks`/`framework_search`/`rpath`・`[macos] min_version` | M20・M17 | macOS の framework リンク入力・rpath・最低 OS 版（既定 `12.0`） |
 | std・型 | `FnPtr`・`Anchor`・`ZString`・`ZUtf8String`・`Linalg`、`Env.os_version`、`IO.Error.Unavailable` | W08・W20・W22・W23・M06・M17・NC08 | 静的 C ABI 関数ポインタ、コールバック状態アンカー、NUL 終端 UTF-16/UTF-8 文字列、線形代数・縮約、実行時 OS 版問い合わせ、欠落ストリームの IO エラー |
 | CLI・manifest・std | `--emit app`、`[macos]` の `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、`Env.executable_path` | M15 | macOS のアプリケーションバンドル（ad-hoc の署名、`.app.dSYM`）と、実行ファイルの絶対パス。kind は `macos_bundle_id_missing`・`macos_bundle_conflict`（`E2000`）、`macos_bundle_input_invalid`（`E2001`）、`app_output_not_owned`（`E2003`） |

@@ -904,6 +904,7 @@ diagnostic_kinds! {
         (WasmNetNeedsOptIn, "wasm_net_needs_opt_in", "E2000"),
         (WasmOsApiNeedsOptIn, "wasm_os_api_needs_opt_in", "E2000"),
         (WasmTestRunnerAsync, "wasm_test_runner_async", "E2000"),
+        (WindowsResourceConflict, "windows_resource_conflict", "E2000"),
         // E2001
         (BuildServerControlFailed, "build_server_control_failed", "E2001"),
         (BuildServerStartFailed, "build_server_start_failed", "E2001"),
@@ -917,6 +918,7 @@ diagnostic_kinds! {
         (MacosBundleInputInvalid, "macos_bundle_input_invalid", "E2001"),
         (ReplStreamFailure, "repl_stream_failure", "E2001"),
         (TempDirectoryFailed, "temp_directory_failed", "E2001"),
+        (WindowsResourceInvalid, "windows_resource_invalid", "E2001"),
         // E2002
         (BindgenUnreadableAst, "bindgen_unreadable_ast", "E2002"),
         (BindgenUnsupportedTarget, "bindgen_unsupported_target", "E2002"),
@@ -930,6 +932,7 @@ diagnostic_kinds! {
         (InvalidCoverageCounters, "invalid_coverage_counters", "E2002"),
         (MacosSdkNotFound, "macos_sdk_not_found", "E2002"),
         (PlatformUnsupportedApi, "platform_unsupported_api", "E2002"),
+        (ResourceCompilerMissing, "resource_compiler_missing", "E2002"),
         (TargetAttributesNotApplicable, "target_attributes_not_applicable", "E2002"),
         (TargetAttributesUnreadable, "target_attributes_unreadable", "E2002"),
         (ToolchainMissingFeature, "toolchain_missing_feature", "E2002"),
