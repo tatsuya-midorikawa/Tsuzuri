@@ -7,15 +7,15 @@
 | 規模 | L（driver の Windows のリンクの分岐、IR の 1 か所の書き換え、import library の sidecar とキャッシュ、3 つの E2E suite と CI の step、文書） |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
-| 承認 | 要承認（E13 の DLL の方針、G10 の後続）。D1（出力の形）は承認前に着手しない。ほかの決定は既定案 |
+| 承認 | D1 を 2026-11-28 の包括委任で承認済み。ほかの決定は既定案 |
 | 手本にする既存実装 | `src/driver.rs` の `link_shared`（macOS・Linux の分岐）・`shared_exports`・`pdb_link_args`・`pdb_path`・`BuildOptions::validate_shared`、`src/cache.rs` の `hash_output_path`、`src/llvm.rs` の `windows_abi`、`tests/windows.mjs`（object と IR を C のホストへつなぐ段）、`tests/host_bindings.mjs`、`tests/targets.mjs` の共有ライブラリの段 |
 | 主な影響ファイル | `src/driver.rs`、`src/llvm.rs`、`src/cache.rs`、`tests/windows.mjs`、`tests/host_bindings.mjs`、`tests/targets.mjs`、`.github/workflows/windows.yml`（と冒頭の step の一覧の comment）、`_tsuzuri/language-reference/compiler/{platforms,native-interop,option}.md`、`_tsuzuri/language-reference/ownership-and-memory/stack-and-heap.md`、`docs/language.md`、`docs/architecture.md`、`README.md` |
 
 ## 実装者向け早見
 
-- 範囲: Windows の target（ビルド機が Windows の MSVC と同梱の MinGW、ほかのホストからの `*-pc-windows-gnu`）の `--emit shared`。出力は DLL と、隣の import library `<stem>.lib`。export は macOS・Linux と同じ `shared_exports` の一覧。`--trap-mode return` は Windows では `E2000` のまま（対象外。外すのは [W35](W35-windows-trap-mode-return.md)）。
+- 範囲: Windows の target（ビルド機が Windows の MSVC と同梱の MinGW、ほかのホストからの `*-pc-windows-gnu`）の `--emit shared`。出力は DLL と、隣の import library `<stem>.lib`。export は macOS・Linux と同じ `shared_exports` の一覧。`--trap-mode return` は Windows では `E2000` のまま（対象外。外すのは [W35](../W35-windows-trap-mode-return.md)）。
 - 最初に読む: ① 「現状」の「確かめた実験」② 仕様 1〜4 ③ `src/driver.rs` の `link_shared` と `shared_exports` ④ `src/llvm_abi.rs` の `allocator`・`native_allocator`。
 - 最初に書くテスト: `src/driver.rs` の単体テスト `windows_module_definitions_name_the_library_and_the_exports`、`src/llvm.rs` の `windows_shared_libraries_define_the_allocator_strongly`。その次に `tests/windows.mjs` の DLL と C のホスト。
 - 触ってはいけない: macOS・Linux の `--emit shared` の出力、Windows の `exe`・`object`・`llvm`・`header`（IR を 1 byte も変えない）、C ヘッダー（`__declspec(dllimport)` を付けない。G10 の契約）、`shared_exports` の一覧、`link inputs require a native executable` の文（E13 Phase 2 の判断 8）。
@@ -31,7 +31,7 @@ clang host.c tag.lib -o host.exe && ./host.exe    # ABC（tz_make_tag の結果�
 
 E13 Phase 2 は、公開 C ABI だけを export する共有ライブラリ（`--emit shared`）と、それを呼ぶ C#・Python・C++ のバインディングを macOS と Linux に入れた。Windows は G10 の「DLL は含めない」（G10 D12）と E13 D11 の「G10 の Windows DLL 方針と揃える」の間で方針が決まらないまま `E2000` になっている。今の案内（object を DLL へつなぐ）は、`tsuzuri_alloc`・`tsuzuri_free` が弱い定義なので link.exe では export できず、LLD では使えない import library になる（W03 の R3）。このチケットは Windows の DLL の出力の形を決め、ほかの OS と同じ一覧を正しく export し、正しい import library を出す。
 
-関連: [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](_completed/G10-windows.md)（D8・D12、「後続の作業」）、[E13](_completed/E13-host-bindings.md)（D11、Phase 2 の判断 8・11）、[W03](W03-windows-interop-doc-fixes.md)（R3 の回避策）、[W07](_completed/W07-windows-trap-fail-fast.md)（`uwtable`）、[W10](W10-windows-resources.md)、[W17](_completed/W17-link-attribute-dllimport.md)、[W27](W27-win32-package-from-winmd.md)、[W30](W30-windows-hardening.md)。
+関連: [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](G10-windows.md)（D8・D12、「後続の作業」）、[E13](E13-host-bindings.md)（D11、Phase 2 の判断 8・11）、[W03](W03-windows-interop-doc-fixes.md)（R3 の回避策）、[W07](W07-windows-trap-fail-fast.md)（`uwtable`）、[W10](../W10-windows-resources.md)、[W17](W17-link-attribute-dllimport.md)、[W27](../W27-win32-package-from-winmd.md)、[W30](../W30-windows-hardening.md)。
 
 ## 着手条件と停止条件
 
@@ -111,7 +111,7 @@ E13 Phase 2 は、公開 C ABI だけを export する共有ライブラリ（`-
 ### 3. ランタイムとオプション
 
 - tzroutine・CPU・IO・Net のランタイムは、実行ファイルと同じ object を DLL に入れる（Net は `-lws2_32`）。OS API は今と同じ `E2002`（`build_complete` の `os_message`）。
-- `--trap-mode return` は Windows の `--emit shared` で `E2000`（kind `option_unsupported_platform`、文案 `--trap-mode return is not supported for Windows shared libraries yet: its runtime needs POSIX threads and unwind tables; build without --trap-mode return`。D4。[W35](W35-windows-trap-mode-return.md) が先に入っていれば、D4 のとおりこの `E2000` は入れずに受ける）。`Domain.run` は今と同じ `E1038`。
+- `--trap-mode return` は Windows の `--emit shared` で `E2000`（kind `option_unsupported_platform`、文案 `--trap-mode return is not supported for Windows shared libraries yet: its runtime needs POSIX threads and unwind tables; build without --trap-mode return`。D4。[W35](../W35-windows-trap-mode-return.md) が先に入っていれば、D4 のとおりこの `E2000` は入れずに受ける）。`Domain.run` は今と同じ `E1038`。
 - `--allocator counting`・`small` は今の共有ライブラリと同じく受ける。`host` は今と同じ `E2000`。`--link`・`-l`・`-L`・`[native]` を受ける。
 
 ### 4. ホストへの約束（文書に書く）
@@ -180,7 +180,7 @@ fn module_definition(library: &str, symbols: &[String]) -> String; // "LIBRARY \
 
 - `link_shared` の Windows の分岐: W10（リソース）が DLL に版情報を埋め込むときの入口。W30（硬化）が `/guard:cf` などのリンクの旗を DLL にも足すときの入口。
 - `with_exported_allocator` と `module_definition`: W27（生成した `win32` パッケージ）や E13 の後続が DLL を配るときの前提。
-- `--trap-mode return` の Windows の DLL の `E2000`: W07（`uwtable`）と `trap.c` の Windows の移植が済んだ後に外す後続の作業の印。外すのは [W35](W35-windows-trap-mode-return.md)（D6）。
+- `--trap-mode return` の Windows の DLL の `E2000`: W07（`uwtable`）と `trap.c` の Windows の移植が済んだ後に外す後続の作業の印。外すのは [W35](../W35-windows-trap-mode-return.md)（D6）。
 
 ## 実装手順
 
@@ -276,14 +276,14 @@ fn module_definition(library: &str, symbols: &[String]) -> String; // "LIBRARY \
 
 ## 受け入れ条件
 
-- [ ] Windows の `--emit shared` が DLL と `<stem>.lib` を書き、export と import library の名前が `shared_exports` の一覧と同じで、`.weak.` の名前がない（MSVC と同梱の MinGW）。
-- [ ] import library が記録する DLL 名が出力のファイル名で、`LNK4070` などの警告を出さない。
-- [ ] C のホストが import library でリンクでき、所有結果を `tsuzuri_free` で解放できる。ランタイム入りの DLL がホストのスレッドから呼べる。
-- [ ] `--trap-mode return`、`.dll` でない出力、`--allocator host` が仕様の `E2000`（`--trap-mode return` は、W35 が先に入っていれば D4 のとおり受ける）。新しい診断コードも kind も足していない。
-- [ ] Windows の `exe`・`object`・`llvm`・`header` と、macOS・Linux の `--emit shared` の出力が変わらない（手順 3 の `cmp`、`tests/host_bindings.mjs` の POSIX の結果）。
-- [ ] ビルドキャッシュが DLL・import library・PDB の組を返す。
-- [ ] `tests/windows.mjs`、Windows の `tests/host_bindings.mjs`（C++・Python・C#。`--trap-mode return` の段を除く）、`tests/targets.mjs` の MinGW の DLL が CI で成功する。
-- [ ] 文書を直し、`check-docs`・`check-cli-docs` が通る。T2 が成功し、PR に `ci:full` を付けた。
+- [x] Windows の `--emit shared` が DLL と `<stem>.lib` を書き、export と import library の名前が `shared_exports` の一覧と同じで、`.weak.` の名前がない（MSVC と同梱の MinGW）。
+- [x] import library が記録する DLL 名が出力のファイル名で、`LNK4070` などの警告を出さない。
+- [x] C のホストが import library でリンクでき、所有結果を `tsuzuri_free` で解放できる。ランタイム入りの DLL がホストのスレッドから呼べる。
+- [x] `--trap-mode return`、`.dll` でない出力、`--allocator host` が仕様の `E2000`（`--trap-mode return` は、W35 が先に入っていれば D4 のとおり受ける）。新しい診断コードも kind も足していない。
+- [x] Windows の `exe`・`object`・`llvm`・`header` と、macOS・Linux の `--emit shared` の出力が変わらない（手順 3 の `cmp`、`tests/host_bindings.mjs` の POSIX の結果）。
+- [x] ビルドキャッシュが DLL・import library・PDB の組を返す。
+- [x] `tests/windows.mjs`、Windows の `tests/host_bindings.mjs`（C++・Python・C#。`--trap-mode return` の段を除く）、`tests/targets.mjs` の MinGW の DLL が CI で成功する。
+- [x] 文書を直し、`check-docs`・`check-cli-docs` が通る。T2 が成功し、PR に `ci:full` を付けた。
 
 ## 落とし穴
 
@@ -298,7 +298,7 @@ fn module_definition(library: &str, symbols: &[String]) -> String; // "LIBRARY \
 
 ## 対象外
 
-- `--trap-mode return` と `Domain.run` の Windows の DLL（`trap.c` の Windows の移植と W07 の `uwtable` の後）。[W35](W35-windows-trap-mode-return.md) の Phase 1（`--trap-mode return`）と Phase 2（`Domain.run`）が扱う。
+- `--trap-mode return` と `Domain.run` の Windows の DLL（`trap.c` の Windows の移植と W07 の `uwtable` の後）。[W35](../W35-windows-trap-mode-return.md) の Phase 1（`--trap-mode return`）と Phase 2（`Domain.run`）が扱う。
 - `FreeLibrary` に耐える DLL（ランタイムのスレッドの停止）、`DllMain` のフック、遅延読み込み。
 - DLL のリソース・版情報（W10）、署名、硬化の旗（W30）。
 - C ヘッダーの `__declspec(dllimport)`、データの export。
@@ -310,10 +310,10 @@ fn module_definition(library: &str, symbols: &[String]) -> String; // "LIBRARY \
 
 | ID | 決定 | 理由 | 状態 |
 | --- | --- | --- | --- |
-| D1 | Windows の `--emit shared` は DLL と、隣の import library `<stem>.lib` を出す。export は macOS・Linux と同じ一覧 | E13 D11 は「G10 の Windows DLL 方針と揃える」とし、G10 D12 は DLL を含めなかったので、方針の記録がない。import library がないと C・C++ のホストはリンクできず、一覧を変えるとバインディングが OS ごとに分かれる | 要承認（承認前は該当する段に着手しない） |
+| D1 | Windows の `--emit shared` は DLL と、隣の import library `<stem>.lib` を出す。export は macOS・Linux と同じ一覧 | E13 D11 は「G10 の Windows DLL 方針と揃える」とし、G10 D12 は DLL を含めなかったので、方針の記録がない。import library がないと C・C++ のホストはリンクできず、一覧を変えるとバインディングが OS ごとに分かれる | 承認済み（2026-11-28 の包括委任） |
 | D2 | Windows の DLL でだけ、`tsuzuri_alloc`・`tsuzuri_free` を強い `dllexport` の定義にする | link.exe は弱い定義を export できず、LLD は使えない import library を書く（確かめた）。強い定義なら両方のリンカーで正しい。退けた案: import library を `.def` から `lib`・`llvm-dlltool`・`zig dlltool` で作り直す（link.exe の export は直らず、ツールが 1 つ増える）。DLL は 1 つの module と 1 つのランタイムだけを含むので、弱い定義の役目（複数の object の統合）がない | 既定案（実装者はこの案に従う） |
 | D3 | export の一覧は `shared_exports` から `.def` を生成して渡し、`LIBRARY` は出力のファイル名、段の DLL も同じ名前に置く | Linux の version script と同じ役目。`/EXPORT:` の並びは `LIBRARY` を決められず、MinGW と書き方が分かれる | 既定案（実装者はこの案に従う） |
-| D4 | `--trap-mode return` の Windows の DLL は `E2000` | `trap.c` は `pthread.h` を要し、`longjmp` は `.pdata` のない Windows のフレームを越えられない（G10 の後続の一覧、W07）。黙ってコンパイルの失敗（`E2002`）にしない。後続の [W35](W35-windows-trap-mode-return.md) がこの `E2000` を外す（W35 の D6。2 つの理由は W35 の D2 と W07 で消える）。W35 が先に `main` に入っていれば、この `E2000` は入れず、W35 の仕様 4 のとおり受け、W35 の手順 5 の DLL の段をこのチケットの PR で足す | 既定案（実装者はこの案に従う） |
+| D4 | `--trap-mode return` の Windows の DLL は `E2000` | `trap.c` は `pthread.h` を要し、`longjmp` は `.pdata` のない Windows のフレームを越えられない（G10 の後続の一覧、W07）。黙ってコンパイルの失敗（`E2002`）にしない。後続の [W35](../W35-windows-trap-mode-return.md) がこの `E2000` を外す（W35 の D6。2 つの理由は W35 の D2 と W07 で消える）。W35 が先に `main` に入っていれば、この `E2000` は入れず、W35 の仕様 4 のとおり受け、W35 の手順 5 の DLL の段をこのチケットの PR で足す | 既定案（実装者はこの案に従う） |
 | D5 | `-g` は MSVC のリンカーで `<stem>.pdb`、MinGW は DWARF | exe と同じ扱い（`pdb_link_args`）。PDB の名前は鍵に入れる | 既定案（実装者はこの案に従う） |
 | D6 | CRT は exe と同じ選び方（MSVC は Clang の既定の静的 CRT） | 依存の DLL を増やさずに配れる（import は `KERNEL32.dll` だけだった）。所有結果は既に `tsuzuri_free` で解放する契約 | 既定案（実装者はこの案に従う） |
 | D7 | `FreeLibrary` は対象外と文書に書く | ランタイムのスレッドは止まらない。POSIX の `dlclose` も同じだが、どの OS の文書にも書いていないので、Windows の節と共有ライブラリの節に書く | 既定案（実装者はこの案に従う） |
@@ -321,3 +321,14 @@ fn module_definition(library: &str, symbols: &[String]) -> String; // "LIBRARY \
 | D9 | Windows の共有ライブラリの出力は `.dll` で終わる。違えば `E2000`（`output_extension_invalid`） | import library の名前 `<stem>.lib` との衝突を防ぎ、バインディングが探す `{name}.dll` と合わせる | 既定案（実装者はこの案に従う） |
 | D10 | 同梱の MinGW でも import library の名前は `<stem>.lib` | 1 つの名前で両方のホストに配れる。MinGW の lld もパスで渡せば読む（`-l` の探索名は確かめていない） | 既定案（実装者はこの案に従う） |
 | D11 | 新しい診断コードを作らない。既存の kind `option_unsupported_platform`・`output_extension_invalid`（E2000）とリンクの `E2002` を使う | D-51 と E13 D12 | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜8 をすべて完了。
+  - `src/driver.rs`・`src/main.rs`: `BuildOptions::validate_shared` の Windows 無条件拒否を解除して `--trap-mode return` のみを `E2000` とし、`shared_output_error` で `.dll` 拡張子を検査。`module_definition` と `link_shared` の Windows 分岐（MSVC の `/DEF:`・`/IMPLIB:` と PDB、同梱 MinGW・`*-pc-windows-gnu` の `.def` 入力・`--out-implib=`、Net の `-lws2_32`、W11 導入後の OS API の `-lbcrypt`）および `<stem>.lib` sidecar 保護・公開を実装。
+  - `src/llvm.rs`: Windows の `--emit shared` に限って `tsuzuri_alloc`・`tsuzuri_free` の `define weak` を `define dllexport` に昇格する `with_exported_allocator` を追加（W07 の `uwtable`・W39 の `comdat` と両立）。
+  - `src/cache.rs`: `hash_output_path` の `pdb-name` を `Emit::Shared` にも広げ、`BuildCache` の許可ファイル名に `"import"` を追加。
+  - テスト・CI: 単体テスト（`windows_shared_libraries_define_the_allocator_strongly`、`windows_module_definitions_name_the_library_and_the_exports`、`validates_shared_libraries_and_native_bindings`、`sidecars_round_trip_and_unknown_names_are_refused`）、`tests/windows.mjs`（DLL + `.lib` + PDB + キャッシュ + tzroutine 8 ホストスレッド + `lld-link`/`link.exe`）、`tests/host_bindings.mjs`（Windows DLL 対応と `.github/workflows/windows.yml` への追加）、`tests/targets.mjs`（PE `IMAGE_FILE_DLL` 検査と `*-pc-windows-gnu` DLL クロスリンク）。
+- **最新仕様との整合**: 起票後に完了した W11（Windows OS API）に合わせ、OS ランタイムを使う Windows DLL のリンクにも実行ファイルと同様に `-lbcrypt` を付与。W39 と同一 PR で実装したため `with_exported_allocator` は行頭プレフィックス一致で `uwtable comdat` を保持。言語リファレンスは `Tsuzuri-Reference` 分離後の構成に従い、本リポジトリ内の `docs/language.md`・`docs/architecture.md`・`README.md` を更新。
+- **変更したファイル**: `src/driver.rs`, `src/main.rs`, `src/llvm.rs`, `src/cache.rs`, `tests/windows.mjs`, `tests/host_bindings.mjs`, `tests/host_bindings_test.cs`, `tests/host_bindings_two_libraries.c`, `tests/targets.mjs`, `.github/workflows/windows.yml`, `docs/language.md`, `docs/architecture.md`, `README.md`, `_features/README.md`, `_features/_completed/W05-windows-shared-library.md`。
+

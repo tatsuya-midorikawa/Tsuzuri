@@ -1881,6 +1881,7 @@ fn parse_arguments(arguments: &[OsString]) -> Result<Arguments, Diagnostic> {
     if let Some(error) = output.as_deref().and_then(|output| {
         driver::bindings_output_error(options.emit, output)
             .or_else(|| driver::app_output_error(options.emit, output))
+            .or_else(|| driver::shared_output_error(options, output))
     }) {
         return Err(error);
     }

@@ -41,11 +41,11 @@ fn windows_x64_i128_helpers_follow_the_win64_abi() {
             llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap()
         );
         assert_eq!(
-            ir.matches("define weak hidden <2 x i64> @__").count(),
+            ir.matches("define hidden <2 x i64> @tz.weak.__").count(),
             9,
             "{triple:?}"
         );
-        assert!(!ir.contains("define weak hidden i128 @__"), "{triple:?}");
+        assert!(!ir.contains("define weak "), "{triple:?}");
         assert_eq!(
             ir.matches("define internal i128 @tz.runtime.").count(),
             10,
@@ -53,8 +53,9 @@ fn windows_x64_i128_helpers_follow_the_win64_abi() {
         );
         for name in &wasm_names {
             assert!(
-                ir.contains(&format!("define weak hidden <2 x i64> @__{name}(ptr ")),
-                "missing wrapper {name}"
+                ir.contains(&format!("define hidden <2 x i64> @tz.weak.__{name}(ptr "))
+                    && ir.contains(&format!("@__{name} = weak hidden alias <2 x i64> (")),
+                "missing wrapper or weak alias {name}"
             );
             assert!(
                 ir.contains(&format!("define internal i128 @tz.runtime.{name}(")),
@@ -67,11 +68,149 @@ fn windows_x64_i128_helpers_follow_the_win64_abi() {
         llvm::emit_with_export_style(&module, options, llvm::ExportStyle::Dllexport).unwrap();
     for name in &wasm_names {
         assert!(
-            arm_ir.contains(&format!("define weak hidden i128 @__{name}(")),
-            "Arm64 Windows keeps wasm.ll definitions: {name}"
+            arm_ir.contains(&format!("define hidden i128 @tz.weak.__{name}("))
+                && arm_ir.contains(&format!("@__{name} = weak hidden alias i128 (")),
+            "Arm64 Windows keeps wasm.ll definitions behind weak aliases: {name}"
         );
     }
-    assert!(!arm_ir.contains("define weak hidden <2 x i64> @__"));
+    assert!(!arm_ir.contains("<2 x i64> @tz.weak.__"));
+}
+
+#[test]
+fn windows_weak_definitions_are_comdat_any() {
+    let owned = analyze(
+        "export def make_tag :: i64 -> [ubyte]\nfn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)\n",
+    )
+    .unwrap();
+    let soft = analyze(
+        "export def half_sum :: i64 -> i64\nfn half_sum n = ((n as f16) + 1.5f16) as i64\n",
+    )
+    .unwrap();
+    let base = llvm::EmitOptions {
+        entry: llvm::Entry::Library,
+        wasm: false,
+        debug_output: false,
+        runtime_objects: false,
+        wasm_simd128: false,
+        allocator: llvm::Allocator::System,
+        f16: llvm::F16Path::Soft,
+    };
+
+    let check_ir = |ir: &str| -> Vec<String> {
+        assert!(
+            !ir.contains("define weak "),
+            "bare define weak left in COFF IR"
+        );
+        let mut expected_comdats = Vec::new();
+        let mut seen = BTreeSet::new();
+        for line in ir.lines() {
+            if line.starts_with("define hidden ") && line.contains(" @tz.weak.") {
+                let fallback = line
+                    .split_once('@')
+                    .and_then(|(_, rest)| rest.split_once('('))
+                    .map(|(name, _)| name)
+                    .expect("fallback function name");
+                assert!(
+                    line.contains(" comdat {") || line.contains(" comdat !"),
+                    "missing comdat on fallback function: {line}"
+                );
+                let public_name = fallback.strip_prefix("tz.weak.").unwrap();
+                assert!(
+                    ir.lines().any(|alias| {
+                        alias.starts_with(&format!("@{public_name} = weak "))
+                            && alias.contains("alias ")
+                            && alias.ends_with(&format!(", ptr @{fallback}"))
+                    }),
+                    "missing weak alias for {public_name}"
+                );
+                if seen.insert(fallback.to_owned()) {
+                    expected_comdats.push(fallback.to_owned());
+                }
+            } else if let Some((lhs, rhs)) = line.split_once(" = ")
+                && let Some(fallback) = lhs.strip_prefix('@')
+                && fallback.starts_with("tz.weak.")
+                && rhs.starts_with("hidden global ")
+            {
+                assert!(
+                    line.contains(", comdat"),
+                    "missing comdat on fallback global: {line}"
+                );
+                let public_name = fallback.strip_prefix("tz.weak.").unwrap();
+                assert!(
+                    ir.lines().any(|alias| {
+                        alias.starts_with(&format!("@{public_name} = weak "))
+                            && alias.contains("alias ")
+                            && alias.ends_with(&format!(", ptr @{fallback}"))
+                    }),
+                    "missing weak alias for global {public_name}"
+                );
+                if seen.insert(fallback.to_owned()) {
+                    expected_comdats.push(fallback.to_owned());
+                }
+            }
+        }
+        let comdat_lines: Vec<String> = ir
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix('$')
+                    .and_then(|rest| rest.strip_suffix(" = comdat any"))
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            comdat_lines, expected_comdats,
+            "comdat declarations must match weak fallbacks in order"
+        );
+        expected_comdats
+    };
+
+    for triple in [
+        Triple::X86_64WindowsMsvc,
+        Triple::X86_64WindowsGnu,
+        Triple::Aarch64WindowsMsvc,
+    ] {
+        let _scope = PlatformScope::enter(Platform::new(Some(triple)));
+        let sys_ir =
+            llvm::emit_with_export_style(&owned, base, llvm::ExportStyle::Dllexport).unwrap();
+        assert_eq!(
+            sys_ir,
+            llvm::emit_with_export_style(&owned, base, llvm::ExportStyle::Dllexport).unwrap()
+        );
+        let sys_names = check_ir(&sys_ir);
+        assert!(sys_names.contains(&"tz.weak.tsuzuri_alloc".to_owned()));
+        assert!(sys_names.contains(&"tz.weak.tsuzuri_free".to_owned()));
+        assert!(sys_names.contains(&"tz.weak.__multi3".to_owned()));
+
+        let small_options = llvm::EmitOptions {
+            allocator: llvm::Allocator::Small,
+            ..base
+        };
+        let small_ir =
+            llvm::emit_with_export_style(&owned, small_options, llvm::ExportStyle::Dllexport)
+                .unwrap();
+        let small_names = check_ir(&small_ir);
+        assert!(small_names.contains(&"tz.weak.tz_small_shared".to_owned()));
+        assert!(small_names.contains(&"tz.weak.tz_small_stats".to_owned()));
+        assert!(
+            small_ir.contains(
+                "@tz.weak.tz_small_shared = hidden global ptr @tz_small_own, comdat, align 8"
+            ),
+            "{small_ir}"
+        );
+
+        let soft_ir =
+            llvm::emit_with_export_style(&soft, base, llvm::ExportStyle::Dllexport).unwrap();
+        let soft_names = check_ir(&soft_ir);
+        assert!(soft_names.contains(&"tz.weak.tz_soft_op".to_owned()));
+    }
+
+    let posix_ir = llvm::emit_with_options(&owned, base).unwrap();
+    assert!(!posix_ir.contains("comdat"));
+    assert!(!posix_ir.contains("tz.weak."));
+    let wasm_ir =
+        llvm::emit_with_options(&owned, llvm::EmitOptions { wasm: true, ..base }).unwrap();
+    assert!(!wasm_ir.contains("comdat"));
+    assert!(!wasm_ir.contains("tz.weak."));
 }
 
 #[test]

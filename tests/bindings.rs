@@ -440,6 +440,7 @@ fn native_bindings_are_deterministic_and_follow_the_c_abi() {
     );
     assert!(cpp.contains("if (arg0 == nullptr) throw std::invalid_argument(\"argument 0 of 'pass_through' cannot be a null handle\");"));
     assert!(cpp.contains("if (value == nullptr) throw std::runtime_error(\"result of 'pass_through' is a null handle\");"));
+    assert!(cpp.contains("GetModuleHandleW(L\"native.dll\")"));
 }
 
 #[test]

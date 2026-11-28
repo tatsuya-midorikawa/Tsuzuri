@@ -15,7 +15,7 @@
 // the WebAssembly aliases, and the refusals. It never installs anything and runs no foreign executable
 // without an emulator that is already there.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -117,7 +117,8 @@ function inspect(file) {
   if (bytes.readUInt16LE(0) === 0x5a4d) {
     const header = bytes.readUInt32LE(0x3c);
     assert.equal(bytes.readUInt32LE(header), 0x4550, `${file} has no PE signature`);
-    return { format: "coff", machine: bytes.readUInt16LE(header + 4), type: "executable" };
+    const characteristics = bytes.readUInt16LE(header + 22);
+    return { format: "coff", machine: bytes.readUInt16LE(header + 4), type: (characteristics & 0x2000) !== 0 ? "dll" : "executable" };
   }
   return { format: "coff", machine: bytes.readUInt16LE(0), type: "object" };
 }
@@ -230,13 +231,14 @@ try {
       cli(["build", "examples/tzroutines", "--no-cache", "--target", name, "-o", exe], { env: cross });
       check(name, exe, "executable");
       record(name, "linked", `${target.format} linked with ${crossClang.split("/").pop()}`);
-      // A program that needs no runtime also builds as an object and as a shared library, where the target has them.
-      if (target.os !== "windows") {
-        const library = join(work, `answer-${name}.lib`);
-        cli(["build", answer, "--emit", "shared", "--no-cache", "--target", name, "-o", library], { env: cross });
-        const found = inspect(library);
-        assert.equal(found.machine, machine[target.format][target.arch], name);
-        assert.equal(found.type, target.format === "macho" ? 6 : 3, `${name} shared library`);
+      // A program that needs no runtime also builds as an object and as a shared library.
+      const library = join(work, `answer-${name}.${target.os === "windows" ? "dll" : "lib"}`);
+      cli(["build", answer, "--emit", "shared", "--no-cache", "--target", name, "-o", library], { env: cross });
+      const found = inspect(library);
+      assert.equal(found.machine, machine[target.format][target.arch], name);
+      assert.equal(found.type, target.format === "macho" ? 6 : target.format === "elf" ? 3 : "dll", `${name} shared library`);
+      if (target.os === "windows") {
+        assert.ok(existsSync(join(work, `answer-${name}.lib`)), `${name} import library`);
       }
       // A static musl executable of the host's architecture runs on any Linux.
       if (process.platform === "linux" && target.libc === "musl" && target.arch === hostArch) {

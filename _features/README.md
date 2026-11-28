@@ -337,9 +337,9 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 |---|---|---|---|---|---|
 | W01 | [コールバックを取る `extern` に文字列の一時値を渡すと、`check` は通るのに不正な IR になる](_completed/W01-callback-extern-temporary-string.md) | P1 | S | – | done（`FunctionEmitter::call` の先頭でコールバック `extern` を直接 `host_call` へ送り、`BorrowOperand` を一時領域へ借用して呼び出し後に解放） |
 | W02 | [`do!` を含む関数の `while` の中の `break` が `E1023` になる](_completed/W02-break-in-do-function.md) | P2 | S | – | done |
-| W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](W03-windows-interop-doc-fixes.md) | P2 | S | – | todo |
+| W03 | [Windows のネイティブ連携の文書と診断の誤りを直す](_completed/W03-windows-interop-doc-fixes.md) | P2 | S | – | done（リンク失敗時の未定義シンボル名と `--link`/`-l`/`-L`/`[native]` の hint、`extern` 引数型・COFF object・標準ハンドルなし `IO`・リンク入力・`--backend fast` の文書修正） |
 | W04 | [Windows でトラップの報告が黙って消える経路を塞ぐ](_completed/W04-windows-trap-report-lost.md) | P1 | S | – | done（Windows の `--trap-info` と tzroutine ランタイムの報告を `GetStdHandle`・`WriteFile` で直接書き、標準エラーが無い・書けないときは `OutputDebugStringW` へ送る） |
-| W05 | [Windows の `--emit shared`（DLL）を実装する](W05-windows-shared-library.md) | P2 | L | – | todo |
+| W05 | [Windows の `--emit shared`（DLL）を実装する](_completed/W05-windows-shared-library.md) | P2 | L | – | done（`<name>.dll` と `<stem>.lib` の出力、`tsuzuri_alloc`/`tsuzuri_free` の強い `dllexport`、`.def`・PDB・ビルドキャッシュ、C++/Python/C# ホストバインディングと MinGW クロスリンク対応） |
 | W06 | [Windows の GUI をヘッドレスに検査するテスト基盤](_completed/W06-windows-gui-test-harness.md) | P1 | M | – | done |
 | W07 | [Windows のトラップを確実に終わらせる（fail-fast・VEH・`uwtable`）](_completed/W07-windows-trap-fail-fast.md) | P1 | M | W04, W06 | done |
 | W08 | [標準ストリームが無いときの IO の意味を決めて実装する](_completed/W08-io-without-std-streams.md) | P1 | S | – | done |
@@ -373,7 +373,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | W36 | [C レイアウトの record の値渡し（引数と結果。Windows x64・Arm64 から）](_completed/W36-c-layout-by-value.md) | P2 | L | W21 | done（Phase 1–2: Windows x64・Arm64、System V x86-64、AAPCS64。`ref` のない `@c_layout` record は C の値渡し・値返し（S1 は A。互換を破る変更として `docs/stability.md` に記録）。全 target の `declare` を Clang と突き合わせ） |
 | W37 | [同梱の `tsuzuri-clang` が `-O0` の C に UBSan の実行時の参照を入れ、別のリンカーで使えない object になる](W37-bundled-clang-ubsan-objects.md) | P3 | S | – | todo |
 | W38 | [トップレベルの `do`（`!` なし）を含むコードで、最後の式に場違いな `E1003` が出る](W38-top-level-plain-do-misplaced-e1003.md) | P3 | S | – | todo |
-| W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | todo |
+| W39 | [Windows で 2 つの Tsuzuri の object を 1 つのホストにリンクできない（弱い定義の既定の名前が object ごとに違う）](_completed/W39-windows-multiple-objects-weak-defaults.md) | P2 | M | – | done（Windows COFF のすべての弱い関数・大域変数を `weak` のまま `comdat any` に入れ、`lld-link`・`link.exe`・MinGW での複数 object リンクに対応） |
 | W40 | [同梱の launcher の `-x ir` の経路が `-Wl,--gc-sections` を IR のコンパイルに渡し、Windows のすべてのビルドで警告が出る](W40-launcher-ir-forwards-linker-flags.md) | P3 | S | – | todo |
 | W41 | [Windows のタイマーのスレッドの待ちがミリ秒に切り上がり、短い `Time.sleep` が大きく延びる](W41-windows-timer-thread-resolution.md) | P2 | M | W34 | todo |
 | W42 | [Windows x64 の `i128`・`i128u` の `/`・`%` が誤った値になり、リンクしたホストの `__int128` の除算も壊す](_completed/W42-windows-i128-division.md) | P1 | M | – | done（Windows x86-64 では `wasm.ll` の 9 個の本体を内部関数に読み替え、Win64 ABI の包み `src/runtime/i128-windows-x64.ll` を添える。Windows Arm64 と WebAssembly の IR は不変） |

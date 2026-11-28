@@ -543,6 +543,141 @@ if (isMain) {
   const executable = join(directory, "answer.exe");
   execute(clang, [...nativeFlags, host, object, "-o", executable]);
   execute(executable, []);
+
+  // W39: multiple runtime-free Tsuzuri objects share weak definitions via `comdat any` across lld-link and link.exe at -O0 and -O3.
+  const msvcLinkFlags = nativeFlags.map((flag) => (flag === "-fuse-ld=lld" ? "-fuse-ld=link" : flag));
+  const llvmNm = join(dirname(clang), process.platform === "win32" ? "llvm-nm.exe" : "llvm-nm");
+  const nmTool = existsSync(llvmNm) ? llvmNm : "llvm-nm";
+  assert.doesNotMatch(execute(nmTool, [object]).stdout, /\.weak\.\S+\.default\./, "COFF object must not emit object-specific .weak.*.default.* symbols");
+  const multiTwice = join(directory, "multi-twice");
+  const multiTag = join(directory, "multi-tag");
+  const multiPad = join(directory, "multi-pad");
+  for (const dir of [multiTwice, multiTag, multiPad]) mkdirSync(dir);
+  writeFileSync(
+    join(multiTwice, "Main.tz"),
+    [
+      "export def twice :: i64 -> i64",
+      "fn twice x = x * 2",
+      "export def wide_div :: i64 -> i64 -> i64",
+      "fn wide_div a b = (((a as i128) * 1000000000000i128) / (b as i128)) as i64",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(multiTag, "Main.tz"),
+    "export def make_tag :: i64 -> [ubyte]\nfn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)\n",
+  );
+  writeFileSync(
+    join(multiPad, "Main.tz"),
+    "export def make_pad :: i64 -> [ubyte]\nfn make_pad n = Array.init n (\\i -> (97 + i) as ubyte)\n",
+  );
+  const tagHeader = join(directory, "multi_tag.h");
+  const padHeader = join(directory, "multi_pad.h");
+  cli(["build", multiTag, "--emit", "header", "-o", tagHeader]);
+  cli(["build", multiPad, "--emit", "header", "-o", padHeader]);
+  const multiScalarHost = join(directory, "multi_scalar_host.c");
+  writeFileSync(
+    multiScalarHost,
+    [
+      "#undef NDEBUG",
+      "#include <assert.h>",
+      "#include <stdint.h>",
+      "extern int64_t tz_answer(void), tz_twice(int64_t), tz_wide_div(int64_t, int64_t);",
+      "int main(void) {",
+      "  assert(tz_twice(tz_answer()) == 84);",
+      "  assert(tz_wide_div(1000000000000LL, 300000000000LL) == 3333333333333LL);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const multiOwnedHost = join(directory, "multi_owned_host.c");
+  writeFileSync(
+    multiOwnedHost,
+    [
+      "#undef NDEBUG",
+      "#include <assert.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      '#include "multi_tag.h"',
+      '#include "multi_pad.h"',
+      "int main(void) {",
+      "  tsuzuri_ubyte_buffer tag = {0, 0}, pad = {0, 0};",
+      "  tz_make_tag(&tag, 3);",
+      "  tz_make_pad(&pad, 2);",
+      "  assert(tag.len == 3 && memcmp(tag.ptr, \"ABC\", 3) == 0);",
+      "  assert(pad.len == 2 && memcmp(pad.ptr, \"ab\", 2) == 0);",
+      "  fwrite(tag.ptr, 1, (size_t)tag.len, stdout);",
+      "  fwrite(pad.ptr, 1, (size_t)pad.len, stdout);",
+      "  tsuzuri_free(tag.ptr);",
+      "  tsuzuri_free(pad.ptr);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const optimization of ["-O0", "-O3"]) {
+    const objA = join(directory, `multi-a${optimization}.obj`);
+    const objB = join(directory, `multi-b${optimization}.obj`);
+    cli(["build", library, "--no-cache", optimization, "--emit", "object", "-o", objA]);
+    cli(["build", multiTwice, "--no-cache", optimization, "--emit", "object", "-o", objB]);
+    assert.doesNotMatch(execute(nmTool, [objB]).stdout, /\.weak\.\S+\.default\./);
+    for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+      const abExe = join(directory, `multi-ab-${label}${optimization}.exe`);
+      execute(clang, [...linkFlags, optimization, multiScalarHost, objA, objB, "-o", abExe]);
+      execute(abExe, []);
+    }
+    for (const [allocLabel, allocFlags] of [["system", []], ["small", ["--allocator", "small"]]]) {
+      const objC = join(directory, `multi-c-${allocLabel}${optimization}.obj`);
+      const objD = join(directory, `multi-d-${allocLabel}${optimization}.obj`);
+      cli(["build", multiTag, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objC]);
+      cli(["build", multiPad, "--no-cache", optimization, ...allocFlags, "--emit", "object", "-o", objD]);
+      assert.doesNotMatch(execute(nmTool, [objC]).stdout, /\.weak\.\S+\.default\./);
+      assert.doesNotMatch(execute(nmTool, [objD]).stdout, /\.weak\.\S+\.default\./);
+      for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+        const cdExe = join(directory, `multi-cd-${allocLabel}-${label}${optimization}.exe`);
+        execute(clang, [...linkFlags, optimization, "-I", directory, multiOwnedHost, objC, objD, "-o", cdExe]);
+        assert.equal(execute(cdExe, []).stdout, "ABCab");
+      }
+      if (allocLabel === "system") {
+        // Strong host definitions override the weak aliases even when multiple Tsuzuri objects are linked.
+        const strongHost = join(directory, `multi_strong_host${optimization}.c`);
+        writeFileSync(
+          strongHost,
+          [
+            "#undef NDEBUG",
+            "#include <assert.h>",
+            "#include <stdio.h>",
+            "#include <stdlib.h>",
+            "#include <string.h>",
+            '#include "multi_tag.h"',
+            '#include "multi_pad.h"',
+            "static int host_frees = 0;",
+            "void tsuzuri_free(void *ptr) { host_frees++; free(ptr); }",
+            "int main(void) {",
+            "  tsuzuri_ubyte_buffer tag = {0, 0}, pad = {0, 0};",
+            "  tz_make_tag(&tag, 3);",
+            "  tz_make_pad(&pad, 2);",
+            "  assert(tag.len == 3 && memcmp(tag.ptr, \"ABC\", 3) == 0);",
+            "  assert(pad.len == 2 && memcmp(pad.ptr, \"ab\", 2) == 0);",
+            "  tsuzuri_free(tag.ptr);",
+            "  tsuzuri_free(pad.ptr);",
+            "  assert(host_frees == 2);",
+            "  fwrite(\"OK\", 1, 2, stdout);",
+            "  return 0;",
+            "}",
+            "",
+          ].join("\n"),
+        );
+        for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+          const strongExe = join(directory, `multi-strong-${label}${optimization}.exe`);
+          execute(clang, [...linkFlags, optimization, "-I", directory, strongHost, objC, objD, "-o", strongExe]);
+          assert.equal(execute(strongExe, []).stdout, "OK");
+        }
+      }
+    }
+  }
+  console.log("Windows MSVC: multiple Tsuzuri objects linked with lld-link and link.exe at -O0 and -O3 (system and small allocators)");
   const wasm = join(directory, "answer.wasm");
   cli(["build", library, "--target", "wasm32", "-o", wasm]);
   const { module, instance } = await WebAssembly.instantiate(readFileSync(wasm));
@@ -977,6 +1112,167 @@ if (isMain) {
     assert.equal(execute(w17Exe, [], false).status, 7, `W17 @link("gdi32") ${optimization}`);
   }
   console.log("Windows MSVC: W17 @link(\"gdi32\") and dllimport passed");
+
+  // W05: `--emit shared` writes `<name>.dll` and `<name>.lib`, exports only `shared_exports`, caches
+  // DLL + import library + PDB, and runs from C hosts (including tzroutine + host threads and OS APIs).
+  const llvmReadobjCandidate = join(dirname(clang), "llvm-readobj.exe");
+  const readobjTool = existsSync(llvmReadobjCandidate) ? llvmReadobjCandidate : "llvm-readobj";
+  const coffExports = (dllPath) =>
+    execute(readobjTool, ["--coff-exports", dllPath])
+      .stdout.split(/\r?\n/)
+      .map((line) => /^\s*Name:\s*(\S+)\s*$/.exec(line)?.[1])
+      .filter(Boolean)
+      .sort();
+  const sharedDir = join(directory, "w05-shared");
+  const sharedCache = join(directory, "w05-cache");
+  mkdirSync(sharedDir);
+  const tagSrc = join(sharedDir, "tag-src");
+  mkdirSync(tagSrc);
+  writeFileSync(
+    join(tagSrc, "Main.tz"),
+    [
+      "export def add :: i64 -> i64 -> i64",
+      "fn add a b = a + b",
+      "export def make_tag :: i64 -> [ubyte]",
+      "fn make_tag n = Array.init n (\\i -> (65 + i) as ubyte)",
+      "",
+    ].join("\n"),
+  );
+  const tagDllHeader = join(sharedDir, "tag.h");
+  cli(["build", tagSrc, "--emit", "header", "-o", tagDllHeader]);
+  const tagDllHost = join(sharedDir, "tag_host.c");
+  writeFileSync(
+    tagDllHost,
+    [
+      "#undef NDEBUG",
+      "#include <assert.h>",
+      "#include <stdio.h>",
+      "#include <string.h>",
+      '#include "tag.h"',
+      "int main(void) {",
+      "  assert(tz_add(40, 2) == 42);",
+      "  tsuzuri_ubyte_buffer tag = {0, 0};",
+      "  tz_make_tag(&tag, 3);",
+      "  assert(tag.len == 3 && memcmp(tag.ptr, \"ABC\", 3) == 0);",
+      "  fwrite(tag.ptr, 1, 3, stdout);",
+      "  tsuzuri_free(tag.ptr);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  for (const optimization of ["-O0", "-O3"]) {
+    const outSub = join(sharedDir, `out${optimization}`);
+    mkdirSync(outSub);
+    const dllPath = join(outSub, "my tag.dll");
+    const libPath = join(outSub, "my tag.lib");
+    cli(["build", tagSrc, "--no-cache", optimization, "--emit", "shared", "-o", dllPath]);
+    assert.deepEqual(readdirSync(outSub).sort(), ["my tag.dll", "my tag.lib"]);
+    assert.deepEqual(coffExports(dllPath), ["tsuzuri_alloc", "tsuzuri_free", "tz_add", "tz_make_tag"]);
+    const nmOut = execute(nmTool, [libPath]).stdout;
+    assert.doesNotMatch(nmOut, /\.weak\./);
+    for (const sym of ["__imp_tsuzuri_alloc", "__imp_tsuzuri_free", "__imp_tz_add", "__imp_tz_make_tag"]) {
+      assert.match(nmOut, new RegExp(`\\b${sym}\\b`));
+    }
+    const readobjLib = execute(readobjTool, [libPath]).stdout;
+    assert.match(readobjLib, /File:\s*my tag\.dll\r?\nFormat:\s*COFF-import-file-/);
+
+    const countingDll = join(outSub, "counting.dll");
+    cli(["build", tagSrc, "--no-cache", optimization, "--allocator", "counting", "--emit", "shared", "-o", countingDll]);
+    assert.deepEqual(coffExports(countingDll), ["tsuzuri_alloc", "tsuzuri_alloc_stats", "tsuzuri_free", "tz_add", "tz_make_tag"]);
+
+    for (const [label, linkFlags] of [["lld", nativeFlags], ["link", msvcLinkFlags]]) {
+      const hostExe = join(outSub, `host-${label}.exe`);
+      execute(clang, [...linkFlags, optimization, "-I", sharedDir, tagDllHost, libPath, "-o", hostExe]);
+      assert.equal(execute(hostExe, []).stdout, "ABC");
+    }
+
+    // Runtime-embedded DLL: tzroutine scheduler + 8 host OS threads (verifies TLS detach cleanup).
+    const tzDll = join(outSub, "tz_rt.dll");
+    const tzLib = join(outSub, "tz_rt.lib");
+    cli(["build", "tests/fixtures/tzroutine/Main.tz", "--no-cache", optimization, "--emit", "shared", "-o", tzDll]);
+    const tzDllHost = join(outSub, "tz_dll_host.c");
+    writeFileSync(
+      tzDllHost,
+      [
+        "#undef NDEBUG",
+        "#include <assert.h>",
+        "#include <process.h>",
+        "#include <stdint.h>",
+        "#include <windows.h>",
+        "extern int64_t tz_sum_atomic(int64_t), tz_nested(int64_t), tz_moves_owned(void), tz_go_owned(void), tz_counts(void);",
+        "static unsigned __stdcall worker(void *arg) {",
+        "  (void)arg;",
+        "  assert(tz_sum_atomic(100) == 4950);",
+        "  return 0;",
+        "}",
+        "int main(void) {",
+        "  assert(tz_sum_atomic(100) == 4950);",
+        "  assert(tz_nested(10) == 2047);",
+        "  assert(tz_moves_owned() == 13);",
+        "  assert(tz_go_owned() == 11);",
+        "  assert(tz_counts() == 1);",
+        "  HANDLE threads[8];",
+        "  for (int i = 0; i < 8; i++) {",
+        "    uintptr_t h = _beginthreadex(NULL, 0, worker, NULL, 0, NULL);",
+        "    assert(h != 0);",
+        "    threads[i] = (HANDLE)h;",
+        "  }",
+        "  assert(WaitForMultipleObjects(8, threads, TRUE, 30000) == WAIT_OBJECT_0);",
+        "  for (int i = 0; i < 8; i++) CloseHandle(threads[i]);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const tzHostExe = join(outSub, "tz_dll_host.exe");
+    execute(clang, [...nativeFlags, optimization, tzDllHost, tzLib, "-o", tzHostExe]);
+    execute(tzHostExe, []);
+  }
+
+  // Debug PDB + build cache round-trip for DLL + import library + PDB.
+  const debugSub = join(sharedDir, "debug");
+  mkdirSync(debugSub);
+  const debugDll = join(debugSub, "tag_dbg.dll");
+  const debugLib = join(debugSub, "tag_dbg.lib");
+  const debugPdb = join(debugSub, "tag_dbg.pdb");
+  cli(["build", tagSrc, "-g", "--emit", "shared", "-o", debugDll], true, { TSUZURI_CACHE_DIR: sharedCache });
+  assert.ok(existsSync(debugPdb), "MSVC debug DLL must write adjacent .pdb");
+  assert.match(execute(readobjTool, ["--coff-debug-directory", debugDll]).stdout, /PDBFileName:\s*tag_dbg\.pdb/);
+  const firstDllBytes = readFileSync(debugDll);
+  const firstLibBytes = readFileSync(debugLib);
+  const firstPdbBytes = readFileSync(debugPdb);
+  rmSync(debugSub, { recursive: true, force: true });
+  mkdirSync(debugSub);
+  cli(["build", tagSrc, "-g", "--emit", "shared", "-o", debugDll], true, { TSUZURI_CACHE_DIR: sharedCache });
+  assert.deepEqual(readFileSync(debugDll), firstDllBytes);
+  assert.deepEqual(readFileSync(debugLib), firstLibBytes);
+  assert.deepEqual(readFileSync(debugPdb), firstPdbBytes);
+
+  // Refusals: --trap-mode return, non-.dll extension, --allocator host, and unresolved extern.
+  const badTrap = diagnostic(cli(["build", tagSrc, "--emit", "shared", "--trap-mode", "return", "-o", join(sharedDir, "bad.dll"), "--json"], false));
+  assert.equal(badTrap.code, "E2000");
+  assert.match(badTrap.message, /--trap-mode return is not supported for Windows shared libraries yet/);
+  const badExt = diagnostic(cli(["build", tagSrc, "--emit", "shared", "-o", join(sharedDir, "bad.so"), "--json"], false));
+  assert.equal(badExt.code, "E2000");
+  assert.match(badExt.message, /must end with '\.dll'/);
+  const badHost = diagnostic(cli(["build", tagSrc, "--emit", "shared", "--allocator", "host", "-o", join(sharedDir, "bad_host.dll"), "--json"], false));
+  assert.equal(badHost.code, "E2000");
+  const unresolvedLib = join(sharedDir, "unresolved");
+  mkdirSync(unresolvedLib);
+  writeFileSync(join(unresolvedLib, "Main.tz"), "extern def missing_host :: unit -> i64\nexport def call_missing :: i64\nfn call_missing = missing_host ()\n");
+  const unresolvedErr = diagnostic(cli(["build", unresolvedLib, "--no-cache", "--emit", "shared", "-o", join(sharedDir, "unresolved.dll"), "--json"], false));
+  assert.equal(unresolvedErr.code, "E2002");
+  assert.match(unresolvedErr.message, /unresolved symbols: tsuzuri_host_Main_missing_host/);
+  assert.doesNotMatch(unresolvedErr.message, /shared libraries require the Clang linker/);
+  const unresolvedExeDir = join(sharedDir, "unresolved-exe");
+  mkdirSync(unresolvedExeDir);
+  writeFileSync(join(unresolvedExeDir, "Main.tz"), "extern def host_value :: unit -> i64\ndef main :: unit -> i32 = \\() -> (host_value ()) as i32\n");
+  const unresolvedExeErr = diagnostic(cli(["build", unresolvedExeDir, "--no-cache", "-o", join(sharedDir, "unresolved.exe"), "--json"], false));
+  assert.equal(unresolvedExeErr.code, "E2002");
+  assert.match(unresolvedExeErr.message, /unresolved symbols: tsuzuri_host_Main_host_value/);
+  assert.doesNotMatch(unresolvedExeErr.message, /install LLVM\/Clang/);
+  console.log("Windows MSVC: W05 --emit shared (.dll + .lib + .pdb + cache + tzroutine threads) passed");
 
   runGuiStage(compiler, clang, directory);
   console.log("Windows MSVC: native O0/O3, tzroutines and Parallel, linked IR, UTF-8, hardlinks, atomic replacement, object ABI and WASM passed");

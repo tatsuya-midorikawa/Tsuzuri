@@ -1690,7 +1690,7 @@ public:
 
 private:
     struct release {
-        void operator()(T *pointer) const noexcept { ::tsuzuri_free(pointer); }
+    void operator()(T *pointer) const noexcept { detail::free_owned(pointer); }
     };
     std::unique_ptr<T, release> data_;
     std::size_t size_ = 0;
@@ -1782,10 +1782,98 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
                 )
             })
     });
+    let mut taken: BTreeSet<String> = [
+        "buffer",
+        "string_buffer",
+        "utf8string_buffer",
+        "trap_error",
+        "detail",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    let exported_functions: Vec<(&CheckedFunction, String)> = exports(module)
+        .into_iter()
+        .map(|function| {
+            let function_name = cpp_name(&function.name, &taken);
+            taken.insert(function_name.clone());
+            (function, function_name)
+        })
+        .collect();
+    let mut shielded = BTreeSet::new();
+    let mut add_shield = |ident: &str| {
+        if !ident.is_empty()
+            && !CPP_KEYWORDS.contains(&ident)
+            && !matches!(ident, "GetModuleHandleW" | "GetProcAddress")
+        {
+            shielded.insert(ident.to_owned());
+        }
+    };
+    for builtin_macro in ["near", "far", "cdecl", "pascal"] {
+        add_shield(builtin_macro);
+    }
+    add_shield(&namespace);
+    for (function, function_name) in &exported_functions {
+        add_shield(function_name);
+        add_shield(&format!("tz_{}", function.name));
+        if trap_return {
+            add_shield(&format!("tsuzuri_try_{}", function.name));
+        }
+    }
+    for (rname, record_ty) in records(module) {
+        add_shield(&rname);
+        for (fname, _, _) in fields(&record_ty, module) {
+            add_shield(&crate::abi::field_name(&fname));
+        }
+    }
+    for handle in handles(module) {
+        add_shield(&handle_c_name(&handle));
+    }
+    let push_macros: String = shielded
+        .iter()
+        .map(|ident| format!("#pragma push_macro(\"{ident}\")\n"))
+        .collect();
+    let undef_macros: String = shielded
+        .iter()
+        .map(|ident| format!("#undef {ident}\n"))
+        .collect();
+    let pop_macros: String = shielded
+        .iter()
+        .rev()
+        .map(|ident| format!("#pragma pop_macro(\"{ident}\")\n"))
+        .collect();
     let mut output = banner("//");
+    let win32_loader = if owned {
+        "#ifdef _WIN32\n\
+         #pragma push_macro(\"NOMINMAX\")\n\
+         #ifndef NOMINMAX\n\
+         #define NOMINMAX\n\
+         #endif\n\
+         #include <windows.h>\n\
+         #pragma pop_macro(\"NOMINMAX\")\n\
+         #endif\n"
+    } else {
+        ""
+    };
     let _ = write!(
         output,
-        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n// tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n#pragma once\n#include \"{name}.h\"\n\n#include <cstddef>\n#include <cstdint>\n#include <memory>\n{}#include <span>\n#include <stdexcept>\n#include <string>\n#include <string_view>\n#include <utility>\n\nnamespace tsuzuri::{namespace} {{\n\n",
+        "// A header-only C++20 wrapper over \"{name}.h\": generate it from the same sources with\n\
+         // tsuzuri build --emit header{} and link the library of tsuzuri build --emit shared (or --emit object).\n\
+         #pragma once\n\
+         #include <cstddef>\n\
+         #include <cstdint>\n\
+         #include <memory>\n\
+         {}#include <span>\n\
+         #include <stdexcept>\n\
+         #include <string>\n\
+         #include <string_view>\n\
+         #include <utility>\n\n\
+         #ifdef _WIN32\n\
+         {push_macros}#endif\n\
+         {win32_loader}#ifdef _WIN32\n\
+         {undef_macros}#endif\n\
+         #include \"{name}.h\"\n\n\
+         namespace tsuzuri::{namespace} {{\n\n",
         if trap_return {
             " --trap-mode return"
         } else {
@@ -1797,17 +1885,31 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
             ""
         }
     );
-    let mut taken: BTreeSet<String> = [
-        "buffer",
-        "string_buffer",
-        "utf8string_buffer",
-        "trap_error",
-        "detail",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect();
     if owned {
+        let escaped_dll = format!("{name}.dll")
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let _ = write!(
+            output,
+            "namespace detail {{\n\n\
+             #ifdef _WIN32\n\
+             inline void free_owned(void *pointer) noexcept {{\n\
+                 using free_fn = void (*)(void *);\n\
+                 static const free_fn release = []() noexcept -> free_fn {{\n\
+                     if (auto *module = ::GetModuleHandleW(L\"{escaped_dll}\")) {{\n\
+                         if (auto proc = ::GetProcAddress(module, \"tsuzuri_free\")) {{\n\
+                             return reinterpret_cast<free_fn>(reinterpret_cast<std::uintptr_t>(proc));\n\
+                         }}\n\
+                     }}\n\
+                     return &::tsuzuri_free;\n\
+                 }}();\n\
+                 release(pointer);\n\
+             }}\n\
+             #else\n\
+             inline void free_owned(void *pointer) noexcept {{ ::tsuzuri_free(pointer); }}\n\
+             #endif\n\n\
+             }} // namespace detail\n\n"
+        );
         output.push_str(CPP_SUPPORT);
     }
     if trap_return {
@@ -1831,12 +1933,15 @@ pub fn cpp(module: &CheckedModule, name: &str, trap_return: bool) -> String {
         }
         output.push_str("} // namespace detail\n\n");
     }
-    for function in exports(module) {
-        let function_name = cpp_name(&function.name, &taken);
-        taken.insert(function_name.clone());
-        cpp_export(&mut output, function, module, &function_name, trap_return);
+    for (function, function_name) in &exported_functions {
+        cpp_export(&mut output, function, module, function_name, trap_return);
     }
-    let _ = writeln!(output, "}} // namespace tsuzuri::{namespace}");
+    let _ = writeln!(
+        output,
+        "}} // namespace tsuzuri::{namespace}\n\
+         #ifdef _WIN32\n\
+         {pop_macros}#endif"
+    );
     output
 }
 
