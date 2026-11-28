@@ -554,7 +554,9 @@ void tsuzuri_mainthread_boundary_done(void);
 - `node tests/main_thread.mjs target/debug/tsuzuri`（`TSUZURI_BUNDLED_CLANG` に同梱の `tsuzuri-clang`）: 51 checks passed（7 場面 × `-O0`・`-O3` × `TSUZURI_MAXPROCS=1`・`4`、`tsuzuri test`・`bench`、Phase 2 の 3 場面、Phase 3 の 1 場面、`--allocator counting`、同梱の zig でのリンク）。
 - `node tests/features.mjs target/debug/tsuzuri anchor`: native・WASM の `-O0`・`-O3` で 13 cases（共有の 4 件を含む）。
 - S1: `tests/fixtures/*`・`examples/*` の `--emit llvm`（native・`--target wasm32`）・`--emit header`・`check --json` の 1,269 ファイルを、変更前のバイナリと Phase 1・Phase 2 の後のバイナリで `diff -rq` し、差分なし。S2: C の単位へは `MainThread` を使うプログラムでだけ、既存の部品の後ろに足す。
-- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（65 files）、`node scripts/gen-docs.mjs --check`、`node scripts/check-cli-docs.mjs`、`cargo nextest run --locked`（T1）: 結果は PR の説明に書く。
+- `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`sh scripts/check-runtime-includes.sh`（65 files）、`node scripts/gen-docs.mjs --check`（11 blocks, 0 stale）、`node scripts/check-cli-docs.mjs`（4 checks, 0 failed）、`node scripts/check-guide-lite.mjs`（87 references, 0 failed）: 通過。
+- `cargo nextest run --locked`（T1。Phase 3 までの木）: 3780 passed、4 skipped。`node tests/tzroutine_runtime.mjs`: 595 runs passed。
+- Linux・Windows と release build の実行は手元では行っていない（PR に `ci:full` を付けて CI で確かめる）。
 
 ### 更新した文書
 

@@ -276,14 +276,7 @@ fn trap_mode_return_and_freestanding_exclude_main_thread() {
     let (ok, text) = build_json(
         "trap-return",
         POSTS,
-        &[
-            "--target",
-            "aarch64-apple-darwin",
-            "--trap-mode",
-            "return",
-            "--emit",
-            "object",
-        ],
+        &["--trap-mode", "return", "--emit", "object"],
     );
     assert!(!ok, "{text}");
     assert!(text.contains("\"code\":\"E2000\""), "{text}");
@@ -295,15 +288,7 @@ fn trap_mode_return_and_freestanding_exclude_main_thread() {
     let (ok, text) = build_json(
         "freestanding",
         POSTS,
-        &[
-            "--target",
-            "aarch64-apple-darwin",
-            "--freestanding",
-            "--allocator",
-            "host",
-            "--emit",
-            "object",
-        ],
+        &["--freestanding", "--allocator", "host", "--emit", "object"],
     );
     assert!(!ok, "{text}");
     assert!(text.contains("\"code\":\"E2000\""), "{text}");
