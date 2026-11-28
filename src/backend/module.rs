@@ -449,8 +449,14 @@ pub(crate) fn skip_function_attributes(lex: &mut Lexer<'_>) -> Res<u32> {
                 let word = lex.word();
                 match word {
                     "" => bail!("a function attribute near {}", lex.context()),
-                    "section" | "comdat" | "personality" | "gc" | "prefix" | "prologue" => {
+                    "section" | "personality" | "gc" | "prefix" | "prologue" => {
                         bail!("the function attribute '{word}'")
+                    }
+                    "comdat" => {
+                        lex.skip_ws();
+                        if lex.peek() == b'(' {
+                            lex.skip_parens()?;
+                        }
                     }
                     "align" => {
                         lex.uint()?;

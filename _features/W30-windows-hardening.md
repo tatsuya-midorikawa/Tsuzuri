@@ -93,7 +93,7 @@ GUI のアプリは、シェルの拡張・COM のサーバー・IME など、�
 
 - [W07](_completed/W07-windows-trap-fail-fast.md): Windows のトラップの fail-fast（0xC000001D）と VEH（0xC00000FD の報告）。CET の下でも同じ終了コードであることを Phase 1 で確かめる。
 - [W06](_completed/W06-windows-gui-test-harness.md): `tests/windows-pe.mjs`（`readobj`・`peHeaders`）、`tests/windows.mjs` の `--stage gui`（`vscode.yml` が同梱の `tsuzuri-clang` で回す）、GUI の段（WndProc・TimerProc）。
-- [W05](W05-windows-shared-library.md)（出ていれば）: Windows の `--emit shared` の最終リンク。印を同じ所で足す。
+- [W05](_completed/W05-windows-shared-library.md)（出ていれば）: Windows の `--emit shared` の最終リンク。印を同じ所で足す。
 - [W25](W25-extern-interface-com.md)（Phase 2）: `extern interface` の vtable のスロットの呼び出し（間接呼び出し）。W22 の `FnPtr` と W26 の Tsuzuri の COM オブジェクトは、アドレスを取られた関数として表に入る。
 
 ## 他チケットへ提供するインターフェース

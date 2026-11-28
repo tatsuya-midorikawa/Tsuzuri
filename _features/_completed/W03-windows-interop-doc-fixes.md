@@ -7,7 +7,7 @@
 | 規模 | S |
 | 依存 | – |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done |
 | 起票 | 2026-11-22（D-63。利用者の依頼「X: D13 を狭く改める方針で決定。実現向けたチケットを @_features に W プリフィックスのチケットを作成して」と「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」から起票。HEAD `fa40eede` で確認） |
 | 承認 | 不要（文書と診断の文だけを直す。言語の意味、生成コード、診断のコードと kind は変えない） |
 | 改善する劣位 | 文書の誤り: extern の引数型、COFF の object の制限の主語、DLL の回避策の欠落、リンク入力を受けるコマンド、`[native] link` の受ける入力。診断の誤り: 未定義シンボルによるリンクの失敗に「Clang を入れよ」と出る。記載の欠落: 標準ハンドルのないプロセスの `IO` |
@@ -26,7 +26,7 @@
 
 Windows でネイティブ連携を試すと、文書のとおりに書いても動かない所が続けて出る。`string` を値で取る `extern` は `E1008`、object をつないだ DLL は `tsuzuri_free` を export せず、ホストのライブラリを忘れたリンクの失敗は「Clang を入れよ」と案内する。言語と生成コードは変えずに、文書を今の実装に合わせ、リンクの失敗の hint を原因に合わせる。
 
-関連: [GUIDE D-63](GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](_completed/G10-windows.md)（D8・D12、後続の作業）、[E12](_completed/E12-ffi-extensions.md)（D6）、[E13](_completed/E13-host-bindings.md)（Phase 2 の判断 8・11）、[PB05](../_perfs/_completed/PB05-fast-debug-backend.md)（WP14）、[W05](W05-windows-shared-library.md)。
+関連: [GUIDE D-63](../GUIDE.md#d-63-tsuzuri-だけで-win32-のアプリを書くe12-d13-の狭い改訂w01w30)、[G10](G10-windows.md)（D8・D12、後続の作業）、[E12](E12-ffi-extensions.md)（D6）、[E13](E13-host-bindings.md)（Phase 2 の判断 8・11）、[PB05](../../_perfs/_completed/PB05-fast-debug-backend.md)（WP14）、[W05](W05-windows-shared-library.md)。
 
 ## 着手条件と停止条件
 
@@ -78,7 +78,7 @@ Windows でネイティブ連携を試すと、文書のとおりに書いても
 - **R3**: E2000 の文を `'--emit shared' is not supported on Windows yet (G10); build an object with --emit object, link it into a DLL with lld-link or MinGW and a .def file that exports tsuzuri_alloc and tsuzuri_free, and make the import library from the .def` にする（kind `option_unsupported_platform` と `(G10)` の印は変えない。G10 D12）。`native-interop.md` の「共有ライブラリと各言語のバインディング」の Windows の文を、次の手順の小節（見出し案「Windows の DLL（`--emit shared` が使えるまで）」）に置き換える: (1) ランタイムを要しないライブラリを `--emit object` にする（要するものは R2 の `E2002`）。(2) `--emit header` のプロトタイプの `tz_*` と `tsuzuri_*` を `EXPORTS` に並べ、`LIBRARY "<DLL のファイル名>"` を書いた `.def` を作る。(3) `lld-link /DLL <obj> libcmt.lib /DEF:<def> /OUT:<dll>`（Developer PowerShell）か、同梱の `tsuzuri-clang -shared <obj> <def> -o <dll>` でリンクする。`link.exe` は弱い定義の `tsuzuri_alloc`・`tsuzuri_free` を export できない（`LNK2001`）。(4) リンカーが書く import library は名前が `.weak.` で始まり使えないので、同じ `.def` から `lib /DEF:<def> /MACHINE:X64 /OUT:<lib>`、`llvm-dlltool -m i386:x86-64 -d <def> -l <lib>`、または同梱の `zig dlltool` で作り直す（Arm64 は `/MACHINE:ARM64`・`-m arm64`）。(5) C#・Python のバインディングは名前で読むので (3) の DLL だけで足り、C・C++ のホストは (4) の import library でリンクする。`option.md:517` の行と `docs/language.md:4965` の「Windows（DLL の出力は未対応です…）」は、新しい E2000 の文と、この小節へのリンクに合わせる。
 - **R4**: リンクの失敗の出力が未定義シンボルを示すときは、hint を次の文に置き換える（ツールの出力はそのまま残す）: `unresolved symbols: <名前>, ...; link the objects or libraries that define them with --link PATH, -l NAME and -L DIR, or list them under [native] in Tsuzuri.toml (an 'extern def' without a link name is the host function tsuzuri_host_<Module>_<name>)`。名前は出てきた順に重複を除いて 8 個まで、残りは `and N more`。コードは `E2002`、kind は `external_tool_failed` のまま。ツールを起動できない（`cannot execute`）とき、未定義シンボル以外で失敗したときの hint は今と同じ。`TSUZURI_LINKER=lld` の注記（`linker_hint`）と `cross_hint` の前置きは、未定義シンボルの場合には付けない（原因と無関係なので）。wasm-ld の失敗には適用しない（WebAssembly のビルドはリンク入力を `E2000` にするので、`--link` の案内は誤りになる）。
 - **R5**: `io.md` の「標準出力、標準エラー、標準入力」の後に、次の段落を足す:「標準ハンドルを持たずに起動されたプロセス（Windows の GUI サブシステムの実行ファイルを Explorer や `Start-Process` から起動したときなど）では、書き込みも読み込みも失敗します。`try_` の付かない関数はトラップします（Windows では終了コード `0xC000001D`）。標準エラーも無いので、トラップの位置の報告は読めません。`try_writeln` などは `IO.WriteFailed`、`try_readln` は `IO.ReadFailed` を返します」（報告が読めないのは推測なので、「出ません」と言い切らず「読めません」と書く）。`platforms.md` の「既知の制限」に 1 行を足し、io.md の段落へリンクする。POSIX の閉じた fd については確かめていないので書かない。
-- **R6**: 判定は変えない（D1）。`platforms.md:169` の「Windows」を「Windows のホスト（wasm32 も）」にし、`option.md:270` の target の欄に「どちらもビルド機が macOS Arm64・Linux x64/Arm64 のときだけです」を足す。`docs/architecture.md` の「高速デバッグバックエンド（PB05）」に「翻訳器は x86-64 の COFF も書けるが（PB05 の WP14 のテストだけが使う）、CLI は Windows のホストと `--target TRIPLE` を `E2000` にする。有効にするには `unwind_info` を true にして `.pdata` を書くことと、`windows_abi` の 128 bit の helper の規約を Windows で確かめることが要る」を足す（x86-64 の helper の規約の食い違いは [W42](_completed/W42-windows-i128-division.md) が直した。足す文には `_features` へのリンクを入れない）。`src/backend/target.rs` の `Target::new` の COFF の分岐の上に、CLI から届かないことと上の 2 つの条件を 2 行の comment で書く。
+- **R6**: 判定は変えない（D1）。`platforms.md:169` の「Windows」を「Windows のホスト（wasm32 も）」にし、`option.md:270` の target の欄に「どちらもビルド機が macOS Arm64・Linux x64/Arm64 のときだけです」を足す。`docs/architecture.md` の「高速デバッグバックエンド（PB05）」に「翻訳器は x86-64 の COFF も書けるが（PB05 の WP14 のテストだけが使う）、CLI は Windows のホストと `--target TRIPLE` を `E2000` にする。有効にするには `unwind_info` を true にして `.pdata` を書くことと、`windows_abi` の 128 bit の helper の規約を Windows で確かめることが要る」を足す（x86-64 の helper の規約の食い違いは [W42](W42-windows-i128-division.md) が直した。足す文には `_features` へのリンクを入れない）。`src/backend/target.rs` の `Target::new` の COFF の分岐の上に、CLI から届かないことと上の 2 つの条件を 2 行の comment で書く。
 - **R7**: リンク入力を受けるのは、native の `build`（`--emit exe` と `--emit shared`）、`run`、native の `test` と `bench`、`script`（ファイルより前に書いたもの）で、`test --doc` は受けない。`native-interop.md:230`、`option.md:15`、`docs/language.md` の「リンク入力」の 2 文をこれに合わせる（language.md の「実行ファイル以外の `--emit`」は「実行ファイルと共有ライブラリ以外の `--emit`」にする）。受ける入力は object と静的ライブラリ（D3）。`packages.md` の例を `link = ["host.o", "vendor/libutil.a"]` に、`link` の説明を「リンクするオブジェクトか静的ライブラリの相対パス（`--link` と同じ）」にし、`option.md:433` と `packages.md` に「ほかの種類のファイルもそのまま Clang に渡すので、Clang が拡張子で扱いを決めます（C のソースはその場でコンパイルされますが、オプションは決まっておらず、検証していません）。オブジェクトにしてから渡してください」を足す。
 
 ## 設計
@@ -109,7 +109,7 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 
 - `undefined_symbols`: W17（`@link`）がシステムライブラリを足し忘れたときの案内、W27（生成した `win32` パッケージ）の利用者の案内がこの hint を使う。
 - io.md の「標準ハンドルのないプロセス」の段落: W08 が意味を決めたら置き換える。
-- platforms.md の R2 の文（ランタイム入りの Windows の COFF object の汎用の `E2002`）: [W11](_completed/W11-windows-os-api.md) が `os_apis` を Windows で真にすると、同じ文に OS のランタイムが加わる。W03 と W11 のうち後に入るほうが、文書の列挙と `src/driver.rs` の文を合わせる。
+- platforms.md の R2 の文（ランタイム入りの Windows の COFF object の汎用の `E2002`）: [W11](W11-windows-os-api.md) が `os_apis` を Windows で真にすると、同じ文に OS のランタイムが加わる。W03 と W11 のうち後に入るほうが、文書の列挙と `src/driver.rs` の文を合わせる。
 
 ## 実装手順
 
@@ -169,13 +169,13 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 
 ## 受け入れ条件
 
-- [ ] R1〜R7 の各ページを仕様のとおりに直し、`node scripts/check-docs.mjs` が変更したページで通る。
-- [ ] 未定義シンボルによるリンクの失敗の `E2002` が名前と `--link`・`-l`・`-L`・`[native]` を案内し、`install LLVM/Clang 17+` を出さない（Linux の `tests/e2e.mjs`（ci.yml）、Windows の `tests/windows.mjs`（`ci:full`））。ツールを起動できないときと wasm-ld の失敗の hint は変わらない。
-- [ ] `undefined_symbol_hints_name_the_symbols` が成功し、読まないものの入力で空を返す。
-- [ ] `--emit shared` の Windows の E2000 の文が R3 の文になり、テストと option.md の表が一致する（W05 が先に入ったときは対象外）。
-- [ ] 言語の意味、生成 IR、診断のコードと kind、`link inputs require a native executable` の文が変わらない。
-- [ ] 文書にチケット（`_features/W..`）へのリンクを書いていない（D6）。
-- [ ] T2 が成功し、PR に `ci:full` を付けた。
+- [x] R1〜R7 の各ページを仕様のとおりに直し、`node scripts/check-docs.mjs` が変更したページで通る。
+- [x] 未定義シンボルによるリンクの失敗の `E2002` が名前と `--link`・`-l`・`-L`・`[native]` を案内し、`install LLVM/Clang 17+` を出さない（Linux の `tests/e2e.mjs`（ci.yml）、Windows の `tests/windows.mjs`（`ci:full`））。ツールを起動できないときと wasm-ld の失敗の hint は変わらない。
+- [x] `undefined_symbol_hints_name_the_symbols` が成功し、読まないものの入力で空を返す。
+- [x] `--emit shared` の Windows の E2000 の文が R3 の文になり、テストと option.md の表が一致する（W05 が先に入ったときは対象外）。
+- [x] 言語の意味、生成 IR、診断のコードと kind、`link inputs require a native executable` の文が変わらない。
+- [x] 文書にチケット（`_features/W..`）へのリンクを書いていない（D6）。
+- [x] T2 が成功し、PR に `ci:full` を付けた。
 
 ## 落とし穴
 
@@ -189,12 +189,12 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 ## 対象外
 
 - `--emit shared` を Windows で実装すること（[W05](W05-windows-shared-library.md)）。
-- `--backend fast` を Windows で有効にすること（[PB05](../_perfs/_completed/PB05-fast-debug-backend.md) の WP14 の後続）。
-- 標準ハンドルのないときの `IO` の意味を決めること（[W08](_completed/W08-io-without-std-streams.md)）、トラップの報告を届けること（[W04](_completed/W04-windows-trap-report-lost.md)）。
+- `--backend fast` を Windows で有効にすること（[PB05](../../_perfs/_completed/PB05-fast-debug-backend.md) の WP14 の後続）。
+- 標準ハンドルのないときの `IO` の意味を決めること（[W08](W08-io-without-std-streams.md)）、トラップの報告を届けること（[W04](W04-windows-trap-report-lost.md)）。
 - `ref` のない `string` の `E1008` に `ref string` の修正案（D-51 の `fixes`）を足すこと。
-- C のソースをリンク入力として正式に受けること（コンパイルのオプションの決定とテストが要る機能。[E12](_completed/E12-ffi-extensions.md) D6 の拡張）。
-- docs/language.md の「コールバック」節の寿命の文（[W12](_completed/W12-static-callback-lifetime.md)）。
-- システムライブラリを `extern` ごとに求めること（[W17](_completed/W17-link-attribute-dllimport.md)）。この hint はその前後で同じ。
+- C のソースをリンク入力として正式に受けること（コンパイルのオプションの決定とテストが要る機能。[E12](E12-ffi-extensions.md) D6 の拡張）。
+- docs/language.md の「コールバック」節の寿命の文（[W12](W12-static-callback-lifetime.md)）。
+- システムライブラリを `extern` ごとに求めること（[W17](W17-link-attribute-dllimport.md)）。この hint はその前後で同じ。
 
 ## 決定事項
 
@@ -206,3 +206,13 @@ fn undefined_symbols(output: &str) -> Vec<String>;
 | D4 | 未定義シンボルの判定は `tool_output` の 1 か所で行い、kind は `external_tool_failed` のまま hint の文だけを変える | 呼び出し側ごとに選ぶと `test`・`bench` の runner と codegen unit の経路を取りこぼす。新しい kind は JSON と `explain` を変えるが、利用者に要るのは文の案内だけ（D-51） | 既定案（実装者はこの案に従う） |
 | D5 | 標準ハンドルのないプロセスの `IO` は既知の制限として今の振る舞いを書く | 意味を変えるのは W08（要承認）。文書は今の振る舞いだけを書く（AGENTS.md） | 既定案（実装者はこの案に従う） |
 | D6 | 利用者向けの文書から、まだ終わっていない W チケットへリンクしない | チケットは完了すると `_completed/` へ移り、リンクが切れる（`check-docs` が落ちる） | 既定案（実装者はこの案に従う） |
+
+## 実装と検証（2026-11-28）
+
+- **実装した手順**: 手順 1〜6 を完了（W05 と同一 PR のため、着手条件に従い手順 3 の R3 `E2000` 回避策は W05 の本実装・文書に置き換え）。
+  - `src/driver.rs`: `undefined_symbols`（lld・`lld-link`・`ld64.lld`・MSVC `link.exe` `LNK2001`/`LNK2019`・GNU `ld`・Apple `ld64`・`__declspec(dllimport)` に対応、`wasm-ld`・Clang IR の `undefined value`・ファイル欠落を除外）と `unresolved_symbols_hint` を追加し、`tool_output` の失敗分岐で未定義シンボル検出時に `--link`・`-l`・`-L`・`[native]` を案内。単体テスト `undefined_symbol_hints_name_the_symbols` を追加。
+  - `src/backend/target.rs`: `Target::new` の COFF 分岐に R6 の 2 行コメントを追加。
+  - E2E: `tests/e2e.mjs`、`tests/windows.mjs`、`tests/ffi_extensions.mjs` に未解決シンボルの `E2002` メッセージ検査を追加。
+  - 文書: `docs/language.md`（R1 共有借用バッファ／文字列、R2 ランタイム入り COFF object の `E2002`（W11 の OS ランタイムを含む）、R5 標準ハンドルなしプロセスの `IO.Unavailable`／トラップ／`OutputDebugStringW`（W04・W08 実装後の振る舞いに最新化）、R7 リンク入力対象コマンド・拡張子注記）および `docs/architecture.md`（R6 PB05 の COFF 注記）を更新（言語リファレンスは PR #147 で `Tsuzuri-Reference` リポジトリへ分離済み）。
+- **変更したファイル**: `src/driver.rs`, `src/backend/target.rs`, `tests/e2e.mjs`, `tests/windows.mjs`, `tests/ffi_extensions.mjs`, `docs/language.md`, `docs/architecture.md`, `_features/README.md`, `_features/_completed/W03-windows-interop-doc-fixes.md`。
+

@@ -858,6 +858,15 @@ try {
   });
   assert.equal(JSON.parse(failedCompiler.stderr).code, "E2002");
   assert.equal(readFileSync(output, "utf8"), "preserved");
+  // W03: a native link that fails with unresolved symbols names them and points to --link/-l/-L instead of Clang installation.
+  const unresolvedDir = join(temporary, "unresolved-extern");
+  mkdirSync(unresolvedDir);
+  writeFileSync(join(unresolvedDir, "Main.tz"), "extern def host_value :: unit -> i64\ndef main :: unit -> i32 = \\() -> (host_value ()) as i32\n");
+  const failedUnresolved = cli(["build", unresolvedDir, "--no-cache", "-o", join(temporary, "unresolved-out"), "--json"], { success: false });
+  const unresolvedDiag = JSON.parse(failedUnresolved.stderr);
+  assert.equal(unresolvedDiag.code, "E2002");
+  assert.match(unresolvedDiag.message, /unresolved symbols: tsuzuri_host_Main_host_value/);
+  assert.doesNotMatch(unresolvedDiag.message, /install LLVM\/Clang/);
   const failedLinker = cli(["build", input, "--target", "wasm32", "-o", output, "--json"], {
     success: false, env: { TSUZURI_WASM_LD: join(temporary, "missing linker") },
   });

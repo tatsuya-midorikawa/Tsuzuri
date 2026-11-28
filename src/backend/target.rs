@@ -51,6 +51,8 @@ impl Target {
         let format = if platform.mach_o() {
             Format::MachO
         } else if platform.windows() {
+            // CLI builds reject Windows hosts and `--target TRIPLE` with E2000 (only `tests/fast_backend.rs` reaches this);
+            // enabling COFF requires `.pdata` unwind tables (`unwind_info=true`) and verifying the Windows ABI helpers.
             Format::Coff
         } else if platform.linux_kernel() {
             Format::Elf

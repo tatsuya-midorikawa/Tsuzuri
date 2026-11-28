@@ -26,6 +26,7 @@ function rejected(args, code) {
   const result = execute(compiler, args, false);
   assert.notEqual(result.status, 0, args.join(" "));
   assert.match(result.stderr, new RegExp(`error\\[${code}\\]`), `${args.join(" ")}\n${result.stderr}`);
+  return result;
 }
 // A copy of the fixture with an entry expression: counters 10 = 59 and callbacks 4 = 39.
 function application(name) {
@@ -286,7 +287,9 @@ try {
   const cbTrapRun = execute(nullCbRunner, [], false);
   assert.notEqual(cbTrapRun.status, 0);
   assert.match(cbTrapRun.stderr, /trap: null extern handle/);
-  rejected(["run", app], "E2002");
+  const missingHostRun = rejected(["run", app], "E2002");
+  assert.match(missingHostRun.stderr, /unresolved symbols: .*e12_counter_new/);
+  assert.doesNotMatch(missingHostRun.stderr, /install LLVM\/Clang/);
   rejected(["run", app, "--link", join(root, "missing.o")], "E2001");
   rejected(["run", app, "-L", join(root, "missing-dir"), "-l", "e12host"], "E2001");
   rejected(["build", app, "--target", "wasm32", "--link", host, "-o", join(root, "x.wasm")], "E2000");
@@ -344,7 +347,9 @@ try {
   const w17NoLink = join(root, "w17-nolink");
   mkdirSync(w17NoLink);
   writeFileSync(join(w17NoLink, "Main.tz"), '@trusted\nextern "w17_answer" def answer :: unit -> i64\nanswer ()\n');
-  rejected(["build", w17NoLink, "-L", w17LibDir, "-o", join(root, "w17-fail")], "E2002");
+  const missingW17 = rejected(["build", w17NoLink, "-L", w17LibDir, "-o", join(root, "w17-fail")], "E2002");
+  assert.match(missingW17.stderr, /unresolved symbols: w17_answer/);
+  assert.doesNotMatch(missingW17.stderr, /install LLVM\/Clang/);
 
   // W16: `@last_error` atomically clears and reads POSIX `errno` around the call, including inside tzroutines.
   const w16Posix = join(root, "w16-posix");

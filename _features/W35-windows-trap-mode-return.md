@@ -11,7 +11,7 @@
 | 起票 | 2026-11-22（D-63。W01〜W30 の起票中に見つけ、利用者の依頼「リスクについては修正が必要なものは修正用チケットを、改善が必要なものはあなたが考える中で最も良いと考えられる方法での改善チケットを作成して」に当たるので起票。HEAD `fa40eede` で確認） |
 | 承認 | 要承認（E14 の Windows の境界の方針）。D1・D3 が要承認、ほかは既定案 |
 | 改善する劣位 | C/C++ 比: Windows のホストに埋め込んだ Tsuzuri の関数のトラップを、値として返せない（macOS・Linux は [E14](_completed/E14-trap-boundary.md) Phase 2 で返せる） |
-| 手本にする既存実装 | `src/runtime/arguments.c`（`_WIN32` の下で `WIN32_LEAN_AND_MEAN` を守って `windows.h` を読む）、`src/runtime/tzroutine-windows.h`（SRWLOCK）、`src/driver.rs` の `build_complete` の `merge_runtime_ir`（ランタイムを IR で 1 つにする macOS の debug object と bitcode の経路）と `compile_runtime_object`（ランタイムのキャッシュ）、`tests/trap_return.mjs`・`tests/trap_return_host.c`、[W05](W05-windows-shared-library.md) の `link_shared` の Windows の分岐 |
+| 手本にする既存実装 | `src/runtime/arguments.c`（`_WIN32` の下で `WIN32_LEAN_AND_MEAN` を守って `windows.h` を読む）、`src/runtime/tzroutine-windows.h`（SRWLOCK）、`src/driver.rs` の `build_complete` の `merge_runtime_ir`（ランタイムを IR で 1 つにする macOS の debug object と bitcode の経路）と `compile_runtime_object`（ランタイムのキャッシュ）、`tests/trap_return.mjs`・`tests/trap_return_host.c`、[W05](_completed/W05-windows-shared-library.md) の `link_shared` の Windows の分岐 |
 | 主な影響ファイル | `src/runtime/trap.c`, `src/runtime/tzroutine.c`, `src/driver.rs`, `src/test_runner.rs`（Phase 2）, `tests/trap_return.mjs`, `tests/trap_return_host.c`, `tests/trap_boundary_runtime.c`, `tests/trap_return_sync.mjs`, `tests/fixtures/trap_return_plain/Main.tz`（新規）, `tests/windows_trap_return_gui.c`（新規）, `tests/windows.mjs`, `tests/domain.mjs`・`tests/domain_runtime.c`（Phase 2）, `.github/workflows/windows.yml`, `docs/architecture.md`, `docs/language.md`, 言語リファレンスの 5 ページ |
 
 ## 実装者向け早見
@@ -87,7 +87,7 @@
 - `clang -std=c11 -c -emit-llvm -O3 trap.c -o trap.bc` の後、`clang -c -O3 lib.ll -Xclang -mlink-bitcode-file -Xclang trap.bc -o merged.obj` で、同じ clang の実行の中で連結した 1 つの COFF の object ができた（MSVC の target の LLVM 22.1.8 と、同梱の 21.1.8）。`llvm-nm` は `T tsuzuri_trap_raise`・`T tsuzuri_boundary_run`・`T tsuzuri_try_div`・`W tsuzuri_trap_hooks` を示し、`llvm-readobj --unwind` はランタイムの関数の `RuntimeFunction` を示した。C のホストとリンクして状態 1（MSVC は lld-link と link.exe の両方）。
 - `-mno-incremental-linker-compatible`（`src/target.rs` が MSVC の triple に付ける）を付けると、2 回の出力が同じバイト列になった。付けないと COFF の時刻で違う。
 - 同じ方法で作った 2 つの trap の object（`div` と `rem`）を 1 つのホストにリンクすると `lld-link: error: duplicate symbol: tsuzuri_boundary_run`（Windows の `TZ_TRAP_API` は強い定義）。
-- trap mode と関係なく、Windows では Tsuzuri の object を 2 つ 1 つのホストにリンクできない。どの object も弱い定義（128 bit の補助 `__multi3` など、所有バッファを返すなら `tsuzuri_alloc`・`tsuzuri_free`）を持ち、COFF の弱い定義は既定の名前（`.weak.__multi3.default.<object の最初の公開記号>`）が object ごとに違う。スカラーだけの普通の object と trap の object の組でも、lld-link は `duplicate symbol: __multi3`、link.exe は `LNK1227: conflicting weak extern definition for '__multi3'` で止まった（所有バッファを返す 2 つの object では `tsuzuri_alloc` で同じ誤り）。G10 D8 の「複数 object の weak 統合は対象外」の具体的な姿である。この弱い定義の衝突は [W39](W39-windows-multiple-objects-weak-defaults.md) が直す（弱い定義を `comdat any` に入れる）。W39 の後も、上の trap ランタイムの強い定義の重複（`tsuzuri_boundary_run`）は残る。
+- trap mode と関係なく、Windows では Tsuzuri の object を 2 つ 1 つのホストにリンクできない。どの object も弱い定義（128 bit の補助 `__multi3` など、所有バッファを返すなら `tsuzuri_alloc`・`tsuzuri_free`）を持ち、COFF の弱い定義は既定の名前（`.weak.__multi3.default.<object の最初の公開記号>`）が object ごとに違う。スカラーだけの普通の object と trap の object の組でも、lld-link は `duplicate symbol: __multi3`、link.exe は `LNK1227: conflicting weak extern definition for '__multi3'` で止まった（所有バッファを返す 2 つの object では `tsuzuri_alloc` で同じ誤り）。G10 D8 の「複数 object の weak 統合は対象外」の具体的な姿である。この弱い定義の衝突は [W39](_completed/W39-windows-multiple-objects-weak-defaults.md) が直す（弱い定義を `comdat any` に入れる）。W39 の後も、上の trap ランタイムの強い定義の重複（`tsuzuri_boundary_run`）は残る。
 - 一方、片方の翻訳単位が定義を持たない弱い参照（`extern __attribute__((weak)) struct H hooks;` と、読む前の `&hooks != 0`）で、もう片方が 1 つだけ定義を持つ形は、lld-link・link.exe・同梱の MinGW のどれでもリンクでき、定義が無ければアドレスが 0、あれば定義を読んだ（小さな C の試作）。
 - `trap.c` と `tzroutine.c` を 1 つの翻訳単位にした bitcode を連結した object も `.CRT$XLB`（`tzr_tls_callback_entry`）と `.tls$` を保った（`llvm-objdump -h`）。
 
@@ -112,7 +112,7 @@
 
 1. Windows の target（`x86_64-pc-windows-msvc`・`-gnu`、`aarch64-pc-windows-msvc`・`-gnu`、Windows のホストの `--target native`）の `--trap-mode return` は、`--emit object`・`llvm`・`header`・`shared`（W05 の後）とバインディングで、POSIX と同じ意味で動く。
 2. `--emit object`: 埋め込む C ランタイムが trap ランタイムだけ（`trap_runtime` が真で、tzroutine・CPU・IO・OS・Net・GPU・arguments のどれも要らない）なら作る。ほかのランタイムが要れば今の `E2002`（文は変えない。今の文の「tzroutine, CPU, IO, or Net」がこれで正確になる）。
-3. Windows の 1 つのホストにリンクできる Tsuzuri の object は、trap mode によらず今と同じく 1 つ（G10 D8。「現状」の測定）。trap の object の 2 つ目や普通の object との組は、リンカーの記号の重複の誤り（link.exe の `LNK2005`・`LNK1227`、lld-link の `duplicate symbol`）になると文書に書く（D4）。今の文書がこの制限を書いていなければ、同じ PR で書く。[W39](W39-windows-multiple-objects-weak-defaults.md) が先に `main` に入っていれば、着手時にこの項を見直す: 弱い定義の衝突はなくなり、残るのは trap ランタイムの強い定義の重複（trap の object の 2 つ目）だけなので、「1 つのホストに 1 つ」の文は書かず、その重複だけを書く（W39 の「他チケットへ提供するインターフェース」）。
+3. Windows の 1 つのホストにリンクできる Tsuzuri の object は、trap mode によらず今と同じく 1 つ（G10 D8。「現状」の測定）。trap の object の 2 つ目や普通の object との組は、リンカーの記号の重複の誤り（link.exe の `LNK2005`・`LNK1227`、lld-link の `duplicate symbol`）になると文書に書く（D4）。今の文書がこの制限を書いていなければ、同じ PR で書く。[W39](_completed/W39-windows-multiple-objects-weak-defaults.md) が先に `main` に入っていれば、着手時にこの項を見直す: 弱い定義の衝突はなくなり、残るのは trap ランタイムの強い定義の重複（trap の object の 2 つ目）だけなので、「1 つのホストに 1 つ」の文は書かず、その重複だけを書く（W39 の「他チケットへ提供するインターフェース」）。
 4. `--emit shared`（W05 の後）: `--trap-mode return` を受け、tzroutine・CPU・IO・Net のランタイムも今の DLL と同じく連結する。export の一覧は W05 の `shared_exports`（`tsuzuri_try_<name>` を含む）。
 5. `--emit llvm`: ホストは `src/runtime/trap.c`（tzroutine を使うなら `tzroutine.c` も）を Clang でコンパイルしてリンクする。`cl.exe` ではコンパイルできない（`__attribute__`）と文書に書く。
 6. tzroutine のランタイムは、Windows でも境界の中の `Parallel.*` をすべて呼び出し元で添字の順に走らせ、境界の中の G を横取りで譲らせず、トラップの後に呼び出しのスレッドが持つロックを解放する（POSIX と同じ）。
@@ -181,7 +181,7 @@ typedef pthread_mutex_t tz_lock;
 ## 前提とする他チケットのインターフェース
 
 - [W07](_completed/W07-windows-trap-fail-fast.md): Windows の IR のすべての `define` の `uwtable`（`with_unwind_tables`）、境界の外のトラップの `@tz.trap.fail`、ランタイム C の `TZR_TRAP()`。`trap.c` 自身はトラップしない（メモリ不足は `abort()`）。
-- [W05](W05-windows-shared-library.md)（あれば）: `link_shared` の Windows の分岐、`module_definition`、`validate_shared` の D4 の判定。
+- [W05](_completed/W05-windows-shared-library.md)（あれば）: `link_shared` の Windows の分岐、`module_definition`、`validate_shared` の D4 の判定。
 - [W06](_completed/W06-windows-gui-test-harness.md)（W07 の依存なので入っている）: `tests/windows_launch.c` の `--timeout-ms`。
 
 ## 他チケットへ提供するインターフェース
@@ -209,7 +209,7 @@ typedef pthread_mutex_t tz_lock;
 | 段 | 期待 |
 | --- | --- |
 | trap だけの fixture の `--emit object --trap-mode return` と `tests/trap_return_host.c`（`COUNTING` なし） | POSIX と同じ状態・`site`・`kind`。`.trap.json` の位置と一致。3,000 回の交互 |
-| `-DMIXED_OBJECTS`（普通の object と trap の object を 1 つのホストに） | Windows では飛ばす（仕様 3。`__multi3` の弱い定義の衝突を測定済み）。[W39](W39-windows-multiple-objects-weak-defaults.md) が先に入っていれば、この理由は成り立たないので、Windows でも動かせるかを着手時に確かめる |
+| `-DMIXED_OBJECTS`（普通の object と trap の object を 1 つのホストに） | Windows では飛ばす（仕様 3。`__multi3` の弱い定義の衝突を測定済み）。[W39](_completed/W39-windows-multiple-objects-weak-defaults.md) が先に入っていれば、この理由は成り立たないので、Windows でも動かせるかを着手時に確かめる |
 | trap ランタイムを `--emit llvm` の IR とは別の object（`trap.c` と `tzroutine.c` を別々にコンパイル）でリンク | リンクでき（設計の弱い参照）、`parallel_*` の段が 3,000 回通る（今の Windows の分岐では 8 回中 5 回落ちる） |
 | `-g` の trap だけの object | リンクでき、状態 1（ランタイムの bitcode はデバッグ情報を持たない。未確認） |
 | 全部の fixture の `--emit llvm` と `trap_return_host.c -DCOUNTING`（ホストが `trap.c` を数える allocator で持つ）と `tzroutine.c` | 3,000 回、`live == 0`、`parallel_*` の段を含む |
@@ -230,7 +230,7 @@ typedef pthread_mutex_t tz_lock;
 - `_tsuzuri/language-reference/compiler/platforms.md`: 166 行の既知の制限（trap だけの object は作れる、ほかのランタイムの object は `E2002`）。
 - `docs/language.md`: 1571 行付近の「Windows の組み込みランタイムオブジェクトでは `E2002`」。`docs/architecture.md`: 240 行と 437 行の COFF の段落（trap の object の bitcode の連結と、G10 D8 のほかのランタイムの `E2002`）。
 - Phase 2: `built-in-types-and-modules/domain.md`（13 行と 132 行の表の「Windows のネイティブ」）、`docs/language.md` の 1548 行付近の「Windows のネイティブ」。
-- `grep -rnE "trap-mode return|E1038|Windows COFF" _tsuzuri/language-reference docs README.md` で残りを探す。[W03](W03-windows-interop-doc-fixes.md) が `E2002` の文の誤り（同梱ツールチェーンだけの制限と読める）を直していれば、その文に合わせる。
+- `grep -rnE "trap-mode return|E1038|Windows COFF" _tsuzuri/language-reference docs README.md` で残りを探す。[W03](_completed/W03-windows-interop-doc-fixes.md) が `E2002` の文の誤り（同梱ツールチェーンだけの制限と読める）を直していれば、その文に合わせる。
 
 ## 受け入れ条件
 
@@ -246,7 +246,7 @@ typedef pthread_mutex_t tz_lock;
 - `-O0` だけで確かめない。`.pdata` が無くても `-O0` は偶然通る（測定）。必ず `-O3` を入れる。
 - W07 の `uwtable` が無い IR では、Windows の境界は `-O3` でプロセスを落とす。`--emit llvm` の IR を古いコンパイラで作ったホストも同じ。
 - `-mlink-bitcode-file` は cc1 の旗で、clang の driver の公開の旗ではない。使う所を 1 か所にし、版ごとの確認（S1）を CI に任せる。Clang 17〜20 で IR の入力に効くかは確かめていない（未確認）。
-- `-mlink-bitcode-file` は連結した記号を内部にしない。Windows の trap ランタイムの関数は強い定義で、2 つの trap の object は重複の誤りになる（測定）。`weak` にしても直らない: COFF の弱い定義は object ごとに既定の名前が違い、2 つあれば `LNK1227`・`duplicate symbol` になる（`__multi3` で測定）。W05 の測定のとおり、DLL の export にも使えない。[W39](W39-windows-multiple-objects-weak-defaults.md) は `windows_abi` が返す IR の弱い定義を `comdat any` に入れてこの衝突をなくすが、bitcode で連結する trap ランタイムの関数に同じ形が使えるかは確かめていない（D4）。
+- `-mlink-bitcode-file` は連結した記号を内部にしない。Windows の trap ランタイムの関数は強い定義で、2 つの trap の object は重複の誤りになる（測定）。`weak` にしても直らない: COFF の弱い定義は object ごとに既定の名前が違い、2 つあれば `LNK1227`・`duplicate symbol` になる（`__multi3` で測定）。W05 の測定のとおり、DLL の export にも使えない。[W39](_completed/W39-windows-multiple-objects-weak-defaults.md) は `windows_abi` が返す IR の弱い定義を `comdat any` に入れてこの衝突をなくすが、bitcode で連結する trap ランタイムの関数に同じ形が使えるかは確かめていない（D4）。
 - SRWLOCK は再帰しない（`pthread_mutex_t` の既定も同じ）。`tz_boundary` の lock を同じスレッドで 2 回取る経路が無いことは今も同じ。SRWLOCK は destroy が要らないが、`TZ_LOCK_DESTROY` は対称のために残す。
 - `__attribute__((constructor))` は COFF では `.CRT$XCU` で走る。DLL では loader lock の下なので、`tz_boundary_install` にポインターの代入以外を足さない（W05 の落とし穴と同じ）。
 - `tests/trap_return_host.c` の `-DCOUNTING` の版はホストが `trap.c` を強い定義で持つ。Windows の trap の object も強い定義を持つので、`COUNTING` の版を object と一緒にリンクすると重複の誤りになる（2 つの trap の object の測定と同じ形。この組そのものは試していない）。Windows では `COUNTING` の版を `--emit llvm` の経路だけで使う（テスト計画の表）。
@@ -254,7 +254,7 @@ typedef pthread_mutex_t tz_lock;
 
 ## 対象外
 
-- trap ランタイム以外（tzroutine・CPU・IO・Net・OS・GPU）を埋め込む Windows の object（G10 D8。仕組みは提供インターフェースに残す）。複数の Tsuzuri の object を 1 つの Windows のホストに入れること（trap mode によらない今の制限。弱い定義の統合は G10 D8 の対象外で、[W39](W39-windows-multiple-objects-weak-defaults.md) が扱う）。
+- trap ランタイム以外（tzroutine・CPU・IO・Net・OS・GPU）を埋め込む Windows の object（G10 D8。仕組みは提供インターフェースに残す）。複数の Tsuzuri の object を 1 つの Windows のホストに入れること（trap mode によらない今の制限。弱い定義の統合は G10 D8 の対象外で、[W39](_completed/W39-windows-multiple-objects-weak-defaults.md) が扱う）。
 - コールバックとの併用（E14 の決定のまま `E2000`。ホストと OS のフレームを越える）。
 - `--backend fast` の Windows（`E2000` のまま）。`--emit bitcode` の Windows（`E2000` のまま）。
 - `cl.exe` で `trap.c` をコンパイルすること。CET のシャドウスタックとの関係（[W30](W30-windows-hardening.md) が確かめる）。
@@ -267,7 +267,7 @@ typedef pthread_mutex_t tz_lock;
 | D1 | E14 の Windows の境界の方針: Windows でも E14 D6 の `setjmp`・`longjmp` の境界を使い、`longjmp` は CRT の巻き戻し（OS の unwinder が `.pdata` を辿る）に任せる。W07 の `uwtable` を前提にする | 測定で `uwtable` があれば MSVC・MinGW の `-O0`・`-O3`、link.exe・lld-link、WndProc の中で状態 1 になった。Clang が C のコードに出すのと同じ `nounwind uwtable` の形で、Tsuzuri のフレームは unwinder から見て C のフレームと同じになる。退けた案: (a) 巻き戻さない `longjmp`（MinGW の `_setjmp(buf, NULL)`。測定では `.pdata` なしでも状態 1）は、MSVC の target の Clang が `setjmp` を常に frame 付きの `_setjmp` に下げるので toolchain ごとに別の仕組み（`__builtin_setjmp` の Arm64 の Windows の対応は未確認）が要り、OS の unwinder を通らないので CET のシャドウスタックとの整合も保証できない（未確認、W30）。`.pdata` はデバッガーと WER のために W07 がどのみち出す。(b) E14 D6 の代案（すべての呼び出しの後で旗を検査して戻る）は IR のすべての呼び出しと数値ランタイムを変える。(c) `invoke`・SEH の `__try` は D-10（例外を入れない）に反する | 要承認（承認前は該当する段に着手しない） |
 | D2 | `trap.c` の排他は Windows で SRWLOCK（`tz_lock` のマクロ）、POSIX は今の `pthread_mutex_t` | MSVC の Clang でコンパイルでき（今は `pthread.h` が無い）、MinGW の winpthreads への依存も消える。`tzroutine-windows.h` と同じ。初期化は失敗しない。C11 の `<threads.h>` は UCRT と同梱の MinGW での可否を確かめていない | 既定案（実装者はこの案に従う） |
 | D3 | Windows の object は、埋め込む C ランタイムが trap ランタイムだけのときに限り `E2002` を外す。ランタイムを bitcode にして、IR を object にする clang の実行に `-Xclang -mlink-bitcode-file` で連結する（G10 D8 の部分的な改訂） | COFF には再配置可能なリンクが無く（lld-link は `-r` を無視、zig は拒否）、`llvm-link` は Windows のどの配布物にも無い。この方法は 1 回の clang の実行で、ツールを増やさず、同梱 21.1.8 と LLVM 22.1.8 で動き、決定的だった。退けた案: ランタイムの object を別のファイルで出す（出力の契約が変わり、ホストが 2 つをリンクする）、静的ライブラリで出す（拡張子と中身が食い違う）、すべてのランタイムを同じ方法で埋め込む（tzroutine の TLS callback と複数 object の重複の扱いを含む G10 D8 全体の改訂で、このチケットの範囲を越える。`.CRT$XLB` が残ることは確かめたので材料として残す） | 要承認（承認前は手順 4 に着手しない） |
-| D4 | Windows の trap ランタイムの公開関数は強い定義のまま（`TZ_TRAP_API` は空）。Windows の 1 つのホストに Tsuzuri の object は 1 つ（trap mode によらない今の制限）と文書に書く | G10 D8 と同じ扱い。trap mode が無くても、2 つの object の `__multi3` などの弱い定義が COFF で衝突する（測定）ので、trap ランタイムだけを弱くしても 2 つ目の object は入らない。`-mlink-builtin-bitcode` で object ごとに内部化する案は、入れ子の検出（状態 2）が object ごとになって POSIX と意味が変わる。COFF の `weak` は W05 の測定で DLL の export に使えない。[W39](W39-windows-multiple-objects-weak-defaults.md) が先に `main` に入っていれば、理由の前半（弱い定義の衝突）は成り立たないので、着手時にこの決定と仕様 3 を見直す（W39 の「他チケットへ提供するインターフェース」） | 既定案（実装者はこの案に従う） |
+| D4 | Windows の trap ランタイムの公開関数は強い定義のまま（`TZ_TRAP_API` は空）。Windows の 1 つのホストに Tsuzuri の object は 1 つ（trap mode によらない今の制限）と文書に書く | G10 D8 と同じ扱い。trap mode が無くても、2 つの object の `__multi3` などの弱い定義が COFF で衝突する（測定）ので、trap ランタイムだけを弱くしても 2 つ目の object は入らない。`-mlink-builtin-bitcode` で object ごとに内部化する案は、入れ子の検出（状態 2）が object ごとになって POSIX と意味が変わる。COFF の `weak` は W05 の測定で DLL の export に使えない。[W39](_completed/W39-windows-multiple-objects-weak-defaults.md) が先に `main` に入っていれば、理由の前半（弱い定義の衝突）は成り立たないので、着手時にこの決定と仕様 3 を見直す（W39 の「他チケットへ提供するインターフェース」） | 既定案（実装者はこの案に従う） |
 | D5 | `tzroutine.c` の Windows の `tzr_trap_boundary` と `abandon` の登録を POSIX と同じ意味にする。Windows の `tsuzuri_trap_hooks`・`tsuzuri_sync_hooks` は `tzroutine.c` では定義を持たない弱い参照にし、定義は `trap.c` の 1 つだけにする | 今の Windows の分岐は境界が無かったときの仮のもので、境界の中の `Parallel` が手伝いに配られて落ちる（測定）。`--emit llvm` と DLL の経路は tzroutine のランタイムを含む。POSIX と同じ弱い定義を両方に置くと、ホストが 2 つを別々にコンパイルする `--emit llvm` の経路で COFF の弱い定義が衝突する（同じ形を `__multi3` で測定）。弱い参照と 1 つの定義の組は 3 つのリンカーで通った | 既定案（実装者はこの案に従う） |
 | D6 | W05 D4（`--trap-mode return` の Windows の DLL の `E2000`）を外す | W05 D4 の理由（`pthread.h` と `.pdata`）は D2 と W07 で両方とも消える。DLL は普通のリンクなので D3 の制限も無い | 既定案（実装者はこの案に従う） |
 | D7 | `--emit llvm` の経路の `trap.c` は Clang でコンパイルすると文書に書き、`cl.exe` 向けの書き換えはしない | `cl.exe` は 72 行目の `__attribute__` で止まる（測定）。IR を object にするのにどのみち Clang が要る | 既定案（実装者はこの案に従う） |
