@@ -1,6 +1,6 @@
 // NC09: the time of one planned transform under four kernel policies, and of the serial and parallel batches.
 //
-// usage: node benchmarks/run-fft.mjs <compiler> [--runs N] [--numpy]
+// usage: node benchmarks/run-fft.mjs [compiler] [--runs N] [--numpy] [--metrics directory]
 //
 // 1. Kernel policies. The policies are copies of std/Fft.tz as user modules with the choice of radices and of the
 //    convolution length of Bluestein's algorithm edited (A is std/Fft.tz unchanged):
@@ -12,19 +12,41 @@
 // 2. benchmarks/fft/Main.tz: `fft` against `fft_parallel` and `fft2` against `fft2_parallel`.
 // 3. With --numpy, the same transforms with numpy.fft (pocketfft, one thread), for context only.
 //
-// Every program runs N times (default 5) and the fastest time of each line is printed. The script edits the source by
-// exact text, so it stops when std/Fft.tz no longer has the lines it replaces.
+// Every program runs N times (default 5; at least 9 with --metrics) after one run that is not counted. A run of the
+// kernel program gives one sample for each line (the mean of its rounds), and a run of the batch program gives nine
+// (one for each round after its own first one). Every sample is kept: a line shows the fastest, the median and the
+// slowest, and --metrics writes them as schema-1 records (`fft.jsonl` in the directory, read by
+// `node benchmarks/metrics.mjs report`). The script edits the source by exact text, so it stops when std/Fft.tz no
+// longer has the lines it replaces.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { captureRun, makeRecord, median, writeRecords } from "./metrics.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const usage = "Usage: node benchmarks/run-fft.mjs [compiler] [--runs N] [--numpy] [--metrics directory]";
 const args = process.argv.slice(2);
-const compiler = resolve(args.find((arg) => !arg.startsWith("--")) ?? join(root, "target/release/tsuzuri"));
-const runs = args.includes("--runs") ? Number(args[args.indexOf("--runs") + 1]) : 5;
+const valued = (flag) => {
+  const index = args.indexOf(flag);
+  if (index < 0) return null;
+  const value = args[index + 1];
+  assert.ok(value !== undefined && !value.startsWith("-") && args.indexOf(flag, index + 1) < 0, usage);
+  args.splice(index, 2);
+  return value;
+};
+const metrics = valued("--metrics");
+const requested = valued("--runs");
+const withNumpy = args.includes("--numpy");
+const positional = args.filter((arg) => arg !== "--numpy");
+assert.ok(positional.length <= 1 && positional.every((arg) => !arg.startsWith("-")), usage);
+const compiler = resolve(positional[0] ?? join(root, "target/release/tsuzuri"));
+const runs = requested === null ? (metrics ? 9 : 5) : Number(requested);
+assert.ok(Number.isSafeInteger(runs) && runs >= (metrics ? 9 : 1), metrics ? "--metrics needs at least 9 runs" : usage);
+const context = metrics ? captureRun(metrics, { compiler, mode: "benchmark" }) : null;
+const records = [];
 
 function execute(program, programArgs) {
   const result = spawnSync(program, programArgs, { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -54,10 +76,10 @@ const smoothEnd = source.indexOf("// perm[i] is the slot of input element");
 assert.ok(smoothStart >= 0 && smoothEnd > smoothStart, "std/Fft.tz no longer has next_smooth before build_perm");
 const powerOfTwo = (text) => text.replace(source.slice(smoothStart, smoothEnd), "private def next_smooth :: own i64 -> i64\nfn next_smooth least = doubled_to least 1\n\n");
 const policies = [
-  ["FftA", "A radix 4/2/3/5, smooth chirp", source],
-  ["FftB", "B radix 2/3/5, smooth chirp", cut(source, radix4)],
-  ["FftC", "C radix 2 only, 2^k chirp", powerOfTwo(cut(cut(source, radix4), radix35))],
-  ["FftD", "D radix 4/2/3/5, 2^k chirp", powerOfTwo(source)],
+  ["FftA", "A radix 4/2/3/5, smooth chirp", source, "radix-4235-smooth"],
+  ["FftB", "B radix 2/3/5, smooth chirp", cut(source, radix4), "radix-235-smooth"],
+  ["FftC", "C radix 2 only, 2^k chirp", powerOfTwo(cut(cut(source, radix4), radix35)), "radix-2-pow2"],
+  ["FftD", "D radix 4/2/3/5, 2^k chirp", powerOfTwo(source), "radix-4235-pow2"],
 ];
 const lengths = [256, 1024, 4096, 65536, 1000, 3600, 10000, 1031, 10007];
 const one = ([module, label]) => `        let forward${module}: Result<${module}.Plan<f64>, ${module}.Error> = ${module}.plan n ${module}.Direction.Direct
@@ -118,25 +140,46 @@ for shape in [(1024, 1024), (2048, 2048), (300, 500), (16, 256, 256), (1009, 101
     print(f"numpy fft2 {list(shape)}: {best(lambda: np.fft.fft2(x), 1) / 1000:.0f} us")
 `;
 
-// The fastest of `runs` runs for every line that ends in a time; the other words of the line are its key.
-function fastest(program) {
-  const best = new Map();
-  for (let run = 0; run < runs; run++) {
-    for (const line of execute(program, []).split("\n")) {
-      const single = /^(.*) (\d+) ns\/transform$/.exec(line);
-      const pair = /^(.*): serial (\d+) us, parallel (\d+) us, same (\w+)$/.exec(line);
-      if (single) best.set(single[1], Math.min(best.get(single[1]) ?? Infinity, Number(single[2])));
-      else if (pair) {
-        const old = best.get(pair[1]) ?? [Infinity, Infinity, true];
-        best.set(pair[1], [Math.min(old[0], Number(pair[2])), Math.min(old[1], Number(pair[3])), old[2] && pair[4] === "true"]);
-      } else if (line.startsWith("processors")) best.set(line, null);
+// Every sample of `runs` runs (after one that is not counted) for each line that ends in a time; the other words of the
+// line are its key.
+function measure(program) {
+  const kernels = new Map(), batches = new Map(), notes = new Set();
+  const push = (map, key, value) => { if (!map.has(key)) map.set(key, []); map.get(key).push(value); };
+  for (let run = -1; run < runs; run++) {
+    const lines = execute(program, []).split("\n");
+    if (run < 0) continue;
+    for (const line of lines) {
+      const single = /^(.*) n=(\d+) (\d+) ns\/transform$/.exec(line);
+      const pair = /^(fft2?) \[([\d, ]+)\]: serial (\d+) ns, parallel (\d+) ns, same (\w+)$/.exec(line);
+      if (single) push(kernels, `${single[1]} n=${single[2]}`, Number(single[3]));
+      else if (pair) push(batches, `${pair[1]} [${pair[2]}]`, [Number(pair[3]), Number(pair[4]), pair[5] === "true"]);
+      else if (line.startsWith("processors")) notes.add(line);
     }
   }
-  for (const [key, value] of best) {
-    if (value === null) console.log(key);
-    else if (Array.isArray(value)) console.log(`${key}: serial ${value[0]} us, parallel ${value[1]} us, x${(value[0] / value[1]).toFixed(2)}, same ${value[2]}`);
-    else console.log(`${key} ${value} ns/transform`);
+  const spread = (values, unit, scale) => {
+    const sorted = [...values].sort((left, right) => left - right);
+    const show = (value) => (value / scale).toFixed(scale === 1 ? 0 : 1);
+    return `${show(sorted[0])} ${unit} (median ${show(median(values))}, max ${show(sorted.at(-1))}, ${values.length} samples)`;
+  };
+  const record = (workload, size, variant, nanoseconds) => {
+    if (context) records.push(makeRecord(context, { suite: "fft", workload, size, language: "tsuzuri", variant, opt: "O3",
+      metric: "wall_time", samples: nanoseconds.map((value) => value / 1e6) }));
+  };
+  for (const [key, values] of kernels) {
+    console.log(`${key} ${spread(values, "ns/transform", 1)}`);
+    const [, label, size] = /^(.*) n=(\d+)$/.exec(key);
+    record("transform", Number(size), policies.find((policy) => policy[1] === label)[3], values);
   }
+  for (const [key, values] of batches) {
+    const serial = values.map((value) => value[0]), parallel = values.map((value) => value[1]);
+    console.log(`${key}: serial ${spread(serial, "us", 1000)}, parallel ${spread(parallel, "us", 1000)}, x${(median(serial) / median(parallel)).toFixed(2)} by the medians, same ${values.every((value) => value[2])}`);
+    const [, name, shape] = /^(fft2?) \[([\d, ]+)\]$/.exec(key);
+    const extents = shape.split(", ").map(Number);
+    const workload = `${name}-${extents.join("x")}`, size = extents.reduce((product, extent) => product * extent, 1);
+    record(workload, size, "serial", serial);
+    record(workload, size, "parallel", parallel);
+  }
+  for (const note of notes) console.log(note);
 }
 
 const temporary = mkdtempSync(join(tmpdir(), "tsuzuri-fft-bench-"));
@@ -146,11 +189,12 @@ try {
   writeFileSync(join(temporary, "Main.tz"), kernels);
   const kernelProgram = join(temporary, "kernels");
   execute(compiler, ["build", temporary, "-O3", "-o", kernelProgram]);
-  fastest(kernelProgram);
+  measure(kernelProgram);
   const batchProgram = join(temporary, "batches");
   execute(compiler, ["build", join(root, "benchmarks/fft"), "-O3", "-o", batchProgram]);
-  fastest(batchProgram);
-  if (args.includes("--numpy")) process.stdout.write(execute("python3", ["-c", numpy]));
+  measure(batchProgram);
+  if (withNumpy) process.stdout.write(execute("python3", ["-c", numpy]));
+  if (metrics) console.log(`metrics: ${writeRecords(metrics, "fft", records)}`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }
