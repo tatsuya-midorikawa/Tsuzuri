@@ -5,10 +5,10 @@
 | ID | NC10 |
 | 優先度 | P2（モンテカルロ法・統計シミュレーション・機械学習の重み初期化とデータシャッフル） |
 | 規模 | M（2 Phase: Phase 1 常時ロード `std/Random.tz` のスカラー分布拡張、Phase 2 opt-in `std/RandomTensor.tz` のテンソル生成・軸シャッフル・多変量正規） |
-| 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([NC08](_completed/NC08-linalg-core-and-einsum.md)) |
+| 依存 | [NC01](NC01-complex-and-extended-math.md), [NC02](NC02-tensor-core-views-and-broadcasting.md), ([NC08](NC08-linalg-core-and-einsum.md)) |
 | 後続 | – |
 | 状態 | done（Phase 1・2。2026-11-28） |
-| 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
+| 起票 | 2026-11-24（[GUIDE D-65](../GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
 | 承認 | 承認済み（D-65 の委任で決定、2026-11-28。D1 の `RandomTensor` の `RESERVED_MODULES` 登録と、「方針の最新化」の D4〜D12） |
 | 手本にする既存実装 | `std/Random.tz`（`Pcg`・`pcg_next_u32`・`pcg_next_u64` の純粋関数型設計）、`std/Array.tz`（`random_shuffle_with`/`random_shuffle_in_place_with`/`random_choice_with`）、`tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt` |
 | 主な影響ファイル | `std/Random.tz`、`std/RandomTensor.tz`（新規・Phase 2）、`src/stdlib.rs`、`src/capabilities.rs`、`tests/capabilities.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/random_distributions.rs`（新規）、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/features.mjs`、`tests/fixtures/effects_sweep/`、`tests/fixtures/`、`tests/random-cases.mjs`（新規）、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`vsc/src/core.ts`、`docs/language.md`、別リポジトリ Tsuzuri-Reference の `docs/stdlib/sys/random.md`・`docs/stdlib/numeric/random-tensor.md`（新規）・`docs/index.md`・`docs/stdlib/conventions.md` |
@@ -45,14 +45,14 @@
 
 ## 目的
 
-現行の [Random.tz](../std/Random.tz) は 32/64 bit 整数の出力のみで、確率分布・多次元テンソルの一括生成・並列用の独立ストリーム分岐を持たない。常時ロードの `Random`（スカラー分布）と opt-in の `RandomTensor`（テンソル生成・多変量分布・軸シャッフル）を分離することで、数値計算を使わないプログラムの IR を 1 byte も変えずに NumPy 級の乱数機能を提供する。
+現行の [Random.tz](../../std/Random.tz) は 32/64 bit 整数の出力のみで、確率分布・多次元テンソルの一括生成・並列用の独立ストリーム分岐を持たない。常時ロードの `Random`（スカラー分布）と opt-in の `RandomTensor`（テンソル生成・多変量分布・軸シャッフル）を分離することで、数値計算を使わないプログラムの IR を 1 byte も変えずに NumPy 級の乱数機能を提供する。
 
 ## 着手条件と停止条件
 
 ### 着手条件
 
-- Phase 1 は [NC01](_completed/NC01-complex-and-extended-math.md) が done。
-- Phase 2 は [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md) が done（`multivariate_normal` は [NC08](_completed/NC08-linalg-core-and-einsum.md) も done）および決定事項 D1 の承認。
+- Phase 1 は [NC01](NC01-complex-and-extended-math.md) が done。
+- Phase 2 は [NC02](NC02-tensor-core-views-and-broadcasting.md) が done（`multivariate_normal` は [NC08](NC08-linalg-core-and-einsum.md) も done）および決定事項 D1 の承認。
 
 ### 停止条件
 
@@ -92,7 +92,7 @@
   - 多変量分布: `dirichlet :: ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)`、`multivariate_normal :: ref Tensor.View<f64> -> ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> Result<(Tensor<f64> * Random.Pcg64), Linalg.Error>`（`Linalg.cholesky` 使用）
   - 順列: `permutation :: own i64 -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)`
 - テンソル操作（既存の `Array.random_shuffle_in_place_with` / `Array.random_choice_with` と一貫させ、操作・書き換え対象のテンソルを最後の引数にする: D-59）:
-  - `shuffle_axis { r } :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> { r } -> Random.Pcg64`（`ref mut` 引数を取るため非 `pure` の `def`。`Copy` は「方針の最新化」の D9）
+  - `shuffle_axis :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64`（`ref mut` 引数を取るため非 `pure` の `def`。`Copy` は「方針の最新化」の D9）
   - `choice_weighted :: Copy<'a> => own i64 -> own bool -> ref Tensor.View<f64> -> own Random.Pcg64 -> ref Tensor.View<'a> -> (Tensor<'a> * Random.Pcg64)`（`pure def`）
 
 ### 3. パラメータ検証
@@ -107,9 +107,9 @@
 
 ## 前提とする他チケットのインターフェース
 
-- [NC01](_completed/NC01-complex-and-extended-math.md): `Math.log1p`, `Math.expm1`, `Math.log`, `Math.sqrt`。
-- [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`（Phase 2）。
-- 弱い依存 [NC08](_completed/NC08-linalg-core-and-einsum.md): `Linalg.cholesky`（Phase 2 の `multivariate_normal` 用）。
+- [NC01](NC01-complex-and-extended-math.md): `Math.log1p`, `Math.expm1`, `Math.log`, `Math.sqrt`。
+- [NC02](NC02-tensor-core-views-and-broadcasting.md): `Tensor`, `Tensor.View`, `Tensor.Mut`（Phase 2）。
+- 弱い依存 [NC08](NC08-linalg-core-and-einsum.md): `Linalg.cholesky`（Phase 2 の `multivariate_normal` 用）。
 
 ## 他チケットへ提供するインターフェース
 

@@ -345,13 +345,13 @@ fn reordered_copy axis generator window =
 /// The order is the one of `permutation` for the same generator: slice `i` becomes the old slice `order[i]`.
 /// A negative `axis` counts from the last axis; an axis outside the rank traps.
 ///
-/// ```tsuzuri run=[[1,%202],%20[3,%204],%20[5,%206]]
+/// ```tsuzuri run=[5,%206,%203,%204,%201,%202]
 /// let mut data = [1, 2, 3, 4, 5, 6]
 /// let mut rows = Tensor.borrow_mut [3, 2] (ref mut data)
 /// let _next = RandomTensor.shuffle_axis 0 (Random.pcg64 42i64u) (ref mut rows)
-/// Array.sort [[data[0], data[1]], [data[2], data[3]], [data[4], data[5]]]
+/// $"{data}"
 /// ```
-def shuffle_axis { r } :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> { r } -> Random.Pcg64
+def shuffle_axis :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64
 fn shuffle_axis axis generator target =
     let (reordered, next) = reordered_copy axis generator target
     Tensor.copy_from (Tensor.view reordered) target

@@ -604,19 +604,16 @@ fn binomial_btpe n r generator =
 		elif u <= p2 then
 			let x = left + (u - p1) / c
 			v = v * c + 1.0 - Math.abs (mode_value - x + 0.5) / p1
-			if v <= 1.0 then
-				y = (Math.floor x) as i64
-				check = true
+			y = (Math.floor x) as i64
+			check = v <= 1.0
 		elif u <= p3 then
 			y = (Math.floor (left + Math.log v / left_rate)) as i64
-			if y >= 0 && v != 0.0 then
-				v = v * (u - p2) * left_rate
-				check = true
+			check = y >= 0 && v != 0.0
+			v = v * (u - p2) * left_rate
 		else
 			y = (Math.floor (right - Math.log v / right_rate)) as i64
-			if y <= n && v != 0.0 then
-				v = v * (u - p3) * right_rate
-				check = true
+			check = y <= n && v != 0.0
+			v = v * (u - p3) * right_rate
 		if check then
 			let distance = Int.abs (y - mode)
 			let k = distance as f64
@@ -626,7 +623,7 @@ fn binomial_btpe n r generator =
 				let a = Math.log v
 				if a < t - rho then accepted = true
 				elif a <= t + rho then
-					let x1 = ((y + 1) as f64)
+					let x1 = (y + 1) as f64
 					let f1 = mode_value + 1.0
 					let z = ((n - mode) as f64) + 1.0
 					let w = ((n - y) as f64) + 1.0
