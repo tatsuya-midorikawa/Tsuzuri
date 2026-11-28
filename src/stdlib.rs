@@ -95,6 +95,8 @@ pub const SOURCES: &[(&str, &str)] = &[
         include_str!("../std/TensorElement.tt"),
     ),
     ("std/TensorIO.tz", include_str!("../std/TensorIO.tz")),
+    ("std/Fft.tz", include_str!("../std/Fft.tz")),
+    ("std/Polynomial.tz", include_str!("../std/Polynomial.tz")),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -201,6 +203,10 @@ pub const RESERVED_MODULES: &[&str] = &[
     "TensorCodec",
     "TensorElement",
     "TensorIO",
+    // NC09: fast Fourier transforms of any length.
+    "Fft",
+    // NC09: polynomial arithmetic, least-squares fits and roots.
+    "Polynomial",
 ];
 
 /// The namespace of every std module, as `std::Maybe`. User code cannot
@@ -274,6 +280,7 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "TensorCodec.Archive"
             | "TensorCodec.ElementType"
             | "TensorIO.MappedTensor"
+            | "Fft.Plan"
     )
 }
 
@@ -568,6 +575,18 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["TensorIO"],
         aliases: &[],
         uses: &["Tensor", "TensorCodec", "TensorElement"],
+    },
+    OptIn {
+        module: "Fft",
+        names: &["Fft"],
+        aliases: &[],
+        uses: &["Complex", "Tensor"],
+    },
+    OptIn {
+        module: "Polynomial",
+        names: &["Polynomial"],
+        aliases: &[],
+        uses: &["Complex", "Tensor", "Linalg"],
     },
 ];
 
@@ -1072,7 +1091,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 87);
+        assert_eq!(RESERVED_MODULES.len(), 89);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

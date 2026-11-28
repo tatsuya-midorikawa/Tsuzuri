@@ -374,9 +374,11 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`、`ZUtf8String`、`Linalg`、`RandomTensor`、`ObjC`、`MainThread`、`TensorCodec`、`TensorElement`、`TensorIO`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`、`ZUtf8String`、`Linalg`、`RandomTensor`、`ObjC`、`MainThread`、`TensorCodec`、`TensorElement`、`TensorIO`、`Fft`、`Polynomial`
 
 `Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で、`ZUtf8String` は M06 で、`Linalg` は NC08 で、`RandomTensor` は NC10 で、`ObjC`（std のファイルを持たない組み込みのモジュール。型 `ObjC.Object`・`ObjC.Class`・`ObjC.Sel` と関数を持ちます。[Objective-C のクラスとメッセージ送信](#objective-c-のクラスとメッセージ送信)）は M01 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`TensorCodec`・`TensorElement`（opt-in の型クラス）・`TensorIO` は NC11 で追加した予約モジュール名です（[TensorCodec / TensorIO](#tensorcodec--tensorio)）。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
+
+`Fft` と `Polynomial` は NC09 で追加した予約モジュール名です（どちらも opt-in の std モジュール。[Fft](#fft)、[Polynomial](#polynomial)）。
 
 `HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
@@ -3777,6 +3779,49 @@ let (order, rng) = RandomTensor.permutation 100 rng                // Tensor<i64
 マップは読み取り専用で、書き込めるマップはありません。マップしている間にほかのプログラムがファイルを切り詰めると、欠けたページを読んだ時点でシステムがプログラムを止めます（POSIX の `mmap` の性質。Windows はマップ中の切り詰めを拒否します）。WebAssembly はファイルをマップできず、`--wasm-host wasi` では `open_mmap_*`・`with_mmap_npy` が `Io`（`Other`、ENOSYS）を返します。import のない既定の WebAssembly では、`TensorIO` は `File` と同じく `E2000` です（`TensorCodec` は使えます）。
 
 **内部の組み込み。** `TensorCodec.__to_bytes`・`TensorCodec.__of_bytes`（数値の配列の記憶域とバイト列の間の 1 回の複写。対応する target はすべて little-endian）、`TensorIO.__mmap_slice`（マップの中の借用スライス。所有する配列は作らないので、解放で `tz.free` が呼ばれることはない）、`Os.__map`・`Os.__unmap` は、それぞれの std モジュールだけが呼べます（利用者のコードでは `E1022`）。`TensorIO` の 16 個の関数（`save_*`・`load_*`・`open_mmap_*`・`with_mmap_npy`）の権限は `fs` で、`view`・`mapped_dtype`・`mapped_shape` と `TensorCodec` の全関数は権限を要しません。
+
+### Fft
+
+`Fft` は `Tensor` と `Complex` の上に構築された高速フーリエ変換の opt-in 標準モジュール（予約モジュール `Fft`）です。外部の C ライブラリに依存せず、ネイティブと WebAssembly で同じビットの結果を返します（回転因子は `f64` の `Math.cos`・`Math.sin` を 1 回ずつ呼んで要素型へ丸めたもので、反復乗算・`fast-math`・暗黙の FMA は使いません）。
+変換長は任意で、計算量は $O(n \log n)$ です。素因数が 2・3・5 だけの長さは基数 4・2・3・5 の反復の混合基数（桁反転の置換と段ごとのバタフライ）で直接変換し、それ以外の長さは Bluestein のチャープ Z 変換で、$2n - 1$ 以上の最小の $2^a 3^b 5^c$ の長さの畳み込みに置き換えます（チャープの位相 $k^2 \bmod 2n$ は整数で厳密に計算します）。要素型は `Elementary<'a>`（`f32`・`f64`）です。
+失敗はトラップではなく `Result<_, Fft.Error>`（`EmptyAxis axis`・`InvalidAxis (axis, rank)`・`RepeatedAxis axis`・`InvalidLength n`・`LengthMismatch (expected, found)`）で返します。長さ 0 の変換軸は NumPy と同じく誤り（`EmptyAxis`）で、変換しない軸の長さが 0 のときは空のテンソルを返します。
+スケーリングは `Fft.Norm`（`Backward`: 順変換は 1、逆変換は $1/n$。既定。`Ortho`: どちらも $1/\sqrt{n}$。`Forward`: 順変換が $1/n$）で、$1/n$ は乗算で掛けます。
+
+| 分類 | 関数 |
+|---|---|
+| 複素 1D（最後の軸、`*_axis` は軸指定、`*_with` は `Fft.Options { axis, n, norm }`） | `fft`・`fft_axis`・`fft_with`・`ifft`・`ifft_axis`・`ifft_with` |
+| 実数 1D（出力は先頭の `n / 2 + 1` 項。偶数長は長さ `n / 2` の複素変換 1 回） | `rfft`・`rfft_axis`・`rfft_with`・`irfft`・`irfft_len`・`irfft_with` |
+| エルミート対称 | `hfft`・`hfft_len`・`hfft_with`・`ihfft`・`ihfft_with` |
+| 2D・ND（`fft2` は最後の 2 軸、`fftn` は全軸、`*_with` は `Fft.NdOptions { axes, shape, norm }`。列挙した最後の軸から変換） | `fft2`・`ifft2`・`rfft2`・`irfft2`・`fftn`・`ifftn`・`rfftn`・`irfftn`・`fftn_with`・`ifftn_with`・`rfftn_with`・`irfftn_with` |
+| 周波数とシフト | `fftfreq`・`rfftfreq`（`spacing`・`n` の順。`n <= 0` はトラップ）・`fftshift`・`ifftshift`・`fftshift_axes`・`ifftshift_axes` |
+| 既定値 | `options`・`nd_options` |
+| 計画 | `plan`・`plan_with`・`plan_length`・`plan_work_length`・`execute`・`execute_into`・`execute_in_place` |
+| 並列 | `fft_parallel`・`ifft_parallel`・`fft2_parallel`・`ifft2_parallel` |
+
+- `Options.n`・`NdOptions.shape` を与えると、入力は変換の前にその長さへ切り詰めるか、後ろを 0 で埋めます。`irfft`・`hfft` の既定の出力長は `2 (m - 1)` で、奇数長は `irfft_len`・`hfft_len`・`*_with` で指定します。`irfft` は NumPy と同じく、第 0 項と（偶数長の）第 `n / 2` 項の虚部を読みません。
+- `NdOptions.axes` に同じ軸を 2 回書くと `RepeatedAxis` です（NumPy は 2 回変換します）。`axes` が `Maybe.None` で `shape` が k 個なら、最後の k 軸を変換します。
+- `Fft.Plan<'a>` は 1 つの長さと向き（`Fft.Direction.Direct`・`Inverse`）の回転因子・置換・Bluestein のフィルターを持つ不変の不透明レコードです。隠れたキャッシュはなく、1 つの計画を複数のスレッドが共有借用で同時に使えます。`execute` は最後の軸を変換した新しいテンソルを返し、`execute_into plan input work output`（長さ `n` の入力と出力）・`execute_in_place plan work data`（`n` 個ずつが 1 本の線）は排他スライスへ書き込み、ヒープを確保しません。`work` は `plan_work_length plan` 個以上が要り、呼び出しの後の中身は未規定です。
+- `ref mut` を取る `execute_into`・`execute_in_place` と `*_parallel` 以外は `pure def` です。
+- `fft_parallel`・`ifft_parallel`（最後の軸のバッチ）と `fft2_parallel`・`ifft2_parallel`（最後の 2 軸）は、16384 要素以上を 1 チャンクとして `Parallel.for_each_chunk_with` で線を分け合います。各線の計算は直列版と同じなので結果はビットまで同じで、スレッドのない WebAssembly では逐次に実行します。
+- 核の方針（基数 4、混合基数、畳み込み長）と並列版の実測は [benchmarks.md](benchmarks.md#fft-の変換の核と並列バッチnc092026-11-28) にあります。SIMD・GPU の核、外部の FFTW／vDSP への接続、窓関数・STFT はありません。
+
+### Polynomial
+
+`Polynomial` は多項式の演算・最小二乗フィッティング・求根の opt-in 標準モジュール（予約モジュール `Polynomial`。`Complex`・`Tensor`・`Linalg` を使います）です。係数は昇べきの配列 `['a]`（`c[0] + c[1] x + c[2] x^2 + …`。`numpy.polynomial` と同じ向きで、旧 `np.polyval` の逆順とは違います）、標本点とデータは `Tensor.View<'a>`、根は `[Complex<'a>]` で、要素型は `Elementary<'a>`（`f32`・`f64`）です。どの公開関数も `pure def` です。
+失敗は `Result<_, Polynomial.Error>`（`ZeroDivisor`・`InvalidDegree degree`・`InvalidRank rank`・`ShapeMismatch`・`EmptyData`・`Solver of Linalg.Error`）で返し、負のべき（`pow`）・負の階数（`deriv_n`）・負の許容差（`trim`）は事前条件の違反としてトラップします。
+
+| 分類 | 関数 |
+|---|---|
+| 評価（Horner 法） | `eval x c`・`eval_complex z c`・`eval_tensor c points` |
+| 四則 | `add`・`sub`（長いほうの長さ。0 の係数は残す）・`mul`（畳み込み）・`divmod dividend divisor`（商と余り）・`pow power c`・`trim tolerance c` |
+| 微積分 | `deriv`・`deriv_n order c`・`integ`（0 で 0）・`integ_const constant c` |
+| 根 | `from_roots`・`from_roots_complex`・`roots`（半回転したコンパニオン行列の `Linalg.eigvals`。実部、次に虚部の昇順） |
+| フィッティング | `vander degree points`・`fit degree points values`・`fit_weighted degree weights points values`（列を単位長に正規化してから `Linalg.lstsq`） |
+| Chebyshev・Legendre（Clenshaw の漸化式） | `cheb_eval`・`cheb_fit`・`leg_eval`・`leg_fit` |
+
+- `divmod` と `roots` は、最高次の側のちょうど 0 の係数を先に取り除きます。定数（と零多項式）の根は空です。
+- `fit` は点の数が係数の数より少ないとき、ノルムが最小の解を返します（NumPy の `RankWarning` に当たる警告はありません）。
+- 一般の複素係数の演算、Hermite・Laguerre 基底、基底の間の変換はありません。
 
 ### HashMap / HashSet
 

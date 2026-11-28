@@ -16,6 +16,7 @@ import { cases as tensorOperatorCases, traps as tensorOperatorTraps } from "./te
 import { cases as tensorCodecCases } from "./tensor-codec-cases.mjs";
 import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
 import { cases as randomCases, traps as randomTraps, tensorCases as randomTensorCases, tensorTraps as randomTensorTraps } from "./random-cases.mjs";
+import { fftCases, fftTraps, polynomialCases, polynomialTraps } from "./fft-polynomial-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
@@ -3198,6 +3199,26 @@ const suites = {
       assert.match(ir, /@tz\.builtin\.TensorCodec\.__to_bytes/);
       assert.match(ir, /@tz\.builtin\.TensorCodec\.__of_bytes/);
       assert.doesNotMatch(ir, /@tsuzuri_os_/);
+    },
+  },
+  // NC09: transforms of every kind of length against their definitions; plans and parallel batches agree with `fft`.
+  fft: {
+    cases: fftCases,
+    traps: fftTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Fft\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC09: polynomial arithmetic with exact integer results, fits and roots of known polynomials.
+  polynomial: {
+    cases: polynomialCases,
+    traps: polynomialTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Polynomial\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },
   // NC19: 43 Tensor operator extension instances (View/Tensor/Scalar +, -, *, /, %, **, unary -).

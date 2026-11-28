@@ -3653,8 +3653,12 @@ entry:
             allocator: Allocator::System,
             f16: F16Path::Soft,
         };
+        // The source map names the std sources after the user's, as `analyze_modules` numbers them: a site of a
+        // parallel region inside a std function (NC09, `Fft.fft_parallel`) is a span of its std source.
+        let std_sources = crate::stdlib::sources_for(sources.iter().map(|(_, text)| *text));
         let traps: Vec<_> = sources
             .iter()
+            .chain(std_sources.iter())
             .map(|(path, text)| crate::trap::TrapSource { path, text })
             .collect();
         let output = emit_native_build_numbered(
