@@ -409,7 +409,7 @@ def main :: unit -> i32 = \() ->
 #### OS API
 
 ファイルシステム、プロセス、環境変数、時刻などの OS 機能は、標準モジュール `File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Process`、`Os` で提供されます（macOS・Linux・Windows 対応）。
-すべての OS 操作は `IO<Result<T, Os.Error>>` などの一貫した遅延アクションとして抽象化されています（`Path` および擬似乱数 `Random.Pcg` は純粋関数です）。WASM 環境では `--wasm-host wasi` を指定することで WASI preview1 に接続可能です。
+すべての OS 操作は `IO<Result<T, Os.Error>>` などの一貫した遅延アクションとして抽象化されています（`Path` および種を明示する擬似乱数 `Random.Pcg`・`Random.Pcg64` とその確率分布は純粋関数です）。WASM 環境では `--wasm-host wasi` を指定することで WASI preview1 に接続可能です。
 
 #### ネットワーク API
 
@@ -1174,6 +1174,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | macOS の報告の送り先（標準エラーが閉じているか `/dev/null` のときの unified logging。M19） | `src/llvm.rs` の単体テスト `darwin_trap_report_asks_the_runtime` | `macos_report.mjs`（macOS だけ。実行ファイルの標準エラーをパイプ・ファイル・`/dev/null`・閉じた状態にし、記録を `/usr/bin/log show` でプロセス ID から読む。読めない機械ではその旨を出し、`tests/macos_report_host.c` で送り先の判定と、独立した報告が 1 件に混ざらないことだけを確かめる。`--emit app` のバンドルを `open` で起動した場合も確かめる。ほかのホストでは理由を出して飛ばす） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
+| 乱数（`Random.Pcg64`・`SeedSequence`・確率分布、opt-in の `RandomTensor`。NC10） | `tests/random_distributions.rs`（NumPy が出した列との一致、分布の積率と確率、native・WASM の `-O0`・`-O3` のビット一致、opt-in の IR） | `features.mjs random`・`random_tensor`（期待値は `tests/random-cases.mjs` の BigInt のモデルが作り、モデルは NumPy の出力と照合する） |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs`、`tests/c_layout.rs`、`tests/c_layout_by_value.rs`（`@c_layout` の値渡し。W36） | `host_imports.mjs`、`c_layout.mjs`、`c_layout_by_value.mjs`（C のホストでの実行と、全 target の `declare` の Clang との突き合わせ） |
 | `MainThread`・`extern type main`・共有の `Anchor`（M09） | `tests/main_thread.rs`、`tests/main_thread_handles.rs`、`tests/shared_anchor.rs` | `main_thread.mjs`（arm64 の macOS だけ。CFRunLoop の上の場面、C のホスト `tests/main_thread_host.c` の pthread、ランタイムを C から直接動かす `tests/main_thread_runtime.c`（順序・境界の終わり・投入ごとのメモリが残らないこと。ASan・UBSan のビルドでも）。ほかのホストでは理由を出して飛ばす）、`features.mjs anchor`（共有の `Anchor`。native と既定の WebAssembly）、`tzroutine_runtime.mjs anchor_shared`（読み取り中の共有の `Anchor` を別のスレッドが退かせる） |

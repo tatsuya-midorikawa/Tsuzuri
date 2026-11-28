@@ -1,0 +1,184 @@
+// NC10 Phase 1: `Random.Pcg64`, `Random.SeedSequence` and the scalar distributions. The expected values are in
+// tests/random-cases.mjs (a BigInt model checked against NumPy). Seeds and results cross the boundary as `i64`.
+
+private def nth_raw :: own i64 -> own Random.Pcg64 -> i64
+fn nth_raw index generator =
+    let mut state = generator
+    let mut value = 0i64u
+    for _ in 0 ..= index do
+        let (bits, next) = Random.pcg64_next_u64 state
+        value = bits
+        state = next
+    value as i64
+
+// Output `index` of the generator of one seed.
+export def raw_at :: own i64 -> own i64 -> i64
+fn raw_at seed index = nth_raw index (Random.pcg64 (seed as i64u))
+
+// Output `index` of the generator of `seed_sequence` with `count` (0 to 3) of the three integers.
+export def sequence_raw_at :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn sequence_raw_at count a b c index =
+    let entropy: [i64u] =
+        if count == 0 then []
+        elif count == 1 then [a as i64u]
+        elif count == 2 then [a as i64u, b as i64u]
+        else [a as i64u, b as i64u, c as i64u]
+    let sequence = Random.seed_sequence entropy
+    nth_raw index (Random.pcg64_from_seed (ref sequence))
+
+// Output `index` of child `child` when the sequence of `a` and `b` spawns `first` children and then `second` more.
+export def spawn_raw_at :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn spawn_raw_at a b first second child index =
+    let (early, parent) = Random.seed_sequence_spawn first (Random.seed_sequence [a as i64u, b as i64u])
+    let (late, _) = Random.seed_sequence_spawn second parent
+    if child < first then nth_raw index (Random.pcg64_from_seed (ref early[child]))
+    else nth_raw index (Random.pcg64_from_seed (ref late[child - first]))
+
+// Output `index` of grandchild `grandchild` of child `child` of three children.
+export def grandchild_raw_at :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn grandchild_raw_at a b child grandchild index =
+    // Child `child` is the same whether it is spawned with its siblings or after them.
+    let (_, parent) = Random.seed_sequence_spawn child (Random.seed_sequence [a as i64u, b as i64u])
+    let (only, _) = Random.seed_sequence_spawn 1 parent
+    let mut picked = Random.seed_sequence []
+    for candidate in only do picked = candidate
+    let (grandchildren, _) = Random.seed_sequence_spawn 2 picked
+    nth_raw index (Random.pcg64_from_seed (ref grandchildren[grandchild]))
+
+// The parent after spawning still seeds the stream it seeded before.
+export def parent_raw_after_spawn :: own i64 -> own i64 -> i64
+fn parent_raw_after_spawn seed index =
+    let (_, parent) = Random.seed_sequence_spawn 4 (Random.seed_sequence [seed as i64u])
+    nth_raw index (Random.pcg64_from_seed (ref parent))
+
+// `pcg64_next_f64` number `index`, times 2^53: an integer below 2^53.
+export def unit_scaled_at :: own i64 -> own i64 -> i64
+fn unit_scaled_at seed index =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut value = 0.0
+    for _ in 0 ..= index do
+        let (unit, next) = Random.pcg64_next_f64 state
+        value = unit
+        state = next
+    (value * 9007199254740992.0) as i64
+
+export def range_at :: own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn range_at low high seed index =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut value = 0
+    for _ in 0 ..= index do
+        let (drawn, next) = Random.pcg64_next_i64_range low high state
+        value = drawn
+        state = next
+    value
+
+// `count` draws of `[low, high)` folded into one number; -1 when a draw leaves the range.
+export def range_mix :: own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn range_mix low high seed count =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut total = 0
+    let mut inside = true
+    for _ in 0 ..< count do
+        let (drawn, next) = Random.pcg64_next_i64_range low high state
+        state = next
+        if drawn < low || drawn >= high then inside = false
+        total = Int.wrapping_add (Int.wrapping_mul total 31) drawn
+    if inside then total else -1
+
+private def draw_real :: own i64 -> own f64 -> own f64 -> own Random.Pcg64 -> (f64 * Random.Pcg64)
+fn draw_real kind a b generator =
+    if kind == 0 then Random.pcg64_next_f64 generator
+    elif kind == 1 then Random.pcg64_uniform a b generator
+    elif kind == 2 then Random.pcg64_standard_normal generator
+    elif kind == 3 then Random.pcg64_normal a b generator
+    elif kind == 4 then Random.pcg64_exponential a generator
+    elif kind == 5 then Random.pcg64_gamma a b generator
+    elif kind == 6 then Random.pcg64_beta a b generator
+    elif kind == 7 then Random.pcg64_chisquare a generator
+    elif kind == 8 then Random.pcg64_laplace a b generator
+    elif kind == 9 then Random.pcg64_lognormal a b generator
+    elif kind == 10 then Random.pcg64_standard_t a generator
+    else Random.pcg64_f_dist a b generator
+
+private def close :: own f64 -> own f64 -> bool
+fn close value expected = Math.abs (value - expected) <= 1e-11 * Math.abs expected
+
+// 1 when sample `index` of distribution `kind` is `expected` up to rounding in the last digits.
+export def real_close_at :: own i64 -> own f64 -> own f64 -> own i64 -> own i64 -> own f64 -> i64
+fn real_close_at kind a b seed index expected =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut value = 0.0
+    for _ in 0 ..= index do
+        let (sample, next) = draw_real kind a b state
+        value = sample
+        state = next
+    if close value expected then 1 else 0
+
+// 1 when the sum of `count` samples is `expected` up to rounding, and the generator after them gives `following`.
+export def real_sum_close :: own i64 -> own f64 -> own f64 -> own i64 -> own i64 -> own f64 -> own i64 -> i64
+fn real_sum_close kind a b seed count expected following =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut total = 0.0
+    for _ in 0 ..< count do
+        let (sample, next) = draw_real kind a b state
+        total = total + sample
+        state = next
+    let (bits, _) = Random.pcg64_next_u64 state
+    if Math.abs (total - expected) <= 1e-9 * Math.max 1.0 (Math.abs expected) && (bits as i64) == following then 1 else 0
+
+private def draw_count :: own i64 -> own i64 -> own f64 -> own Random.Pcg64 -> (i64 * Random.Pcg64)
+fn draw_count kind n p generator =
+    if kind == 0 then Random.pcg64_binomial n p generator
+    elif kind == 1 then Random.pcg64_poisson p generator
+    elif kind == 2 then Random.pcg64_geometric p generator
+    else
+        let (hit, next) = Random.pcg64_bernoulli p generator
+        (if hit then 1 else 0, next)
+
+export def count_at :: own i64 -> own i64 -> own f64 -> own i64 -> own i64 -> i64
+fn count_at kind n p seed index =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut value = 0
+    for _ in 0 ..= index do
+        let (sample, next) = draw_count kind n p state
+        value = sample
+        state = next
+    value
+
+// `count` samples folded into one number, then mixed with the next output of the generator.
+export def count_mix :: own i64 -> own i64 -> own f64 -> own i64 -> own i64 -> i64
+fn count_mix kind n p seed count =
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut total = 0
+    for _ in 0 ..< count do
+        let (sample, next) = draw_count kind n p state
+        total = Int.wrapping_add (Int.wrapping_mul total 31) sample
+        state = next
+    let (bits, _) = Random.pcg64_next_u64 state
+    Int.wrapping_add (Int.wrapping_mul total 31) (bits as i64)
+
+// Invalid parameters trap before a number is drawn.
+private def seeded :: own unit -> Random.Pcg64
+fn seeded _unit = Random.pcg64 1i64u
+
+export def trap_range_empty :: own i64 -> i64
+fn trap_range_empty low =
+    let (value, _) = Random.pcg64_next_i64_range low low (seeded ())
+    value
+
+export def trap_spawn_negative :: own i64 -> i64
+fn trap_spawn_negative count =
+    let (children, _) = Random.seed_sequence_spawn count (Random.seed_sequence [1i64u])
+    children.length
+
+// 0: uniform, 3: normal, 4: exponential, 5: gamma, 6: beta, 7: chisquare, 8: laplace, 9: lognormal, 10: t, 11: F.
+export def trap_real :: own i64 -> own f64 -> own f64 -> i64
+fn trap_real kind a b =
+    let (value, _) = draw_real (if kind == 0 then 1 else kind) a b (seeded ())
+    if value == value then 1 else 0
+
+// 0: binomial, 1: poisson, 2: geometric, 3: bernoulli.
+export def trap_count :: own i64 -> own i64 -> own f64 -> i64
+fn trap_count kind n p =
+    let (value, _) = draw_count kind n p (seeded ())
+    value

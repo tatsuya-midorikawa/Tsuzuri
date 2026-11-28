@@ -142,6 +142,7 @@ export const STD_PAGES = {
     Path: 'stdlib/sys/path.md',
     Process: 'stdlib/sys/process.md',
     Random: 'stdlib/sys/random.md',
+    RandomTensor: 'stdlib/numeric/random-tensor.md',
     Rc: 'stdlib/memory/rc.md',
     ReceiveOnly: 'stdlib/sync/channel.md',
     Regex: 'stdlib/text/regex.md',

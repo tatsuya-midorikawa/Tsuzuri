@@ -1,0 +1,358 @@
+// NC10 Phase 2: the opt-in `RandomTensor`. The expected values are in tests/random-cases.mjs (a BigInt model checked
+// against NumPy). Seeds and results cross the boundary as `i64`.
+
+private def draw_real :: own i64 -> own f64 -> own f64 -> own Random.Pcg64 -> (f64 * Random.Pcg64)
+fn draw_real kind a b generator =
+    if kind == 1 then Random.pcg64_uniform a b generator
+    elif kind == 2 then Random.pcg64_standard_normal generator
+    elif kind == 3 then Random.pcg64_normal a b generator
+    elif kind == 4 then Random.pcg64_exponential a generator
+    elif kind == 5 then Random.pcg64_gamma a b generator
+    elif kind == 6 then Random.pcg64_beta a b generator
+    elif kind == 7 then Random.pcg64_chisquare a generator
+    elif kind == 8 then Random.pcg64_laplace a b generator
+    elif kind == 9 then Random.pcg64_lognormal a b generator
+    elif kind == 10 then Random.pcg64_standard_t a generator
+    else Random.pcg64_f_dist a b generator
+
+private def tensor_real :: own i64 -> own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn tensor_real kind a b shape generator =
+    if kind == 1 then RandomTensor.uniform a b shape generator
+    elif kind == 2 then RandomTensor.standard_normal shape generator
+    elif kind == 3 then RandomTensor.normal a b shape generator
+    elif kind == 4 then RandomTensor.exponential a shape generator
+    elif kind == 5 then RandomTensor.gamma a b shape generator
+    elif kind == 6 then RandomTensor.beta a b shape generator
+    elif kind == 7 then RandomTensor.chisquare a shape generator
+    elif kind == 8 then RandomTensor.laplace a b shape generator
+    elif kind == 9 then RandomTensor.lognormal a b shape generator
+    elif kind == 10 then RandomTensor.standard_t a shape generator
+    else RandomTensor.f_dist a b shape generator
+
+private def same_generator :: own Random.Pcg64 -> own Random.Pcg64 -> bool
+fn same_generator left right =
+    let (a, _) = Random.pcg64_next_u64 left
+    let (b, _) = Random.pcg64_next_u64 right
+    a == b
+
+// 1 when a `[rows, cols]` tensor of distribution `kind` is the scalar draws in row-major order, bit for bit, and
+// the returned generator is the generator after those draws.
+export def real_tensor_is_scalar_draws :: own i64 -> own f64 -> own f64 -> own i64 -> own i64 -> own i64 -> i64
+fn real_tensor_is_scalar_draws kind a b rows cols seed =
+    let (tensor, after) = tensor_real kind a b [rows, cols] (Random.pcg64 (seed as i64u))
+    let values = Tensor.as_array (ref tensor)
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut same = values.length == rows * cols
+    for index in 0 ..< rows * cols do
+        let (sample, next) = draw_real kind a b state
+        state = next
+        if !(values[index] == sample) then same = false
+    let view = Tensor.view (ref tensor)
+    let shape = Tensor.shape (ref view)
+    if same && shape.length == 2 && shape[0] == rows && shape[1] == cols && same_generator after state then 1 else 0
+
+private def draw_count :: own i64 -> own i64 -> own f64 -> own Random.Pcg64 -> (i64 * Random.Pcg64)
+fn draw_count kind n p generator =
+    if kind == 0 then Random.pcg64_binomial n p generator
+    elif kind == 1 then Random.pcg64_poisson p generator
+    else Random.pcg64_geometric p generator
+
+// The same for the integer distributions (0 binomial, 1 poisson, 2 geometric) and for bernoulli (3), rank 3.
+export def count_tensor_is_scalar_draws :: own i64 -> own i64 -> own f64 -> own i64 -> own i64 -> i64
+fn count_tensor_is_scalar_draws kind n p extent seed =
+    let shape = [extent, 2, 3]
+    let mut state = Random.pcg64 (seed as i64u)
+    let mut same = true
+    if kind == 3 then
+        let (tensor, after) = RandomTensor.bernoulli p shape (Random.pcg64 (seed as i64u))
+        let values = Tensor.as_array (ref tensor)
+        same = values.length == extent * 6
+        for index in 0 ..< extent * 6 do
+            let (sample, next) = Random.pcg64_bernoulli p state
+            state = next
+            if values[index] != sample then same = false
+        if same && same_generator after state then 1 else 0
+    else
+        let (tensor, after) =
+            if kind == 0 then RandomTensor.binomial n p shape (Random.pcg64 (seed as i64u))
+            elif kind == 1 then RandomTensor.poisson p shape (Random.pcg64 (seed as i64u))
+            else RandomTensor.geometric p shape (Random.pcg64 (seed as i64u))
+        let values = Tensor.as_array (ref tensor)
+        same = values.length == extent * 6
+        for index in 0 ..< extent * 6 do
+            let (sample, next) = draw_count kind n p state
+            state = next
+            if values[index] != sample then same = false
+        if same && same_generator after state then 1 else 0
+
+private def mix :: own i64 -> own i64 -> i64
+fn mix total value = Int.wrapping_add (Int.wrapping_mul total 31) value
+
+private def mix_all :: own i64 -> ref [i64] -> i64
+fn mix_all start values =
+    let mut total = start
+    for index in 0 ..< values.length do total = mix total values[index]
+    total
+
+private def mix_generator :: own i64 -> own Random.Pcg64 -> i64
+fn mix_generator total generator =
+    let (bits, _) = Random.pcg64_next_u64 generator
+    mix total (bits as i64)
+
+export def integers_mix :: own i64 -> own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn integers_mix low high rows cols seed =
+    let (tensor, after) = RandomTensor.integers low high [rows, cols] (Random.pcg64 (seed as i64u))
+    mix_generator (mix_all 0 (Tensor.as_array (ref tensor))) after
+
+export def permutation_mix :: own i64 -> own i64 -> i64
+fn permutation_mix count seed =
+    let (order, after) = RandomTensor.permutation count (Random.pcg64 (seed as i64u))
+    mix_generator (mix_all count (Tensor.as_array (ref order))) after
+
+// A `[rows, cols]` tensor of 0, 1, 2, ... shuffled along `axis`.
+export def shuffle_mix :: own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn shuffle_mix rows cols axis seed =
+    let mut data = Array.init (rows * cols) (\index -> index)
+    let mut window = Tensor.borrow_mut [rows, cols] (ref mut data)
+    let after = RandomTensor.shuffle_axis axis (Random.pcg64 (seed as i64u)) (ref mut window)
+    mix_generator (mix_all 0 (ref data)) after
+
+// The same tensor shuffled through a transposed window: axis 0 of the window is axis 1 of the buffer.
+export def shuffle_transposed_mix :: own i64 -> own i64 -> own i64 -> i64
+fn shuffle_transposed_mix rows cols seed =
+    let mut data = Array.init (rows * cols) (\index -> index)
+    let mut window = Tensor.borrow_mut [rows, cols] (ref mut data)
+    let mut transposed = Tensor.permute_mut [1, 0] (ref mut window)
+    let after = RandomTensor.shuffle_axis 0 (Random.pcg64 (seed as i64u)) (ref mut transposed)
+    mix_generator (mix_all 0 (ref data)) after
+
+// A rank 3 tensor shuffled along its middle axis, named from the end.
+export def shuffle_cube_mix :: own i64 -> i64
+fn shuffle_cube_mix seed =
+    let mut data = Array.init 24 (\index -> index)
+    let mut window = Tensor.borrow_mut [2, 4, 3] (ref mut data)
+    let after = RandomTensor.shuffle_axis (-2) (Random.pcg64 (seed as i64u)) (ref mut window)
+    mix_generator (mix_all 0 (ref data)) after
+
+private def weights_of :: own i64 -> [f64]
+fn weights_of kind =
+    if kind == 0 then [0.1, 0.2, 0.3, 0.4]
+    elif kind == 1 then [0.0, 5.0, 0.0, 1.0, 2.0, 0.0]
+    elif kind == 2 then [1.0]
+    elif kind == 3 then [1e-300, 1.0, 1e300]
+    else [3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+
+// `count` rows of an `[n, 2]` tensor (row i holds 2i and 2i + 1) drawn with the weights of `kind`.
+export def choice_mix :: own i64 -> own i64 -> own i64 -> own i64 -> i64
+fn choice_mix count replace kind seed =
+    let odds = weights_of kind
+    let n = odds.length
+    let values = Tensor.init [n, 2] (\index -> index)
+    let weights = Tensor.of_array [n] odds
+    let (picked, after) = RandomTensor.choice_weighted count (replace == 1) (Tensor.view weights) (Random.pcg64 (seed as i64u)) (Tensor.view values)
+    let view = Tensor.view (ref picked)
+    let shape = Tensor.shape (ref view)
+    if shape.length == 2 && shape[0] == count && shape[1] == 2 then mix_generator (mix_all count (Tensor.as_array (ref picked))) after
+    else -1
+
+private def alpha_of :: own i64 -> [f64]
+fn alpha_of kind =
+    if kind == 0 then [1.0, 2.0, 3.0]
+    elif kind == 1 then [0.05, 0.02, 0.01, 0.09]
+    elif kind == 2 then [5.0]
+    elif kind == 3 then [0.5, 0.5]
+    else [0.09, 30.0]
+
+private def close :: own f64 -> own f64 -> bool
+fn close value expected = Math.abs (value - expected) <= 1e-11 * Math.abs expected
+
+// 1 when element `index` (row-major) of `rows` Dirichlet vectors is `expected` up to rounding in the last digits.
+export def dirichlet_close_at :: own i64 -> own i64 -> own i64 -> own i64 -> own f64 -> i64
+fn dirichlet_close_at kind rows seed index expected =
+    let parameters = alpha_of kind
+    let k = parameters.length
+    let alpha = Tensor.of_array [k] parameters
+    let (drawn, _) = RandomTensor.dirichlet (Tensor.view alpha) [rows] (Random.pcg64 (seed as i64u))
+    let values = Tensor.as_array (ref drawn)
+    if values.length == rows * k && close values[index] expected then 1 else 0
+
+// The fold of the next output of the generator after `rows` Dirichlet vectors of shape `[rows, 1, k]`.
+export def dirichlet_generator_after :: own i64 -> own i64 -> own i64 -> i64
+fn dirichlet_generator_after kind rows seed =
+    let parameters = alpha_of kind
+    let k = parameters.length
+    let alpha = Tensor.of_array [k] parameters
+    let (drawn, after) = RandomTensor.dirichlet (Tensor.view alpha) [rows, 1] (Random.pcg64 (seed as i64u))
+    let view = Tensor.view (ref drawn)
+    let shape = Tensor.shape (ref view)
+    if shape.length == 3 && shape[0] == rows && shape[1] == 1 && shape[2] == k then mix_generator 0 after else -1
+
+private def mean_of :: own i64 -> [f64]
+fn mean_of kind =
+    if kind == 0 then [1.0, -1.0]
+    elif kind == 1 then [0.0, 10.0, -5.0]
+    else [2.5]
+
+private def cov_of :: own i64 -> [f64]
+fn cov_of kind =
+    if kind == 0 then [2.0, 0.5, 0.5, 1.0]
+    elif kind == 1 then [4.0, 2.0, 0.6, 2.0, 2.0, 0.5, 0.6, 0.5, 3.0]
+    else [0.25]
+
+// 1 when element `index` (row-major) of `rows` multivariate normal vectors is `expected` up to rounding.
+export def mvn_close_at :: own i64 -> own i64 -> own i64 -> own i64 -> own f64 -> i64
+fn mvn_close_at kind rows seed index expected =
+    let center = mean_of kind
+    let n = center.length
+    let mean = Tensor.of_array [n] center
+    let cov = Tensor.of_array [n, n] (cov_of kind)
+    match RandomTensor.multivariate_normal (Tensor.view mean) (Tensor.view cov) [rows] (Random.pcg64 (seed as i64u)) with
+    | Result.Ok (drawn, _) ->
+        let values = Tensor.as_array (ref drawn)
+        if values.length == rows * n && close values[index] expected then 1 else 0
+    | Result.Error _ -> 0
+
+export def mvn_generator_after :: own i64 -> own i64 -> own i64 -> i64
+fn mvn_generator_after kind rows seed =
+    let center = mean_of kind
+    let n = center.length
+    let mean = Tensor.of_array [n] center
+    let cov = Tensor.of_array [n, n] (cov_of kind)
+    match RandomTensor.multivariate_normal (Tensor.view mean) (Tensor.view cov) [rows, 2] (Random.pcg64 (seed as i64u)) with
+    | Result.Ok (drawn, after) ->
+        let view = Tensor.view (ref drawn)
+        let shape = Tensor.shape (ref view)
+        if shape.length == 3 && shape[0] == rows && shape[1] == 2 && shape[2] == n then mix_generator 0 after else -1
+    | Result.Error _ -> -2
+
+// 0 Ok, 1 ShapeMismatch, 2 NotPositiveDefinite, 3 NotSquare, 4 InvalidRank, 5 another error.
+export def mvn_error :: own i64 -> i64
+fn mvn_error kind =
+    let two = Tensor.of_array [2] [0.0, 0.0]
+    let three = Tensor.of_array [3] [0.0, 0.0, 0.0]
+    let identity = Tensor.of_array [2, 2] [1.0, 0.0, 0.0, 1.0]
+    let indefinite = Tensor.of_array [2, 2] [1.0, 2.0, 2.0, 1.0]
+    let asymmetric = Tensor.of_array [2, 2] [1.0, 0.5, 0.0, 1.0]
+    let wide = Tensor.of_array [2, 3] [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+    let flat = Tensor.of_array [4] [1.0, 0.0, 0.0, 1.0]
+    let matrix_mean = Tensor.of_array [1, 2] [0.0, 0.0]
+    let rng = Random.pcg64 1i64u
+    let result =
+        if kind == 0 then RandomTensor.multivariate_normal (Tensor.view two) (Tensor.view identity) [3] rng
+        elif kind == 1 then RandomTensor.multivariate_normal (Tensor.view three) (Tensor.view identity) [3] rng
+        elif kind == 2 then RandomTensor.multivariate_normal (Tensor.view two) (Tensor.view indefinite) [3] rng
+        elif kind == 3 then RandomTensor.multivariate_normal (Tensor.view two) (Tensor.view asymmetric) [3] rng
+        elif kind == 4 then RandomTensor.multivariate_normal (Tensor.view two) (Tensor.view wide) [3] rng
+        elif kind == 5 then RandomTensor.multivariate_normal (Tensor.view two) (Tensor.view flat) [3] rng
+        else RandomTensor.multivariate_normal (Tensor.view matrix_mean) (Tensor.view identity) [3] rng
+    match result with
+    | Result.Ok _ -> 0
+    | Result.Error Linalg.Error.ShapeMismatch _ -> 1
+    | Result.Error Linalg.Error.NotPositiveDefinite -> 2
+    | Result.Error Linalg.Error.NotSquare _ -> 3
+    | Result.Error Linalg.Error.InvalidRank _ -> 4
+    | Result.Error _ -> 5
+
+// 1 when shapes without elements give empty tensors of that shape and leave the generator where it was.
+export def empty_shapes_draw_nothing :: own i64 -> i64
+fn empty_shapes_draw_nothing seed =
+    let (a, after_a) = RandomTensor.normal 0.0 1.0 [0] (Random.pcg64 (seed as i64u))
+    let (b, after_b) = RandomTensor.integers 0 5 [3, 0, 2] after_a
+    let (c, after_c) = RandomTensor.permutation 0 after_b
+    let (d, after_d) = RandomTensor.permutation 1 after_c
+    let alpha = Tensor.of_array [2] [1.0, 1.0]
+    let (e, after_e) = RandomTensor.dirichlet (Tensor.view alpha) [0] after_d
+    let (scalar, after_f) = RandomTensor.standard_normal [] after_e
+    let (first, _) = Random.pcg64_standard_normal (Random.pcg64 (seed as i64u))
+    let view_b = Tensor.view (ref b)
+    let view_e = Tensor.view (ref e)
+    let view_s = Tensor.view (ref scalar)
+    let shapes = (Tensor.shape (ref view_b)).length == 3 && (Tensor.shape (ref view_e)).length == 2 && (Tensor.shape (ref view_e))[1] == 2 && Tensor.rank (ref view_s) == 0
+    let sizes = (Tensor.as_array (ref a)).length == 0 && (Tensor.as_array (ref b)).length == 0 && (Tensor.as_array (ref c)).length == 0 && (Tensor.as_array (ref e)).length == 0
+    let one = (Tensor.as_array (ref d)).length == 1 && (Tensor.as_array (ref d))[0] == 0 && (Tensor.as_array (ref scalar))[0] == first
+    let (_, expected) = Random.pcg64_standard_normal (Random.pcg64 (seed as i64u))
+    if shapes && sizes && one && same_generator after_f expected then 1 else 0
+
+// Invalid parameters trap although the shape has no element to draw.
+export def trap_real_tensor :: own i64 -> own f64 -> own f64 -> i64
+fn trap_real_tensor kind a b =
+    let (tensor, _) = tensor_real kind a b [0] (Random.pcg64 1i64u)
+    (Tensor.as_array (ref tensor)).length
+
+// 0 binomial, 1 poisson, 2 geometric, 3 bernoulli, 4 integers (n is low, p is the span).
+export def trap_count_tensor :: own i64 -> own i64 -> own f64 -> i64
+fn trap_count_tensor kind n p =
+    let rng = Random.pcg64 1i64u
+    if kind == 0 then
+        let (tensor, _) = RandomTensor.binomial n p [0] rng
+        (Tensor.as_array (ref tensor)).length
+    elif kind == 1 then
+        let (tensor, _) = RandomTensor.poisson p [0] rng
+        (Tensor.as_array (ref tensor)).length
+    elif kind == 2 then
+        let (tensor, _) = RandomTensor.geometric p [0] rng
+        (Tensor.as_array (ref tensor)).length
+    elif kind == 3 then
+        let (tensor, _) = RandomTensor.bernoulli p [0] rng
+        (Tensor.as_array (ref tensor)).length
+    else
+        let (tensor, _) = RandomTensor.integers n (n + (p as i64)) [0] rng
+        (Tensor.as_array (ref tensor)).length
+
+export def trap_negative_extent :: own i64 -> i64
+fn trap_negative_extent extent =
+    let (tensor, _) = RandomTensor.standard_normal [2, extent] (Random.pcg64 1i64u)
+    (Tensor.as_array (ref tensor)).length
+
+export def trap_permutation :: own i64 -> i64
+fn trap_permutation count =
+    let (order, _) = RandomTensor.permutation count (Random.pcg64 1i64u)
+    (Tensor.as_array (ref order)).length
+
+export def trap_shuffle_axis :: own i64 -> i64
+fn trap_shuffle_axis axis =
+    let mut data = [1, 2, 3, 4]
+    let mut window = Tensor.borrow_mut [2, 2] (ref mut data)
+    let _after = RandomTensor.shuffle_axis axis (Random.pcg64 1i64u) (ref mut window)
+    data[0]
+
+// 0: a negative weight, 1: weights that sum to 0, 2: a weight for each element is missing, 3: more draws without
+// replacement than positive weights, 4: a negative count, 5: the weight `special` (a NaN or an infinity), 7: weights
+// of rank 2.
+export def trap_choice :: own i64 -> own f64 -> i64
+fn trap_choice kind special =
+    let values = Tensor.of_array [3] [10, 20, 30]
+    let rng = Random.pcg64 1i64u
+    let odds: [f64] =
+        if kind == 0 then [1.0, -1.0, 1.0]
+        elif kind == 1 then [0.0, 0.0, 0.0]
+        elif kind == 2 then [1.0, 1.0]
+        elif kind == 3 then [1.0, 0.0, 1.0]
+        elif kind == 5 then [1.0, special, 1.0]
+        else [1.0, 1.0, 1.0]
+    let count = if kind == 4 then -1 else 3
+    if kind == 7 then
+        let square = Tensor.of_array [3, 1] [1.0, 1.0, 1.0]
+        let (picked, _) = RandomTensor.choice_weighted 1 true (Tensor.view square) rng (Tensor.view values)
+        (Tensor.as_array (ref picked)).length
+    else
+        let weights = Tensor.of_array [odds.length] odds
+        let (picked, _) = RandomTensor.choice_weighted count (kind != 3) (Tensor.view weights) rng (Tensor.view values)
+        (Tensor.as_array (ref picked)).length
+
+// 0: a parameter of 0, 1: parameters of rank 2, 2: no parameter, 3: the parameter `special` (a NaN or an infinity).
+export def trap_dirichlet :: own i64 -> own f64 -> i64
+fn trap_dirichlet kind special =
+    let rng = Random.pcg64 1i64u
+    if kind == 1 then
+        let alpha = Tensor.of_array [1, 2] [1.0, 1.0]
+        let (drawn, _) = RandomTensor.dirichlet (Tensor.view alpha) [0] rng
+        (Tensor.as_array (ref drawn)).length
+    else
+        let parameters: [f64] =
+            if kind == 0 then [1.0, 0.0]
+            elif kind == 2 then []
+            else [1.0, special]
+        let alpha = Tensor.of_array [parameters.length] parameters
+        let (drawn, _) = RandomTensor.dirichlet (Tensor.view alpha) [0] rng
+        (Tensor.as_array (ref drawn)).length

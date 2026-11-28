@@ -14,6 +14,7 @@ import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixVi
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
 import { cases as tensorOperatorCases, traps as tensorOperatorTraps } from "./tensor-operator-cases.mjs";
 import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
+import { cases as randomCases, traps as randomTraps, tensorCases as randomTensorCases, tensorTraps as randomTensorTraps } from "./random-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
@@ -3195,6 +3196,29 @@ const suites = {
     trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Tensor\.\$instance\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC10 Phase 1: `Random.Pcg64`, `Random.SeedSequence` and the scalar distributions against the BigInt model of
+  // tests/random-cases.mjs (itself checked against NumPy). The always-loaded `Random` pulls in no opt-in module.
+  random: {
+    cases: randomCases,
+    traps: randomTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Random\.pcg64_next_u64/);
+      assert.doesNotMatch(ir, /@tz\.fn\.(Tensor|Linalg|RandomTensor|Complex)\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC10 Phase 2: the opt-in `RandomTensor`. A tensor is the scalar draws in row-major order, bit for bit; the orders,
+  // the weighted choices, the Dirichlet and the multivariate normal vectors are the model's.
+  random_tensor: {
+    cases: randomTensorCases,
+    traps: randomTensorTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.RandomTensor\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },

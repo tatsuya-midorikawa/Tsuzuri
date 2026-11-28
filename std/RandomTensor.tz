@@ -1,0 +1,426 @@
+// Tensors of random numbers, multivariate distributions and random reorderings (NC10 Phase 2). Every generator
+// takes a `Random.Pcg64` last and returns the tensor with the generator to use next. A tensor is filled in row-major
+// order with the scalar function of the same name in `Random` (`normal` with `Random.pcg64_normal`), one call an
+// element, so a tensor equals the same number of scalar draws and two halves equal one whole.
+
+// The number of elements of a shape; a negative extent and a product above the range of `i64` trap.
+private pure def volume :: ref [i64] -> i64
+fn volume shape =
+    let mut total = 1
+    for axis in 0 ..< shape.length do
+        assert (shape[axis] >= 0)
+        total = Maybe.get (Int.checked_mul total shape[axis])
+    total
+
+private pure def fill :: Default<'a> => pure (Random.Pcg64 -> ('a * Random.Pcg64)) -> own [i64] -> own Random.Pcg64 -> (Tensor<'a> * Random.Pcg64)
+fn fill draw shape generator =
+    let count = volume (ref shape)
+    let mut data: ['a] = Array.zero_create count
+    let mut state = generator
+    for index in 0 ..< count do
+        let (sample, next) = draw state
+        data[index] = sample
+        state = next
+    (Tensor.of_array shape data, state)
+
+/// Numbers in `[low, high)`, uniformly (`Random.pcg64_uniform`). `low >= high`, a NaN and an infinite span trap.
+///
+/// ```tsuzuri run=[2,%203]%20true
+/// let (t, _) = RandomTensor.uniform (-1.0) 1.0 [2, 3] (Random.pcg64 42i64u)
+/// let v = Tensor.view (ref t)
+/// $"{Tensor.shape (ref v)} {Tensor.fold (\ok x -> ok && x >= -1.0 && x < 1.0) true (ref v)}"
+/// ```
+pure def uniform :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn uniform low high shape generator =
+    assert (low < high && Math.is_finite (high - low))
+    fill (\state -> Random.pcg64_uniform low high state) shape generator
+
+/// Standard normal numbers (`Random.pcg64_standard_normal`).
+///
+/// ```tsuzuri run=[100,%2010]
+/// let (samples, _) = RandomTensor.standard_normal [100, 10] (Random.pcg64 42i64u)
+/// let v = Tensor.view (ref samples)
+/// Array.copy (Tensor.shape (ref v))
+/// ```
+pure def standard_normal :: own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn standard_normal shape generator = fill (\state -> Random.pcg64_standard_normal state) shape generator
+
+/// Normal numbers with mean `loc` and standard deviation `scale` (`Random.pcg64_normal`). A negative, NaN or infinite
+/// `scale`, and a `loc` that is not finite, trap.
+///
+/// ```tsuzuri run=[5,%205,%205]
+/// let (t, _) = RandomTensor.normal 5.0 0.0 [3] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def normal :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn normal loc scale shape generator =
+    assert (Math.is_finite loc && scale >= 0.0 && Math.is_finite scale)
+    fill (\state -> Random.pcg64_normal loc scale state) shape generator
+
+/// Integers in `[low, high)`, every value equally likely (`Random.pcg64_next_i64_range`). `low >= high` traps.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.integers 0 6 [4, 4] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x >= 0 && x < 6) true (Tensor.view t)
+/// ```
+pure def integers :: own i64 -> own i64 -> own [i64] -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)
+fn integers low high shape generator =
+    assert (low < high)
+    fill (\state -> Random.pcg64_next_i64_range low high state) shape generator
+
+/// Exponential numbers with mean `scale` (`Random.pcg64_exponential`). A negative, NaN or infinite `scale` traps.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.exponential 2.0 [8] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x >= 0.0) true (Tensor.view t)
+/// ```
+pure def exponential :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn exponential scale shape generator =
+    assert (scale >= 0.0 && Math.is_finite scale)
+    fill (\state -> Random.pcg64_exponential scale state) shape generator
+
+/// Gamma numbers with shape parameter `k` and scale `scale` (`Random.pcg64_gamma`). `k <= 0`, a negative `scale`, and
+/// a NaN or an infinity in either, trap.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.gamma 2.5 1.5 [8] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x > 0.0) true (Tensor.view t)
+/// ```
+pure def gamma :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn gamma k scale shape generator =
+    assert (k > 0.0 && Math.is_finite k && scale >= 0.0 && Math.is_finite scale)
+    fill (\state -> Random.pcg64_gamma k scale state) shape generator
+
+/// Beta numbers in `[0, 1]` with parameters `a` and `b` (`Random.pcg64_beta`). `a <= 0`, `b <= 0`, a NaN and an
+/// infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.beta 2.0 5.0 [8] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x >= 0.0 && x <= 1.0) true (Tensor.view t)
+/// ```
+pure def beta :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn beta a b shape generator =
+    assert (a > 0.0 && Math.is_finite a && b > 0.0 && Math.is_finite b)
+    fill (\state -> Random.pcg64_beta a b state) shape generator
+
+/// Chi-square numbers with `df` degrees of freedom (`Random.pcg64_chisquare`). `df <= 0`, a NaN and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.chisquare 3.0 [8] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x > 0.0) true (Tensor.view t)
+/// ```
+pure def chisquare :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn chisquare df shape generator =
+    assert (df > 0.0 && Math.is_finite df)
+    fill (\state -> Random.pcg64_chisquare df state) shape generator
+
+/// Laplace numbers with mean `loc` and scale `scale` (`Random.pcg64_laplace`). A negative, NaN or infinite `scale`,
+/// and a `loc` that is not finite, trap.
+///
+/// ```tsuzuri run=[-3,%20-3]
+/// let (t, _) = RandomTensor.laplace (-3.0) 0.0 [2] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def laplace :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn laplace loc scale shape generator =
+    assert (Math.is_finite loc && scale >= 0.0 && Math.is_finite scale)
+    fill (\state -> Random.pcg64_laplace loc scale state) shape generator
+
+/// Log-normal numbers: `exp` of normal numbers with mean `mean` and standard deviation `sigma`
+/// (`Random.pcg64_lognormal`). A negative, NaN or infinite `sigma`, and a `mean` that is not finite, trap.
+///
+/// ```tsuzuri run=[1,%201]
+/// let (t, _) = RandomTensor.lognormal 0.0 0.0 [2] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def lognormal :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn lognormal mean sigma shape generator =
+    assert (Math.is_finite mean && sigma >= 0.0 && Math.is_finite sigma)
+    fill (\state -> Random.pcg64_lognormal mean sigma state) shape generator
+
+/// Student's t numbers with `df` degrees of freedom (`Random.pcg64_standard_t`). `df <= 0`, a NaN and an infinity
+/// trap.
+///
+/// ```tsuzuri run=4
+/// let (t, _) = RandomTensor.standard_t 5.0 [2, 2] (Random.pcg64 42i64u)
+/// Tensor.count (Tensor.view t)
+/// ```
+pure def standard_t :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn standard_t df shape generator =
+    assert (df > 0.0 && Math.is_finite df)
+    fill (\state -> Random.pcg64_standard_t df state) shape generator
+
+/// F numbers with `dfnum` and `dfden` degrees of freedom (`Random.pcg64_f_dist`). A value that is not above 0, a NaN
+/// and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (t, _) = RandomTensor.f_dist 4.0 12.0 [8] (Random.pcg64 42i64u)
+/// Tensor.fold (\ok x -> ok && x > 0.0) true (Tensor.view t)
+/// ```
+pure def f_dist :: own f64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn f_dist dfnum dfden shape generator =
+    assert (dfnum > 0.0 && Math.is_finite dfnum && dfden > 0.0 && Math.is_finite dfden)
+    fill (\state -> Random.pcg64_f_dist dfnum dfden state) shape generator
+
+/// `true` with probability `p` (`Random.pcg64_bernoulli`). A `p` outside `[0, 1]` and a NaN trap.
+///
+/// ```tsuzuri run=[true,%20true,%20true]
+/// let (t, _) = RandomTensor.bernoulli 1.0 [3] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def bernoulli :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<bool> * Random.Pcg64)
+fn bernoulli p shape generator =
+    assert (p >= 0.0 && p <= 1.0)
+    fill (\state -> Random.pcg64_bernoulli p state) shape generator
+
+/// Numbers of successes in `n` trials that each succeed with probability `p` (`Random.pcg64_binomial`). A negative
+/// `n`, a `p` outside `[0, 1]` and a NaN trap.
+///
+/// ```tsuzuri run=[20,%2020]
+/// let (t, _) = RandomTensor.binomial 20 1.0 [2] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def binomial :: own i64 -> own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)
+fn binomial n p shape generator =
+    assert (n >= 0 && p >= 0.0 && p <= 1.0)
+    fill (\state -> Random.pcg64_binomial n p state) shape generator
+
+/// Numbers of events at rate `lam` (`Random.pcg64_poisson`). A negative or NaN `lam`, and one above
+/// 9.223372006484771e18, trap.
+///
+/// ```tsuzuri run=[0,%200]
+/// let (t, _) = RandomTensor.poisson 0.0 [2] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def poisson :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)
+fn poisson lam shape generator =
+    assert (lam >= 0.0 && lam <= 9.223372006484771e18)
+    fill (\state -> Random.pcg64_poisson lam state) shape generator
+
+/// Numbers of the trial with the first success (`Random.pcg64_geometric`). `p <= 0`, `p > 1` and a NaN trap.
+///
+/// ```tsuzuri run=[1,%201]
+/// let (t, _) = RandomTensor.geometric 1.0 [2] (Random.pcg64 42i64u)
+/// Tensor.to_array t
+/// ```
+pure def geometric :: own f64 -> own [i64] -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)
+fn geometric p shape generator =
+    assert (p > 0.0 && p <= 1.0)
+    fill (\state -> Random.pcg64_geometric p state) shape generator
+
+/// Dirichlet vectors: the output has the shape `shape` followed by the length of `alpha`, and each vector along the
+/// last axis is non-negative and sums to 1 with mean `alpha / sum alpha`. A vector is `k` gamma numbers divided by
+/// their sum, or, when every parameter is below 0.1, a chain of beta numbers (the gamma numbers would all round to
+/// zero). `alpha` must have rank 1, at least one element, and positive finite elements, or the call traps.
+///
+/// ```tsuzuri run=[2,%203]%20true
+/// let alpha = Tensor.of_array [3] [1.0, 2.0, 3.0]
+/// let (t, _) = RandomTensor.dirichlet (Tensor.view alpha) [2] (Random.pcg64 42i64u)
+/// let v = Tensor.view (ref t)
+/// let first_row = v[[0, 0]] + v[[0, 1]] + v[[0, 2]]
+/// $"{Tensor.shape (ref v)} {Math.abs (first_row - 1.0) < 1e-12}"
+/// ```
+pure def dirichlet :: ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)
+fn dirichlet alpha shape generator =
+    assert (Tensor.rank alpha == 1)
+    let parameters = Tensor.to_array (Tensor.to_tensor alpha)
+    let k = parameters.length
+    assert (k > 0)
+    let mut largest = 0.0
+    for index in 0 ..< k do
+        assert (parameters[index] > 0.0 && Math.is_finite parameters[index])
+        largest = Math.max largest parameters[index]
+    let rows = volume (ref shape)
+    let mut out_shape = Vec.empty()
+    for axis in 0 ..< shape.length do out_shape = Vec.push_owned shape[axis] out_shape
+    out_shape = Vec.push_owned k out_shape
+    let mut data: [f64] = Array.zero_create (Maybe.get (Int.checked_mul rows k))
+    let mut state = generator
+    if largest < 0.1 then
+        // rest[i] is the sum of the parameters after i.
+        let mut rest: [f64] = Array.zero_create k
+        for back in 1 ..< k do
+            let index = k - 1 - back
+            rest[index] = rest[index + 1] + parameters[index + 1]
+        for row in 0 ..< rows do
+            let mut remaining = 1.0
+            for index in 0 ..< (k - 1) do
+                let (share, next) = Random.pcg64_beta parameters[index] rest[index] state
+                state = next
+                data[row * k + index] = remaining * share
+                remaining = remaining * (1.0 - share)
+            data[row * k + k - 1] = remaining
+    else
+        for row in 0 ..< rows do
+            let mut total = 0.0
+            for index in 0 ..< k do
+                let (sample, next) = Random.pcg64_gamma parameters[index] 1.0 state
+                state = next
+                data[row * k + index] = sample
+                total = total + sample
+            for index in 0 ..< k do data[row * k + index] = data[row * k + index] / total
+    (Tensor.of_array (Vec.to_array out_shape) data, state)
+
+/// Multivariate normal vectors with mean `mean` (rank 1, length `n`) and covariance `cov` (`[n, n]`, symmetric
+/// positive definite): the output has the shape `shape` followed by `n`, and each vector is `mean + L z` for the
+/// Cholesky factor `L` of `cov` (`Linalg.cholesky`) and `n` standard normal numbers `z`. A `mean` that is not of
+/// rank 1 and a `cov` that is not `[n, n]` are `Linalg.Error.ShapeMismatch` with the two shapes; a `cov` that is not
+/// symmetric positive definite is `Linalg.Error.NotPositiveDefinite`. Nothing is drawn when the result is an error.
+///
+/// ```tsuzuri run=[4,%202]
+/// let mean = Tensor.of_array [2] [1.0, -1.0]
+/// let cov = Tensor.of_array [2, 2] [2.0, 0.5, 0.5, 1.0]
+/// match RandomTensor.multivariate_normal (Tensor.view mean) (Tensor.view cov) [4] (Random.pcg64 42i64u) with
+/// | Result.Ok (samples, _) ->
+///     let v = Tensor.view (ref samples)
+///     Array.copy (Tensor.shape (ref v))
+/// | Result.Error _ -> []
+/// ```
+pure def multivariate_normal :: ref Tensor.View<f64> -> ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> Result<(Tensor<f64> * Random.Pcg64), Linalg.Error>
+fn multivariate_normal mean cov shape generator =
+    let mean_shape = Tensor.shape mean
+    let cov_shape = Tensor.shape cov
+    if mean_shape.length != 1 || cov_shape.length != 2 || cov_shape[0] != mean_shape[0] || cov_shape[1] != mean_shape[0] then
+        Result.Error (Linalg.Error.ShapeMismatch (Array.copy mean_shape, Array.copy cov_shape))
+    else
+        match Linalg.cholesky cov with
+        | Result.Error error -> Result.Error error
+        | Result.Ok factor ->
+            let n = mean_shape[0]
+            let center = Tensor.to_array (Tensor.to_tensor mean)
+            let lower = Tensor.as_array (ref factor)
+            let rows = volume (ref shape)
+            let mut out_shape = Vec.empty()
+            for axis in 0 ..< shape.length do out_shape = Vec.push_owned shape[axis] out_shape
+            out_shape = Vec.push_owned n out_shape
+            let mut data: [f64] = Array.zero_create (Maybe.get (Int.checked_mul rows n))
+            let mut normals: [f64] = Array.zero_create n
+            let mut state = generator
+            for row in 0 ..< rows do
+                for index in 0 ..< n do
+                    let (z, next) = Random.pcg64_standard_normal state
+                    state = next
+                    normals[index] = z
+                for index in 0 ..< n do
+                    let mut value = center[index]
+                    for column in 0 ..= index do value = value + lower[index * n + column] * normals[column]
+                    data[row * n + index] = value
+            Result.Ok (Tensor.of_array (Vec.to_array out_shape) data, state)
+
+// A random order of `0 ..< count`: element i is swapped with one of the elements from i on (Fisher and Yates).
+private pure def shuffled_indices :: own i64 -> own Random.Pcg64 -> ([i64] * Random.Pcg64)
+fn shuffled_indices count generator =
+    let mut order = Array.init count (\index -> index)
+    let mut state = generator
+    for index in 0 ..< (count - 1) do
+        let (other, next) = Random.pcg64_next_i64_range index count state
+        state = next
+        Array.swap_in index other (ref mut order)
+    (order, state)
+
+/// A random order of the integers `0 ..< count`, every order equally likely. A negative `count` traps.
+///
+/// ```tsuzuri run=[0,%201,%202,%203,%204]
+/// let (order, _) = RandomTensor.permutation 5 (Random.pcg64 42i64u)
+/// Array.sort (Tensor.to_array order)
+/// ```
+pure def permutation :: own i64 -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)
+fn permutation count generator =
+    assert (count >= 0)
+    let (order, next) = shuffled_indices count generator
+    (Tensor.of_array [count] order, next)
+
+// A copy of the window with its slices along `axis` in a random order.
+private def reordered_copy :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref Tensor.Mut<'a> -> (Tensor<'a> * Random.Pcg64)
+fn reordered_copy axis generator window =
+    let before = Tensor.freeze window
+    let extents = Tensor.shape (ref before)
+    let count = extents[Tensor.normalize_axis axis extents.length]
+    let (order, next) = shuffled_indices count generator
+    let positions = Tensor.of_array [count] order
+    (Tensor.take axis (Tensor.view positions) (ref before), next)
+
+/// Reorders the slices of `target` along `axis` in place, every order equally likely, and returns the generator to
+/// use next. The slices move whole: with axis 0 of a matrix the rows change places and each row keeps its elements.
+/// The order is the one of `permutation` for the same generator: slice `i` becomes the old slice `order[i]`.
+/// A negative `axis` counts from the last axis; an axis outside the rank traps.
+///
+/// ```tsuzuri run=[5,%206,%203,%204,%201,%202]
+/// let mut data = [1, 2, 3, 4, 5, 6]
+/// let mut rows = Tensor.borrow_mut [3, 2] (ref mut data)
+/// let _next = RandomTensor.shuffle_axis 0 (Random.pcg64 42i64u) (ref mut rows)
+/// $"{data}"
+/// ```
+def shuffle_axis :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64
+fn shuffle_axis axis generator target =
+    let (reordered, next) = reordered_copy axis generator target
+    Tensor.copy_from (Tensor.view reordered) target
+    next
+
+/// `count` slices of `source` along axis 0, drawn with the probabilities `weights / sum weights`; the result has the
+/// shape of `source` with `count` as its first extent. With `replace`, a slice can come more than once (one uniform
+/// number a draw). Without it, every slice comes at most once and each draw takes one of the slices that are left
+/// with their weights (one uniform number for each positive weight, whatever `count` is). `weights` must have rank 1
+/// and the first extent of `source` as its length, with finite elements that are not negative and a positive sum;
+/// `count` must not be negative, nor above the number of positive weights without `replace`. Otherwise the call
+/// traps.
+///
+/// ```tsuzuri run=[20,%2020,%2020]
+/// let values = Tensor.of_array [3] [10, 20, 30]
+/// let weights = Tensor.of_array [3] [0.0, 1.0, 0.0]
+/// let (picked, _) = RandomTensor.choice_weighted 3 true (Tensor.view weights) (Random.pcg64 42i64u) (Tensor.view values)
+/// Tensor.to_array picked
+/// ```
+pure def choice_weighted :: Copy<'a> => own i64 -> own bool -> ref Tensor.View<f64> -> own Random.Pcg64 -> ref Tensor.View<'a> -> (Tensor<'a> * Random.Pcg64)
+fn choice_weighted count replace weights generator source =
+    assert (count >= 0 && Tensor.rank source >= 1 && Tensor.rank weights == 1)
+    let odds = Tensor.to_array (Tensor.to_tensor weights)
+    let extent = (Tensor.shape source)[0]
+    assert (odds.length == extent)
+    let mut total = 0.0
+    let mut positive = 0
+    let mut last = 0
+    let mut running: [f64] = Array.zero_create extent
+    for index in 0 ..< extent do
+        assert (odds[index] >= 0.0 && Math.is_finite odds[index])
+        total = total + odds[index]
+        running[index] = total
+        if odds[index] > 0.0 then
+            positive = positive + 1
+            last = index
+    assert (total > 0.0 && Math.is_finite total)
+    let mut state = generator
+    let mut picked: [i64] = Array.zero_create count
+    if replace then
+        for draw in 0 ..< count do
+            let (unit, next) = Random.pcg64_next_f64 state
+            state = next
+            let point = unit * total
+            // The first slice whose running sum is above the point; a slice of weight 0 never is.
+            let mut low = 0
+            let mut high = extent
+            while low < high do
+                let middle = low + (high - low) / 2
+                if running[middle] > point then high = middle else low = middle + 1
+            picked[draw] = if low < extent then low else last
+    else
+        assert (count <= positive)
+        // An exponential clock of rate `weight` for each slice: the slices in the order of their clocks are the
+        // draws without replacement, one after another.
+        let mut clocks: [f64] = Array.zero_create extent
+        let mut order = Vec.empty()
+        for index in 0 ..< extent do
+            if odds[index] > 0.0 then
+                let (unit, next) = Random.pcg64_next_f64 state
+                state = next
+                clocks[index] = (0.0 - Math.log (1.0 - unit)) / odds[index]
+                order = Vec.push_owned index order
+        let sorted = Array.sort_with (\left right ->
+            if clocks[left] < clocks[right] then -1
+            elif clocks[left] > clocks[right] then 1
+            elif left < right then -1
+            elif left > right then 1
+            else 0) (Vec.to_array order)
+        for draw in 0 ..< count do picked[draw] = sorted[draw]
+    let positions = Tensor.of_array [count] picked
+    (Tensor.take 0 (Tensor.view positions) source, state)

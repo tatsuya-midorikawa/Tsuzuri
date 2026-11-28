@@ -33,6 +33,7 @@ export def io_actions :: i64 -> i64 = \_n ->
     let _ab = File.with_open "f" File.Mode.Read (\handle -> File.close handle)
     let _ac = Random.bytes 4
     let _ad = Random.next_u64 ()
+    let _ad64 = Random.pcg64_from_os ()
     let _ae = Time.monotonic_ns ()
     let _af = Time.sleep_ms 1
     let _ag = Time.unix_ns ()

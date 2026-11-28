@@ -374,9 +374,9 @@ registry はルートマニフェストの `[registry]`（`index = "<git URL>"`�
 以下のモジュール名は標準ライブラリ用として予約されており、ユーザー定義ファイルのファイル名（拡張子を除いたモジュール名）として使用することはできません（`E1011`）。
 現時点でまだ std に正式導入されていない予約モジュール名も含まれています（なお、関数名、レコード名、union の型名としてこれらを使用することは可能です）。
 
-`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`、`ZUtf8String`、`Linalg`、`ObjC`、`MainThread`
+`Maybe`、`Result`、`Array`、`List`、`Vec`、`String`、`Utf8String`、`Char`、`Utf8Char`、`Math`、`Int`、`Debug`、`Parallel`、`Simd`、`Map`、`Set`、`HashMap`、`HashSet`、`Seq`、`Test`、`Gpu`、`IO`、`Owned`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex`、`ZUtf8String`、`Linalg`、`RandomTensor`、`ObjC`、`MainThread`
 
-`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で、`ZUtf8String` は M06 で、`Linalg` は NC08 で、`ObjC`（std のファイルを持たない組み込みのモジュール。型 `ObjC.Object`・`ObjC.Class`・`ObjC.Sel` と関数を持ちます。[Objective-C のクラスとメッセージ送信](#objective-c-のクラスとメッセージ送信)）は M01 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
+`Arena`、`Rc`、`Arc` は C10 で追加した予約モジュール名です。`Rc` と `Arc` は組み込みの型名でもあるため、`Vec` と同じく、この 2 つの名前のレコード、union、型エイリアス、extern type、型クラス、union の case は `E1001` です。`Atomic` と `Mutex` は F10 で、`Channel` は F10 Phase 2 で（TZ03 で `DataChannel` に改名し、`Channel` は Go の双方向のチャンネルの名前になりました）、`DataChannel` は TZ03 で、`Alloc` は F14 で、`Text` と `RegexText` は D14 で、`Domain` は B10 で、`Monoid`（常時ロードの型クラス）と `Monoids`（opt-in）は F15 で追加した予約モジュール名です。`Routine`（std のファイルを持たない組み込みのモジュール）は TZ02 で、`SendOnly` と `ReceiveOnly`（`Channel` の向きのあるハンドル）は TZ03 で、`Timer` と `Ticker` は TZ05 で、`WaitGroup`・`Once`・`OnceValue`・`RwMutex`・`Cond`・`Semaphore`・`SyncMap` は TZ06 で、`Context`・`ErrGroup` は TZ07 で、`ZString` は W20 で、`FnPtr`（std のファイルを持たない組み込みのモジュール。組み込みの型名でもあるので、`Rc` と同じく同名の宣言は `E1001`）は W22 で、`Anchor` は W23 で、`Complex` は NC01 で、`Slice` は NC04 で、`ZUtf8String` は M06 で、`Linalg` は NC08 で、`RandomTensor` は NC10 で、`ObjC`（std のファイルを持たない組み込みのモジュール。型 `ObjC.Object`・`ObjC.Class`・`ObjC.Sel` と関数を持ちます。[Objective-C のクラスとメッセージ送信](#objective-c-のクラスとメッセージ送信)）は M01 で追加した予約モジュール名です。`Arena` や `Map` と同じく、同名のレコードや型エイリアスは宣言でき、std の型は `std::Atomic<T>`・`DataChannel.Sender<T>` のように書いて区別します。`Async` は TZ13 で std から削除し、予約も外しました。利用者のモジュール `Async.tz` は普通のモジュールです（[非同期計算（Async）](#非同期計算async)）。
 
 `HashMap`、`HashSet`、`File`、`Dir`、`Path`、`Env`、`Time`、`Random`、`Os`、`Process`、`Net`、`Format`、`Exception`、`BigInt`、`FixedArray`、`Dyn`、`Arena`、`Rc`、`Arc`、`Regex`、`Unicode`、`Json`、`Cbor`、`Bench`、`Gen`、`Matrix`、`MatrixView`、`Tensor`、`Atomic`、`Mutex`、`Channel`、`DataChannel`、`Alloc`、`Text`、`RegexText`、`Domain`、`Monoid`、`Monoids`、`Routine`、`SendOnly`、`ReceiveOnly`、`Timer`、`Ticker`、`WaitGroup`、`Once`、`OnceValue`、`RwMutex`、`Cond`、`Semaphore`、`SyncMap`、`Context`、`ErrGroup`、`Slice`、`FnPtr`、`Anchor`、`ZString`、`Complex` は後から予約語として追加されたモジュール名です。
 これらの名前を持つファイル（例: `Path.tz`）を含む既存のプロジェクトは `E1011` エラーとなるため、ファイル名の変更が必要です（互換性を破る変更点です）。
@@ -784,7 +784,7 @@ class の純粋なメソッドは既定実装と全 instance を検査し、inst
 整数の値引数と整数結果を持つ関数に、独立した既存の `memory(none)` の証明もある場合だけ、
 同じ基本ブロック内の同一引数の後続呼び出しを再利用します。最初の呼び出し、トラップ、評価順序は保ち、
 参照・浮動小数点・所有結果の共有、永続的 memo cache、分岐をまたぐ移動は行いません。
-標準 Char の ASCII 6 関数と Random の明示 seed の PCG 3 関数にも明示の純粋契約があります。
+標準 Char の ASCII 6 関数と Random の明示 seed の PCG 3 関数、`Random.Pcg64` の 22 関数（種の列 `seed_sequence`・`seed_sequence_spawn`、生成器、分布。OS から種を取る `pcg64_from_os` を除く）、`RandomTensor` の生成関数（窓へ書き込む `shuffle_axis` を除く）にも明示の純粋契約があります。
 GPU の効果検査は同じ問い合わせを共有しますが、backend 固有の制限と利用可能性の検査は省略しません。
 具体例と制限は[純粋関数](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/expressions/functions.md)にあります。
 
@@ -1449,7 +1449,7 @@ API と詳しい利用例は [IO リファレンス](https://github.com/tatsuya-
 
 標準の OS API は std の `File`・`Dir`・`Path`・`Env`・`Time`・`Random`・`Os`・`Process` です。インポートや設定は不要で、他の std と同じく `File.read_text` のように修飾して呼びます。
 OS のリソースにアクセスする操作は、すべて遅延評価される `IO<Result<T, Os.Error>>` アクションとして表現されます。アクションを生成・合成・破棄するだけの段階では OS のシステムコールは発行されず、実際にアクションが実行された回数だけ OS API が呼び出されます。
-`Path` モジュールのパス文字列操作関数および `Random.Pcg` は純粋計算であり、`IO` を返しません。またシステム時刻や OS 提供の暗号論的乱数も `IO` アクションの内部でのみ読み取ることが可能なため、グローバルな乱数シードや暗黙の隠蔽された乱数源は存在しません。
+`Path` モジュールのパス文字列操作関数および `Random.Pcg`・`Random.Pcg64`（種を明示する生成器と分布）は純粋計算であり、`IO` を返しません。またシステム時刻や OS 提供の暗号論的乱数も `IO` アクションの内部でのみ読み取ることが可能なため、グローバルな乱数シードや暗黙の隠蔽された乱数源は存在しません。
 OS の呼び出しは、`IO` アクションを実行したとき（エントリーポイントの IO と、tzroutine の本体の `let!`・`do!`）にだけ行われます（任意の場所でアクションを実行する `IO.run` は提供されません）。OS API を使用しないプログラムにおいては、生成される LLVM IR、ランタイムコード、およびリンク構成に何ら不要なオーバーヘッドは生じません。
 
 | モジュール | 主な提供機能 |
@@ -1459,7 +1459,7 @@ OS の呼び出しは、`IO` アクションを実行したとき（エントリ
 | `Path` | `join`／`parent`／`file_name`／`extension`（スラッシュ `/` 区切りの純粋なパス文字列操作） |
 | `Env` | `args ()`／`var name`／`current_dir ()` |
 | `Time` | `monotonic_ns ()`／`unix_ns ()`／`sleep_ms count` |
-| `Random` | OS 提供乱数の `bytes count`／`next_u64 ()`、決定論的かつ純粋な `pcg`／`pcg_next_u32`／`pcg_next_u64` |
+| `Random` | OS 提供乱数の `bytes count`／`next_u64 ()`／`pcg64_from_os ()`、決定論的かつ純粋な `pcg`／`pcg_next_u32`／`pcg_next_u64`、64 bit の生成器 `pcg64`／`pcg64_from_seed`／`seed_sequence`／`seed_sequence_spawn`／`pcg64_next_u64`／`pcg64_next_f64`／`pcg64_next_i64_range` と 15 の分布 `pcg64_*` |
 | `Process` | `run program args input`（シェルを介さない子プロセスの安全な起動と同期実行） |
 | `Os` | `Error`／`ErrorKind`、エラーメッセージ変換 `message`、UTF-8 相互変換 `encode`／`decode` |
 
@@ -1560,6 +1560,30 @@ def main :: unit -> i32 = \() ->
 - `Random.bytes count`（0 以上 $2^{30}$ 以下、範囲外は `InvalidInput`）および `Random.next_u64 ()`（8 バイトを little-endian で読み出した `i64u`）は、OS カーネルが提供する暗号論的乱数を取得します。
 - `Random.pcg seed sequence` は、PCG-XSH-RR 64/32 アルゴリズムに基づく純粋な乱数生成器 `Random.Pcg` を構築します。生成器は不変な値であり、`Random.pcg_next_u32` は `(i32u * Random.Pcg)` のタプルを、`Random.pcg_next_u64` は 2 回の出力を結合して `(i64u * Random.Pcg)` を返します。
   同一のシード値およびストリームシーケンスからは、ネイティブ環境でも WASM 環境でも完全に同一の乱数列が決定論的に得られ、外部インポートも不要です。`Random.Pcg` は不透明型として保護されており、コンストラクタ内でストリームから奇数のインクリメント値を自動合成するため、利用者が誤って偶数の不適切なインクリメントを指定してしまう事故を防ぎます。
+- `Random.pcg64 seed` は、PCG-XSL-RR 128/64（状態 128 bit、1 回の出力 64 bit、周期 $2^{128}$）の純粋な乱数生成器 `Random.Pcg64` を作ります（NC10）。生成器は不透明な値で、進める関数はどれも `own Pcg64` を最後の引数に取り、結果と次に使う生成器の組を返します。暗黙の乱数源やグローバルな種はありません。
+  `Random.pcg64_next_u64` は `(i64u * Pcg64)`、`Random.pcg64_next_f64` は 1 回の出力の上位 53 bit に $2^{-53}$ を掛けた `[0.0, 1.0)` の `f64`、`Random.pcg64_next_i64_range low high` は半開区間 `[low, high)` の整数を返します（積と棄却による Lemire の方法で、剰余の偏りがありません。`low >= high` はトラップ。幅は $2^{64} - 1$ まで取れます）。
+  `Random.seed_sequence [a, b, ...]` は任意個の `i64u` から種の材料 `Random.SeedSequence` を作り、`Random.pcg64_from_seed (ref sequence)` がそこから生成器を作ります。`pcg64 seed` は `pcg64_from_seed (seed_sequence [seed])` と同じです。`Random.seed_sequence_spawn count sequence` は `count` 個の子と、次に分岐するための親の組 `([SeedSequence] * SeedSequence)` を返します。子どうし、子と親、孫は互いに別のストリームになるので、並列に走るタスクへ 1 つずつ渡せます（負の `count` はトラップ）。
+  種の混ぜ方は NumPy の `SeedSequence`、生成器の初期化は NumPy の `PCG64` と同じ算法です。そのため `pcg64_next_u64` と `pcg64_next_f64` の列は、同じ種の `numpy.random.PCG64(seed).random_raw()` と `Generator.random()` に一致します。分布の標本は NumPy の `Generator` と一致しません（算法が違います）。
+  `Random.pcg64_from_os ()` は OS の乱数 32 バイト（`Random.bytes`）を種にする `IO<Result<Pcg64, Os.Error>>` で、`Pcg64` の関数のうち `random` の権限と OS API を要るのはこれだけです。
+- `Random.Pcg64` の分布は次の 15 個です。連続分布は `(f64 * Pcg64)`、`pcg64_bernoulli` は `(bool * Pcg64)`、ほかの離散分布は `(i64 * Pcg64)` を返します。
+
+  | 関数 | 分布と算法 |
+  |---|---|
+  | `pcg64_uniform low high` | `[low, high)` の一様分布。`low + (high - low) * u`（幅が `low` に比べて非常に大きいと、丸めで `high` が出ることがあります） |
+  | `pcg64_standard_normal`、`pcg64_normal loc scale` | 正規分布。Leva の一様乱数の比（表なし。対数は標本 80 個に 1 回ほど） |
+  | `pcg64_exponential scale` | 平均 `scale` の指数分布。逆関数法 `-scale * log (1 - u)` |
+  | `pcg64_gamma shape scale`、`pcg64_chisquare df` | ガンマ分布（平均 `shape * scale`）とカイ二乗分布。Marsaglia-Tsang の方法（`shape < 1` は `shape + 1` の標本に `u ** (1 / shape)` を掛けます） |
+  | `pcg64_beta a b` | `[0, 1]` のベータ分布。`a`・`b` がともに 1 以下なら Jöhnk の方法、それ以外は 2 つのガンマの比 |
+  | `pcg64_laplace loc scale` | ラプラス分布（分散 `2 * scale * scale`）。逆関数法 |
+  | `pcg64_lognormal mean sigma` | 対数正規分布。`exp (normal mean sigma)` |
+  | `pcg64_standard_t df`、`pcg64_f_dist dfnum dfden` | スチューデントの t 分布と F 分布。正規とガンマ、2 つのカイ二乗の比 |
+  | `pcg64_bernoulli p` | 確率 `p` で `true` |
+  | `pcg64_binomial n p` | 二項分布。`n * min p (1 - p) <= 30` なら逆関数法、それ以外は BTPE |
+  | `pcg64_poisson lam` | ポアソン分布。`lam < 10` なら一様乱数の積、それ以外は PTRS（変換棄却法） |
+  | `pcg64_geometric p` | 最初に成功する試行の番号（1 以上、平均 `1 / p`）。逆関数法。`i64` に収まらない結果は `i64` の最大値 |
+
+  種を明示するこれらの関数はすべて `pure def` で、権限も WASM の import も要りません。四則演算と比較、ビット一致の契約を持つ `Math` の関数（`log`・`log1p`・`exp`・`pow`・`sqrt`）、正確に求まる `floor`・`ceil`・`abs`・`min`・`max` だけで計算するので、同じ種からは native と WASM、`-O0` と `-O3` でビット単位に同じ標本が出ます。
+  不正なパラメータは、乱数を引く前に `assert` でトラップします（`assertion failed`）: NaN、無限大、負の `scale`・`sigma`、0 以下の `shape`・`a`・`b`・`df`・`dfnum`・`dfden`、`[0, 1]` の外の `p`（`pcg64_geometric` は `p == 0` も）、負の `n`、負または `9.223372006484771e18` を超える `lam`、`low >= high`。`scale == 0` のような退化した値は使えます（`pcg64_normal loc 0.0` は `loc` を返します）。`pcg64_poisson` は、`lam` が非常に大きいとき（目安として `1e13` 以上）、棄却の判定式 `k * log lam - lam - log (k!)` の丸め誤差が判定の幅に近づくので、裾の確率の精度が下がります。乱数のテンソルと多変量分布は opt-in の [RandomTensor](#randomtensor) にあります。
 - `Process.run program args input` は、シェルを介さずに指定された外部プログラムを直接起動し、その完了を同期待機します。`args` はプログラム名自身の後に続く引数列であり、各要素は空白文字や特殊記号を含んでいてもそのまま単一の argv 引数として安全に渡されます（`;`、`$HOME`、空白文字などがシェル展開される危険はありません）。`input` のバイト列は子プロセスの標準入力へパイプ経由で書き込まれた後に速やかに閉じられます。
   スラッシュ `/` を含まないプログラム名はシステムの `PATH` 環境変数から検索され、子プロセスは親プロセスの環境変数と作業ディレクトリを正しく継承します。標準出力および標準エラー出力は合計 $2^{30}$ バイト（1 GiB）を上限として並行回収され、超過時はリソース保護のため子プロセスへ `SIGKILL` を送信して強制終了させ、`Other` エラーを返します。戻り値は `Process.Output { code: i32, signal: i32, stdout: [ubyte], stderr: [ubyte] }` であり、`code` はプロセスの終了コード、シグナルにより強制終了された場合は `code` が `-1` となり `signal` にシグナル番号が格納されます（プログラムが見つからない場合は `NotFound`、WASM 環境では `Other` エラーとなります）。
 
@@ -1581,7 +1605,7 @@ match Random.pcg_next_u32 generator with
 #### WASM と Windows
 
 デフォルトの wasm32 出力バイナリは、`tsuzuri_io`（標準入出力）以外のホストインポートを持たない自己完結バイナリの生成を原則としています。そのため、`File`、`Dir`、`Env`、`Time`、`Random`（`Random.bytes`／`next_u64`、ならびにこれらを利用する `HashMap.randomized` など）、および `Process` の操作に到達するコードをビルドしようとした場合、ビルド処理は `E2000` エラーで安全に失敗します（WASM バイナリ、LLVM IR、オブジェクトファイルのいずれの出力モードであっても拒否され、不完全な成果物は出力されません。なお、静的検証のみを行う `check` コマンドは IR を生成しないため本エラーは報告されません）。
-一方、`Path` モジュールや `Os` モジュール内の純粋関数、および `Random.Pcg` は外部インポートを必要としないため、wasm32 環境であってもネイティブとまったく同一にコンパイル・実行可能です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve`・`error_kind` など）に到達するコードも `E2000` で、`--wasm-host wasi` を付けても同じです（WASI preview1 には `connect`・`bind`・`listen` がありません）。Node.js 向けには、`--wasm-feature jspi --wasm-feature net` を付けたビルドだけが、生成したグルーでソケットを実装します（「ネットワーク（Net）」）。`Net` のアドレスの解析と表示は純粋な計算なので、import は増えません。
+一方、`Path` モジュールや `Os` モジュール内の純粋関数、および `Random.Pcg`・`Random.Pcg64`（`pcg64_from_os` を除く）は外部インポートを必要としないため、wasm32 環境であってもネイティブとまったく同一にコンパイル・実行可能です。`Net` のソケット（`connect`・`bind`・`bind_udp`・`resolve`・`error_kind` など）に到達するコードも `E2000` で、`--wasm-host wasi` を付けても同じです（WASI preview1 には `connect`・`bind`・`listen` がありません）。Node.js 向けには、`--wasm-feature jspi --wasm-feature net` を付けたビルドだけが、生成したグルーでソケットを実装します（「ネットワーク（Net）」）。`Net` のアドレスの解析と表示は純粋な計算なので、import は増えません。
 
 `build --target wasm32 --wasm-host wasi` オプションを指定した場合、標準入出力および OS API は WASI preview1（`wasi_snapshot_preview1`）の公式インポート関数へと lowering されます。
 
@@ -3694,6 +3718,33 @@ Phase 1 としてバッチ行列積 `matmul`（C 連続 `A` とバッチ共通 `
 Phase 2 として `Elementary<'a>`（`f32` / `f64`、先頭バッチ軸対応）上の部分ピボット `lu`、正定値下三角 `cholesky`、Householder `qr`（`Reduced` / `Complete`）、`solve`（1D 単一右辺・2D+ 複数右辺）、再利用求解 `solve_triangular`・`lu_solve`・`cholesky_solve`、SVD ベースのランク落ち対応最小二乗 `lstsq`、`inv`、`det`、`slogdet`、`matrix_power`、`norm`・`vector_norm`・`matrix_norm`・`cond` を提供します。
 Phase 3 として確定反復上限付きの片側 Hestenes-Jacobi `svd`・`svdvals`、`pinv`、`matrix_rank`、実対称・複素エルミート固有値分解 `eigh`・`eigvalsh`・`eigh_complex`・`eigvalsh_complex`（固有値昇順）、および実一般非対称固有値分解 `eig`・`eigvals`（上 Hessenberg 化＋Francis ダブルシフト実 Schur 分解、`Tensor<Complex<'a>>` 返却）を提供します。
 
+### RandomTensor
+
+`RandomTensor` は、乱数のテンソル、多変量分布、ランダムな並べ替えを提供する opt-in 標準モジュール（予約モジュール `RandomTensor`。NC10）です。ソースが `RandomTensor` という名前を書いたときだけ読み込まれ、そのとき `Tensor` と `Linalg` も読み込まれます。常時読み込まれる `Random` は `Tensor` も `Linalg` も参照しないので、`RandomTensor` を書かないプログラムの型検査と生成 IR は変わりません。利用者の `RandomTensor.tz` は `E1011` です。
+
+```text
+let rng = Random.pcg64 42i64u
+let (samples, rng) = RandomTensor.normal 0.0 1.0 [100, 10] rng     // Tensor<f64>、形状 [100, 10]
+let (order, rng) = RandomTensor.permutation 100 rng                // Tensor<i64>、0 ..< 100 の並べ替え
+```
+
+生成関数は、分布のパラメータ、形状 `own [i64]`、最後に `own Random.Pcg64` を取り、テンソルと次に使う生成器の組を返します（生成器が対象で、最後の引数です）。テンソルは、`Random` の同じ名前のスカラー関数（`normal` なら `Random.pcg64_normal`）を行優先の順に 1 要素につき 1 回呼んだ結果とビット単位で同じです。`[100, 10]` の生成は 1000 回のスカラー生成と同じで、`[50, 10]` を 2 回続けても同じ列になります。要素のない形状は乱数を引かず、空の形状 `[]` は 1 要素のランク 0 のテンソルです。
+
+| 区分 | API |
+|---|---|
+| 連続分布（`Tensor<f64>`） | `uniform low high`、`standard_normal`、`normal loc scale`、`exponential scale`、`gamma k scale`、`beta a b`、`chisquare df`、`laplace loc scale`、`lognormal mean sigma`、`standard_t df`、`f_dist dfnum dfden` |
+| 離散分布 | `integers low high`（`[low, high)`、`Tensor<i64>`）、`bernoulli p`（`Tensor<bool>`）、`binomial n p`、`poisson lam`、`geometric p`（`Tensor<i64>`） |
+| 多変量分布 | `dirichlet alpha shape rng`、`multivariate_normal mean cov shape rng` |
+| 並べ替えと抽出 | `permutation count rng`、`shuffle_axis axis rng target`、`choice_weighted count replace weights rng source` |
+
+- `dirichlet :: ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)` の結果の形状は `shape` に `alpha` の長さを続けたもので、最後の軸に沿った各ベクトルは非負で和が 1、平均は `alpha / sum alpha` です。ガンマ分布の標本を和で割って作り、パラメータがすべて 0.1 未満のときはベータ分布の連鎖で作ります（ガンマの標本がすべて 0 に丸まるのを避けます）。`alpha` はランク 1・1 要素以上・正の有限値でなければトラップします。
+- `multivariate_normal :: ref Tensor.View<f64> -> ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> Result<(Tensor<f64> * Random.Pcg64), Linalg.Error>` は、平均 `mean`（ランク 1、長さ `n`）と共分散 `cov`（`[n, n]`、対称正定値）の多変量正規分布です。結果の形状は `shape` に `n` を続けたもので、各ベクトルは `cov` の Cholesky 因子 `L`（`Linalg.cholesky`）と `n` 個の標準正規乱数 `z` から `mean + L z` で作ります。`mean` がランク 1 でない、または `cov` が `[n, n]` でないときは `Linalg.Error.ShapeMismatch`（2 つの形状）、`cov` が対称正定値でないときは `Linalg.Error.NotPositiveDefinite` を返し、そのとき乱数は引きません。
+- `permutation count rng` は `0 ..< count` の並べ替えを、どの順序も同じ確率で返します（Fisher-Yates。負の `count` はトラップ）。
+- `shuffle_axis :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64` は、書き込み窓 `target` の `axis` に沿った切片をその場で並べ替え、次に使う生成器を返します。切片は丸ごと動きます（行列の軸 0 なら行が入れ替わり、各行の中身は変わりません）。順序は同じ生成器の `permutation` と同じで、`i` 番目の切片は元の `order[i]` 番目になります。負の `axis` は末尾から数え、ランクの外の軸はトラップします。窓へ書き込むので `pure def` ではなく、要素数に比例する作業領域を 1 つ使います。
+- `choice_weighted :: Copy<'a> => own i64 -> own bool -> ref Tensor.View<f64> -> own Random.Pcg64 -> ref Tensor.View<'a> -> (Tensor<'a> * Random.Pcg64)` は、`source` の軸 0 の切片を `weights / sum weights` の確率で `count` 個取り出します（結果の形状は `source` の最初の軸を `count` にしたもの）。`replace` が `true` なら同じ切片が何度も出ることがあり、1 回の抽出に一様乱数を 1 つ使います。`false` なら各切片は高々 1 回で、残った切片からその重みで順に取ります（重みが正の切片ごとに一様乱数を 1 つ使い、`count` には依りません）。重み 0 の切片は選ばれません。`weights` はランク 1 で長さが `source` の最初の軸と同じ、要素は非負の有限値、合計は正でなければならず、`count` は負であってはならず、`replace` が `false` のとき正の重みの個数以下でなければなりません（違反はトラップ）。
+
+不正なパラメータは `Random` のスカラー関数と同じ条件でトラップし（`assertion failed`）、要素のない形状でも検査します。負の軸長を含む形状もトラップします。`shuffle_axis` を除く関数はすべて `pure def` で、権限も WASM の import も要らず、同じ種からは native と WASM、`-O0` と `-O3` でビット単位に同じテンソルが出ます。
+
 ### HashMap / HashSet
 
 `HashMap<'key, 'value>` および `HashSet<'key>` は、`Map` や `Set` と同様に常に非 Copy 型として扱われる、所有権付きのハッシュテーブルコンテナです。キー型には `Hash` および `Eq` 型クラスの実装が要求されますが（`deriving (Eq, Hash)` による自動導出が利用可能）、`Ord` 型クラスの実装は不要です。
@@ -5333,7 +5384,7 @@ CLI 引数の不備、入力ファイルの読み込み失敗、外部リンカ�
 | `E1019` | 再帰関数に必要な `rec` 修飾子の欠落、宣言と実装の再帰契約の不一致、先行関数を持たない単独の `and` |
 | `E1020` | 不正なパターン構文、OR パターン間での束縛変数の不一致、未対応のアクティブパターン形式、共用体バリアントのペイロード不整合 |
 | `E1021` | 明示的な `match` 式、関数ガード、不変 `let` のパターン分解、および edition 2027 のラムダ引数・`for...in`・計算式束縛におけるパターンの網羅性不足（不足している具体的なケース例を提示） |
-| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Net.__*`・`Arena.__next_id` プリミティブの不正参照 |
+| `E1022` | 他モジュールの private 識別子の不正参照、public 宣言からの private 型の露出、不正な `private` 修飾、不透明な標準ライブラリレコード（`HashMap`、`Random.Pcg`、`Random.Pcg64`、`Random.SeedSequence`、`File.Handle`、`BigInt`、`Arena`、`Arena.Handle`、`Net.Address`、`Atomic`、`Mutex` 等）の不正な直接構築・フィールドアクセス、内部 `Os.__*`・`Net.__*`・`Arena.__next_id` プリミティブの不正参照 |
 | `E1023` | ループ外での脱出、関数・tzroutine の本体・ビルダー境界を越える不正な `break`／`continue`、`finally` 節を持つ `try` 式から抜け出す不正なジャンプ |
 | `E1024` | 型宣言における型パラメータ・長さパラメーター（`const N: i64`）の重複・未使用・未宣言、union／case／型エイリアスの大文字始まり規則違反、同一 union 内でのバリアント名重複、型エイリアスの循環参照・型引数の個数不一致 |
 | `E1027` | 条件付きインスタンス、スーパークラス、デフォルトメソッドにおけるトレイト制約の不整合 |
