@@ -167,3 +167,70 @@
 - **D10（委任による決定）**: 整数の区間は半開 `[low, high)`。`low >= high` はトラップ。幅は 2^64 − 1 まで取れる（`i64` の最小値から最大値の 1 つ手前まで）。
 - **D11（委任による決定）**: `choice_weighted count replace weights rng source` は `source` の軸 0 の切片を選ぶ。重みは合計で割って確率にする（合計が 1 である必要はない）。非復元は、重みが正の切片ごとに率 `weight` の指数分布の時計を 1 つ引き、小さい順に `count` 個を取る（逐次の非復元抽出と同じ分布。一様乱数は `count` によらず正の重みの個数だけ使う）。`dirichlet` は、パラメータがすべて 0.1 未満のときベータ分布の連鎖で作る（ガンマがすべて 0 に丸まるのを避ける）。`multivariate_normal` の形の不一致は `Linalg.Error.ShapeMismatch`、対称正定値でない共分散は `Linalg.Error.NotPositiveDefinite` で、エラーのときは乱数を引かない。
 - **D12（委任による決定）**: D-55 に、std のモジュール `RandomTensor`（`RESERVED_MODULES` 83 → 84、`stdlib::OPT_IN`）と、std の型 `Random.Pcg64`・`Random.SeedSequence`（不透明）を登録する。新しい診断コード・予約語・組み込みはない。
+
+## 実装と検証（2026-11-28）
+
+Phase 1・2 を実装しました（ブランチ `feat/nc10-random-distributions`、基点は `main` の `b72bccd0`）。
+
+### 実装した内容
+
+- **Phase 1（`std/Random.tz`、常時ロード）**: 不透明な `record Pcg64 { state: i128u, increment: i128u }`（`Copy`）と `record SeedSequence`（種の 32 bit 語、分岐のキー、プール 4 語、分岐した子の数）。公開関数は 23 個: `pcg64`・`pcg64_from_seed`・`pcg64_from_os`・`seed_sequence`・`seed_sequence_spawn`・`pcg64_next_u64`・`pcg64_next_f64`・`pcg64_next_i64_range` と、分布の `pcg64_uniform`・`pcg64_standard_normal`・`pcg64_normal`・`pcg64_exponential`・`pcg64_gamma`・`pcg64_beta`・`pcg64_chisquare`・`pcg64_laplace`・`pcg64_lognormal`・`pcg64_standard_t`・`pcg64_f_dist`・`pcg64_bernoulli`・`pcg64_binomial`・`pcg64_poisson`・`pcg64_geometric`。`pcg64_from_os` を除く 22 個は `pure def`。128 bit の乗算は組み込みの `i128u` をそのまま使う。`std/Random.tz` は `Tensor`・`Linalg` を名指さない（テストで検査）。
+- **Phase 2（`std/RandomTensor.tz`、opt-in、`uses: ["Tensor", "Linalg"]`）**: 公開関数は 21 個: `uniform`・`standard_normal`・`normal`・`integers`・`exponential`・`gamma`・`beta`・`chisquare`・`laplace`・`lognormal`・`standard_t`・`f_dist`・`bernoulli`・`binomial`・`poisson`・`geometric`、`dirichlet`・`multivariate_normal`・`permutation`・`shuffle_axis`・`choice_weighted`。`shuffle_axis` を除く 20 個は `pure def`。
+- **登録**: `src/stdlib.rs`（`SOURCES`、`RESERVED_MODULES` 83 → 84、`OPT_IN`、`opaque_record` に `Random.Pcg64`・`Random.SeedSequence`）、`tests/std_argument_order.rs`（`Random` を `subject(&["Pcg", "Pcg64", "SeedSequence"])`、`RandomTensor` を `subject(&["Random.Pcg64", "Tensor.Mut", "Tensor.View"])`）、`tests/std_examples.rs`（`Random` 5 → 28、`RandomTensor` 21）、`tests/fixtures/capabilities/std-table.txt`（`Random.pcg64_from_os: random`。90 → 91 行）、`tests/fixtures/effects_sweep/Main.tz`（`Random.pcg64_from_os`）、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`vsc/src/core.ts`（`libraryModules`）。
+
+### 期待値の出どころ
+
+- **生の列**: NumPy 2.5.1 が出した数（`PCG64(seed).random_raw()`、`SeedSequence(...).generate_state`、`spawn` の子と孫、`Generator.random()`）。`tests/random_distributions.rs` に直接書き、`tests/random-cases.mjs` の BigInt のモデルも同じ数で検査する。
+- **分布の標本**: `tests/random-cases.mjs` のモデル（論文の算法を JavaScript の倍精度で書いたもの）。モデルの二項分布（逆関数法・BTPE・`p > 0.5`・`n = 10^12`）とポアソン分布（積・PTRS・`lam = 10`）は、NumPy の `Generator.binomial`・`Generator.poisson` の出力と一致することをモジュールの読み込み時に検査する（NumPy も同じ算法と同じ生の列を使うため）。整数の結果は厳密に、実数の結果は相対誤差 `1e-11` で比べる（モデルの対数は V8、コンパイラは同梱の musl で、最後の桁が違いうる）。
+- **分布の形**: 各分布の平均・分散・尖度の公式と、分布関数の値（正規は `erfc`、ガンマは不完全ガンマ関数の級数、二項・ポアソンは厳密な和、ほかは閉じた式。Python で計算）。固定した種の 4 万〜40 万標本が標準誤差の 4 倍以内にあることを検査する。
+- **ビット一致**: 期待値を持たず、native の `-O0`・`-O3` と wasm32 の `-O0`・`-O3` の 4 つの結果が互いに等しいことを検査する。
+
+### 実行したコマンドと結果（macOS arm64、dev バイナリ）
+
+| コマンド | 結果 |
+| --- | --- |
+| `cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings` | 差分なし、警告なし |
+| `cargo test --locked --test random_distributions` | 13 passed |
+| `cargo test --locked --test std_argument_order --test std_examples --test capabilities --test effects_alloc_conservative --test pure_functions --test formatter` | 22・5・18・7・33・24 passed |
+| `cargo nextest run --locked`（T1） | 3813 tests run、3813 passed、4 skipped（最終のコードの木）。その前の 1 回は 3812 passed・1 failed（`formatter corpus_is_idempotent_and_semantically_unchanged`。下の「チケットから外れた判断」の書き直しで解消） |
+| `tsuzuri test --doc std` | 1394 passed、0 failed（うち `Random` 28、`RandomTensor` 21） |
+| `node tests/features.mjs target/debug/tsuzuri random` | 585 cases と 52 traps。native／WASM の `-O0`／`-O3`、WASM の import なし、`live == 0` |
+| `node tests/features.mjs target/debug/tsuzuri random_tensor` | 466 cases と 43 traps。同上 |
+| `node tests/features.mjs target/debug/tsuzuri`（全 suite） | 途中で止めました（共有機の混雑で 35 分に 34 suite。止めるまでの 34 suite はすべて成功、失敗 0）。残りの suite は実行していません。既存のプログラムの IR が通し番号しか変わらないこと（下の節）が、既存の suite に影響がないことの根拠です |
+| `node tests/os.mjs target/debug/tsuzuri` | 成功（native と wasm32 の `Random` を含む OS API、`-O0`／`-O3`）。`e2e.mjs`・`examples.mjs`・`io.mjs` は実行していません |
+| `node scripts/gen-docs.mjs --check`、`node scripts/check-cli-docs.mjs`、`node scripts/check-guide-lite.mjs`、`node scripts/check-spec.mjs`、`node scripts/check-links.mjs` | 11 blocks・0 stale、4 checks・0 failed、87 references・0 failed、ok、0 broken |
+| Tsuzuri-Reference の `node scripts/check-docs.mjs <変更した 8 ページ>` | 33 examples、66 native runs（`-O0`／`-O3`）、すべて成功 |
+
+`honors_the_exact_specialization_limit`・`reserves_the_d07_table`・`opt_in_modules_are_reached_only_through_their_names` は T1 に含まれ、成功しています。
+
+### 既存のプログラムの IR（停止条件 S2）
+
+`tests/fixtures/*/Main.tz` と `examples/*/Main.tz` の 168 プロジェクトの `build --emit llvm` を、変更の前後で比べました。変更していない 167 プロジェクトのうち 63 はバイト単位で同じ、104 は内部シンボルの通し番号だけが違い（番号を消して比べると同じ）、ほかの差はありません（残りの 1 つは、このチケットが 1 行足した `tests/fixtures/effects_sweep`）。内部シンボルの通し番号は、常時ロードの `std/Random.tz` に宣言が 36 個増えた分だけずれます（`@tz.fn.Shapes.$instance.850.area` が `.886.` になる形）。使わない関数の本体・宣言・文字列は出力されません。`RandomTensor` を名指さないプログラムに `@tz.fn.Tensor.`・`@tz.fn.Linalg.`・`@tz.fn.RandomTensor.` が出ないことは `random_tensor_is_opt_in_and_random_does_not_reach_it` と suite `random` の `inspect` が検査します。
+
+### 計測（参考。性能の主張ではありません）
+
+`-O3`、Apple Silicon、1000 万要素の生成と合計を 1 回ずつ（共有機、1 回だけ）: `RandomTensor.uniform` 約 7 ns／要素、`standard_normal` 約 23 ns、`gamma 2.5 1.0` 約 33 ns、`integers 0 1000` 約 3 ns、`poisson 250.0` 約 35 ns、`binomial 1000 0.4` 約 47 ns。生成コードの確認と、他の実装との同条件の比較はしていません。
+
+### 検証していないこと
+
+- **wasm64**: この機械に Node.js 24 がなく、確かめていません。文書は wasm32 までを述べています。
+- **macOS arm64 以外の native**: CI（`ci:full`）に任せます。suite `random`・`random_tensor` の期待値はモデルが実行時に作るので、Node.js の版で `Math.log`・`Math.pow` の結果が変わると、実数の照合（相対 `1e-11`）ではなく、棄却の判定が 1 ulp の差で入れ替わる場合にだけ整数の照合が変わりえます（起きる見込みは非常に小さい）。
+- **`pcg64_poisson` の非常に大きい `lam`**: `1e15` まではモデルと一致しますが、判定式の丸め誤差が効く範囲（目安 `1e13` 以上）の分布の精度は測っていません（文書に注意を書きました）。
+
+### チケットから外れた判断
+
+「方針の最新化」と D4〜D12 のとおりです。加えて次の 2 点:
+
+- `binomial_btpe` の 3 つの分岐は、`elif` の本体の最後を `else` のない `if` で終えると `tsuzuri fmt` が意味の変わる整形を検出して拒否する（`tests/formatter.rs` の corpus の検査が落ちる）ので、`check = 条件` の代入に書き直しました。整形器の側は直していません（別の不具合として残ります: `elif` の本体が 2 文以上の本体を持つ `else` なしの `if` で終わり、その後に外側の `elif` が続く形）。
+- `tests/capabilities.rs` のテスト名 `std_table_file_lists_the_88_functions` は行数（91）と合っていませんが、起票前からのずれなので変えていません。
+
+### 更新した文書
+
+- `docs/language.md`: 予約モジュール名、純粋関数の一覧の文、OS API の表と「環境・時刻・乱数・プロセス」（`Pcg64`・`SeedSequence`・分布の表・検査・再現性）、WASM の節、新しい節「RandomTensor」、`E1022` の不透明なレコード。
+- `README.md`: OS API の文（`Random.Pcg64`）と、テストの表の行。
+- `_features/GUIDE.md`（D-55 の登録、D-65 の委任による決定）、`_features/README.md`（一覧と計画の表）。
+- Tsuzuri-Reference（ブランチ `docs/nc10-random-distributions`）: `docs/stdlib/sys/random.md`（大幅に追記）、`docs/stdlib/numeric/random-tensor.md`（新規。「引数の順序」あり）、`docs/index.md`、`docs/stdlib/conventions.md`、`docs/modules/imports-and-visibility.md`、`docs/expressions/functions.md`、`docs/modules/packages.md`、`docs/stdlib/numeric/tensor.md`。
+
+### 変更したファイル
+
+`std/Random.tz`、`std/RandomTensor.tz`（新規）、`src/stdlib.rs`、`tests/random_distributions.rs`（新規）、`tests/random-cases.mjs`（新規）、`tests/fixtures/random/Main.tz`（新規）、`tests/fixtures/random_tensor/Main.tz`（新規）、`tests/features.mjs`、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/capabilities.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/fixtures/effects_sweep/Main.tz`、`scripts/check-cli-docs.mjs`、`vsc/src/core.ts`、`docs/language.md`、`README.md`、`_features/GUIDE.md`、`_features/README.md`、このチケット。
