@@ -157,7 +157,7 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 - **D3（既定案）**: `Polynomial` の係数順は NumPy 現行標準（`numpy.polynomial`）の昇べき順（`c[0]` が定数項）を採用する。
 - **D4（委任による決定、2026-11-28）**: 計画の向きの型は `union Direction = Direct | Inverse` とする。採らない案: `Forward | Inverse`（`Norm.Forward` と同じモジュールで同じケース名は `E1001`）、`bool`（呼び出しの位置で意味が読めない）。
 - **D5（委任による決定、2026-11-28）**: 確保なしの実行は、排他スライスを取る `execute_into plan input work output` と `execute_in_place plan work data` の 2 つとし、作業バッファの長さは `plan_work_length` で引く。採らない案: `Tensor.Mut` を取る形（`Tensor` の外から形とストライドを確保なしで読めない）、作業バッファを計画の中に持つ形（計画が可変になり、スレッドで共有できない）。
-- **D6（委任による決定、2026-11-28）**: 変換の核は基数 4・2・3・5 の反復の混合基数 1 つとし、Bluestein の畳み込み長は `2n - 1` 以上の最小の `2^a 3^b 5^c` とする。Phase 1b の「実測して採用」は、`docs/benchmarks.md` の計測（基数 4: 1.33〜1.41 倍、混合基数: 5.1〜11 倍、滑らかな畳み込み長: 1.58〜1.83 倍）で採用と決めた。Stockham 形・SoA・基数 7 以上は入れない（測っていない）。
+- **D6（委任による決定、2026-11-28）**: 変換の核は基数 4・2・3・5 の反復の混合基数 1 つとし、Bluestein の畳み込み長は `2n - 1` 以上の最小の `2^a 3^b 5^c` とする。Phase 1b の「実測して採用」は、`docs/benchmarks.md` の計測（基数 4: 1.33〜1.41 倍、混合基数: 5.1〜11 倍、滑らかな畳み込み長: 1.58〜1.83 倍。レビュー後に 9 標本の中央値で測り直した値は 1.33〜1.42 倍、5.1〜11.6 倍、1.58〜1.83 倍）で採用と決めた。Stockham 形・SoA・基数 7 以上は入れない（測っていない）。
 - **D7（委任による決定、2026-11-28）**: `NdOptions.axes` に同じ軸を 2 回書くのは誤り（`RepeatedAxis`）とする。NumPy は同じ軸を 2 回変換するが、書き間違いと区別できないので受け付けない。
 - **D8（委任による決定、2026-11-28）**: `Polynomial` の係数は配列 `['a]`、データは `Tensor.View<'a>`、要素型は `Elementary<'a>` とし、`add`・`sub`・`mul` は最高次の側の 0 を取り除かない（`trim` で明示する）。採らない案: 係数も `Tensor`（1 次元の小さい列に形とストライドを持たせる利点がない）、NumPy と同じ自動の取り除き（結果の長さが値で変わる）。
 
@@ -205,3 +205,9 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 ### 変更したファイル
 
 `std/Fft.tz`（新規）、`std/Polynomial.tz`（新規）、`src/stdlib.rs`、`tests/fft.rs`（新規）、`tests/polynomial.rs`（新規）、`tests/fft_polynomial_reference.py`（新規。NumPy の期待値を出す）、`tests/fft-polynomial-cases.mjs`（新規。JavaScript の参照）、`tests/features.mjs`、`tests/fixtures/fft/`（新規）、`tests/fixtures/polynomial/`（新規）、`tests/fixtures/effects_sweep/Main.tz`、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`src/llvm_split.rs`（テストの補助関数だけ）、`vsc/src/core.ts`、`scripts/check-cli-docs.mjs`、`benchmarks/run-fft.mjs`（新規）、`benchmarks/fft/Main.tz`（新規）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_features/GUIDE.md`、`_features/README.md`、このチケット。
+
+### レビュー後の修正（2026-11-28、PR #153）
+
+- **ベンチマークが最小値しか残さない**（Copilot の 2 回目の指摘）: `benchmarks/run-fft.mjs` は各行の最小値だけを出し、`benchmarks/fft/Main.tz` も 5 回の最小値だけを出していたので、`docs/benchmarks.md` の「性能指標の記録」の読み方（生の標本・中央値・幅）で比べられなかった。`run-fft.mjs` は、数えない 1 回のあとの実行（既定 5 回、`--metrics` では 9 回以上）の標本をすべて持ち、最小・中央値・最大を出し、`--metrics DIR` で `schema: 1` のレコード（suite `fft`、`makeRecord`・`writeRecords`）を書く。`Main.tz` は最初のラウンドを除く 9 ラウンドを 1 行ずつ出す。
+- 測り直し（load average 約 6、`target/perf/NC09-fft-20261128/fft.jsonl`。核 36 行 × 9 標本、並列バッチ 20 行 × 81 標本）: 基数 4 は 1.33〜1.42 倍、混合基数は 5.1〜11.6 倍、滑らかな畳み込み長は 1.58〜1.83 倍、並列は 2.7〜6.2 倍（中央値の比）。採否の結論は変わらない。`docs/benchmarks.md` の表を中央値と幅に置き換えた。
+
