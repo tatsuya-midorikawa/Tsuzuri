@@ -184,6 +184,22 @@ jobs:
       - name: OS API end to end (W11)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node tests/os.mjs target/release/tsuzuri.exe
+      # NC11: TensorIO on Win32: files, and read-only views of a file (CreateFileMappingW, MapViewOfFile,
+      # UnmapViewOfFile), which no other host runs.
+      - name: Tensor files end to end (NC11)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tests/tensor_io.mjs target/release/tsuzuri.exe
+      # NC09 and NC10: the seeded generators and the transforms give the same bits on Win32 as on the other hosts.
+      - name: Numeric libraries end to end (NC09, NC10)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tests/features.mjs target/release/tsuzuri.exe fft
+          if ($LASTEXITCODE -ne 0) { throw "features.mjs fft failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe polynomial
+          if ($LASTEXITCODE -ne 0) { throw "features.mjs polynomial failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe random
+          if ($LASTEXITCODE -ne 0) { throw "features.mjs random failed: $LASTEXITCODE" }
+          node tests/features.mjs target/release/tsuzuri.exe random_tensor
       # W21 & W24: @c_layout records and extern view on Windows MSVC.
       - name: C layout and extern view end to end (W21, W24)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

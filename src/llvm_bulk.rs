@@ -106,6 +106,49 @@ impl FunctionEmitter<'_, '_> {
         }
     }
 
+    /// NC11: the storage of numeric elements as bytes (`TensorCodec.__to_bytes`) and back
+    /// (`TensorCodec.__of_bytes`), each one `llvm.memcpy` in the byte order of the target, and the shared slice
+    /// of a read-only mapping (`TensorIO.__mmap_slice`), which allocates and copies nothing.
+    pub(super) fn tensor_storage_builtin(&mut self, instance: &BuiltinInstance) -> String {
+        let byte = Type::Integer(8, false);
+        match instance.builtin {
+            Builtin::TensorCodecToBytes => {
+                let element = &instance.types[0];
+                let source = self.value("extractvalue %tz.array %arg0, 0");
+                let count = self.value("extractvalue %tz.array %arg0, 1");
+                let bytes = self.allocation_size(&self.ty(element), &count);
+                let (array, data) = self.allocate_array(&byte, &bytes);
+                self.vector_copy_slots(&byte, &data, &source, &bytes, false);
+                array
+            }
+            Builtin::TensorCodecOfBytes => {
+                let element = &instance.types[0];
+                let source = self.value("extractvalue %tz.array %arg2, 0");
+                let length = self.value("extractvalue %tz.array %arg2, 1");
+                // Unsigned comparisons reject a negative offset or count as well as a range past the end.
+                let inside = self.value(format!("icmp ule i64 %arg0, {length}"));
+                self.guard(&inside, TrapKind::BoundsCheck);
+                let bytes = self.allocation_size(&self.ty(element), "%arg1");
+                let rest = self.value(format!("sub i64 {length}, %arg0"));
+                let fits = self.value(format!("icmp ule i64 {bytes}, {rest}"));
+                self.guard(&fits, TrapKind::BoundsCheck);
+                let (array, data) = self.allocate_array(element, "%arg1");
+                let from = self.value(format!(
+                    "getelementptr inbounds i8, ptr {source}, i64 %arg0"
+                ));
+                self.vector_copy_slots(&byte, &data, &from, &bytes, false);
+                array
+            }
+            _ => {
+                let data = self.value("inttoptr i64 %arg0 to ptr");
+                let view = self.value(format!(
+                    "insertvalue %tz.array zeroinitializer, ptr {data}, 0"
+                ));
+                self.value(format!("insertvalue %tz.array {view}, i64 %arg1, 1"))
+            }
+        }
+    }
+
     pub(super) fn make_vector(&mut self, data: &str, length: &str, capacity: &str) -> String {
         let value = self.value(format!(
             "insertvalue %tz.vec zeroinitializer, ptr {data}, 0"

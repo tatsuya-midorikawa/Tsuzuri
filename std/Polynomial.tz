@@ -1,0 +1,518 @@
+/// Errors returned by polynomial division, fitting and root finding (NC09): a zero divisor, a negative degree,
+/// data that is not a vector (`InvalidRank rank`), vectors of different lengths, no data points, and a failure
+/// of the linear algebra underneath (`Solver`).
+union Error =
+    | ZeroDivisor
+    | InvalidDegree of i64
+    | InvalidRank of i64
+    | ShapeMismatch of ([i64] * [i64])
+    | EmptyData
+    | Solver of Linalg.Error
+    deriving (Eq)
+
+instance Display<Error> {
+    fn display err =
+        match err with
+        | Error.ZeroDivisor -> "division by the zero polynomial"
+        | Error.InvalidDegree degree -> $"invalid polynomial degree: {degree}"
+        | Error.InvalidRank rank -> $"expected a vector, found rank {rank}"
+        | Error.ShapeMismatch (left, right) -> $"shape mismatch: {left} vs {right}"
+        | Error.EmptyData -> "no data points to fit"
+        | Error.Solver cause -> $"linear algebra failed: {cause}"
+}
+
+// ============================================================================
+// Power basis: coefficients in ascending order, c[0] + c[1] x + c[2] x^2 + ...
+// ============================================================================
+
+// The number of coefficients up to the last one that is not exactly zero.
+private def exact_length :: Elementary<'a> => ref ['a] -> i64
+fn exact_length coefficients =
+    let zero = 0.0 as 'a
+    let mut count = coefficients.length
+    let mut found = false
+    while count > 0 && !found do
+        if coefficients[count - 1] == zero then count = count - 1
+        else found = true
+    count
+
+/// Drops the highest coefficients whose magnitude is at most `tolerance`, keeping at least one coefficient;
+/// traps unless `tolerance >= 0`.
+///
+/// ```tsuzuri run=[1,%202]
+/// Polynomial.trim 0.0 [1.0, 2.0, 0.0, 0.0]
+/// ```
+pure def trim :: Elementary<'a> => own 'a -> ref ['a] -> ['a]
+fn trim tolerance coefficients =
+    assert (tolerance >= (0.0 as 'a))
+    let mut count = coefficients.length
+    let mut found = false
+    while count > 0 && !found do
+        if Math.abs coefficients[count - 1] <= tolerance then count = count - 1
+        else found = true
+    if count == 0 then [0.0 as 'a]
+    else Array.sub 0 count coefficients
+
+/// The value at `x` by Horner's rule: `c[0] + x (c[1] + x (c[2] + ...))`. No coefficients is the zero polynomial.
+///
+/// ```tsuzuri run=17
+/// Polynomial.eval 2.0 [1.0, 2.0, 3.0]
+/// ```
+pure def eval :: Elementary<'a> => own 'a -> ref ['a] -> 'a
+fn eval x coefficients =
+    let count = coefficients.length
+    if count == 0 then 0.0 as 'a
+    else
+        let mut value = coefficients[count - 1]
+        let mut index = count - 1
+        while index > 0 do
+            index = index - 1
+            value = coefficients[index] + value * x
+        value
+
+/// The value of a polynomial with real coefficients at a complex `x`, by Horner's rule.
+///
+/// ```tsuzuri run=0+0i
+/// $"{Polynomial.eval_complex (Complex.of 0.0 1.0) [1.0, 0.0, 1.0]}"
+/// ```
+pure def eval_complex :: Elementary<'a> => own Complex<'a> -> ref ['a] -> Complex<'a>
+fn eval_complex x coefficients =
+    let count = coefficients.length
+    let zero = 0.0 as 'a
+    if count == 0 then Complex { re: zero, im: zero }
+    else
+        let mut re = coefficients[count - 1]
+        let mut im = zero
+        let mut index = count - 1
+        while index > 0 do
+            index = index - 1
+            let next_re = coefficients[index] + (re * x.re - im * x.im)
+            im = re * x.im + im * x.re
+            re = next_re
+        Complex { re: re, im: im }
+
+/// The value at every element of `points`, in a tensor of the same shape.
+///
+/// ```tsuzuri run=[1,%206,%2017]
+/// let xs = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// Tensor.to_array (Polynomial.eval_tensor [1.0, 2.0, 3.0] (Tensor.view xs))
+/// ```
+pure def eval_tensor :: Elementary<'a> => ref ['a] -> ref Tensor.View<'a> -> Tensor<'a>
+fn eval_tensor coefficients points =
+    let packed = Tensor.to_tensor points
+    let values = Tensor.as_array (ref packed)
+    let out = new ['a](values.length, \index -> eval values[index] coefficients)
+    Tensor.of_array (Array.copy (Tensor.shape points)) out
+
+/// The sum, with as many coefficients as the longer operand (at least one); zero coefficients are kept.
+///
+/// ```tsuzuri run=[4,%207,%203]
+/// Polynomial.add [1.0, 2.0, 3.0] [3.0, 5.0]
+/// ```
+pure def add :: Elementary<'a> => ref ['a] -> ref ['a] -> ['a]
+fn add left right =
+    let zero = 0.0 as 'a
+    let longer = if left.length > right.length then left.length else right.length
+    new ['a](if longer == 0 then 1 else longer, \index ->
+        (if index < left.length then left[index] else zero) + (if index < right.length then right[index] else zero))
+
+/// The difference `left - right`, with as many coefficients as the longer operand (at least one).
+///
+/// ```tsuzuri run=[-2,%20-3,%203]
+/// Polynomial.sub [1.0, 2.0, 3.0] [3.0, 5.0]
+/// ```
+pure def sub :: Elementary<'a> => ref ['a] -> ref ['a] -> ['a]
+fn sub left right =
+    let zero = 0.0 as 'a
+    let longer = if left.length > right.length then left.length else right.length
+    new ['a](if longer == 0 then 1 else longer, \index ->
+        (if index < left.length then left[index] else zero) - (if index < right.length then right[index] else zero))
+
+/// The product: the convolution of the coefficients, summed in ascending order of the left index.
+///
+/// ```tsuzuri run=[3,%2011,%2019,%2015]
+/// Polynomial.mul [1.0, 2.0, 3.0] [3.0, 5.0]
+/// ```
+pure def mul :: Elementary<'a> => ref ['a] -> ref ['a] -> ['a]
+fn mul left right =
+    let zero = 0.0 as 'a
+    if left.length == 0 || right.length == 0 then [zero]
+    else
+        let mut out = new ['a](left.length + right.length - 1, \_ -> zero)
+        for i in 0i64 ..< left.length do
+            let factor = left[i]
+            for j in 0i64 ..< right.length do
+                out[i + j] = out[i + j] + factor * right[j]
+        out
+
+/// The quotient and the remainder of `dividend / divisor` by long division, after dropping the highest
+/// coefficients that are exactly zero; the remainder has a lower degree than the divisor.
+///
+/// ```tsuzuri run=[1,%201]%20[2]
+/// match Polynomial.divmod [3.0, 2.0, 1.0] [1.0, 1.0] with
+/// | Result.Ok (quotient, remainder) -> $"{quotient} {remainder}"
+/// | Result.Error _ -> ""
+/// ```
+pure def divmod :: Elementary<'a> => ref ['a] -> ref ['a] -> Result<(['a] * ['a]), Error>
+fn divmod dividend divisor =
+    let zero = 0.0 as 'a
+    let numerator = exact_length dividend
+    let denominator = exact_length divisor
+    if denominator == 0 then Result.Error Error.ZeroDivisor
+    elif numerator < denominator then
+        Result.Ok ([zero], (if numerator == 0 then [zero] else Array.sub 0 numerator dividend))
+    else
+        let lead = divisor[denominator - 1]
+        let low = new ['a](denominator - 1, \index -> divisor[index] / lead)
+        let mut rest = Array.sub 0 numerator dividend
+        let mut top = numerator
+        while top >= denominator do
+            top = top - 1
+            let factor = rest[top]
+            let start = top - (denominator - 1)
+            for index in 0i64 ..< low.length do
+                rest[start + index] = rest[start + index] - low[index] * factor
+        let quotient = new ['a](numerator - denominator + 1, \index -> rest[denominator - 1 + index] / lead)
+        let mut kept = denominator - 1
+        let mut found = false
+        while kept > 0 && !found do
+            if rest[kept - 1] == zero then kept = kept - 1
+            else found = true
+        Result.Ok (quotient, (if kept == 0 then [zero] else Array.sub 0 kept (ref rest)))
+
+/// The `power`-th power by repeated multiplication; traps unless `power >= 0`.
+///
+/// ```tsuzuri run=[1,%202,%201]
+/// Polynomial.pow 2 [1.0, 1.0]
+/// ```
+pure def pow :: Elementary<'a> => own i64 -> ref ['a] -> ['a]
+fn pow power coefficients =
+    assert (power >= 0)
+    let mut result = [1.0 as 'a]
+    for _step in 0i64 ..< power do
+        result = mul (ref result) coefficients
+    result
+
+/// The derivative: `c[1] + 2 c[2] x + 3 c[3] x^2 + ...` (the zero polynomial for a constant).
+///
+/// ```tsuzuri run=[2,%206]
+/// Polynomial.deriv [1.0, 2.0, 3.0]
+/// ```
+pure def deriv :: Elementary<'a> => ref ['a] -> ['a]
+fn deriv coefficients =
+    if coefficients.length <= 1 then [0.0 as 'a]
+    else new ['a](coefficients.length - 1, \index -> ((index + 1) as 'a) * coefficients[index + 1])
+
+/// The derivative taken `order` times; traps unless `order >= 0`.
+///
+/// ```tsuzuri run=[6]
+/// Polynomial.deriv_n 2 [1.0, 2.0, 3.0]
+/// ```
+pure def deriv_n :: Elementary<'a> => own i64 -> ref ['a] -> ['a]
+fn deriv_n order coefficients =
+    assert (order >= 0)
+    let mut result = if coefficients.length == 0 then [0.0 as 'a] else Array.copy coefficients
+    for _step in 0i64 ..< order do
+        result = deriv (ref result)
+    result
+
+/// The antiderivative that is 0 at 0: `c[0] x + c[1] x^2 / 2 + c[2] x^3 / 3 + ...`.
+///
+/// ```tsuzuri run=[0,%201,%201,%201]
+/// Polynomial.integ [1.0, 2.0, 3.0]
+/// ```
+pure def integ :: Elementary<'a> => ref ['a] -> ['a]
+fn integ coefficients = integ_const (0.0 as 'a) coefficients
+
+/// The antiderivative whose value at 0 is `constant`.
+///
+/// ```tsuzuri run=[5,%201,%201,%201]
+/// Polynomial.integ_const 5.0 [1.0, 2.0, 3.0]
+/// ```
+pure def integ_const :: Elementary<'a> => own 'a -> ref ['a] -> ['a]
+fn integ_const constant coefficients =
+    new ['a](coefficients.length + 1, \index -> if index == 0 then constant else coefficients[index - 1] / (index as 'a))
+
+/// The monic polynomial with the given real roots: the product of `x - r`, multiplied in the order of `roots`.
+///
+/// ```tsuzuri run=[2,%20-3,%201]
+/// Polynomial.from_roots [1.0, 2.0]
+/// ```
+pure def from_roots :: Elementary<'a> => ref ['a] -> ['a]
+fn from_roots roots =
+    let zero = 0.0 as 'a
+    let mut result = [1.0 as 'a]
+    for index in 0i64 ..< roots.length do
+        let current = result
+        let root = roots[index]
+        result = new ['a](current.length + 1, \power ->
+            (if power > 0 then current[power - 1] else zero) - (if power < current.length then root * current[power] else zero))
+    result
+
+/// The monic polynomial with the given complex roots, with complex coefficients; for roots in conjugate pairs
+/// the imaginary parts are zero up to rounding.
+///
+/// ```tsuzuri run=true
+/// let c = Polynomial.from_roots_complex [Complex.of 0.0 1.0, Complex.of 0.0 (-1.0)]
+/// c.length == 3 && c[0].re == 1.0 && c[1].re == 0.0 && c[2].re == 1.0 && c[0].im == 0.0
+/// ```
+pure def from_roots_complex :: Elementary<'a> => ref [Complex<'a>] -> [Complex<'a>]
+fn from_roots_complex roots =
+    let zero = 0.0 as 'a
+    let mut result = [Complex { re: 1.0 as 'a, im: zero }]
+    for index in 0i64 ..< roots.length do
+        let current = result
+        let root = roots[index]
+        result = new [Complex<'a>](current.length + 1, \power ->
+            let shifted = if power > 0 then current[power - 1] else Complex { re: zero, im: zero }
+            if power < current.length then
+                let c = current[power]
+                Complex { re: shifted.re - (root.re * c.re - root.im * c.im), im: shifted.im - (root.re * c.im + root.im * c.re) }
+            else shifted)
+    result
+
+// ============================================================================
+// Fitting and roots
+// ============================================================================
+
+// The elements of a vector as an array, or the error for a window that is not a vector.
+private def vector :: Elementary<'a> => ref Tensor.View<'a> -> Result<['a], Error>
+fn vector view =
+    let rank = (Tensor.shape view).length
+    if rank != 1 then Result.Error (Error.InvalidRank rank)
+    else Result.Ok (Tensor.to_array (Tensor.to_tensor view))
+
+// Row `i` of the result holds the `terms` basis values at `points[i]`: basis 0 is the powers, 1 the Chebyshev
+// polynomials of the first kind, 2 the Legendre polynomials.
+private def design :: Elementary<'a> => own i64 -> own i64 -> ref ['a] -> ['a]
+fn design basis terms points =
+    let one = 1.0 as 'a
+    let mut out = new ['a](points.length * terms, \_ -> one)
+    for row in 0i64 ..< points.length do
+        let x = points[row]
+        let start = row * terms
+        if terms > 1 then out[start + 1] = x
+        for term in 2i64 ..< terms do
+            let previous = out[start + term - 1]
+            let before = out[start + term - 2]
+            if basis == 0 then out[start + term] = previous * x
+            elif basis == 1 then out[start + term] = previous * x * (2.0 as 'a) - before
+            else out[start + term] = (previous * x * ((2 * term - 1) as 'a) - before * ((term - 1) as 'a)) / (term as 'a)
+    out
+
+// The least-squares coefficients of the basis for the points, the values and the optional weights. The columns
+// are scaled to unit length before the SVD, as in NumPy, so that the powers of a wide range stay comparable.
+private def fit_basis :: Elementary<'a> => own i64 -> own i64 -> own Result<Maybe<['a]>, Error> -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<['a], Error>
+fn fit_basis basis degree weights points values =
+    if degree < 0 then Result.Error (Error.InvalidDegree degree)
+    else
+        match (vector points, vector values, weights) with
+        | (Result.Error problem, _, _) -> Result.Error problem
+        | (_, Result.Error problem, _) -> Result.Error problem
+        | (_, _, Result.Error problem) -> Result.Error problem
+        | (Result.Ok xs, Result.Ok ys, Result.Ok given) ->
+            if xs.length != ys.length then Result.Error (Error.ShapeMismatch ([xs.length], [ys.length]))
+            elif xs.length == 0 then Result.Error Error.EmptyData
+            else
+                let ws =
+                    match given with
+                    | Maybe.Some listed -> listed
+                    | Maybe.None -> new ['a](xs.length, \_ -> 1.0 as 'a)
+                if ws.length != xs.length then Result.Error (Error.ShapeMismatch ([xs.length], [ws.length]))
+                else solve_weighted basis (degree + 1) (ref xs) (ref ys) (ref ws)
+
+private def solve_weighted :: Elementary<'a> => own i64 -> own i64 -> ref ['a] -> ref ['a] -> ref ['a] -> Result<['a], Error>
+fn solve_weighted basis terms xs ys ws =
+    let zero = 0.0 as 'a
+    let rows = xs.length
+    let mut matrix = design basis terms xs
+    for row in 0i64 ..< rows do
+        for term in 0i64 ..< terms do
+            matrix[row * terms + term] = matrix[row * terms + term] * ws[row]
+    let right = new ['a](rows, \row -> ys[row] * ws[row])
+    let lengths = new ['a](terms, \term ->
+        let mut total = zero
+        for row in 0i64 ..< rows do
+            total = total + matrix[row * terms + term] * matrix[row * terms + term]
+        let length = Math.sqrt total
+        if length == zero then 1.0 as 'a else length)
+    for row in 0i64 ..< rows do
+        for term in 0i64 ..< terms do
+            matrix[row * terms + term] = matrix[row * terms + term] / lengths[term]
+    let left = Tensor.of_array [rows, terms] matrix
+    let target = Tensor.of_array [rows] right
+    let left_view = Tensor.view (ref left)
+    let target_view = Tensor.view (ref target)
+    match Linalg.lstsq (ref left_view) (ref target_view) with
+    | Result.Error cause -> Result.Error (Error.Solver cause)
+    | Result.Ok solved ->
+        let solution = Tensor.as_array (ref solved.solution)
+        Result.Ok (new ['a](terms, \term -> solution[term] / lengths[term]))
+
+/// The matrix of powers of the vector `points`: row `i` is `1, x_i, x_i^2, .., x_i^degree`.
+///
+/// ```tsuzuri run=[1,%202,%204,%201,%203,%209]
+/// let xs = Tensor.of_array [2] [2.0, 3.0]
+/// match Polynomial.vander 2 (Tensor.view xs) with
+/// | Result.Ok matrix -> Tensor.to_array matrix
+/// | Result.Error _ -> []
+/// ```
+pure def vander :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn vander degree points =
+    if degree < 0 then Result.Error (Error.InvalidDegree degree)
+    else
+        match vector points with
+        | Result.Error problem -> Result.Error problem
+        | Result.Ok xs -> Result.Ok (Tensor.of_array [xs.length, degree + 1] (design 0 (degree + 1) (ref xs)))
+
+/// The coefficients of the polynomial of `degree` that is closest to the values at the points in the sense of
+/// least squares (the SVD of the scaled matrix of powers); with fewer points than coefficients, the solution of
+/// the least norm.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// let y = Tensor.of_array [3] [1.0, 3.0, 7.0]
+/// match Polynomial.fit 2 (Tensor.view x) (Tensor.view y) with
+/// | Result.Ok c -> Math.abs (c[0] - 1.0) < 1e-12 && Math.abs (c[1] - 1.0) < 1e-12 && Math.abs (c[2] - 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def fit :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<['a], Error>
+fn fit degree points values =
+    fit_basis 0 degree (Result.Ok Maybe.None) points values
+
+/// `fit` with a weight for every point: the sum of `(weight (value - p(point)))^2` is the least.
+///
+/// ```tsuzuri run=true
+/// let w = Tensor.of_array [3] [1.0, 1.0, 0.0]
+/// let x = Tensor.of_array [3] [0.0, 1.0, 2.0]
+/// let y = Tensor.of_array [3] [1.0, 3.0, 100.0]
+/// match Polynomial.fit_weighted 1 (Tensor.view w) (Tensor.view x) (Tensor.view y) with
+/// | Result.Ok c -> Math.abs (c[0] - 1.0) < 1e-12 && Math.abs (c[1] - 2.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def fit_weighted :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<['a], Error>
+fn fit_weighted degree weights points values =
+    match vector weights with
+    | Result.Ok listed -> fit_basis 0 degree (Result.Ok (Maybe.Some listed)) points values
+    | Result.Error problem -> Result.Error problem
+
+/// The roots, as the eigenvalues of the companion matrix, sorted by real part and then by imaginary part.
+/// The highest coefficients that are exactly zero are dropped first; a constant has no roots.
+///
+/// ```tsuzuri run=true
+/// match Polynomial.roots [2.0, -3.0, 1.0] with
+/// | Result.Ok r -> r.length == 2 && Math.abs (r[0].re - 1.0) < 1e-12 && Math.abs (r[1].re - 2.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def roots :: (Elementary<'a>, Neg<'a>) => ref ['a] -> Result<[Complex<'a>], Error>
+fn roots coefficients =
+    let zero = 0.0 as 'a
+    let count = exact_length coefficients
+    if count < 2 then
+        let none: [Complex<'a>] = []
+        Result.Ok none
+    elif count == 2 then Result.Ok [Complex { re: zero - coefficients[0] / coefficients[1], im: zero }]
+    else
+        let size = count - 1
+        let lead = coefficients[size]
+        // The companion matrix turned by half a turn, as NumPy does: the first column holds
+        // -c[size - 1 - row] / c[size] and the entries above the diagonal are 1.
+        let matrix = new ['a](size * size, \index ->
+            let row = index / size
+            let column = index % size
+            if column == 0 then zero - coefficients[size - 1 - row] / lead
+            elif column == row + 1 then 1.0 as 'a
+            else zero)
+        let companion = Tensor.of_array [size, size] matrix
+        let view = Tensor.view (ref companion)
+        match Linalg.eigvals (ref view) with
+        | Result.Error cause -> Result.Error (Error.Solver cause)
+        | Result.Ok values ->
+            let mut sorted = Array.copy (Tensor.as_array (ref values))
+            for index in 1i64 ..< sorted.length do
+                let value = sorted[index]
+                let mut slot = index
+                let mut placed = false
+                while slot > 0 && !placed do
+                    let before = sorted[slot - 1]
+                    if before.re > value.re || (before.re == value.re && before.im > value.im) then
+                        sorted[slot] = before
+                        slot = slot - 1
+                    else placed = true
+                sorted[slot] = value
+            Result.Ok sorted
+
+// ============================================================================
+// Chebyshev and Legendre bases
+// ============================================================================
+
+/// The value at `x` of the Chebyshev series `c[0] T_0 + c[1] T_1 + ...` by Clenshaw's recurrence.
+///
+/// ```tsuzuri run=7
+/// Polynomial.cheb_eval 2.0 [0.0, 0.0, 1.0]
+/// ```
+pure def cheb_eval :: Elementary<'a> => own 'a -> ref ['a] -> 'a
+fn cheb_eval x coefficients =
+    let count = coefficients.length
+    if count == 0 then 0.0 as 'a
+    elif count == 1 then coefficients[0]
+    else
+        let twice = x * (2.0 as 'a)
+        let mut low = coefficients[count - 2]
+        let mut high = coefficients[count - 1]
+        let mut index = count - 2
+        while index > 0 do
+            index = index - 1
+            let kept = low
+            low = coefficients[index] - high
+            high = kept + high * twice
+        low + high * x
+
+/// The Chebyshev series of `degree` that is closest to the values at the points in the sense of least squares.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [-1.0, 0.0, 1.0]
+/// let y = Tensor.of_array [3] [1.0, -1.0, 1.0]
+/// match Polynomial.cheb_fit 2 (Tensor.view x) (Tensor.view y) with
+/// | Result.Ok c -> Math.abs c[0] < 1e-12 && Math.abs c[1] < 1e-12 && Math.abs (c[2] - 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def cheb_fit :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<['a], Error>
+fn cheb_fit degree points values =
+    fit_basis 1 degree (Result.Ok Maybe.None) points values
+
+/// The value at `x` of the Legendre series `c[0] P_0 + c[1] P_1 + ...` by Clenshaw's recurrence.
+///
+/// ```tsuzuri run=5.5
+/// Polynomial.leg_eval 2.0 [0.0, 0.0, 1.0]
+/// ```
+pure def leg_eval :: Elementary<'a> => own 'a -> ref ['a] -> 'a
+fn leg_eval x coefficients =
+    let count = coefficients.length
+    if count == 0 then 0.0 as 'a
+    elif count == 1 then coefficients[0]
+    else
+        let mut low = coefficients[count - 2]
+        let mut high = coefficients[count - 1]
+        let mut order = count
+        let mut index = count - 2
+        while index > 0 do
+            index = index - 1
+            order = order - 1
+            let kept = low
+            low = coefficients[index] - (high * ((order - 1) as 'a)) / (order as 'a)
+            high = kept + (high * x * ((2 * order - 1) as 'a)) / (order as 'a)
+        low + high * x
+
+/// The Legendre series of `degree` that is closest to the values at the points in the sense of least squares.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [-1.0, 0.0, 1.0]
+/// let y = Tensor.of_array [3] [1.0, -0.5, 1.0]
+/// match Polynomial.leg_fit 2 (Tensor.view x) (Tensor.view y) with
+/// | Result.Ok c -> Math.abs c[0] < 1e-12 && Math.abs c[1] < 1e-12 && Math.abs (c[2] - 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def leg_fit :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> ref Tensor.View<'a> -> Result<['a], Error>
+fn leg_fit degree points values =
+    fit_basis 2 degree (Result.Ok Maybe.None) points values

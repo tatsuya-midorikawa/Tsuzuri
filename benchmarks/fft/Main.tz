@@ -1,0 +1,50 @@
+// NC09: `Fft.fft` against `Fft.fft_parallel`, and `Fft.fft2` against `Fft.fft2_parallel`, on batches larger than
+// one parallel chunk. A shape is transformed ten times; the first round is not printed and every other one is a
+// line with its two times, so no sample is lost. `same` says that both gave the same values in that round.
+// `node benchmarks/run-fft.mjs <compiler>` builds and runs this program and reads the lines.
+
+def wave :: own i64 -> [Complex<f64>]
+fn wave n = new [Complex<f64>](n, \i -> Complex.of (Math.sin ((i * i + 1) as f64)) (Math.cos ((3 * i + 2) as f64)))
+
+def now :: unit -> IO<i64>
+fn now _ = IO {
+    let! stamp = Time.monotonic_ns ()
+    return (match stamp with
+        | Result.Ok value -> value
+        | Result.Error _ -> 0)
+}
+
+def same :: Result<Tensor<Complex<f64>>, Fft.Error> -> Result<Tensor<Complex<f64>>, Fft.Error> -> bool
+fn same left right =
+    match (left, right) with
+    | (Result.Ok a, Result.Ok b) -> a == b
+    | _ -> false
+
+def main :: unit -> i32 = \() ->
+    for shape in [[4096, 1024], [64, 65536], [100000, 16], [512, 1000], [200, 10007]] do
+        let t = Tensor.of_array (Array.copy (ref shape)) (wave (shape[0] * shape[1]))
+        let v = Tensor.view (ref t)
+        for round in 0i64 ..< 10 do
+            let! a = now ()
+            let s = Fft.fft (ref v)
+            let! b = now ()
+            let p = Fft.fft_parallel (ref v)
+            let! c = now ()
+            if round > 0 then
+                do! IO.writeln ($"fft {shape}: serial {b - a} ns, parallel {c - b} ns, same {same s p}")
+    for shape in [[1024, 1024], [2048, 2048], [300, 500], [16, 256, 256], [1009, 1013]] do
+        let mut total = 1
+        for extent in shape do
+            total = total * extent
+        let t = Tensor.of_array (Array.copy (ref shape)) (wave total)
+        let v = Tensor.view (ref t)
+        for round in 0i64 ..< 10 do
+            let! a = now ()
+            let s = Fft.fft2 (ref v)
+            let! b = now ()
+            let p = Fft.fft2_parallel (ref v)
+            let! c = now ()
+            if round > 0 then
+                do! IO.writeln ($"fft2 {shape}: serial {b - a} ns, parallel {c - b} ns, same {same s p}")
+    do! IO.writeln ($"processors {Routine.max_procs ()} of {Routine.cpu_count ()}")
+    0

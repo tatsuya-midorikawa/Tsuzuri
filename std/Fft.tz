@@ -1,0 +1,1662 @@
+/// How a transform and its inverse share the factor `1 / n` (NC09): `Backward` leaves the forward transform
+/// unscaled and scales the inverse by `1 / n` (the default, as in NumPy), `Forward` does the opposite, and
+/// `Ortho` scales both by `1 / sqrt n`.
+union Norm =
+    | Backward
+    | Ortho
+    | Forward
+    deriving (Eq)
+
+/// The direction of a planned transform: `Direct` uses the exponent `-2 pi i j k / n`, `Inverse` uses `+`.
+union Direction =
+    | Direct
+    | Inverse
+    deriving (Eq)
+
+/// Errors returned by the transforms (NC09): a transform axis of length 0 (`EmptyAxis axis`), an axis outside
+/// the rank (`InvalidAxis (axis, rank)`), an axis listed twice, a negative length, and a length that differs
+/// from what a plan, a buffer or an option list expects (`LengthMismatch (expected, found)`).
+union Error =
+    | EmptyAxis of i64
+    | InvalidAxis of (i64 * i64)
+    | RepeatedAxis of i64
+    | InvalidLength of i64
+    | LengthMismatch of (i64 * i64)
+    deriving (Eq)
+
+instance Display<Error> {
+    fn display err =
+        match err with
+        | Error.EmptyAxis axis -> $"axis {axis} has no elements to transform"
+        | Error.InvalidAxis (axis, rank) -> $"axis {axis} is out of bounds for rank {rank}"
+        | Error.RepeatedAxis axis -> $"axis {axis} is listed more than once"
+        | Error.InvalidLength length -> $"invalid transform length: {length}"
+        | Error.LengthMismatch (expected, found) -> $"length mismatch: expected {expected}, found {found}"
+}
+
+/// Options of a one-dimensional transform: the axis (negative counts from the end), the transform length
+/// (`Maybe.None` keeps the length of the axis; a shorter input is padded with zeros and a longer one is cut),
+/// and the scaling.
+record Options { axis: i64, n: Maybe<i64>, norm: Norm }
+
+/// Options of a multi-dimensional transform: the axes (`Maybe.None` is every axis, or the last axes when
+/// `shape` is given), the transform length of each listed axis, and the scaling.
+record NdOptions { axes: Maybe<[i64]>, shape: Maybe<[i64]>, norm: Norm }
+
+/// An immutable plan of the complex transform of one length and direction: the radices, the digit-reversal
+/// permutation and the roots of unity of the mixed-radix kernel, and for a length with a prime factor above 5
+/// the chirp and the transformed filter of Bluestein's algorithm. A plan holds no hidden state, so one plan can
+/// be shared by any number of threads.
+record Plan<'a> {
+    n: i64,
+    inverse: bool,
+    scale: 'a,
+    unit_scale: bool,
+    factors: [i64],
+    perm: [i64],
+    twiddles: [Complex<'a>],
+    chirp: [Complex<'a>],
+    filter: [Complex<'a>]
+}
+
+// The plan of a real transform of length `n`: for an even `n` the complex plan of `n / 2` and the roots
+// `exp(-2 pi i k / n)` for `k <= n / 2`; for an odd `n` the complex plan of `n`.
+private record RealPlan<'a> {
+    n: i64,
+    even: bool,
+    inner: Plan<'a>,
+    roots: [Complex<'a>],
+    scale: 'a
+}
+
+// ============================================================================
+// Roots of unity, radices and the digit-reversal permutation
+// ============================================================================
+
+// (cos, sin) of `2 pi k / n` for `0 <= k < n`. The angle is folded into the first octant with integers, so
+// the values on the axes are exactly 0 and +-1 and the eight symmetries hold bit for bit.
+private def unit_root :: own i64 -> own i64 -> (f64 * f64)
+fn unit_root k n =
+    let octant = (8 * k) / n
+    let rest = 8 * k - octant * n
+    let quarter = Math.pi() / 4.0
+    let folded = if octant % 2 == 0 then rest else n - rest
+    let angle = quarter * (folded as f64) / (n as f64)
+    let c = Math.cos angle
+    let s = Math.sin angle
+    if octant == 0 then (c, s)
+    elif octant == 1 then (s, c)
+    elif octant == 2 then (0.0 - s, c)
+    elif octant == 3 then (0.0 - c, s)
+    elif octant == 4 then (0.0 - c, 0.0 - s)
+    elif octant == 5 then (0.0 - s, 0.0 - c)
+    elif octant == 6 then (s, 0.0 - c)
+    else (c, 0.0 - s)
+
+// `exp(-2 pi i k / n)`, or its conjugate for the inverse direction, rounded once from f64.
+private def root :: Elementary<'a> => own bool -> own i64 -> own i64 -> Complex<'a>
+fn root inverse k n =
+    let (c, s) = unit_root k n
+    if inverse then Complex { re: c as 'a, im: s as 'a }
+    else Complex { re: c as 'a, im: (0.0 - s) as 'a }
+
+// The radices of the kernel for a length whose prime factors are 2, 3 and 5, outermost stage first
+// (4s, then a 2, then 3s, then 5s); `Maybe.None` for any other length.
+private def smooth_factors :: own i64 -> Maybe<[i64]>
+fn smooth_factors n =
+    let mut factors = new [i64](64, \_ -> 0)
+    let mut count = 0
+    let mut rest = n
+    while rest % 4 == 0 do
+        factors[count] = 4
+        count = count + 1
+        rest = rest / 4
+    while rest % 2 == 0 do
+        factors[count] = 2
+        count = count + 1
+        rest = rest / 2
+    while rest % 3 == 0 do
+        factors[count] = 3
+        count = count + 1
+        rest = rest / 3
+    while rest % 5 == 0 do
+        factors[count] = 5
+        count = count + 1
+        rest = rest / 5
+    if rest == 1 then Maybe.Some (Array.sub 0 count (ref factors))
+    else Maybe.None
+
+// `value` doubled until it is at least `least`. A recursion and not a loop: the compiler asks LLVM to unroll a
+// loop of one assignment, and LLVM cannot unroll this one.
+private def rec doubled_to :: own i64 -> own i64 -> i64
+fn rec doubled_to least value = if value < least then doubled_to least (value * 2) else value
+
+// The smallest `2^a 3^b 5^c` that is at least `least` (`least >= 1`).
+private def next_smooth :: own i64 -> i64
+fn next_smooth least =
+    let mut best = doubled_to least 1
+    let mut five = 1
+    while five < best do
+        let mut three = five
+        while three < best do
+            let candidate = doubled_to least three
+            if candidate < best then best = candidate
+            three = three * 3
+        five = five * 5
+    best
+
+// perm[i] is the slot of input element `i` before the first stage: digit `d_j = (i / (p_1 .. p_(j-1))) % p_j`
+// of radix `p_j` weighs `n / (p_1 .. p_j)`. With radices 2 only this is the bit reversal.
+private def build_perm :: own i64 -> ref [i64] -> [i64]
+fn build_perm n factors =
+    new [i64](n, \index ->
+        let mut rest = index
+        let mut weight = n
+        let mut slot = 0
+        for radix in factors do
+            weight = weight / radix
+            slot = slot + (rest % radix) * weight
+            rest = rest / radix
+        slot)
+
+// ============================================================================
+// Mixed-radix decimation-in-time stages (radices 2, 3, 4 and 5)
+// ============================================================================
+
+private def stage2 :: Elementary<'a> => own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn stage2 fstride m tw data =
+    if m == 1 then
+        for block in 0i64 ..< fstride do
+            let base = block * 2
+            let a = data[base]
+            let b = data[base + 1]
+            data[base] = Complex { re: a.re + b.re, im: a.im + b.im }
+            data[base + 1] = Complex { re: a.re - b.re, im: a.im - b.im }
+    else
+        for block in 0i64 ..< fstride do
+            let base = block * 2 * m
+            for j in 0i64 ..< m do
+                let w = tw[j * fstride]
+                let a = data[base + j]
+                let b = data[base + m + j]
+                let tr = b.re * w.re - b.im * w.im
+                let ti = b.re * w.im + b.im * w.re
+                data[base + j] = Complex { re: a.re + tr, im: a.im + ti }
+                data[base + m + j] = Complex { re: a.re - tr, im: a.im - ti }
+
+private def stage4 :: Elementary<'a> => own bool -> own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn stage4 inverse fstride m tw data =
+    if m == 1 then
+        for block in 0i64 ..< fstride do
+            let base = block * 4
+            let a0 = data[base]
+            let a1 = data[base + 1]
+            let a2 = data[base + 2]
+            let a3 = data[base + 3]
+            let f0r = a0.re + a2.re
+            let f0i = a0.im + a2.im
+            let s5r = a0.re - a2.re
+            let s5i = a0.im - a2.im
+            let s3r = a1.re + a3.re
+            let s3i = a1.im + a3.im
+            let s4r = a1.re - a3.re
+            let s4i = a1.im - a3.im
+            data[base] = Complex { re: f0r + s3r, im: f0i + s3i }
+            data[base + 2] = Complex { re: f0r - s3r, im: f0i - s3i }
+            if inverse then
+                data[base + 1] = Complex { re: s5r - s4i, im: s5i + s4r }
+                data[base + 3] = Complex { re: s5r + s4i, im: s5i - s4r }
+            else
+                data[base + 1] = Complex { re: s5r + s4i, im: s5i - s4r }
+                data[base + 3] = Complex { re: s5r - s4i, im: s5i + s4r }
+    else
+        for block in 0i64 ..< fstride do
+            let base = block * 4 * m
+            for j in 0i64 ..< m do
+                let w1 = tw[j * fstride]
+                let w2 = tw[2 * j * fstride]
+                let w3 = tw[3 * j * fstride]
+                let a0 = data[base + j]
+                let a1 = data[base + m + j]
+                let a2 = data[base + 2 * m + j]
+                let a3 = data[base + 3 * m + j]
+                let s0r = a1.re * w1.re - a1.im * w1.im
+                let s0i = a1.re * w1.im + a1.im * w1.re
+                let s1r = a2.re * w2.re - a2.im * w2.im
+                let s1i = a2.re * w2.im + a2.im * w2.re
+                let s2r = a3.re * w3.re - a3.im * w3.im
+                let s2i = a3.re * w3.im + a3.im * w3.re
+                let f0r = a0.re + s1r
+                let f0i = a0.im + s1i
+                let s5r = a0.re - s1r
+                let s5i = a0.im - s1i
+                let s3r = s0r + s2r
+                let s3i = s0i + s2i
+                let s4r = s0r - s2r
+                let s4i = s0i - s2i
+                data[base + j] = Complex { re: f0r + s3r, im: f0i + s3i }
+                data[base + 2 * m + j] = Complex { re: f0r - s3r, im: f0i - s3i }
+                if inverse then
+                    data[base + m + j] = Complex { re: s5r - s4i, im: s5i + s4r }
+                    data[base + 3 * m + j] = Complex { re: s5r + s4i, im: s5i - s4r }
+                else
+                    data[base + m + j] = Complex { re: s5r + s4i, im: s5i - s4r }
+                    data[base + 3 * m + j] = Complex { re: s5r - s4i, im: s5i + s4r }
+
+private def stage3 :: Elementary<'a> => own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn stage3 fstride m tw data =
+    let epi = tw[fstride * m].im
+    let half = 0.5 as 'a
+    for block in 0i64 ..< fstride do
+        let base = block * 3 * m
+        for j in 0i64 ..< m do
+            let w1 = tw[j * fstride]
+            let w2 = tw[2 * j * fstride]
+            let a0 = data[base + j]
+            let a1 = data[base + m + j]
+            let a2 = data[base + 2 * m + j]
+            let s1r = a1.re * w1.re - a1.im * w1.im
+            let s1i = a1.re * w1.im + a1.im * w1.re
+            let s2r = a2.re * w2.re - a2.im * w2.im
+            let s2i = a2.re * w2.im + a2.im * w2.re
+            let s3r = s1r + s2r
+            let s3i = s1i + s2i
+            let s0r = (s1r - s2r) * epi
+            let s0i = (s1i - s2i) * epi
+            let mr = a0.re - half * s3r
+            let mi = a0.im - half * s3i
+            data[base + j] = Complex { re: a0.re + s3r, im: a0.im + s3i }
+            data[base + m + j] = Complex { re: mr - s0i, im: mi + s0r }
+            data[base + 2 * m + j] = Complex { re: mr + s0i, im: mi - s0r }
+
+private def stage5 :: Elementary<'a> => own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn stage5 fstride m tw data =
+    let ya = tw[fstride * m]
+    let yb = tw[2 * fstride * m]
+    for block in 0i64 ..< fstride do
+        let base = block * 5 * m
+        for j in 0i64 ..< m do
+            let w1 = tw[j * fstride]
+            let w2 = tw[2 * j * fstride]
+            let w3 = tw[3 * j * fstride]
+            let w4 = tw[4 * j * fstride]
+            let a0 = data[base + j]
+            let a1 = data[base + m + j]
+            let a2 = data[base + 2 * m + j]
+            let a3 = data[base + 3 * m + j]
+            let a4 = data[base + 4 * m + j]
+            let s1r = a1.re * w1.re - a1.im * w1.im
+            let s1i = a1.re * w1.im + a1.im * w1.re
+            let s2r = a2.re * w2.re - a2.im * w2.im
+            let s2i = a2.re * w2.im + a2.im * w2.re
+            let s3r = a3.re * w3.re - a3.im * w3.im
+            let s3i = a3.re * w3.im + a3.im * w3.re
+            let s4r = a4.re * w4.re - a4.im * w4.im
+            let s4i = a4.re * w4.im + a4.im * w4.re
+            let s7r = s1r + s4r
+            let s7i = s1i + s4i
+            let s10r = s1r - s4r
+            let s10i = s1i - s4i
+            let s8r = s2r + s3r
+            let s8i = s2i + s3i
+            let s9r = s2r - s3r
+            let s9i = s2i - s3i
+            let s5r = a0.re + s7r * ya.re + s8r * yb.re
+            let s5i = a0.im + s7i * ya.re + s8i * yb.re
+            let s6r = s10i * ya.im + s9i * yb.im
+            let s6i = (0.0 as 'a) - s10r * ya.im - s9r * yb.im
+            let s11r = a0.re + s7r * yb.re + s8r * ya.re
+            let s11i = a0.im + s7i * yb.re + s8i * ya.re
+            let s12r = s9i * ya.im - s10i * yb.im
+            let s12i = s10r * yb.im - s9r * ya.im
+            data[base + j] = Complex { re: a0.re + s7r + s8r, im: a0.im + s7i + s8i }
+            data[base + m + j] = Complex { re: s5r - s6r, im: s5i - s6i }
+            data[base + 4 * m + j] = Complex { re: s5r + s6r, im: s5i + s6i }
+            data[base + 2 * m + j] = Complex { re: s11r + s12r, im: s11i + s12i }
+            data[base + 3 * m + j] = Complex { re: s11r - s12r, im: s11i - s12i }
+
+// Runs every stage on `data`, whose elements are already in digit-reversed order, innermost radix first.
+private def butterflies :: Elementary<'a> => own bool -> ref [i64] -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn butterflies inverse factors tw data =
+    let n = data.length
+    let mut m = 1
+    let mut index = factors.length
+    while index > 0 do
+        index = index - 1
+        let radix = factors[index]
+        let fstride = n / (radix * m)
+        if radix == 4 then stage4 inverse fstride m tw data
+        elif radix == 2 then stage2 fstride m tw data
+        elif radix == 3 then stage3 fstride m tw data
+        else stage5 fstride m tw data
+        m = m * radix
+
+// ============================================================================
+// Plans and the transform of one line
+// ============================================================================
+
+// The factor of a transform of length `n`, and whether it is exactly 1.
+private def norm_scale :: Elementary<'a> => own Norm -> own bool -> own i64 -> ('a * bool)
+fn norm_scale norm inverse n =
+    let one = 1.0 as 'a
+    if n == 1 then (one, true)
+    else
+        match norm with
+        | Norm.Ortho -> (one / Math.sqrt (n as 'a), false)
+        | Norm.Backward -> if inverse then (one / (n as 'a), false) else (one, true)
+        | Norm.Forward -> if inverse then (one, true) else (one / (n as 'a), false)
+
+private def make_plan :: Elementary<'a> => own bool -> own 'a -> own bool -> own i64 -> Plan<'a>
+fn make_plan inverse scale unit_scale n =
+    match smooth_factors n with
+    | Maybe.Some factors ->
+        let perm = build_perm n (ref factors)
+        let twiddles = new [Complex<'a>](n, \k -> root inverse k n)
+        Plan { n: n, inverse: inverse, scale: scale, unit_scale: unit_scale, factors: factors, perm: perm, twiddles: twiddles, chirp: [], filter: [] }
+    | Maybe.None ->
+        let m = next_smooth (2 * n - 1)
+        let factors =
+            match smooth_factors m with
+            | Maybe.Some found -> found
+            | Maybe.None -> new [i64](0, \_ -> 0)
+        let perm = build_perm m (ref factors)
+        let twiddles = new [Complex<'a>](m, \k -> root false k m)
+        // exp(-+ pi i k^2 / n): k^2 is reduced modulo 2n exactly, so the phase is as accurate for a large k as for a small one.
+        let chirp = new [Complex<'a>](n, \k ->
+            let square = ((k as i128) * (k as i128)) % ((2 * n) as i128)
+            root inverse (square as i64) (2 * n))
+        let zero: Complex<'a> = Complex.zero ()
+        let mut spectrum = new [Complex<'a>](m, \_ -> zero)
+        for j in 0i64 ..< n do
+            let c = chirp[j]
+            let conjugate = Complex { re: c.re, im: (0.0 as 'a) - c.im }
+            spectrum[perm[j]] = conjugate
+            if j > 0 then spectrum[perm[m - j]] = conjugate
+        butterflies false (ref factors) (ref twiddles) (ref mut spectrum)
+        let inverse_m = (1.0 as 'a) / (m as 'a)
+        let filter = new [Complex<'a>](m, \k -> Complex { re: spectrum[k].re * inverse_m, im: ((0.0 as 'a) - spectrum[k].im) * inverse_m })
+        Plan { n: n, inverse: inverse, scale: scale, unit_scale: unit_scale, factors: factors, perm: perm, twiddles: twiddles, chirp: chirp, filter: filter }
+
+private def work_length :: ref Plan<'a> -> i64
+fn work_length plan =
+    if plan.chirp.length == 0 then plan.n else 2 * plan.perm.length
+
+// Reads the line `source[offset + i * stride]` into `work`: in digit-reversed order for a direct kernel,
+// multiplied by the chirp and padded with zeros for Bluestein's algorithm.
+private def load :: Elementary<'a> => ref Plan<'a> -> ref [Complex<'a>] -> own i64 -> own i64 -> ref mut [Complex<'a>..] -> unit
+fn load plan source offset stride work =
+    let n = plan.n
+    if plan.chirp.length == 0 then
+        for i in 0i64 ..< n do
+            work[plan.perm[i]] = source[offset + i * stride]
+    else
+        let m = plan.perm.length
+        for j in 0i64 ..< n do
+            let x = source[offset + j * stride]
+            let c = plan.chirp[j]
+            work[j] = Complex { re: x.re * c.re - x.im * c.im, im: x.re * c.im + x.im * c.re }
+        let zero: Complex<'a> = Complex.zero ()
+        for j in n ..< m do
+            work[j] = zero
+
+// Transforms what `load` left in `work`. A direct kernel leaves the result in `work[0 ..< n]`; Bluestein's
+// algorithm leaves the conjugate of the convolution in `work[m ..< 2 m]`.
+private def kernel :: Elementary<'a> => ref Plan<'a> -> ref mut [Complex<'a>..] -> unit
+fn kernel plan work =
+    if plan.chirp.length == 0 then
+        butterflies plan.inverse (ref plan.factors) (ref plan.twiddles) (ref mut work[0 ..< plan.n])
+    else
+        let m = plan.perm.length
+        for i in 0i64 ..< m do
+            work[m + plan.perm[i]] = work[i]
+        butterflies false (ref plan.factors) (ref plan.twiddles) (ref mut work[m ..< 2 * m])
+        for k in 0i64 ..< m do
+            let a = work[m + k]
+            let g = plan.filter[k]
+            work[k] = Complex { re: a.re * g.re + a.im * g.im, im: a.re * g.im - a.im * g.re }
+        for i in 0i64 ..< m do
+            work[m + plan.perm[i]] = work[i]
+        butterflies false (ref plan.factors) (ref plan.twiddles) (ref mut work[m ..< 2 * m])
+
+// Writes the scaled result of `kernel` to `target[offset + i * stride]`.
+private def store :: Elementary<'a> => ref Plan<'a> -> ref [Complex<'a>] -> own i64 -> own i64 -> ref mut [Complex<'a>..] -> unit
+fn store plan work offset stride target =
+    let n = plan.n
+    if plan.chirp.length == 0 then
+        if plan.unit_scale then
+            for i in 0i64 ..< n do
+                target[offset + i * stride] = work[i]
+        else
+            let scale = plan.scale
+            for i in 0i64 ..< n do
+                let z = work[i]
+                target[offset + i * stride] = Complex { re: z.re * scale, im: z.im * scale }
+    else
+        let m = plan.perm.length
+        let scale = plan.scale
+        for k in 0i64 ..< n do
+            let r = work[m + k]
+            let c = plan.chirp[k]
+            let re = c.re * r.re + c.im * r.im
+            let im = c.im * r.re - c.re * r.im
+            if plan.unit_scale then target[offset + k * stride] = Complex { re: re, im: im }
+            else target[offset + k * stride] = Complex { re: re * scale, im: im * scale }
+
+// Transforms the line `data[offset + i * stride]` in place.
+private def line :: Elementary<'a> => ref Plan<'a> -> own i64 -> own i64 -> ref mut [Complex<'a>..] -> ref mut [Complex<'a>..] -> unit
+fn line plan offset stride work data =
+    load plan (ref data[0 ..]) offset stride work
+    kernel plan work
+    store plan (ref work[0 ..]) offset stride data
+
+// Transforms every line of the dense row-major buffer `data` of `shape` along `axis`, in place.
+private def apply_axis :: Elementary<'a> => ref Plan<'a> -> ref [i64] -> own i64 -> ref mut [Complex<'a>..] -> unit
+fn apply_axis plan shape axis data =
+    let n = shape[axis]
+    if n > 1 && data.length > 0 then
+        let mut stride = 1
+        for later in (axis + 1) ..< shape.length do
+            stride = stride * shape[later]
+        let outer = data.length / (n * stride)
+        let zero: Complex<'a> = Complex.zero ()
+        let mut work = new [Complex<'a>](work_length plan, \_ -> zero)
+        for block in 0i64 ..< outer do
+            for inner in 0i64 ..< stride do
+                line plan (block * n * stride + inner) stride (ref mut work) data
+
+// ============================================================================
+// Axes, shapes and dense copies
+// ============================================================================
+
+private def resolve_axis :: own i64 -> own i64 -> Result<i64, Error>
+fn resolve_axis axis rank =
+    let resolved = if axis < 0 then axis + rank else axis
+    if resolved >= 0 && resolved < rank then Result.Ok resolved
+    else Result.Error (Error.InvalidAxis (axis, rank))
+
+private def element_count :: ref [i64] -> i64
+fn element_count shape =
+    let mut count = 1
+    for extent in shape do
+        count = count * extent
+    count
+
+private def dense_strides :: ref [i64] -> [i64]
+fn dense_strides shape =
+    let rank = shape.length
+    new [i64](rank, \axis ->
+        let mut stride = 1
+        for later in (axis + 1) ..< rank do
+            stride = stride * shape[later]
+        stride)
+
+private def same_shape :: ref [i64] -> ref [i64] -> bool
+fn same_shape left right =
+    if left.length != right.length then false
+    else
+        let mut same = true
+        for axis in 0i64 ..< left.length do
+            if left[axis] != right[axis] then same = false
+        same
+
+private def rec pack_axis :: Copy<'t> => ref ['t] -> ref [i64] -> ref [i64] -> own i64 -> own i64 -> ref [i64] -> ref [i64] -> own i64 -> ref mut ['t..] -> unit
+fn rec pack_axis source source_shape source_strides axis source_offset target_shape target_strides target_offset target =
+    let count = if source_shape[axis] < target_shape[axis] then source_shape[axis] else target_shape[axis]
+    if axis == source_shape.length - 1 then
+        for step in 0i64 ..< count do
+            target[target_offset + step * target_strides[axis]] = source[source_offset + step * source_strides[axis]]
+    else
+        for step in 0i64 ..< count do
+            pack_axis source source_shape source_strides (axis + 1) (source_offset + step * source_strides[axis]) target_shape target_strides (target_offset + step * target_strides[axis]) target
+
+// The elements of `view` as a dense row-major buffer of `shape`: an axis longer than the view's is padded
+// with `zero`, a shorter one keeps the leading elements.
+private def pack :: Copy<'t> => own 't -> ref [i64] -> ref Tensor.View<'t> -> ['t]
+fn pack zero shape view =
+    let source_shape = Tensor.shape view
+    if same_shape shape source_shape then Tensor.to_array (Tensor.to_tensor view)
+    else
+        let total = element_count shape
+        let mut out = new ['t](total, \_ -> zero)
+        if total > 0 && element_count source_shape > 0 then
+            let strides = dense_strides shape
+            pack_axis (Tensor.data view) source_shape (Tensor.strides view) 0 (Tensor.offset view) shape (ref strides) 0 (ref mut out)
+        out
+
+// The axes of a multi-dimensional transform in the order they were listed, and the length of each.
+private def resolve_nd :: ref NdOptions -> ref [i64] -> Result<([i64] * [i64]), Error>
+fn resolve_nd options shape =
+    let rank = shape.length
+    let mut failure: Maybe<Error> = Maybe.None
+    let axes =
+        match (ref options.axes, ref options.shape) with
+        | (Maybe.Some listed, _) ->
+            let mut resolved = new [i64](listed.length, \_ -> 0)
+            for index in 0i64 ..< listed.length do
+                match resolve_axis listed[index] rank with
+                | Result.Ok axis ->
+                    for earlier in 0i64 ..< index do
+                        if resolved[earlier] == axis then
+                            match failure with
+                            | Maybe.None -> failure = Maybe.Some (Error.RepeatedAxis listed[index])
+                            | Maybe.Some _ -> ()
+                    resolved[index] = axis
+                | Result.Error problem ->
+                    match failure with
+                    | Maybe.None -> failure = Maybe.Some problem
+                    | Maybe.Some _ -> ()
+            resolved
+        | (Maybe.None, Maybe.Some lengths) ->
+            if lengths.length > rank then
+                failure = Maybe.Some (Error.LengthMismatch (rank, lengths.length))
+                new [i64](0, \_ -> 0)
+            else new [i64](lengths.length, \index -> rank - lengths.length + index)
+        | (Maybe.None, Maybe.None) -> new [i64](rank, \index -> index)
+    match failure with
+    | Maybe.Some problem -> Result.Error problem
+    | Maybe.None ->
+        let lengths =
+            match ref options.shape with
+            | Maybe.Some given ->
+                if given.length != axes.length then
+                    failure = Maybe.Some (Error.LengthMismatch (axes.length, given.length))
+                    new [i64](0, \_ -> 0)
+                else Array.copy given
+            | Maybe.None -> new [i64](axes.length, \index -> shape[axes[index]])
+        for index in 0i64 ..< lengths.length do
+            match failure with
+            | Maybe.Some _ -> ()
+            | Maybe.None ->
+                if lengths[index] < 0 then failure = Maybe.Some (Error.InvalidLength lengths[index])
+                elif lengths[index] == 0 then failure = Maybe.Some (Error.EmptyAxis axes[index])
+        match failure with
+        | Maybe.Some problem -> Result.Error problem
+        | Maybe.None -> Result.Ok (axes, lengths)
+
+// ============================================================================
+// Complex transforms
+// ============================================================================
+
+private def complex_1d :: Elementary<'a> => own bool -> ref Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn complex_1d inverse options view =
+    let shape = Tensor.shape view
+    match resolve_axis options.axis shape.length with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok axis ->
+        let n =
+            match options.n with
+            | Maybe.Some length -> length
+            | Maybe.None -> shape[axis]
+        if n < 0 then Result.Error (Error.InvalidLength n)
+        elif n == 0 then Result.Error (Error.EmptyAxis axis)
+        else
+            let target = new [i64](shape.length, \d -> if d == axis then n else shape[d])
+            let zero: Complex<'a> = Complex.zero ()
+            let mut data = pack zero (ref target) view
+            let (scale, unit_scale) = norm_scale options.norm inverse n
+            let plan = make_plan inverse scale unit_scale n
+            apply_axis (ref plan) (ref target) axis (ref mut data)
+            Result.Ok (Tensor.of_array target data)
+
+private def complex_nd :: Elementary<'a> => own bool -> ref NdOptions -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn complex_nd inverse options view =
+    let shape = Tensor.shape view
+    match resolve_nd options shape with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok (axes, lengths) ->
+        let mut target = Array.copy shape
+        for index in 0i64 ..< axes.length do
+            target[axes[index]] = lengths[index]
+        let zero: Complex<'a> = Complex.zero ()
+        let mut data = pack zero (ref target) view
+        // The last listed axis is transformed first, as in NumPy.
+        let mut index = axes.length
+        while index > 0 do
+            index = index - 1
+            let n = lengths[index]
+            let (scale, unit_scale) = norm_scale options.norm inverse n
+            let plan = make_plan inverse scale unit_scale n
+            apply_axis (ref plan) (ref target) axes[index] (ref mut data)
+        Result.Ok (Tensor.of_array target data)
+
+/// The default options of a one-dimensional transform: the last axis, its own length, `Norm.Backward`.
+///
+/// ```tsuzuri run=true
+/// let o = Fft.options()
+/// match o.n with
+/// | Maybe.None -> o.axis == -1 && o.norm == Fft.Norm.Backward
+/// | Maybe.Some _ -> false
+/// ```
+pure def options :: Options
+fn options = Options { axis: -1, n: Maybe.None, norm: Norm.Backward }
+
+/// The default options of a multi-dimensional transform: every axis, their own lengths, `Norm.Backward`.
+///
+/// ```tsuzuri run=true
+/// let o = Fft.nd_options()
+/// match (o.axes, o.shape) with
+/// | (Maybe.None, Maybe.None) -> o.norm == Fft.Norm.Backward
+/// | _ -> false
+/// ```
+pure def nd_options :: NdOptions
+fn nd_options = NdOptions { axes: Maybe.None, shape: Maybe.None, norm: Norm.Backward }
+
+/// The discrete Fourier transform along the last axis: `X[k] = sum x[j] exp(-2 pi i j k / n)`, for any length
+/// in `O(n log n)` (mixed radix 4, 2, 3 and 5; Bluestein's algorithm for other lengths).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [4] [Complex.of 1.0 0.0, Complex.of 1.0 0.0, Complex.of 1.0 0.0, Complex.of 1.0 0.0]
+/// match Fft.fft (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 4.0 && s[1].re == 0.0 && s[2].re == 0.0 && s[3].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def fft :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft view = complex_1d false (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `fft` along `axis` (negative counts from the end).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 4.0 0.0]
+/// match Fft.fft_axis 0 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 4.0 && s[1].re == 6.0 && s[2].re == -2.0 && s[3].re == -2.0
+/// | Result.Error _ -> false
+/// ```
+pure def fft_axis :: Elementary<'a> => own i64 -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft_axis axis view = complex_1d false (ref (Options { axis: axis, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `fft` with an axis, a transform length and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 1.0 0.0, Complex.of 1.0 0.0]
+/// let o = Fft.Options { axis: 0, n: Maybe.Some 4, norm: Fft.Norm.Forward }
+/// match Fft.fft_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s.length == 4 && s[0].re == 0.5 && s[2].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def fft_with :: Elementary<'a> => own Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft_with options view = complex_1d false (ref options) view
+
+/// The inverse of `fft` along the last axis: `x[j] = (1 / n) sum X[k] exp(2 pi i j k / n)`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [4] [Complex.of 4.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+/// match Fft.ifft (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 1.0 && s[1].re == 1.0 && s[2].re == 1.0 && s[3].re == 1.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifft :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft view = complex_1d true (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `ifft` along `axis` (negative counts from the end).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 1] [Complex.of 4.0 0.0, Complex.of 2.0 0.0]
+/// match Fft.ifft_axis 0 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 3.0 && s[1].re == 1.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifft_axis :: Elementary<'a> => own i64 -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft_axis axis view = complex_1d true (ref (Options { axis: axis, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `ifft` with an axis, a transform length and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 2.0 0.0, Complex.of 0.0 0.0]
+/// let o = Fft.Options { axis: -1, n: Maybe.None, norm: Fft.Norm.Forward }
+/// match Fft.ifft_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 2.0 && s[1].re == 2.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifft_with :: Elementary<'a> => own Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft_with options view = complex_1d true (ref options) view
+
+/// The transform over the last two axes (the last axis first).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 4.0 0.0]
+/// match Fft.fft2 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 10.0 && s[1].re == -2.0 && s[2].re == -4.0 && s[3].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def fft2 :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft2 view = complex_nd false (ref (NdOptions { axes: Maybe.Some [-2, -1], shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The inverse of `fft2`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 10.0 0.0, Complex.of (-2.0) 0.0, Complex.of (-4.0) 0.0, Complex.of 0.0 0.0]
+/// match Fft.ifft2 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 1.0 && s[1].re == 2.0 && s[2].re == 3.0 && s[3].re == 4.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifft2 :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft2 view = complex_nd true (ref (NdOptions { axes: Maybe.Some [-2, -1], shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The transform over every axis (the last axis first).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 1, 2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 4.0 0.0]
+/// match Fft.fftn (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 10.0 && s[1].re == -2.0 && s[2].re == -4.0 && s[3].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def fftn :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fftn view = complex_nd false (ref (NdOptions { axes: Maybe.None, shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The inverse of `fftn`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 4.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+/// match Fft.ifftn (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 1.0 && s[3].re == 1.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifftn :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifftn view = complex_nd true (ref (NdOptions { axes: Maybe.None, shape: Maybe.None, norm: Norm.Backward })) view
+
+/// `fftn` over the listed axes with the given lengths and scaling; an axis may be listed once.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 4.0 0.0]
+/// let o = Fft.NdOptions { axes: Maybe.Some [0], shape: Maybe.None, norm: Fft.Norm.Backward }
+/// match Fft.fftn_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 4.0 && s[1].re == 6.0 && s[2].re == -2.0 && s[3].re == -2.0
+/// | Result.Error _ -> false
+/// ```
+pure def fftn_with :: Elementary<'a> => own NdOptions -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fftn_with options view = complex_nd false (ref options) view
+
+/// `ifftn` over the listed axes with the given lengths and scaling; an axis may be listed once.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 4.0 0.0, Complex.of 6.0 0.0, Complex.of (-2.0) 0.0, Complex.of (-2.0) 0.0]
+/// let o = Fft.NdOptions { axes: Maybe.Some [0], shape: Maybe.None, norm: Fft.Norm.Backward }
+/// match Fft.ifftn_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 1.0 && s[1].re == 2.0 && s[2].re == 3.0 && s[3].re == 4.0
+/// | Result.Error _ -> false
+/// ```
+pure def ifftn_with :: Elementary<'a> => own NdOptions -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifftn_with options view = complex_nd true (ref options) view
+
+// ============================================================================
+// Real and Hermitian transforms
+// ============================================================================
+
+private def make_real_plan :: Elementary<'a> => own bool -> own Norm -> own i64 -> RealPlan<'a>
+fn make_real_plan inverse norm n =
+    let (scale, _) = norm_scale norm inverse n
+    let one = 1.0 as 'a
+    if n % 2 == 0 then
+        let half = n / 2
+        let roots = new [Complex<'a>](half + 1, \k -> root false k n)
+        RealPlan { n: n, even: true, inner: make_plan inverse one true half, roots: roots, scale: scale }
+    else
+        RealPlan { n: n, even: false, inner: make_plan inverse one true n, roots: [], scale: scale }
+
+// The first `n / 2 + 1` terms of the transform of every real line of `source` (dense, `shape`) along `axis`.
+// An even length packs the line into `n / 2` complex values `x[2j] + i x[2j+1]`, transforms them and
+// separates the transforms of the even and the odd samples; an odd length transforms the line as complex.
+private def real_forward :: Elementary<'a> => ref RealPlan<'a> -> ref [i64] -> own i64 -> ref ['a] -> [Complex<'a>]
+fn real_forward plan shape axis source =
+    let n = plan.n
+    let kept = n / 2 + 1
+    let mut stride = 1
+    for later in (axis + 1) ..< shape.length do
+        stride = stride * shape[later]
+    let outer = source.length / (n * stride)
+    let zero: Complex<'a> = Complex.zero ()
+    let mut out = new [Complex<'a>](outer * kept * stride, \_ -> zero)
+    let mut packed = new [Complex<'a>](plan.inner.n, \_ -> zero)
+    let mut work = new [Complex<'a>](work_length (ref plan.inner), \_ -> zero)
+    let scale = plan.scale
+    let half_scale = (0.5 as 'a) * scale
+    for block in 0i64 ..< outer do
+        for inner in 0i64 ..< stride do
+            let origin = block * n * stride + inner
+            let dest = block * kept * stride + inner
+            if plan.even then
+                let half = n / 2
+                for j in 0i64 ..< half do
+                    packed[j] = Complex { re: source[origin + 2 * j * stride], im: source[origin + (2 * j + 1) * stride] }
+                line (ref plan.inner) 0 1 (ref mut work) (ref mut packed)
+                for k in 0i64 ..= half do
+                    let zk = packed[if k == half then 0 else k]
+                    let zc = packed[if k == 0 then 0 else half - k]
+                    let er = zk.re + zc.re
+                    let ei = zk.im - zc.im
+                    let dr = zk.re - zc.re
+                    let di = zk.im + zc.im
+                    let w = plan.roots[k]
+                    let pr = w.re * dr - w.im * di
+                    let pi = w.re * di + w.im * dr
+                    out[dest + k * stride] = Complex { re: (er + pi) * half_scale, im: (ei - pr) * half_scale }
+            else
+                for j in 0i64 ..< n do
+                    packed[j] = Complex { re: source[origin + j * stride], im: 0.0 as 'a }
+                line (ref plan.inner) 0 1 (ref mut work) (ref mut packed)
+                for k in 0i64 ..< kept do
+                    let z = packed[k]
+                    out[dest + k * stride] = Complex { re: z.re * scale, im: z.im * scale }
+    out
+
+// The real lines of length `n` whose transforms start with the `n / 2 + 1` terms of every line of `source`
+// (dense, `shape`) along `axis`. The imaginary parts of the term 0 and, for an even `n`, of the term `n / 2`
+// are not read, as in NumPy.
+private def real_inverse :: Elementary<'a> => ref RealPlan<'a> -> ref [i64] -> own i64 -> ref [Complex<'a>] -> ['a]
+fn real_inverse plan shape axis source =
+    let n = plan.n
+    let kept = n / 2 + 1
+    let mut stride = 1
+    for later in (axis + 1) ..< shape.length do
+        stride = stride * shape[later]
+    let outer = source.length / (kept * stride)
+    let zero: Complex<'a> = Complex.zero ()
+    let mut out = new ['a](outer * n * stride, \_ -> 0.0 as 'a)
+    let mut packed = new [Complex<'a>](plan.inner.n, \_ -> zero)
+    let mut work = new [Complex<'a>](work_length (ref plan.inner), \_ -> zero)
+    let scale = plan.scale
+    for block in 0i64 ..< outer do
+        for inner in 0i64 ..< stride do
+            let origin = block * kept * stride + inner
+            let dest = block * n * stride + inner
+            if plan.even then
+                let half = n / 2
+                let first = source[origin].re
+                let last = source[origin + half * stride].re
+                packed[0] = Complex { re: first + last, im: first - last }
+                for k in 1i64 ..< half do
+                    let a = source[origin + k * stride]
+                    let b = source[origin + (half - k) * stride]
+                    let sr = a.re + b.re
+                    let si = a.im - b.im
+                    let dr = a.re - b.re
+                    let di = a.im + b.im
+                    let w = plan.roots[k]
+                    let odd_re = dr * w.re + di * w.im
+                    let odd_im = di * w.re - dr * w.im
+                    packed[k] = Complex { re: sr - odd_im, im: si + odd_re }
+                line (ref plan.inner) 0 1 (ref mut work) (ref mut packed)
+                for j in 0i64 ..< half do
+                    let z = packed[j]
+                    out[dest + 2 * j * stride] = z.re * scale
+                    out[dest + (2 * j + 1) * stride] = z.im * scale
+            else
+                packed[0] = Complex { re: source[origin].re, im: 0.0 as 'a }
+                for k in 1i64 ..= (n - 1) / 2 do
+                    let a = source[origin + k * stride]
+                    packed[k] = a
+                    packed[n - k] = Complex { re: a.re, im: (0.0 as 'a) - a.im }
+                line (ref plan.inner) 0 1 (ref mut work) (ref mut packed)
+                for j in 0i64 ..< n do
+                    out[dest + j * stride] = packed[j].re * scale
+    out
+
+private def conjugate_in_place :: Elementary<'a> => ref mut [Complex<'a>..] -> unit
+fn conjugate_in_place data =
+    for index in 0i64 ..< data.length do
+        let z = data[index]
+        data[index] = Complex { re: z.re, im: (0.0 as 'a) - z.im }
+
+private def swap_norm :: own Norm -> Norm
+fn swap_norm norm =
+    match norm with
+    | Norm.Backward -> Norm.Forward
+    | Norm.Forward -> Norm.Backward
+    | Norm.Ortho -> Norm.Ortho
+
+private def real_forward_1d :: Elementary<'a> => own bool -> ref Options -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn real_forward_1d hermitian options view =
+    let shape = Tensor.shape view
+    match resolve_axis options.axis shape.length with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok axis ->
+        let n =
+            match options.n with
+            | Maybe.Some length -> length
+            | Maybe.None -> shape[axis]
+        if n < 0 then Result.Error (Error.InvalidLength n)
+        elif n == 0 then Result.Error (Error.EmptyAxis axis)
+        else
+            let source_shape = new [i64](shape.length, \d -> if d == axis then n else shape[d])
+            let target = new [i64](shape.length, \d -> if d == axis then n / 2 + 1 else shape[d])
+            let data = pack (0.0 as 'a) (ref source_shape) view
+            let plan = make_real_plan false (if hermitian then swap_norm options.norm else options.norm) n
+            let mut out = real_forward (ref plan) (ref source_shape) axis (ref data)
+            if hermitian then conjugate_in_place (ref mut out)
+            Result.Ok (Tensor.of_array target out)
+
+private def real_inverse_1d :: Elementary<'a> => own bool -> ref Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn real_inverse_1d hermitian options view =
+    let shape = Tensor.shape view
+    match resolve_axis options.axis shape.length with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok axis ->
+        let n =
+            match options.n with
+            | Maybe.Some length -> length
+            | Maybe.None -> 2 * (shape[axis] - 1)
+        if n < 0 then Result.Error (Error.InvalidLength n)
+        elif n == 0 then Result.Error (Error.EmptyAxis axis)
+        else
+            let source_shape = new [i64](shape.length, \d -> if d == axis then n / 2 + 1 else shape[d])
+            let target = new [i64](shape.length, \d -> if d == axis then n else shape[d])
+            let zero: Complex<'a> = Complex.zero ()
+            let mut data = pack zero (ref source_shape) view
+            if hermitian then conjugate_in_place (ref mut data)
+            let plan = make_real_plan true (if hermitian then swap_norm options.norm else options.norm) n
+            let out = real_inverse (ref plan) (ref source_shape) axis (ref data)
+            Result.Ok (Tensor.of_array target out)
+
+private def copy_axes :: ref Maybe<[i64]> -> Maybe<[i64]>
+fn copy_axes axes =
+    match axes with
+    | Maybe.Some listed -> Maybe.Some (Array.copy listed)
+    | Maybe.None -> Maybe.None
+
+// `shape` with every extent of 0 replaced by 1, so that `resolve_nd` checks the axes without judging lengths.
+private def non_empty :: ref [i64] -> [i64]
+fn non_empty shape = new [i64](shape.length, \axis -> if shape[axis] == 0 then 1 else shape[axis])
+
+// The axes of a multi-dimensional real transform and the number of real samples along each. Without a shape,
+// an inverse has `2 (m - 1)` samples along its last listed axis, which is not a length of its input.
+private def resolve_real_nd :: own bool -> ref NdOptions -> ref [i64] -> Result<([i64] * [i64]), Error>
+fn resolve_real_nd inverse options shape =
+    let rank = shape.length
+    let listed =
+        match (ref options.axes, ref options.shape) with
+        | (Maybe.Some given, _) -> given.length
+        | (Maybe.None, Maybe.Some lengths) -> lengths.length
+        | (Maybe.None, Maybe.None) -> rank
+    if listed == 0 then Result.Error (Error.LengthMismatch (1, 0))
+    else
+        match (inverse, ref options.shape) with
+        | (true, Maybe.None) ->
+            let axes_only = NdOptions { axes: copy_axes (ref options.axes), shape: Maybe.None, norm: options.norm }
+            match resolve_nd (ref axes_only) (ref (non_empty shape)) with
+            | Result.Error problem -> Result.Error problem
+            | Result.Ok (axes, _) ->
+                let last = axes[axes.length - 1]
+                let lengths = new [i64](axes.length, \index -> if index == axes.length - 1 then 2 * (shape[last] - 1) else shape[axes[index]])
+                let mut failure: Maybe<Error> = Maybe.None
+                for index in 0i64 ..< lengths.length do
+                    match failure with
+                    | Maybe.Some _ -> ()
+                    | Maybe.None -> if lengths[index] <= 0 then failure = Maybe.Some (Error.EmptyAxis axes[index])
+                match failure with
+                | Maybe.Some problem -> Result.Error problem
+                | Maybe.None -> Result.Ok (axes, lengths)
+        | _ -> resolve_nd options shape
+
+private def real_forward_nd :: Elementary<'a> => ref NdOptions -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn real_forward_nd options view =
+    let shape = Tensor.shape view
+    match resolve_real_nd false options shape with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok (axes, lengths) ->
+        let mut source_shape = Array.copy shape
+        for index in 0i64 ..< axes.length do
+            source_shape[axes[index]] = lengths[index]
+        let last = axes.length - 1
+        let data = pack (0.0 as 'a) (ref source_shape) view
+        let plan = make_real_plan false options.norm lengths[last]
+        let mut out = real_forward (ref plan) (ref source_shape) axes[last] (ref data)
+        let mut target = Array.copy (ref source_shape)
+        target[axes[last]] = lengths[last] / 2 + 1
+        let mut index = last
+        while index > 0 do
+            index = index - 1
+            let n = lengths[index]
+            let (scale, unit_scale) = norm_scale options.norm false n
+            let complex_plan = make_plan false scale unit_scale n
+            apply_axis (ref complex_plan) (ref target) axes[index] (ref mut out)
+        Result.Ok (Tensor.of_array target out)
+
+private def real_inverse_nd :: Elementary<'a> => ref NdOptions -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn real_inverse_nd options view =
+    let shape = Tensor.shape view
+    match resolve_real_nd true options shape with
+    | Result.Error problem -> Result.Error problem
+    | Result.Ok (axes, lengths) ->
+        let last = axes.length - 1
+        let mut source_shape = Array.copy shape
+        for index in 0i64 ..< axes.length do
+            source_shape[axes[index]] = if index == last then lengths[index] / 2 + 1 else lengths[index]
+        let zero: Complex<'a> = Complex.zero ()
+        let mut data = pack zero (ref source_shape) view
+        for index in 0i64 ..< last do
+            let n = lengths[index]
+            let (scale, unit_scale) = norm_scale options.norm true n
+            let complex_plan = make_plan true scale unit_scale n
+            apply_axis (ref complex_plan) (ref source_shape) axes[index] (ref mut data)
+        let plan = make_real_plan true options.norm lengths[last]
+        let out = real_inverse (ref plan) (ref source_shape) axes[last] (ref data)
+        let mut target = Array.copy (ref source_shape)
+        target[axes[last]] = lengths[last]
+        Result.Ok (Tensor.of_array target out)
+
+/// The transform of real samples along the last axis: the first `n / 2 + 1` terms of `fft`; the rest are
+/// their conjugates. An even length costs one complex transform of `n / 2`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [4] [1.0, 2.0, 3.0, 4.0]
+/// match Fft.rfft (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s.length == 3 && s[0].re == 10.0 && s[1].re == -2.0 && s[1].im == 2.0 && s[2].re == -2.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfft :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfft view = real_forward_1d false (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `rfft` along `axis` (negative counts from the end).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 1] [1.0, 3.0]
+/// match Fft.rfft_axis 0 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 4.0 && s[1].re == -2.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfft_axis :: Elementary<'a> => own i64 -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfft_axis axis view = real_forward_1d false (ref (Options { axis: axis, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `rfft` with an axis, a number of real samples and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [1.0, 2.0, 3.0]
+/// let o = Fft.Options { axis: 0, n: Maybe.Some 2, norm: Fft.Norm.Backward }
+/// match Fft.rfft_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s.length == 2 && s[0].re == 3.0 && s[1].re == -1.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfft_with :: Elementary<'a> => own Options -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfft_with options view = real_forward_1d false (ref options) view
+
+/// The inverse of `rfft` along the last axis, for an even number `2 (m - 1)` of real samples.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [Complex.of 10.0 0.0, Complex.of (-2.0) 2.0, Complex.of (-2.0) 0.0]
+/// match Fft.irfft (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [1.0, 2.0, 3.0, 4.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfft :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfft view = real_inverse_1d false (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `irfft` for `n` real samples, which an odd length needs: the input is cut or padded to `n / 2 + 1` terms.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 6.0 0.0, Complex.of 0.0 0.0]
+/// match Fft.irfft_len 3 (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [2.0, 2.0, 2.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfft_len :: Elementary<'a> => own i64 -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfft_len n view = real_inverse_1d false (ref (Options { axis: -1, n: Maybe.Some n, norm: Norm.Backward })) view
+
+/// `irfft` with an axis, a number of real samples and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 3.0 0.0, Complex.of (-1.0) 0.0]
+/// let o = Fft.Options { axis: 0, n: Maybe.Some 2, norm: Fft.Norm.Forward }
+/// match Fft.irfft_with o (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [2.0, 4.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfft_with :: Elementary<'a> => own Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfft_with options view = real_inverse_1d false (ref options) view
+
+/// The transform of a signal with Hermitian symmetry, given by its first `m` terms: a real spectrum of
+/// `2 (m - 1)` values (`irfft` of the conjugate with the scaling of the other direction).
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [3] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0]
+/// match Fft.hfft (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [8.0, -2.0, 0.0, -2.0]
+/// | Result.Error _ -> false
+/// ```
+pure def hfft :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn hfft view = real_inverse_1d true (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `hfft` for a real spectrum of `n` values.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0]
+/// match Fft.hfft_len 3 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     Math.abs (s[0] - 5.0) < 1e-12 && Math.abs (s[1] + 1.0) < 1e-12 && Math.abs (s[2] + 1.0) < 1e-12
+/// | Result.Error _ -> false
+/// ```
+pure def hfft_len :: Elementary<'a> => own i64 -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn hfft_len n view = real_inverse_1d true (ref (Options { axis: -1, n: Maybe.Some n, norm: Norm.Backward })) view
+
+/// `hfft` with an axis, a number of real values and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0]
+/// let o = Fft.Options { axis: 0, n: Maybe.Some 2, norm: Fft.Norm.Forward }
+/// match Fft.hfft_with o (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [1.5, -0.5]
+/// | Result.Error _ -> false
+/// ```
+pure def hfft_with :: Elementary<'a> => own Options -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn hfft_with options view = real_inverse_1d true (ref options) view
+
+/// The inverse of `hfft`: the first `n / 2 + 1` terms of the Hermitian signal whose spectrum is the real input.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [4] [8.0, -2.0, 0.0, -2.0]
+/// match Fft.ihfft (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s.length == 3 && s[0].re == 1.0 && s[1].re == 2.0 && s[2].re == 3.0
+/// | Result.Error _ -> false
+/// ```
+pure def ihfft :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn ihfft view = real_forward_1d true (ref (Options { axis: -1, n: Maybe.None, norm: Norm.Backward })) view
+
+/// `ihfft` with an axis, a number of real values and a scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2] [1.5, -0.5]
+/// let o = Fft.Options { axis: 0, n: Maybe.None, norm: Fft.Norm.Forward }
+/// match Fft.ihfft_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 1.0 && s[1].re == 2.0
+/// | Result.Error _ -> false
+/// ```
+pure def ihfft_with :: Elementary<'a> => own Options -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn ihfft_with options view = real_forward_1d true (ref options) view
+
+/// The real transform over the last two axes: `rfft` along the last axis, then `fft` along the one before.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// match Fft.rfft2 (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 10.0 && s[1].re == -2.0 && s[2].re == -4.0 && s[3].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfft2 :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfft2 view = real_forward_nd (ref (NdOptions { axes: Maybe.Some [-2, -1], shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The inverse of `rfft2`, for an even number of real samples along the last axis.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 10.0 0.0, Complex.of (-2.0) 0.0, Complex.of (-4.0) 0.0, Complex.of 0.0 0.0]
+/// match Fft.irfft2 (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [1.0, 2.0, 3.0, 4.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfft2 :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfft2 view = real_inverse_nd (ref (NdOptions { axes: Maybe.Some [-2, -1], shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The real transform over every axis: `rfft` along the last axis, then `fft` along the others.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 1, 2] [1.0, 2.0, 3.0, 4.0]
+/// match Fft.rfftn (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 10.0 && s[1].re == -2.0 && s[2].re == -4.0 && s[3].re == 0.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfftn :: Elementary<'a> => ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfftn view = real_forward_nd (ref (NdOptions { axes: Maybe.None, shape: Maybe.None, norm: Norm.Backward })) view
+
+/// The inverse of `rfftn`, for an even number of real samples along the last axis.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [Complex.of 10.0 0.0, Complex.of (-2.0) 0.0, Complex.of (-4.0) 0.0, Complex.of 0.0 0.0]
+/// match Fft.irfftn (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [1.0, 2.0, 3.0, 4.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfftn :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfftn view = real_inverse_nd (ref (NdOptions { axes: Maybe.None, shape: Maybe.None, norm: Norm.Backward })) view
+
+/// `rfftn` over the listed axes (the last listed one is the real transform) with the given numbers of real
+/// samples and scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [2, 2] [1.0, 2.0, 3.0, 4.0]
+/// let o = Fft.NdOptions { axes: Maybe.Some [1], shape: Maybe.None, norm: Fft.Norm.Backward }
+/// match Fft.rfftn_with o (Tensor.view x) with
+/// | Result.Ok y ->
+///     let s = Tensor.as_array y
+///     s[0].re == 3.0 && s[1].re == -1.0 && s[2].re == 7.0 && s[3].re == -1.0
+/// | Result.Error _ -> false
+/// ```
+pure def rfftn_with :: Elementary<'a> => own NdOptions -> ref Tensor.View<'a> -> Result<Tensor<Complex<'a>>, Error>
+fn rfftn_with options view = real_forward_nd (ref options) view
+
+/// `irfftn` over the listed axes with the given numbers of real samples (an odd last length needs them) and
+/// scaling.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.of_array [1, 2] [Complex.of 6.0 0.0, Complex.of 0.0 0.0]
+/// let o = Fft.NdOptions { axes: Maybe.Some [1], shape: Maybe.Some [3], norm: Fft.Norm.Backward }
+/// match Fft.irfftn_with o (Tensor.view x) with
+/// | Result.Ok y -> Tensor.to_array y == [2.0, 2.0, 2.0]
+/// | Result.Error _ -> false
+/// ```
+pure def irfftn_with :: Elementary<'a> => own NdOptions -> ref Tensor.View<Complex<'a>> -> Result<Tensor<'a>, Error>
+fn irfftn_with options view = real_inverse_nd (ref options) view
+
+// ============================================================================
+// Frequencies and shifts
+// ============================================================================
+
+/// The sample frequencies of `fft` for `n` samples spaced `spacing` apart: `0, 1, .., (n - 1) / 2` and then
+/// the negative ones, each times `1 / (n spacing)`; traps unless `n > 0`.
+///
+/// ```tsuzuri run=[0,%200.25,%20-0.5,%20-0.25]
+/// Tensor.to_array (Fft.fftfreq 1.0 4)
+/// ```
+pure def fftfreq :: own f64 -> own i64 -> Tensor<f64>
+fn fftfreq spacing n =
+    assert (n > 0)
+    let unit = 1.0 / ((n as f64) * spacing)
+    let positive = (n - 1) / 2 + 1
+    Tensor.of_array [n] (new [f64](n, \index -> if index < positive then (index as f64) * unit else ((index - n) as f64) * unit))
+
+/// The sample frequencies of `rfft` for `n` samples spaced `spacing` apart: `0, 1, .., n / 2`, each times
+/// `1 / (n spacing)`; traps unless `n > 0`.
+///
+/// ```tsuzuri run=[0,%200.25,%200.5]
+/// Tensor.to_array (Fft.rfftfreq 1.0 4)
+/// ```
+pure def rfftfreq :: own f64 -> own i64 -> Tensor<f64>
+fn rfftfreq spacing n =
+    assert (n > 0)
+    let unit = 1.0 / ((n as f64) * spacing)
+    Tensor.of_array [n / 2 + 1] (new [f64](n / 2 + 1, \index -> (index as f64) * unit))
+
+// Moves element `i` of every line of the dense buffer `data` of `shape` along `axis` to `(i + shift) % n`.
+private def rotate_axis :: Copy<'t> => ref [i64] -> own i64 -> own i64 -> ref mut ['t..] -> unit
+fn rotate_axis shape axis shift data =
+    let n = shape[axis]
+    if n > 1 && data.length > 0 && shift % n != 0 then
+        let mut stride = 1
+        for later in (axis + 1) ..< shape.length do
+            stride = stride * shape[later]
+        let outer = data.length / (n * stride)
+        let first = data[0]
+        let mut scratch = new ['t](n, \_ -> first)
+        for block in 0i64 ..< outer do
+            for inner in 0i64 ..< stride do
+                let origin = block * n * stride + inner
+                for index in 0i64 ..< n do
+                    scratch[index] = data[origin + index * stride]
+                for index in 0i64 ..< n do
+                    data[origin + ((index + shift) % n) * stride] = scratch[index]
+
+private def shift_axes :: Copy<'t> => own bool -> ref [i64] -> ref Tensor.View<'t> -> Tensor<'t>
+fn shift_axes inverse axes view =
+    let shape = Array.copy (Tensor.shape view)
+    let mut data = Tensor.to_array (Tensor.to_tensor view)
+    for axis in axes do
+        let n = shape[axis]
+        rotate_axis (ref shape) axis (if inverse then n - n / 2 else n / 2) (ref mut data)
+    Tensor.of_array shape data
+
+private def resolve_shift_axes :: ref [i64] -> own i64 -> Result<[i64], Error>
+fn resolve_shift_axes axes rank =
+    let mut failure: Maybe<Error> = Maybe.None
+    let mut resolved = new [i64](axes.length, \_ -> 0)
+    for index in 0i64 ..< axes.length do
+        match resolve_axis axes[index] rank with
+        | Result.Ok axis -> resolved[index] = axis
+        | Result.Error problem ->
+            match failure with
+            | Maybe.None -> failure = Maybe.Some problem
+            | Maybe.Some _ -> ()
+    match failure with
+    | Maybe.Some problem -> Result.Error problem
+    | Maybe.None -> Result.Ok resolved
+
+/// Moves the zero-frequency term to the middle of every axis: element `i` goes to `(i + n / 2) % n`.
+///
+/// ```tsuzuri run=[-2,%20-1,%200,%201]
+/// let t = Tensor.of_array [4] [0, 1, -2, -1]
+/// Tensor.to_array (Fft.fftshift (Tensor.view t))
+/// ```
+pure def fftshift :: Copy<'a> => ref Tensor.View<'a> -> Tensor<'a>
+fn fftshift view =
+    let rank = (Tensor.shape view).length
+    shift_axes false (ref (new [i64](rank, \axis -> axis))) view
+
+/// `fftshift` along the listed axes only (negative counts from the end).
+///
+/// ```tsuzuri run=[3,%204,%201,%202]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// match Fft.fftshift_axes [0] (Tensor.view t) with
+/// | Result.Ok shifted -> Tensor.to_array shifted
+/// | Result.Error _ -> []
+/// ```
+pure def fftshift_axes :: Copy<'a> => own [i64] -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn fftshift_axes axes view =
+    match resolve_shift_axes (ref axes) (Tensor.shape view).length with
+    | Result.Ok resolved -> Result.Ok (shift_axes false (ref resolved) view)
+    | Result.Error problem -> Result.Error problem
+
+/// The inverse of `fftshift`: element `i` goes to `(i - n / 2) % n`, which differs for an odd length.
+///
+/// ```tsuzuri run=[0,%201,%202,%20-2,%20-1]
+/// let t = Tensor.of_array [5] [-2, -1, 0, 1, 2]
+/// Tensor.to_array (Fft.ifftshift (Tensor.view t))
+/// ```
+pure def ifftshift :: Copy<'a> => ref Tensor.View<'a> -> Tensor<'a>
+fn ifftshift view =
+    let rank = (Tensor.shape view).length
+    shift_axes true (ref (new [i64](rank, \axis -> axis))) view
+
+/// `ifftshift` along the listed axes only (negative counts from the end).
+///
+/// ```tsuzuri run=[3,%204,%201,%202]
+/// let t = Tensor.of_array [2, 2] [1, 2, 3, 4]
+/// match Fft.ifftshift_axes [-2] (Tensor.view t) with
+/// | Result.Ok shifted -> Tensor.to_array shifted
+/// | Result.Error _ -> []
+/// ```
+pure def ifftshift_axes :: Copy<'a> => own [i64] -> ref Tensor.View<'a> -> Result<Tensor<'a>, Error>
+fn ifftshift_axes axes view =
+    match resolve_shift_axes (ref axes) (Tensor.shape view).length with
+    | Result.Ok resolved -> Result.Ok (shift_axes true (ref resolved) view)
+    | Result.Error problem -> Result.Error problem
+
+// ============================================================================
+// Plans for repeated transforms
+// ============================================================================
+
+/// Plans the transform of `n` complex values in one direction with the scaling of `Norm.Backward` (none for
+/// `Direct`, `1 / n` for `Inverse`). Planning computes the roots of unity once; `execute` then reuses them.
+///
+/// ```tsuzuri run=true
+/// let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 8 Fft.Direction.Direct
+/// match made with
+/// | Result.Ok p -> Fft.plan_length p == 8
+/// | Result.Error _ -> false
+/// ```
+pure def plan :: Elementary<'a> => own i64 -> own Direction -> Result<Plan<'a>, Error>
+fn plan n direction = plan_with Norm.Backward n direction
+
+/// `plan` with a scaling.
+///
+/// ```tsuzuri run=true
+/// let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan_with Fft.Norm.Ortho 0 Fft.Direction.Inverse
+/// match made with
+/// | Result.Error problem -> problem == Fft.Error.InvalidLength 0
+/// | Result.Ok _ -> false
+/// ```
+pure def plan_with :: Elementary<'a> => own Norm -> own i64 -> own Direction -> Result<Plan<'a>, Error>
+fn plan_with norm n direction =
+    if n <= 0 then Result.Error (Error.InvalidLength n)
+    else
+        let inverse = direction == Direction.Inverse
+        let (scale, unit_scale) = norm_scale norm inverse n
+        Result.Ok (make_plan inverse scale unit_scale n)
+
+/// The transform length of a plan.
+///
+/// ```tsuzuri run=7
+/// let made: Result<Fft.Plan<f32>, Fft.Error> = Fft.plan 7 Fft.Direction.Inverse
+/// match made with
+/// | Result.Ok p -> Fft.plan_length p
+/// | Result.Error _ -> 0
+/// ```
+pure def plan_length :: ref Plan<'a> -> i64
+fn plan_length plan = plan.n
+
+/// The number of elements that `execute_into` and `execute_in_place` need in their work buffer: `n` for a
+/// length whose prime factors are 2, 3 and 5, and twice the convolution length of Bluestein's algorithm for
+/// any other.
+///
+/// ```tsuzuri run=8%2030
+/// let a: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 8 Fft.Direction.Direct
+/// let b: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 7 Fft.Direction.Direct
+/// match (a, b) with
+/// | (Result.Ok p, Result.Ok q) -> $"{Fft.plan_work_length p} {Fft.plan_work_length q}"
+/// | _ -> ""
+/// ```
+pure def plan_work_length :: ref Plan<'a> -> i64
+fn plan_work_length plan = work_length plan
+
+/// Transforms every line of `view` along the last axis, whose length must be the plan's.
+///
+/// ```tsuzuri run=true
+/// let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 2 Fft.Direction.Direct
+/// let x = Tensor.of_array [2, 2] [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 5.0 0.0]
+/// match made with
+/// | Result.Ok p ->
+///     match Fft.execute p (Tensor.view x) with
+///     | Result.Ok y ->
+///         let s = Tensor.as_array y
+///         s[0].re == 3.0 && s[1].re == -1.0 && s[2].re == 8.0 && s[3].re == -2.0
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+pure def execute :: Elementary<'a> => ref Plan<'a> -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn execute plan view =
+    let shape = Tensor.shape view
+    let rank = shape.length
+    if rank == 0 then Result.Error (Error.InvalidAxis (-1, 0))
+    elif shape[rank - 1] != plan.n then Result.Error (Error.LengthMismatch (plan.n, shape[rank - 1]))
+    else
+        let mut data = Tensor.to_array (Tensor.to_tensor view)
+        apply_axis plan shape (rank - 1) (ref mut data)
+        Result.Ok (Tensor.of_array (Array.copy shape) data)
+
+/// Transforms the `n` values of `input` into `output` without allocating: `work` holds the intermediate
+/// values and needs `plan_work_length plan` elements, and its contents afterwards are unspecified. Each thread
+/// that shares a plan brings its own `work` and `output`.
+///
+/// ```tsuzuri run=true
+/// let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 2 Fft.Direction.Direct
+/// let input = [Complex.of 1.0 0.0, Complex.of 2.0 0.0]
+/// let mut work = [Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+/// let mut output = [Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+/// match made with
+/// | Result.Ok p ->
+///     match Fft.execute_into p input (ref mut work) (ref mut output) with
+///     | Result.Ok _ -> output[0].re == 3.0 && output[1].re == -1.0
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def execute_into :: Elementary<'a> => ref Plan<'a> -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> ref mut [Complex<'a>..] -> Result<unit, Error>
+fn execute_into plan input work output =
+    let needed = work_length plan
+    if input.length != plan.n then Result.Error (Error.LengthMismatch (plan.n, input.length))
+    elif output.length != plan.n then Result.Error (Error.LengthMismatch (plan.n, output.length))
+    elif work.length < needed then Result.Error (Error.LengthMismatch (needed, work.length))
+    else
+        load plan input 0 1 work
+        kernel plan work
+        store plan (ref work[0 ..]) 0 1 output
+        Result.Ok ()
+
+/// Transforms `data` in place without allocating: every `n` consecutive values are one line. `work` needs
+/// `plan_work_length plan` elements, and its contents afterwards are unspecified.
+///
+/// ```tsuzuri run=true
+/// let made: Result<Fft.Plan<f64>, Fft.Error> = Fft.plan 2 Fft.Direction.Direct
+/// let mut work = [Complex.of 0.0 0.0, Complex.of 0.0 0.0]
+/// let mut data = [Complex.of 1.0 0.0, Complex.of 2.0 0.0, Complex.of 3.0 0.0, Complex.of 5.0 0.0]
+/// match made with
+/// | Result.Ok p ->
+///     match Fft.execute_in_place p (ref mut work) (ref mut data) with
+///     | Result.Ok _ -> data[0].re == 3.0 && data[1].re == -1.0 && data[2].re == 8.0 && data[3].re == -2.0
+///     | Result.Error _ -> false
+/// | Result.Error _ -> false
+/// ```
+def execute_in_place :: Elementary<'a> => ref Plan<'a> -> ref mut [Complex<'a>..] -> ref mut [Complex<'a>..] -> Result<unit, Error>
+fn execute_in_place plan work data =
+    let needed = work_length plan
+    if data.length % plan.n != 0 then Result.Error (Error.LengthMismatch (plan.n, data.length))
+    elif work.length < needed then Result.Error (Error.LengthMismatch (needed, work.length))
+    else
+        for index in 0i64 ..< data.length / plan.n do
+            line plan (index * plan.n) 1 work data
+        Result.Ok ()
+
+// ============================================================================
+// Parallel batches
+// ============================================================================
+
+// How many lines of `n` values one parallel chunk holds: at least 16384 values, so that a short line does
+// not cost a job of its own.
+private def lines_per_chunk :: own i64 -> i64
+fn lines_per_chunk n = if n >= 16384 then 1 else (16384 + n - 1) / n
+
+// Transforms every `n` consecutive values of the dense buffer `data` in place, one chunk of lines per job.
+private def parallel_lines :: Elementary<'a> => ref Plan<'a> -> ref mut [Complex<'a>..] -> unit
+fn parallel_lines plan data =
+    let n = plan.n
+    if n > 1 && data.length > 0 then
+        let zero: Complex<'a> = Complex.zero ()
+        Parallel.for_each_chunk_with (lines_per_chunk n * n) plan (\shared _start chunk ->
+            let mut work = new [Complex<'a>](work_length shared, \_ -> zero)
+            for index in 0i64 ..< chunk.length / shared.n do
+                line shared (index * shared.n) 1 (ref mut work) chunk) data
+
+// turned[batch, col, row] = the transform over `row` of data[batch, row, col], one chunk of columns per job.
+private def turn_lines :: Elementary<'a> => ref Plan<'a> -> own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn turn_lines plan rows cols data turned =
+    let zero: Complex<'a> = Complex.zero ()
+    let shared = (data, plan)
+    Parallel.for_each_chunk_with (lines_per_chunk rows * rows) (ref shared) (\pair start chunk ->
+        match pair with
+        | (source, column_plan) ->
+            let mut work = new [Complex<'a>](work_length column_plan, \_ -> zero)
+            let first = start / rows
+            for index in 0i64 ..< chunk.length / rows do
+                let column = first + index
+                load column_plan source ((column / cols) * rows * cols + column % cols) cols (ref mut work)
+                kernel column_plan (ref mut work)
+                store column_plan (ref work) (index * rows) 1 chunk) turned
+
+// data[batch, row, col] = turned[batch, col, row], one chunk of rows per job.
+private def turn_back :: Elementary<'a> => own i64 -> own i64 -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> unit
+fn turn_back rows cols turned data =
+    Parallel.for_each_chunk_with (lines_per_chunk cols * cols) turned (\source start chunk ->
+        let first = start / cols
+        for index in 0i64 ..< chunk.length / cols do
+            let line_index = first + index
+            let origin = (line_index / rows) * rows * cols + line_index % rows
+            for col in 0i64 ..< cols do
+                chunk[index * cols + col] = source[origin + col * rows]) data
+
+private def parallel_1d :: Elementary<'a> => own bool -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn parallel_1d inverse view =
+    let shape = Tensor.shape view
+    let rank = shape.length
+    if rank == 0 then Result.Error (Error.InvalidAxis (-1, 0))
+    elif shape[rank - 1] == 0 then Result.Error (Error.EmptyAxis (rank - 1))
+    else
+        let n = shape[rank - 1]
+        let mut data = Tensor.to_array (Tensor.to_tensor view)
+        let (scale, unit_scale) = norm_scale Norm.Backward inverse n
+        let plan = make_plan inverse scale unit_scale n
+        parallel_lines (ref plan) (ref mut data)
+        Result.Ok (Tensor.of_array (Array.copy shape) data)
+
+private def parallel_2d :: Elementary<'a> => own bool -> ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn parallel_2d inverse view =
+    let shape = Tensor.shape view
+    let rank = shape.length
+    if rank < 2 then Result.Error (Error.InvalidAxis (-2, rank))
+    elif shape[rank - 1] == 0 then Result.Error (Error.EmptyAxis (rank - 1))
+    elif shape[rank - 2] == 0 then Result.Error (Error.EmptyAxis (rank - 2))
+    else
+        let rows = shape[rank - 2]
+        let cols = shape[rank - 1]
+        let mut data = Tensor.to_array (Tensor.to_tensor view)
+        let (col_scale, col_unit) = norm_scale Norm.Backward inverse cols
+        let col_plan = make_plan inverse col_scale col_unit cols
+        parallel_lines (ref col_plan) (ref mut data)
+        if rows > 1 && data.length > 0 then
+            let (row_scale, row_unit) = norm_scale Norm.Backward inverse rows
+            let row_plan = make_plan inverse row_scale row_unit rows
+            let zero: Complex<'a> = Complex.zero ()
+            let mut turned = new [Complex<'a>](data.length, \_ -> zero)
+            turn_lines (ref row_plan) rows cols (ref data) (ref mut turned)
+            turn_back rows cols (ref turned) (ref mut data)
+        Result.Ok (Tensor.of_array (Array.copy shape) data)
+
+/// `fft` along the last axis with the lines shared out over the CPU cores (`Parallel.for_each_chunk_with`).
+/// Every line is computed as `fft` computes it, so the result is the same bit for bit; without threads
+/// (WebAssembly) the lines run one after another.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.init [3, 4] (\i -> Complex.of (i as f64) 0.0)
+/// match (Fft.fft_parallel (Tensor.view x), Fft.fft (Tensor.view x)) with
+/// | (Result.Ok parallel, Result.Ok serial) -> parallel == serial
+/// | _ -> false
+/// ```
+def fft_parallel :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft_parallel view = parallel_1d false view
+
+/// `ifft` along the last axis with the lines shared out over the CPU cores; the same bits as `ifft`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.init [3, 4] (\i -> Complex.of (i as f64) 1.0)
+/// match (Fft.ifft_parallel (Tensor.view x), Fft.ifft (Tensor.view x)) with
+/// | (Result.Ok parallel, Result.Ok serial) -> parallel == serial
+/// | _ -> false
+/// ```
+def ifft_parallel :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft_parallel view = parallel_1d true view
+
+/// `fft2` over the last two axes with the rows and then the columns shared out over the CPU cores; the same
+/// bits as `fft2`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.init [2, 3, 4] (\i -> Complex.of (i as f64) 0.5)
+/// match (Fft.fft2_parallel (Tensor.view x), Fft.fft2 (Tensor.view x)) with
+/// | (Result.Ok parallel, Result.Ok serial) -> parallel == serial
+/// | _ -> false
+/// ```
+def fft2_parallel :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn fft2_parallel view = parallel_2d false view
+
+/// `ifft2` over the last two axes with the rows and then the columns shared out over the CPU cores; the same
+/// bits as `ifft2`.
+///
+/// ```tsuzuri run=true
+/// let x = Tensor.init [2, 3, 4] (\i -> Complex.of 1.0 (i as f64))
+/// match (Fft.ifft2_parallel (Tensor.view x), Fft.ifft2 (Tensor.view x)) with
+/// | (Result.Ok parallel, Result.Ok serial) -> parallel == serial
+/// | _ -> false
+/// ```
+def ifft2_parallel :: Elementary<'a> => ref Tensor.View<Complex<'a>> -> Result<Tensor<Complex<'a>>, Error>
+fn ifft2_parallel view = parallel_2d true view

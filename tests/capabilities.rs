@@ -158,6 +158,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "Os.__open",
         "Os.__handle",
         "Os.__close",
+        "Os.__map",
         "Os.__args",
         "Os.__os_version",
         "Os.__executable_path",
@@ -228,6 +229,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
             ("Net.tz", 12),
             ("Process.tz", 1),
             ("Random.tz", 1),
+            ("TensorIO.tz", 1),
             ("Time.tz", 2),
         ]
         .map(|(file, count)| (file.to_owned(), count)),
@@ -237,7 +239,7 @@ fn std_world_primitives_are_referenced_only_by_the_known_files() {
         "a std file reaches the host in a new place; update appendix A of E15, the table of \
          src/capabilities.rs and tests/fixtures/capabilities/std-table.txt"
     );
-    assert_eq!(found.values().sum::<usize>(), 46);
+    assert_eq!(found.values().sum::<usize>(), 47);
 }
 
 /// The projects of the corpus: every fixture and example with a `Main.tz`.
@@ -296,7 +298,8 @@ fn corpus_table() -> BTreeMap<String, CapabilitySet> {
 fn std_table_file_lists_the_88_functions() {
     let expected = std::fs::read_to_string("tests/fixtures/capabilities/std-table.txt").unwrap();
     let lines: Vec<&str> = expected.lines().collect();
-    assert_eq!(lines.len(), 90);
+    // NC10 added `Random.pcg64_from_os`; NC11 added the 16 functions of TensorIO that read, write or map a file.
+    assert_eq!(lines.len(), 107);
     let derived: Vec<String> = corpus_table()
         .into_iter()
         .map(|(name, set)| {

@@ -878,6 +878,22 @@ int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
 }
 #endif
 
+// TensorIO (NC11): WASI preview 1 cannot map a file into the linear memory.
+#ifdef TZ_OS_MAP
+int64_t tsuzuri_os_map(struct tz_os_buffer *output, const unsigned char *path, int64_t length) {
+    (void)path;
+    (void)length;
+    tz_clear(output);
+    return tz_status(TZ_OS_OTHER, TZ_WASI_NOSYS);
+}
+
+int64_t tsuzuri_os_unmap(int64_t address, int64_t length) {
+    (void)address;
+    (void)length;
+    return 0;
+}
+#endif
+
 // Env.executable_path (M15): a WASI module has no path that the host tells it.
 #ifdef TZ_OS_EXECUTABLE_PATH
 int64_t tsuzuri_os_executable_path(struct tz_os_buffer *output) {

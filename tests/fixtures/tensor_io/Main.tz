@@ -1,0 +1,303 @@
+/// NC11: the program of `tests/tensor_io.mjs`. It is started as `tensor_io MODE DIRECTORY [COUNT]` and prints
+/// one `key=value` line per check; the suite compares the lines with what NumPy reads and writes.
+///
+/// - `write`: writes files with every `TensorIO.save_*` function, for NumPy to read.
+/// - `read`: reads the files that NumPy wrote with every `TensorIO.load_*` function.
+/// - `mmap`: maps the files that NumPy wrote, and the files that cannot be mapped.
+/// - `leak`: maps and releases the large file `big.npy` COUNT times.
+/// - `trap`: asks a mapped file of `f64` for a window of `i32`, which traps.
+
+def outcome :: ref Result<unit, TensorIO.Error> -> string
+fn outcome saved =
+    match saved with
+    | Result.Ok _ -> "ok"
+    | Result.Error error -> failure error
+
+/// `io`, `codec` or `unmappable`, and for a codec error its case.
+def failure :: ref TensorIO.Error -> string
+fn failure error =
+    match error with
+    | TensorIO.Io _ -> "io"
+    | TensorIO.Unmappable _ -> "unmappable"
+    | TensorIO.Codec reason ->
+        match reason with
+        | TensorCodec.DtypeMismatch _ -> "codec:DtypeMismatch"
+        | TensorCodec.InvalidMagic -> "codec:InvalidMagic"
+        | TensorCodec.TruncatedData -> "codec:TruncatedData"
+        | TensorCodec.EntryNotFound _ -> "codec:EntryNotFound"
+        | _ -> "codec:" + (if (Display.display reason).length > 0 then "other" else "")
+
+def total :: ref Tensor.View<f64> -> f64
+fn total window = Tensor.fold (\sum value -> sum + value) 0.0 window
+
+def write_files :: own string -> i64
+fn write_files dir =
+    let weights = Tensor.init [3, 4] (\i -> to_float i * 0.1 - 1.5)
+    let window = Tensor.view (ref weights)
+    let! f64_file = TensorIO.save_npy $"{dir}/out_f64.npy" (ref window)
+    do! IO.writeln $"out_f64.npy={outcome (ref f64_file)}"
+    let permuted = Tensor.permute [1, 0] (ref window)
+    let! permuted_file = TensorIO.save_npy $"{dir}/out_permuted.npy" (ref permuted)
+    do! IO.writeln $"out_permuted.npy={outcome (ref permuted_file)}"
+    let ints = Tensor.init [5] (\i -> (i * 7 - 3) as i32)
+    let ints_window = Tensor.view (ref ints)
+    let! i32_file = TensorIO.save_npy $"{dir}/out_i32.npy" (ref ints_window)
+    do! IO.writeln $"out_i32.npy={outcome (ref i32_file)}"
+    let flags = Tensor.init [2, 2] (\i -> i % 2 == 0)
+    let flags_window = Tensor.view (ref flags)
+    let! bool_file = TensorIO.save_npy $"{dir}/out_bool.npy" (ref flags_window)
+    do! IO.writeln $"out_bool.npy={outcome (ref bool_file)}"
+    let pairs = Tensor.init [3] (\i -> Complex.of ((to_float i * 0.5) as f32) ((0.0 - to_float i) as f32))
+    let pairs_window = Tensor.view (ref pairs)
+    let! complex_file = TensorIO.save_npy $"{dir}/out_c64.npy" (ref pairs_window)
+    do! IO.writeln $"out_c64.npy={outcome (ref complex_file)}"
+    let halves = Tensor.init [4] (\i -> (to_float i * 0.25) as f16)
+    let halves_window = Tensor.view (ref halves)
+    let! half_file = TensorIO.save_npy $"{dir}/out_f16.npy" (ref halves_window)
+    do! IO.writeln $"out_f16.npy={outcome (ref half_file)}"
+    let raw = TensorCodec.Raw { dtype: TensorCodec.U8, shape: [3], data: [1ubyte, 2ubyte, 3ubyte] }
+    let! raw_file = TensorIO.save_npy_raw $"{dir}/out_u8_raw.npy" (ref raw)
+    do! IO.writeln $"out_u8_raw.npy={outcome (ref raw_file)}"
+    let labels = Tensor.init [4] (\i -> i * i - 5)
+    let tensors = [("weights", TensorCodec.to_raw (ref window)), ("labels", TensorCodec.to_raw (Tensor.view (ref labels))), ("flags", TensorCodec.to_raw (ref flags_window)), ("名前", TensorCodec.to_raw (ref ints_window))]
+    let! npz_file = TensorIO.save_npz $"{dir}/out.npz" (ref tensors)
+    do! IO.writeln $"out.npz={outcome (ref npz_file)}"
+    let! packed_file = TensorIO.save_npz_compressed $"{dir}/out_compressed.npz" (ref tensors)
+    do! IO.writeln $"out_compressed.npz={outcome (ref packed_file)}"
+    let wide = Result.get (TensorCodec.encode_npz_with (TensorCodec.NpzOptions { compress: true, zip64: true }) (ref tensors))
+    let! wide_file = File.write_bytes $"{dir}/out_zip64.npz" wide
+    do! IO.writeln $"out_zip64.npz={if Result.is_ok (ref wide_file) then "ok" else "io"}"
+    let singles = Tensor.init [2, 2] (\i -> (to_float i + 0.5) as f32)
+    let safe = [("w", TensorCodec.to_raw (Tensor.view (ref singles))), ("b", TensorCodec.to_raw (Tensor.view (ref labels))), ("flags", TensorCodec.to_raw (ref flags_window))]
+    let! safe_file = TensorIO.save_safetensors $"{dir}/out_plain.safetensors" (ref safe)
+    do! IO.writeln $"out_plain.safetensors={outcome (ref safe_file)}"
+    let metadata = [("format", "pt"), ("note", "é \"quoted\"")]
+    let! safe_with = TensorIO.save_safetensors_with (ref metadata) $"{dir}/out.safetensors" (ref safe)
+    do! IO.writeln $"out.safetensors={outcome (ref safe_with)}"
+    let table = Tensor.of_array [3, 2] [1.5, -2.25, 1024.0, 0.1, 1.0 / 0.0, 3.0e-300]
+    let table_window = Tensor.view (ref table)
+    let! csv_file = TensorIO.save_csv (TensorCodec.csv ()) $"{dir}/out.csv" (ref table_window)
+    do! IO.writeln $"out.csv={outcome (ref csv_file)}"
+    let! tsv_file = TensorIO.save_csv (TensorCodec.tsv ()) $"{dir}/out.tsv" (ref table_window)
+    do! IO.writeln $"out.tsv={outcome (ref tsv_file)}"
+    let! spaced_file = TensorIO.save_csv (TensorCodec.CsvOptions { delimiter: u8"", skip_rows: 0, comment: u8"#" }) $"{dir}/out_spaced.txt" (ref ints_window)
+    do! IO.writeln $"out_spaced.txt={outcome (ref spaced_file)}"
+    let pattern = new [ubyte](70000, \i -> ((i * i + i / 7) % 251) as ubyte)
+    let! deflated = File.write_bytes $"{dir}/out.deflate" (TensorCodec.deflate (ref pattern))
+    do! IO.writeln $"out.deflate={if Result.is_ok (ref deflated) then "ok" else "io"}"
+    let cube = Tensor.init [1, 1, 1] (\i -> i)
+    let cube_window = Tensor.view (ref cube)
+    let! refused = TensorIO.save_csv (TensorCodec.csv ()) $"{dir}/out_cube.csv" (ref cube_window)
+    do! IO.writeln $"out_cube.csv={outcome (ref refused)}"
+    let! nowhere = TensorIO.save_npy $"{dir}/no/such/directory/x.npy" (ref window)
+    do! IO.writeln $"nowhere={outcome (ref nowhere)}"
+    0
+
+def read_files :: own string -> i64
+fn read_files dir =
+    let! plain = TensorIO.load_npy $"{dir}/in_f64.npy"
+    let plain_typed: Result<Tensor<f64>, TensorIO.Error> = plain
+    match plain_typed with
+    | Result.Ok tensor ->
+        let window = Tensor.view (ref tensor)
+        do! IO.writeln $"in_f64.npy={Tensor.shape (ref window)} {total (ref window)} {deref (Tensor.at [1, 2] (ref window))}"
+    | Result.Error error -> do! IO.writeln $"in_f64.npy={failure (ref error)}"
+    let! fortran = TensorIO.load_npy $"{dir}/in_fortran.npy"
+    let fortran_typed: Result<Tensor<f64>, TensorIO.Error> = fortran
+    match fortran_typed with
+    | Result.Ok tensor -> do! IO.writeln $"in_fortran.npy={Tensor.as_array (ref tensor)}"
+    | Result.Error error -> do! IO.writeln $"in_fortran.npy={failure (ref error)}"
+    let! big = TensorIO.load_npy $"{dir}/in_be.npy"
+    let big_typed: Result<Tensor<i32>, TensorIO.Error> = big
+    match big_typed with
+    | Result.Ok tensor -> do! IO.writeln $"in_be.npy={Tensor.as_array (ref tensor)}"
+    | Result.Error error -> do! IO.writeln $"in_be.npy={failure (ref error)}"
+    let! unknown = TensorIO.load_npy_raw $"{dir}/in_be.npy"
+    match unknown with
+    | Result.Ok raw -> do! IO.writeln $"in_be.npy raw={TensorCodec.dtype_name (ref raw.dtype)} {raw.shape} {raw.data}"
+    | Result.Error error -> do! IO.writeln $"in_be.npy raw={failure (ref error)}"
+    let! wrong = TensorIO.load_npy $"{dir}/in_f64.npy"
+    let wrong_typed: Result<Tensor<i64>, TensorIO.Error> = wrong
+    match wrong_typed with
+    | Result.Ok _ -> do! IO.writeln "wrong type=ok"
+    | Result.Error error -> do! IO.writeln $"wrong type={failure (ref error)}"
+    let! missing = TensorIO.load_npy_raw $"{dir}/missing.npy"
+    match missing with
+    | Result.Ok _ -> do! IO.writeln "missing=ok"
+    | Result.Error error -> do! IO.writeln $"missing={failure (ref error)}"
+    let! not_npy = TensorIO.load_npy_raw $"{dir}/in.csv"
+    match not_npy with
+    | Result.Ok _ -> do! IO.writeln "not npy=ok"
+    | Result.Error error -> do! IO.writeln $"not npy={failure (ref error)}"
+    let! stored = TensorIO.load_npz $"{dir}/in.npz"
+    do! IO.writeln $"in.npz={archive_text stored}"
+    let! packed = TensorIO.load_npz $"{dir}/in_compressed.npz"
+    do! IO.writeln $"in_compressed.npz={archive_text packed}"
+    let! safe = TensorIO.load_safetensors $"{dir}/in.safetensors"
+    do! IO.writeln $"in.safetensors={archive_text safe}"
+    let! comma = TensorIO.load_csv (TensorCodec.csv ()) $"{dir}/in.csv"
+    do! IO.writeln $"in.csv={table_text comma}"
+    let! spaced = TensorIO.load_csv (TensorCodec.CsvOptions { delimiter: u8"", skip_rows: 0, comment: u8"#" }) $"{dir}/in_default.txt"
+    do! IO.writeln $"in_default.txt={table_text spaced}"
+    let! not_text = TensorIO.load_csv (TensorCodec.csv ()) $"{dir}/in_f64.npy"
+    let not_text_typed: Result<Tensor<f64>, TensorIO.Error> = not_text
+    do! IO.writeln $"not text={table_text not_text_typed}"
+    0
+
+/// The names of an archive, and the sum of its tensor `weights` (of `f64`) and of its tensor `labels` (of `i64`).
+def archive_text :: own Result<TensorCodec.Archive, TensorIO.Error> -> string
+fn archive_text loaded =
+    match loaded with
+    | Result.Error error -> failure (ref error)
+    | Result.Ok archive ->
+        let weights: Result<Tensor<f64>, TensorCodec.Error> = TensorCodec.archive_get "weights" (ref archive)
+        let labels: Result<Tensor<i64>, TensorCodec.Error> = TensorCodec.archive_get "labels" (ref archive)
+        let first =
+            match weights with
+            | Result.Ok tensor -> $"{total (Tensor.view (ref tensor))}"
+            | Result.Error error -> Display.display (ref error)
+        let second =
+            match labels with
+            | Result.Ok tensor -> $"{Tensor.as_array (ref tensor)}"
+            | Result.Error error -> Display.display (ref error)
+        $"{TensorCodec.archive_names (ref archive)} {first} {second} {TensorCodec.archive_metadata (ref archive)}"
+
+def table_text :: own Result<Tensor<f64>, TensorIO.Error> -> string
+fn table_text loaded =
+    match loaded with
+    | Result.Error error -> failure (ref error)
+    | Result.Ok tensor ->
+        let window = Tensor.view (ref tensor)
+        $"{Tensor.shape (ref window)} {Tensor.as_array (ref tensor)}"
+
+/// What mapping `name` gives: the dtype, the shape and the elements in row-major order, or the failure.
+def mapped_text :: own Result<TensorIO.MappedTensor, TensorIO.Error> -> string
+fn mapped_text opened =
+    match opened with
+    | Result.Error error -> failure (ref error)
+    | Result.Ok mapped ->
+        let dtype = TensorIO.mapped_dtype (ref mapped)
+        let elements =
+            if dtype == TensorCodec.F64 then
+                let window: Tensor.View<f64> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.I32 then
+                let window: Tensor.View<i32> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.I64 then
+                let window: Tensor.View<i64> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.F32 then
+                let window: Tensor.View<f32> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.F16 then
+                let window: Tensor.View<f16> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.U8 then
+                let window: Tensor.View<i8u> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.Bool then
+                let window: Tensor.View<bool> = TensorIO.view (ref mapped)
+                $"{Tensor.to_array (Tensor.to_tensor (ref window))}"
+            elif dtype == TensorCodec.Complex128 then
+                let window: Tensor.View<Complex<f64>> = TensorIO.view (ref mapped)
+                let parts = Tensor.to_array (Tensor.to_tensor (ref window))
+                $"{new [f64](parts.length * 2, \index -> if index % 2 == 0 then parts[index / 2].re else parts[index / 2].im)}"
+            else "?"
+        $"{TensorCodec.dtype_name (ref dtype)} {TensorIO.mapped_shape (ref mapped)} {elements}"
+
+def map_files :: own string -> i64
+fn map_files dir =
+    let! plain = TensorIO.open_mmap_npy $"{dir}/in_f64.npy"
+    do! IO.writeln $"in_f64.npy={mapped_text plain}"
+    let! fortran = TensorIO.open_mmap_npy $"{dir}/in_fortran.npy"
+    do! IO.writeln $"in_fortran.npy={mapped_text fortran}"
+    let! ints = TensorIO.open_mmap_npy $"{dir}/in_i32.npy"
+    do! IO.writeln $"in_i32.npy={mapped_text ints}"
+    let! flags = TensorIO.open_mmap_npy $"{dir}/in_bool.npy"
+    do! IO.writeln $"in_bool.npy={mapped_text flags}"
+    let! pairs = TensorIO.open_mmap_npy $"{dir}/in_c128.npy"
+    do! IO.writeln $"in_c128.npy={mapped_text pairs}"
+    let! halves = TensorIO.open_mmap_npy $"{dir}/in_f16.npy"
+    do! IO.writeln $"in_f16.npy={mapped_text halves}"
+    let! bytes = TensorIO.open_mmap_npy $"{dir}/in_u8.npy"
+    do! IO.writeln $"in_u8.npy={mapped_text bytes}"
+    let! nothing = TensorIO.open_mmap_npy $"{dir}/in_empty.npy"
+    do! IO.writeln $"in_empty.npy={mapped_text nothing}"
+    let! scalar = TensorIO.open_mmap_npy $"{dir}/in_scalar.npy"
+    do! IO.writeln $"in_scalar.npy={mapped_text scalar}"
+    let! typed = TensorIO.open_mmap_npy_as TensorCodec.F64 $"{dir}/in_f64.npy"
+    do! IO.writeln $"as f64={mapped_text typed}"
+    let! mistyped = TensorIO.open_mmap_npy_as TensorCodec.F32 $"{dir}/in_f64.npy"
+    do! IO.writeln $"as f32={mapped_text mistyped}"
+    let! weights = TensorIO.open_mmap_safetensors "w" $"{dir}/in.safetensors"
+    do! IO.writeln $"safetensors w={mapped_text weights}"
+    let! labels = TensorIO.open_mmap_safetensors "labels" $"{dir}/in.safetensors"
+    do! IO.writeln $"safetensors labels={mapped_text labels}"
+    let! absent = TensorIO.open_mmap_safetensors "absent" $"{dir}/in.safetensors"
+    do! IO.writeln $"safetensors absent={mapped_text absent}"
+    let! summed = TensorIO.with_mmap_npy $"{dir}/in_f64.npy" (\mapped ->
+        let window: Tensor.View<f64> = TensorIO.view mapped
+        total (ref window))
+    match summed with
+    | Result.Ok sum -> do! IO.writeln $"with={sum}"
+    | Result.Error error -> do! IO.writeln $"with={failure (ref error)}"
+    let! big = TensorIO.open_mmap_npy $"{dir}/in_be.npy"
+    do! IO.writeln $"in_be.npy={mapped_text big}"
+    let! bad_flags = TensorIO.open_mmap_npy $"{dir}/in_bad_bool.npy"
+    do! IO.writeln $"in_bad_bool.npy={mapped_text bad_flags}"
+    let! unaligned = TensorIO.open_mmap_npy $"{dir}/in_unaligned.npy"
+    do! IO.writeln $"in_unaligned.npy={mapped_text unaligned}"
+    let! cut = TensorIO.open_mmap_npy $"{dir}/in_cut.npy"
+    do! IO.writeln $"in_cut.npy={mapped_text cut}"
+    let! empty = TensorIO.open_mmap_npy $"{dir}/in_zero_bytes.npy"
+    do! IO.writeln $"in_zero_bytes.npy={mapped_text empty}"
+    let! missing = TensorIO.open_mmap_npy $"{dir}/missing.npy"
+    do! IO.writeln $"missing={mapped_text missing}"
+    let! pipe = TensorIO.open_mmap_npy $"{dir}/pipe.npy"
+    do! IO.writeln $"pipe={mapped_text pipe}"
+    let! folder = TensorIO.open_mmap_npy dir
+    do! IO.writeln $"directory={mapped_text folder}"
+    0
+
+/// Maps the large file and releases the mapping `count` times: the address space only holds them all when
+/// each one is released.
+def map_often :: own string -> own i64 -> i64
+fn map_often dir count =
+    let mut done = 0
+    let mut failed = 0
+    while done < count && failed == 0 do
+        let! opened = TensorIO.open_mmap_npy $"{dir}/big.npy"
+        match opened with
+        | Result.Ok mapped -> if TensorIO.mapped_dtype (ref mapped) != TensorCodec.U8 then failed = 1
+        | Result.Error _ -> failed = 1
+        done = done + 1
+    do! IO.writeln $"leak={done} {failed}"
+    0
+
+def map_wrongly :: own string -> i64
+fn map_wrongly dir =
+    let! opened = TensorIO.open_mmap_npy $"{dir}/in_f64.npy"
+    match opened with
+    | Result.Ok mapped ->
+        do! IO.writeln "before"
+        let window: Tensor.View<i32> = TensorIO.view (ref mapped)
+        do! IO.writeln $"after {Tensor.count (ref window)}"
+    | Result.Error error -> do! IO.writeln (failure (ref error))
+    0
+
+def main :: unit -> i32 = \() ->
+    let! listed = Env.args ()
+    let none: [string] = []
+    let args = Result.default_value none listed
+    let mode = if args.length > 0 then $"{args[0]}" else ""
+    let dir = if args.length > 1 then $"{args[1]}" else "."
+    let count = if args.length > 2 then Maybe.default_value 0 (Parse.parse (ref args[2])) else 0
+    let status =
+        if mode == "write" then write_files dir
+        elif mode == "read" then read_files dir
+        elif mode == "mmap" then map_files dir
+        elif mode == "leak" then map_often dir count
+        elif mode == "trap" then map_wrongly dir
+        else 2
+    status as i32

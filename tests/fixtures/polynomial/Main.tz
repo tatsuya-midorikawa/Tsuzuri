@@ -1,0 +1,153 @@
+// NC09: `Polynomial` on native and WebAssembly at -O0 and -O3. The polynomials have small integer coefficients,
+// so most results are exact; tests/fft-polynomial-cases.mjs computes them with BigInt, and the fits and roots
+// from the polynomials they were built from.
+
+private def mix :: own i64 -> own i64 -> i64
+fn mix total x = total * 31 + x
+
+private def rounded :: own f64 -> own f64 -> i64
+fn rounded scale value = (Math.round (value * scale)) as i64
+
+private def fold :: own f64 -> ref [f64] -> i64
+fn fold scale values =
+    let mut total = values.length
+    for index in 0i64 ..< values.length do
+        total = mix total (rounded scale values[index])
+    total
+
+// p(x) = 3 - 2 x + 5 x^3 + x^4 and q(x) = -1 + 4 x + 2 x^2
+private def p :: unit -> [f64]
+fn p _ = [3.0, -2.0, 0.0, 5.0, 1.0]
+
+private def q :: unit -> [f64]
+fn q _ = [-1.0, 4.0, 2.0]
+
+export def eval_at :: own i64 -> i64
+fn eval_at x =
+    let at = x as f64
+    let direct = rounded 1.0 (Polynomial.eval at (ref (p ())))
+    let complex = Polynomial.eval_complex (Complex.of at 0.0) (ref (p ()))
+    let points = Tensor.of_array [2] [at, at + 1.0]
+    let both = Polynomial.eval_tensor (ref (q ())) (Tensor.view (ref points))
+    mix (mix (mix direct (rounded 1.0 complex.re)) (rounded 1.0 complex.im)) (fold 1.0 (Tensor.as_array (ref both)))
+
+// The value of p at the complex point a + b i.
+export def eval_complex_at :: own i64 -> own i64 -> i64
+fn eval_complex_at a b =
+    let value = Polynomial.eval_complex (Complex.of (a as f64) (b as f64)) (ref (p ()))
+    mix (rounded 1.0 value.re) (rounded 1.0 value.im)
+
+export def arithmetic :: own i64 -> i64
+fn arithmetic which =
+    if which == 0 then fold 1.0 (ref (Polynomial.add (ref (p ())) (ref (q ()))))
+    elif which == 1 then fold 1.0 (ref (Polynomial.sub (ref (q ())) (ref (p ()))))
+    elif which == 2 then fold 1.0 (ref (Polynomial.mul (ref (p ())) (ref (q ()))))
+    elif which == 3 then fold 1.0 (ref (Polynomial.pow 3 (ref (q ()))))
+    elif which == 4 then fold 1.0 (ref (Polynomial.deriv (ref (p ()))))
+    elif which == 5 then fold 1.0 (ref (Polynomial.deriv_n 3 (ref (p ()))))
+    elif which == 6 then fold 60.0 (ref (Polynomial.integ (ref (p ()))))
+    elif which == 7 then fold 60.0 (ref (Polynomial.integ_const 7.0 (ref (p ()))))
+    elif which == 8 then fold 1.0 (ref (Polynomial.from_roots [-2.0, 1.0, 3.0, 3.0]))
+    elif which == 9 then fold 1.0 (ref (Polynomial.trim 0.5 [4.0, 0.0, -2.0, 0.25, 0.0]))
+    else
+        let complex = Polynomial.from_roots_complex [Complex.of 1.0 2.0, Complex.of 1.0 (-2.0), Complex.of (-3.0) 0.0]
+        let mut total = complex.length
+        for index in 0i64 ..< complex.length do
+            total = mix (mix total (rounded 1.0 complex[index].re)) (rounded 1.0 complex[index].im)
+        total
+
+// (p * q + remainder) / q gives p back; the remainder is 5 - 3 x.
+export def division :: own i64 -> i64
+fn division which =
+    let product = Polynomial.add (ref (Polynomial.mul (ref (p ())) (ref (q ())))) [5.0, -3.0]
+    match Polynomial.divmod (ref product) (ref (q ())) with
+    | Result.Ok (quotient, remainder) -> if which == 0 then fold 1024.0 (ref quotient) else fold 1024.0 (ref remainder)
+    | Result.Error _ -> -1
+
+// The coefficients of the cubic 2 - x + 3 x^2 + 4 x^3 from its values at -3 .. 3, by the three bases.
+export def fitting :: own i64 -> i64
+fn fitting which =
+    let cubic = [2.0, -1.0, 3.0, 4.0]
+    let xs = new [f64](7, \index -> ((index - 3) as f64) / 4.0)
+    let ys = new [f64](7, \index -> Polynomial.eval xs[index] (ref cubic))
+    let weights = Tensor.of_array [7] [1.0, 2.0, 0.5, 4.0, 1.0, 3.0, 0.25]
+    let x = Tensor.of_array [7] (Array.copy (ref xs))
+    let y = Tensor.of_array [7] (Array.copy (ref ys))
+    let xv = Tensor.view (ref x)
+    let yv = Tensor.view (ref y)
+    let found =
+        if which == 0 then Polynomial.fit 3 (ref xv) (ref yv)
+        elif which == 1 then Polynomial.fit_weighted 3 (Tensor.view (ref weights)) (ref xv) (ref yv)
+        elif which == 2 then Polynomial.cheb_fit 3 (ref xv) (ref yv)
+        else Polynomial.leg_fit 3 (ref xv) (ref yv)
+    match found with
+    | Result.Ok coefficients ->
+        // The series found by the Chebyshev and Legendre fits must give the cubic's values back.
+        let mut wrong = 0
+        for index in 0i64 ..< 7 do
+            let value =
+                if which == 2 then Polynomial.cheb_eval xs[index] (ref coefficients)
+                elif which == 3 then Polynomial.leg_eval xs[index] (ref coefficients)
+                else Polynomial.eval xs[index] (ref coefficients)
+            if !(Math.abs (value - ys[index]) < 1e-9) then wrong = wrong + 1
+        if wrong > 0 then -2 else fold 1024.0 (ref coefficients)
+    | Result.Error _ -> -1
+
+// The roots of (x + 2) (x - 1) (x - 3) (x^2 - 4 x + 13), in the order of `roots`.
+export def root_digest :: own i64 -> i64
+fn root_digest scale =
+    let quadratic = [13.0, -4.0, 1.0]
+    let all = Polynomial.mul (ref (Polynomial.from_roots [-2.0, 1.0, 3.0])) (ref quadratic)
+    match Polynomial.roots (ref all) with
+    | Result.Ok found ->
+        let mut total = found.length
+        for index in 0i64 ..< found.length do
+            total = mix (mix total (rounded (scale as f64) found[index].re)) (rounded (scale as f64) found[index].im)
+        total
+    | Result.Error _ -> -1
+
+// T_n and P_n at k / 8, as the series with a single 1.
+export def series :: own i64 -> own i64 -> own i64 -> i64
+fn series kind degree k =
+    let unit = new [f64](degree + 1, \index -> if index == degree then 1.0 else 0.0)
+    let x = (k as f64) / 8.0
+    if kind == 0 then rounded 1048576.0 (Polynomial.cheb_eval x (ref unit))
+    else rounded 1048576.0 (Polynomial.leg_eval x (ref unit))
+
+private def code :: Result<[f64], Polynomial.Error> -> i64
+fn code result =
+    match result with
+    | Result.Ok _ -> 0
+    | Result.Error Polynomial.Error.ZeroDivisor -> 1
+    | Result.Error (Polynomial.Error.InvalidDegree degree) -> 20 + degree
+    | Result.Error (Polynomial.Error.InvalidRank rank) -> 30 + rank
+    | Result.Error (Polynomial.Error.ShapeMismatch (left, right)) -> 400 + 10 * left[0] + right[0]
+    | Result.Error Polynomial.Error.EmptyData -> 5
+    | Result.Error (Polynomial.Error.Solver _) -> 6
+
+export def error_codes :: own i64 -> i64
+fn error_codes which =
+    let three = Tensor.of_array [3] [0.0, 1.0, 2.0]
+    let four = Tensor.of_array [4] [0.0, 1.0, 2.0, 3.0]
+    let grid = Tensor.of_array [2, 2] [0.0, 1.0, 2.0, 3.0]
+    let empty: Tensor<f64> = Tensor.of_array [0] []
+    let tv = Tensor.view (ref three)
+    if which == 0 then code (Polynomial.fit 1 (ref tv) (Tensor.view (ref four)))
+    elif which == 1 then code (Polynomial.fit (-4) (ref tv) (ref tv))
+    elif which == 2 then code (Polynomial.cheb_fit 1 (Tensor.view (ref grid)) (ref tv))
+    elif which == 3 then code (Polynomial.leg_fit 1 (Tensor.view (ref empty)) (Tensor.view (ref empty)))
+    elif which == 4 then code (Polynomial.fit_weighted 1 (Tensor.view (ref four)) (ref tv) (ref tv))
+    elif which == 5 then
+        match Polynomial.divmod (ref (p ())) [0.0, 0.0] with
+        | Result.Error Polynomial.Error.ZeroDivisor -> 1
+        | _ -> -1
+    else code (Polynomial.fit 1 (ref tv) (ref tv))
+
+export def trap_negative_power :: own i64 -> i64
+fn trap_negative_power power = (Polynomial.pow power (ref (q ()))).length
+
+export def trap_negative_order :: own i64 -> i64
+fn trap_negative_order order = (Polynomial.deriv_n order (ref (q ()))).length
+
+export def trap_negative_tolerance :: own i64 -> i64
+fn trap_negative_tolerance tolerance = (Polynomial.trim (tolerance as f64) (ref (q ()))).length

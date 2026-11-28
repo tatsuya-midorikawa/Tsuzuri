@@ -997,6 +997,69 @@ TZ_OS_API int64_t tsuzuri_os_version(struct tz_os_buffer *output) {
 #endif
 #endif
 
+// TensorIO (NC11): a read-only mapping of a whole regular file. The driver defines the macro only for a
+// program that reaches the functions, so the object of every other program stays as it was. The record is
+// the address and the length as little-endian 64-bit integers; an empty file has no mapping (0 and 0).
+// The descriptor is closed at once: the mapping keeps the file. `MAP_PRIVATE` without `PROT_WRITE` never
+// writes the file, and nothing in the process can write the pages.
+#if defined(TZ_OS_MAP)
+#include <sys/mman.h>
+static int64_t tz_os_map_now(struct tz_os_buffer *output, const unsigned char *path, int64_t length) {
+    int64_t status = 0;
+    char *name = tz_os_name(path, length, &status);
+    if (name == NULL) return status;
+    // `O_NONBLOCK` changes nothing for a regular file, and it keeps the open of a FIFO without a writer from
+    // waiting: the check below refuses the FIFO at once.
+    int descriptor = tz_os_open(name, O_RDONLY | O_NONBLOCK);
+    int error = errno;
+    free(name);
+    if (descriptor < 0) return tz_os_error(error);
+    struct stat information;
+    if (fstat(descriptor, &information) != 0) {
+        error = errno;
+        close(descriptor);
+        return tz_os_error(error);
+    }
+    if (!S_ISREG(information.st_mode)) {
+        close(descriptor);
+        return S_ISDIR(information.st_mode) ? tz_os_error(EISDIR) : tz_os_invalid_input();
+    }
+    if (information.st_size < 0 || (uint64_t)information.st_size > (uint64_t)SIZE_MAX / 2) {
+        close(descriptor);
+        return tz_os_status(TZ_OS_OTHER, EFBIG);
+    }
+    void *address = NULL;
+    if (information.st_size > 0) {
+        address = mmap(NULL, (size_t)information.st_size, PROT_READ, MAP_PRIVATE, descriptor, 0);
+        if (address == MAP_FAILED) {
+            error = errno;
+            close(descriptor);
+            return tz_os_error(error);
+        }
+    }
+    close(descriptor);
+    unsigned char record[16];
+    tz_os_put_i64(record, (int64_t)(intptr_t)address);
+    tz_os_put_i64(record + 8, (int64_t)information.st_size);
+    return tz_os_deliver(output, record, sizeof record);
+}
+
+// TZ08: a tzroutine in this call lets its P go.
+TZ_OS_API int64_t tsuzuri_os_map(struct tz_os_buffer *output, const unsigned char *path, int64_t length) {
+    tz_os_clear(output);
+    TZ_BLOCKING_ENTER();
+    int64_t status = tz_os_map_now(output, path, length);
+    TZ_BLOCKING_EXIT();
+    return status;
+}
+
+// Releases what `tsuzuri_os_map` returned; the record of an empty file has nothing to release.
+TZ_OS_API int64_t tsuzuri_os_unmap(int64_t address, int64_t length) {
+    if (address == 0 || length <= 0) return 0;
+    return munmap((void *)(intptr_t)address, (size_t)length) == 0 ? 0 : tz_os_error(errno);
+}
+#endif
+
 // Env.executable_path (M15): the absolute path of the running executable. The driver defines the macro
 // only for a program that reaches the function, so the object of every other program stays as it was.
 #if defined(TZ_OS_EXECUTABLE_PATH)

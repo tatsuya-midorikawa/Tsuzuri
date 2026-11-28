@@ -13,7 +13,10 @@ import { cases as matrixCases, traps as matrixTraps, productEntry } from "./matr
 import { cases as matrixViewCases, traps as matrixViewTraps, bounded as matrixViewBounded } from "./matrix-view-cases.mjs";
 import { cases as tensorCases, traps as tensorTraps, bounded as tensorBounded } from "./tensor-cases.mjs";
 import { cases as tensorOperatorCases, traps as tensorOperatorTraps } from "./tensor-operator-cases.mjs";
+import { cases as tensorCodecCases } from "./tensor-codec-cases.mjs";
 import { cases as rangeReferenceCases, traps as rangeReferenceTraps } from "./range-reference-cases.mjs";
+import { cases as randomCases, traps as randomTraps, tensorCases as randomTensorCases, tensorTraps as randomTensorTraps } from "./random-cases.mjs";
+import { fftCases, fftTraps, polynomialCases, polynomialTraps } from "./fft-polynomial-cases.mjs";
 import { createBoundary } from "../src/runtime/trap-boundary.mjs";
 import { steadyChurn as steadyChurnReference } from "../benchmarks/heap/reference.mjs";
 
@@ -3188,6 +3191,36 @@ const suites = {
     ],
     trapKind: "assertion failed",
   },
+  // NC11: .npy, .npz with Deflate and Inflate, Safetensors and CSV as pure bytes, with no import on WebAssembly.
+  tensor_codec: {
+    cases: tensorCodecCases,
+    inspect(ir) {
+      // The storage of a numeric array is copied in one piece, and no call leaves the module for the system.
+      assert.match(ir, /@tz\.builtin\.TensorCodec\.__to_bytes/);
+      assert.match(ir, /@tz\.builtin\.TensorCodec\.__of_bytes/);
+      assert.doesNotMatch(ir, /@tsuzuri_os_/);
+    },
+  },
+  // NC09: transforms of every kind of length against their definitions; plans and parallel batches agree with `fft`.
+  fft: {
+    cases: fftCases,
+    traps: fftTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Fft\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC09: polynomial arithmetic with exact integer results, fits and roots of known polynomials.
+  polynomial: {
+    cases: polynomialCases,
+    traps: polynomialTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Polynomial\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
   // NC19: 43 Tensor operator extension instances (View/Tensor/Scalar +, -, *, /, %, **, unary -).
   tensor_operators: {
     cases: tensorOperatorCases,
@@ -3195,6 +3228,29 @@ const suites = {
     trapKind: "assertion failed",
     inspect(ir) {
       assert.match(ir, /@tz\.fn\.Tensor\.\$instance\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC10 Phase 1: `Random.Pcg64`, `Random.SeedSequence` and the scalar distributions against the BigInt model of
+  // tests/random-cases.mjs (itself checked against NumPy). The always-loaded `Random` pulls in no opt-in module.
+  random: {
+    cases: randomCases,
+    traps: randomTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.Random\.pcg64_next_u64/);
+      assert.doesNotMatch(ir, /@tz\.fn\.(Tensor|Linalg|RandomTensor|Complex)\./);
+      assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
+    },
+  },
+  // NC10 Phase 2: the opt-in `RandomTensor`. A tensor is the scalar draws in row-major order, bit for bit; the orders,
+  // the weighted choices, the Dirichlet and the multivariate normal vectors are the model's.
+  random_tensor: {
+    cases: randomTensorCases,
+    traps: randomTensorTraps,
+    trapKind: "assertion failed",
+    inspect(ir) {
+      assert.match(ir, /@tz\.fn\.RandomTensor\./);
       assert.doesNotMatch(ir, /fmuladd|llvm\.fma|\bfast\b|\bcontract\b|\breassoc\b/);
     },
   },

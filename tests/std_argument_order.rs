@@ -82,6 +82,8 @@ const MODULES: &[(&str, Kind)] = &[
     ("ErrGroup", Exempt(BUILTIN_HANDLE)),
     ("Exception", SingleArgument),
     ("ExternAddr", subject(&["ExternAddr"])),
+    // `execute_into` and `execute_in_place` write an exclusive slice, their last parameter.
+    ("Fft", subject(&["Tensor.View", "Tensor", "Plan", "[]"])),
     ("File", Exempt(HANDLE)),
     ("Format", subject(&["string"])),
     (
@@ -129,8 +131,13 @@ const MODULES: &[(&str, Kind)] = &[
     ("Owned", Exempt(BUILTIN_HANDLE)),
     ("Parallel", SingleArgument),
     ("Path", subject(&["string"])),
+    ("Polynomial", subject(&["Tensor.View", "Tensor", "[]"])),
     ("Process", Exempt(HANDLE)),
-    ("Random", subject(&["Pcg"])),
+    ("Random", subject(&["Pcg", "Pcg64", "SeedSequence"])),
+    (
+        "RandomTensor",
+        subject(&["Random.Pcg64", "Tensor.Mut", "Tensor.View"]),
+    ),
     ("ReceiveOnly", Exempt(BUILTIN_HANDLE)),
     // `'s` is the text of the `*_text` functions, a `string` or a `utf8string` chosen by `RegexText`.
     ("Regex", text(&["string", "utf8string", "'s"], &["text"])),
@@ -146,6 +153,14 @@ const MODULES: &[(&str, Kind)] = &[
     // A concurrent map is a resource that tzroutines share, like Mutex: the map comes first.
     ("SyncMap", Exempt(HANDLE)),
     ("Tensor", subject(&["Tensor", "View", "Mut"])),
+    // NC11: the window, the archive, the `Raw`, or the bytes or text of a file is last; a name or the options come first.
+    (
+        "TensorCodec",
+        subject(&["Tensor.View", "Archive", "Raw", "[]", "utf8string"]),
+    ),
+    // The methods of the class take the array of elements or the bytes last.
+    ("TensorElement", subject(&["[]"])),
+    ("TensorIO", subject(&["Tensor.View", "MappedTensor"])),
     ("Test", Exempt(HARNESS)),
     // The methods of the class take the text, `'s`, last; they have no `fn` lines, so no names are read.
     ("Text", text(&["'s", "['s]"], &["text", "parts"])),
