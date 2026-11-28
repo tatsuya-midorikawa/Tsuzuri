@@ -177,6 +177,7 @@ let sized = new [i64](4, i -> i) // 実行時に長さを決定してヒープ�
 - **共有ポインタ (`Rc<T>` / `Arc<T>` / `Rc.Weak<T>` / `Arc.Weak<T>`)**: 参照カウントで値を共有します。所有者は `Rc.share` で明示的に増やし、`Arc` は atomic な計数で、`Send` かつ `Sync` な値を複数のタスクで共有できます。共有した値を書き換えるときは `Atomic` か `Mutex` を入れます（`Arc` と `Mutex` では循環を作れるので、一方は `Arc.Weak` で持ちます）。詳細は [Rc と Arc](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/memory/rc.md)、[Atomic](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sync/atomic.md)、[Mutex](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/sync/mutex.md) を参照してください。
 - **Arena (`Arena<T>` / `Arena.Handle<T>`)**: 値をまとめて所有し、Copy の世代付きハンドルで指すコンテナです。グラフや循環する構造を GC や参照カウントなしで表し、削除済み・別の arena のハンドルを実行時に検出します。詳細は [Arena](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/memory/arena.md) を参照してください。
 - **行列と N 次元配列 (`Matrix<T>`・`MatrixView<T>`・`Tensor<T>`)**: `Matrix` は行優先の 1 本の連続バッファに持つ行列です。構築・要素の参照と置き換え・行の借用・転置・要素ごとの変換と集計・加算・行列積を提供します。行列積の各出力要素は `+0` から `k` の昇順に、積と和を別々に丸めて足すので、native と WASM、`-O0` と `-O3` で同じビットを返します。実装は行ごとに更新する形で、ベクトル化できます。FMA を使う `mul_fma` と、行を形だけで決まるチャンクに分けて並列に計算する `mul_parallel`・`mul_fma_parallel` は別名の API です。`Math.fma` がハードウェアの命令になるのは AArch64 向けにビルドしたコンパイラの native だけで、それ以外の native と wasm32 では積和ごとにソフトウェアのルーチンを呼ぶので、`mul_fma` は大幅に遅くなります（ビットは同じです）。常に非 Copy で、内部は不透明です。`MatrixView` は行列を複製せずに転置・部分行列・行・列として見る借用の窓（排他スライスで書き込める窓もあります）、`Tensor` は形と行優先のバッファを持つ N 次元の配列と、軸の並べ替えなどをする窓です。行列積の GPU カーネルはありません。詳細は [Matrix](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/matrix.md)・[MatrixView](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/matrix-view.md)・[Tensor](https://github.com/tatsuya-midorikawa/Tsuzuri-Reference/blob/main/docs/stdlib/numeric/tensor.md) を参照してください。
+- **フーリエ変換と多項式 (`Fft`・`Polynomial`)**: `Fft` は任意の長さの高速フーリエ変換です（複素・実数・エルミート対称の 1 次元、2 次元・N 次元、`fftfreq`・`fftshift`、繰り返し用の不変の計画 `Fft.Plan`、CPU のコアで線を分け合う並列版）。素因数が 2・3・5 だけの長さは混合基数、それ以外は Bluestein のアルゴリズムで、どの長さも $O(n \log n)$ です。`Polynomial` は昇べきの係数の配列の上の評価・四則・微積分・最小二乗フィッティング（べき・Chebyshev・Legendre）・求根です。どちらも外部ライブラリを使わない opt-in の std モジュールで、native と WASM、`-O0` と `-O3` で同じビットの結果を返します。
 - **SIMD ベクトル**: 128-bit 幅の `f32x4`、`f64x2` と 256-bit 幅の `f32x8`、`f64x4`、整数ベクトル型をサポートします。`Simd.splat`、`Simd.load`、`Simd.store`、`Simd.extract`、`Simd.sum_lanes` などの高効率な組み込み演算を提供します。関数に `@cpu ["avx2", "sve"]` を付けると、native の成果物が実行時に CPU の命令セットごとの版を選びます。
 
 ### 関数と型クラス
@@ -497,6 +498,7 @@ def main :: unit -> i32 = \() ->
 | --- | --- |
 | `Maybe`, `Result` | 成功・失敗および値の存在・欠落を表現する基本データ型 |
 | `Array`, `List`, `Vec`, `Map`, `Set`, `HashMap`, `HashSet`, `Arena`, `Matrix`, `MatrixView`, `Tensor` | 各種コレクションおよびデータ構造 |
+| `Fft`, `Polynomial` | 高速フーリエ変換と、多項式の演算・フィッティング・求根（opt-in） |
 | `Rc`, `Arc` | 参照カウントによる共有所有 |
 | `Atomic`, `Mutex` | 共有借用から更新できる整数・`bool` のセルと、ロックで守る値（`Routine.scope`、`Arc` と組み合わせる） |
 | `Domain` | 純粋な計算のトラップを `Result.Error` にする失敗の領域（macOS・Linux のネイティブ） |
@@ -1174,6 +1176,7 @@ cargo test --locked honors_the_exact_specialization_limit
 | macOS の報告の送り先（標準エラーが閉じているか `/dev/null` のときの unified logging。M19） | `src/llvm.rs` の単体テスト `darwin_trap_report_asks_the_runtime` | `macos_report.mjs`（macOS だけ。実行ファイルの標準エラーをパイプ・ファイル・`/dev/null`・閉じた状態にし、記録を `/usr/bin/log show` でプロセス ID から読む。読めない機械ではその旨を出し、`tests/macos_report_host.c` で送り先の判定と、独立した報告が 1 件に混ざらないことだけを確かめる。`--emit app` のバンドルを `open` で起動した場合も確かめる。ほかのホストでは理由を出して飛ばす） |
 | SIMD・CPU dispatch・GPU | `tests/simd.rs`、`tests/cpu_dispatch.rs`、`tests/gpu.rs`、`tests/gpu_spirv.rs` | `simd.mjs`、`wasm_simd.mjs`、`cpu_dispatch.mjs`、`gpu.mjs`、`gpu_runtime.mjs`、`gpu_vulkan.mjs` |
 | 行列・テンソル | `tests/matrix.rs`、`tests/matrix_views.rs`、`tests/tensor.rs` | `features.mjs matrix`・`matrix_view`・`tensor`、`benchmarks/run-matrix.mjs` |
+| フーリエ変換・多項式 | `tests/fft.rs`、`tests/polynomial.rs`（期待値は定義どおりの総和と NumPy。`tests/fft_polynomial_reference.py` が出す） | `features.mjs fft`・`polynomial` |
 | ネットワーク | `tests/net_api.rs` | `net.mjs`、`net_wasm.mjs`（Node.js 24） |
 | host ABI・import | `tests/host_abi.rs`、`tests/host_imports.rs`、`tests/c_layout.rs`、`tests/c_layout_by_value.rs`（`@c_layout` の値渡し。W36） | `host_imports.mjs`、`c_layout.mjs`、`c_layout_by_value.mjs`（C のホストでの実行と、全 target の `declare` の Clang との突き合わせ） |
 | `MainThread`・`extern type main`・共有の `Anchor`（M09） | `tests/main_thread.rs`、`tests/main_thread_handles.rs`、`tests/shared_anchor.rs` | `main_thread.mjs`（arm64 の macOS だけ。CFRunLoop の上の場面、C のホスト `tests/main_thread_host.c` の pthread、ランタイムを C から直接動かす `tests/main_thread_runtime.c`（順序・境界の終わり・投入ごとのメモリが残らないこと。ASan・UBSan のビルドでも）。ほかのホストでは理由を出して飛ばす）、`features.mjs anchor`（共有の `Anchor`。native と既定の WebAssembly）、`tzroutine_runtime.mjs anchor_shared`（読み取り中の共有の `Anchor` を別のスレッドが退かせる） |

@@ -7,9 +7,9 @@
 | 規模 | L（2 Phase: Phase 1 `std/Fft.tz`、Phase 2 `std/Polynomial.tz`） |
 | 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), [NC08](_completed/NC08-linalg-core-and-einsum.md), ([NC15](_completed/NC15-parallel-borrowed-chunk-input.md)) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（Phase 1・1b・2。2026-11-28） |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
-| 承認 | 要承認（新規 opt-in std モジュール `Fft`・`Polynomial` の `RESERVED_MODULES` 登録。決定事項 D1 が要承認、ほかは既定案） |
+| 承認 | 承認済み（委任による決定、2026-11-28。新規 opt-in std モジュール `Fft`・`Polynomial` の `RESERVED_MODULES` 登録（D1）。起票時は要承認。ほかは既定案） |
 | 手本にする既存実装 | `std/Complex.tz`（NC01）、`std/Tensor.tz`（NC02）、`std/Linalg.tz`（NC08） |
 | 主な影響ファイル | `std/Fft.tz`（新規）、`std/Polynomial.tz`（新規）、`src/stdlib.rs`、`tests/fft.rs`（新規）、`tests/polynomial.rs`（新規）、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/features.mjs`、`tests/fixtures/effects_sweep/`、`tests/fixtures/`、`vsc/src/core.ts`、`_tsuzuri/language-reference/built-in-types-and-modules/fft.md`（新規）、`_tsuzuri/language-reference/built-in-types-and-modules/polynomial.md`（新規）、`_tsuzuri/language-reference/index.md`、`docs/language.md` |
 
@@ -152,6 +152,11 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 
 ## 決定事項
 
-- **D1（要承認）**: opt-in std モジュール `std/Fft.tz`・`std/Polynomial.tz` を追加し、`RESERVED_MODULES` に `"Fft"`・`"Polynomial"` を登録する（`D-55` へ反映）。
+- **D1（委任による決定、2026-11-28。起票時は要承認）**: opt-in std モジュール `std/Fft.tz`・`std/Polynomial.tz` を追加し、`RESERVED_MODULES` に `"Fft"`・`"Polynomial"` を登録する（`D-55` へ反映）。利用者の指示「判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」に基づき、チケットの案のとおりに決めた。
 - **D2（既定案）**: 長さ 0 の変換軸は NumPy と同じくエラーとし、`Result.Error (EmptyAxis axis)` で安全に返す。
 - **D3（既定案）**: `Polynomial` の係数順は NumPy 現行標準（`numpy.polynomial`）の昇べき順（`c[0]` が定数項）を採用する。
+- **D4（委任による決定、2026-11-28）**: 計画の向きの型は `union Direction = Direct | Inverse` とする。採らない案: `Forward | Inverse`（`Norm.Forward` と同じモジュールで同じケース名は `E1001`）、`bool`（呼び出しの位置で意味が読めない）。
+- **D5（委任による決定、2026-11-28）**: 確保なしの実行は、排他スライスを取る `execute_into plan input work output` と `execute_in_place plan work data` の 2 つとし、作業バッファの長さは `plan_work_length` で引く。採らない案: `Tensor.Mut` を取る形（`Tensor` の外から形とストライドを確保なしで読めない）、作業バッファを計画の中に持つ形（計画が可変になり、スレッドで共有できない）。
+- **D6（委任による決定、2026-11-28）**: 変換の核は基数 4・2・3・5 の反復の混合基数 1 つとし、Bluestein の畳み込み長は `2n - 1` 以上の最小の `2^a 3^b 5^c` とする。Phase 1b の「実測して採用」は、`docs/benchmarks.md` の計測（基数 4: 1.33〜1.41 倍、混合基数: 5.1〜11 倍、滑らかな畳み込み長: 1.58〜1.83 倍）で採用と決めた。Stockham 形・SoA・基数 7 以上は入れない（測っていない）。
+- **D7（委任による決定、2026-11-28）**: `NdOptions.axes` に同じ軸を 2 回書くのは誤り（`RepeatedAxis`）とする。NumPy は同じ軸を 2 回変換するが、書き間違いと区別できないので受け付けない。
+- **D8（委任による決定、2026-11-28）**: `Polynomial` の係数は配列 `['a]`、データは `Tensor.View<'a>`、要素型は `Elementary<'a>` とし、`add`・`sub`・`mul` は最高次の側の 0 を取り除かない（`trim` で明示する）。採らない案: 係数も `Tensor`（1 次元の小さい列に形とストライドを持たせる利点がない）、NumPy と同じ自動の取り除き（結果の長さが値で変わる）。

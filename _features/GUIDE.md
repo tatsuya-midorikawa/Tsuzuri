@@ -1866,6 +1866,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 | CLI・manifest | `--framework`・`-F`・`--rpath`・`[native] frameworks`/`framework_search`/`rpath`・`[macos] min_version` | M20・M17 | macOS の framework リンク入力・rpath・最低 OS 版（既定 `12.0`） |
 | std・型 | `FnPtr`・`Anchor`・`ZString`・`ZUtf8String`・`Linalg`、`Env.os_version`、`IO.Error.Unavailable` | W08・W20・W22・W23・M06・M17・NC08 | 静的 C ABI 関数ポインタ、コールバック状態アンカー、NUL 終端 UTF-16/UTF-8 文字列、線形代数・縮約、実行時 OS 版問い合わせ、欠落ストリームの IO エラー |
 | CLI・manifest・std | `--emit app`、`[macos]` の `bundle_id`・`name`・`version`・`build`・`icon`・`resources`・`embed`・`info_plist`・`category`・`ui_element`、`Env.executable_path` | M15 | macOS のアプリケーションバンドル（ad-hoc の署名、`.app.dSYM`）と、実行ファイルの絶対パス。kind は `macos_bundle_id_missing`・`macos_bundle_conflict`（`E2000`）、`macos_bundle_input_invalid`（`E2001`）、`app_output_not_owned`（`E2003`） |
+| std | `Fft`・`Polynomial`（opt-in の std モジュール）、`Fft.Norm`・`Fft.Direction`・`Fft.Options`・`Fft.NdOptions`・`Fft.Plan`・`Fft.Error`・`Polynomial.Error` | NC09 | 任意長の高速フーリエ変換（計画と並列バッチを含む 48 関数）と、多項式の演算・最小二乗フィッティング・求根（23 関数）。`RESERVED_MODULES` へ 2 個足す。委任による決定（2026-11-28） |
 | 予約語 | なし | — | 第3期は予約語を足さない（文脈キーワードと属性だけ） |
 
 **D-55 の追補（各チケットの確定。2026-10-18）**: 次は、チケットを書く間に決まった名前。**診断コードの kind・`E2000` の kind はチケットが G23 の登録簿へ足す**（コード自体は上の表だけ）。同じサブコマンドのフラグの名前が衝突しないように、ここに集める。
@@ -2039,6 +2040,7 @@ Phase 2 以降の仮の名前（B08 の opt-in フラグ・WASM import、E14 の
 - **NumPy との意図的な意味差の集約**: `remainder`（NumPy は床剰余、Tsuzuri は `floor_mod` と `ieee_remainder` に分離）、`round`（Tsuzuri は 0 から遠い側、NumPy 相当は `round_even`）、`sign(-0.0)`、`ddof >= n` の `NaN`、`==` のスカラー `bool` 契約、乱数列の非互換などは `_tsuzuri/language-reference/built-in-types-and-modules/numpy-migration.md`（NC07 で新設、後続チケットで追記）に一元記載する。
 - **1 チケット 1 PR**（XL の NC08・NC13 は Phase ごとに 1 PR）。推奨順は Phase 1（NC01・NC02・NC03・NC04・NC15）→ Phase 2（NC05・NC06・NC07）→ Phase 3（NC08・NC09・NC10）→ Phase 4（NC11・NC12・NC13・NC14）。
 - **D-66 で改訂（2026-11-25）**: 言語拡張 ② の「パーサー文法を増やさない」と、[NC03](_completed/NC03-borrowed-arithmetic-operators.md) の D2（多引数クラスを入れず、スカラーとの演算はライブラリ関数で担う）を、[D-66](#d-66-自然な添字範囲演算子d-65-の改訂a37nc16nc20) で範囲の形・添字の角括弧のカンマ・演算子の拡張インスタンス・複合代入に限って改めた。上の「採用しないもの」は D-66 でもそのまま保つ。
+- **委任による決定（2026-11-28、NC09）**: 利用者は優先順位の高い 3 件（NC09・NC10・NC11）の実装を依頼し、「実装完了までに複数フェーズある場合には、すべてのフェーズを完了させること」「現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して最新化して」「判断が必要なものがあれば、あなたが考える最高の選択肢で実装することを常に許可します」と指示した。この委任に基づき、NC09 の D1（opt-in std モジュール `Fft`・`Polynomial` の追加と `RESERVED_MODULES` への登録）を承認済みとして扱い、上の D-55 の表に登録した。起票後の HEAD との食い違いは [NC09](_completed/NC09-fft-and-polynomial.md) の「方針の最新化（2026-11-28）」で改めた: 計画の向きは `Fft.Direction.Direct`・`Inverse`（1 つのモジュールの共用体は `Norm.Forward` と同じケース名を持てない）、`execute_into`・`execute_in_place` は排他スライスを取る通常の `def`、変換の核は基数 4・2・3・5 の混合基数 1 つ（Phase 1b の混合基数と `{2, 3, 5}` 滑らか数の畳み込み長は計測のうえ採用）、並列版は `fft_parallel`・`ifft_parallel`・`fft2_parallel`・`ifft2_parallel`、`Polynomial` の係数は昇べきの配列 `['a]`。利用者向けのページは別リポジトリ Tsuzuri-Reference の `docs/stdlib/numeric/fft.md`・`polynomial.md`。
 
 ### D-66 自然な添字・範囲・演算子（D-65 の改訂。A37・NC16〜NC20）
 
