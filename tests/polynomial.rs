@@ -1,5 +1,5 @@
 //! NC09: `Polynomial` against independent references. Every test writes a project of one `Main.tz` (edition 2028) and
-//! runs `tsuzuri test` on it. The expectations are the definition (an `O(n^2)` sum written in the test) and the
+//! runs `tsuzuri test` on it. The expectations are closed forms and identities written in the tests and the
 //! values that NumPy 2.5.1 gives; `python3 tests/fft_polynomial_reference.py polynomial` prints the block between
 //! `reference:begin` and `reference:end`.
 

@@ -53,7 +53,7 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 | U5 | 2 のべき乗は反復 Radix-2、Phase 1b で混合基数を「段階追加」 | 利用者は全 Phase の完遂を指示した | 核を 1 つにする: 桁反転の置換と段ごとのバタフライを持つ反復の混合基数 DIT（基数 4・2・3・5）。基数が 2 だけならそのまま反復 Radix-2 Cooley-Tukey なので、Phase 1a の経路は因数分解の方針を変えた同じ核で測る。基数 4 の採否と、Bluestein の畳み込み長（2 のべき乗か `{2, 3, 5}` 滑らか数か）は release ビルドの同条件の計測で決め、数値を「実装と検証」に書く |
 | U6 | 回転因子は `'a` の `Math.cos`／`Math.sin`、S1 で直接角度計算へ統一 | `Math.cos`／`Math.sin` の `f64` は native・WASM・`-O0`・`-O3` でビットが同じ。`f64 as 'a` は 1 回の正しい丸め | 最初から直接角度で作る。1 の $n$ 乗根は整数で 8 分円へ畳んでから `f64` で `Math.cos`／`Math.sin` を 1 回ずつ呼び、`'a` へ丸める（`f32` でも位相の誤差は `f64` の 1 ulp と 1 回の丸めだけ。$k = n/4$ などの軸上の値は厳密に 0・±1）。反復乗算は使わない。Bluestein の $k^2 \bmod 2n$ は `i128` で厳密に計算する |
 | U7 | `fftshift`・`fftn` の軸指定の書き方が未定 | D-65 の「最頻出の短縮名（`*_axis`）と設定レコード（`*_with`）」。NC07 の `Tensor.AxesOptions` | 1D は `*_axis` と `Fft.Options { axis, n, norm }` の `*_with`。ND は `Fft.NdOptions { axes, shape, norm }` の `*_with`（`fft2` は最後の 2 軸、`fftn` は全軸）。`fftshift_axes`・`ifftshift_axes` は軸の配列を取る。既定値の記録 `Fft.options()`・`Fft.nd_options()` を足す |
-| U8 | 誤りは `EmptyAxis axis` だけ | 軸・長さ・形の誤りが要る | `union Error = EmptyAxis of i64 \| InvalidAxis of (i64 * i64) \| RepeatedAxis of i64 \| InvalidLength of i64 \| LengthMismatch of (i64 * i64) \| ShapeMismatch of ([i64] * [i64])`（`deriving (Eq)`、`Display`）。長さ 0 の変換軸は D2 のとおり `EmptyAxis` |
+| U8 | 誤りは `EmptyAxis axis` だけ | 軸・長さ・形の誤りが要る | `union Error = EmptyAxis of i64 \| InvalidAxis of (i64 * i64) \| RepeatedAxis of i64 \| InvalidLength of i64 \| LengthMismatch of (i64 * i64)`（`deriving (Eq)`、`Display`）。長さ 0 の変換軸は D2 のとおり `EmptyAxis` |
 | U9 | `fft_parallel`・`fft2_parallel` だけ | 逆変換も同じ形で要る | `fft_parallel`・`ifft_parallel`（最後の軸のバッチ）と `fft2_parallel`・`ifft2_parallel`（最後の 2 軸）。直列の `fft`／`fft2` と同じ線の計算を同じ順（最後の軸が先）で呼ぶので、結果はビットまで同じ。WASM は NC15 の逐次フォールバック |
 | U10 | `Polynomial` の係数の型が未定（`MODULES` の案は `Tensor.View`・`Tensor`・`[]`） | `Linalg.lstsq`・`Linalg.eigvals` は `Tensor.View` を取り、`Elementary<'a>`（`eigvals` は `Neg<'a>` も）を要る | 係数は昇べきの配列 `['a]`（`Polynomial.eval 2.0 [1.0, 2.0, 3.0]`）、標本点とデータは `Tensor.View<'a>`、根は `[Complex<'a>]`。制約はどの関数も `Elementary<'a>`（`f32`／`f64`。`roots` は `Neg<'a>` も）。失敗は `Result<_, Polynomial.Error>`（`ZeroDivisor`・`InvalidDegree`・`InvalidRank`・`ShapeMismatch`・`EmptyData`・`Linalg of Linalg.Error`）。負の階数・負のべきは事前条件の違反としてトラップ |
 | U11 | `MODULES` の登録: `Fft` は `subject(&["Tensor.View", "Tensor"])` | `execute_into` は排他スライスが最後、`Plan` を読む関数がある | `("Fft", subject(&["Tensor.View", "Tensor", "Plan", "[]"]))`、`("Polynomial", subject(&["Tensor.View", "Tensor", "[]"]))` |
@@ -160,3 +160,48 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 - **D6（委任による決定、2026-11-28）**: 変換の核は基数 4・2・3・5 の反復の混合基数 1 つとし、Bluestein の畳み込み長は `2n - 1` 以上の最小の `2^a 3^b 5^c` とする。Phase 1b の「実測して採用」は、`docs/benchmarks.md` の計測（基数 4: 1.33〜1.41 倍、混合基数: 5.1〜11 倍、滑らかな畳み込み長: 1.58〜1.83 倍）で採用と決めた。Stockham 形・SoA・基数 7 以上は入れない（測っていない）。
 - **D7（委任による決定、2026-11-28）**: `NdOptions.axes` に同じ軸を 2 回書くのは誤り（`RepeatedAxis`）とする。NumPy は同じ軸を 2 回変換するが、書き間違いと区別できないので受け付けない。
 - **D8（委任による決定、2026-11-28）**: `Polynomial` の係数は配列 `['a]`、データは `Tensor.View<'a>`、要素型は `Elementary<'a>` とし、`add`・`sub`・`mul` は最高次の側の 0 を取り除かない（`trim` で明示する）。採らない案: 係数も `Tensor`（1 次元の小さい列に形とストライドを持たせる利点がない）、NumPy と同じ自動の取り除き（結果の長さが値で変わる）。
+
+## 実装と検証（2026-11-28）
+
+### 実装した Phase
+
+- **Phase 1（`std/Fft.tz`、48 公開関数）**: 複素 1 次元（`fft`・`fft_axis`・`fft_with`・`ifft`・`ifft_axis`・`ifft_with`）、実数 1 次元（`rfft`・`rfft_axis`・`rfft_with`・`irfft`・`irfft_len`・`irfft_with`）、エルミート（`hfft`・`hfft_len`・`hfft_with`・`ihfft`・`ihfft_with`）、2 次元・N 次元（`fft2`・`ifft2`・`rfft2`・`irfft2`・`fftn`・`ifftn`・`rfftn`・`irfftn`・`fftn_with`・`ifftn_with`・`rfftn_with`・`irfftn_with`）、補助（`fftfreq`・`rfftfreq`・`fftshift`・`ifftshift`・`fftshift_axes`・`ifftshift_axes`・`options`・`nd_options`）、計画（`plan`・`plan_with`・`plan_length`・`plan_work_length`・`execute`・`execute_into`・`execute_in_place`）。型は `Norm`・`Direction`・`Options`・`NdOptions`・`Plan<'a>`（不透明）・`Error`。
+- **Phase 1b**: 基数 4・2・3・5 の混合基数（核は 1 つ。`load`・`kernel`・`store`）、Bluestein の畳み込み長の `2^a 3^b 5^c` 化、`fft_parallel`・`ifft_parallel`・`fft2_parallel`・`ifft2_parallel`（`Parallel.for_each_chunk_with`、1 チャンク 16384 要素以上）。計測は `docs/benchmarks.md` の「Fft の変換の核と並列バッチ」（`node benchmarks/run-fft.mjs`）。
+- **Phase 2（`std/Polynomial.tz`、23 公開関数）**: `trim`・`eval`・`eval_complex`・`eval_tensor`・`add`・`sub`・`mul`・`divmod`・`pow`・`deriv`・`deriv_n`・`integ`・`integ_const`・`from_roots`・`from_roots_complex`・`vander`・`fit`・`fit_weighted`・`roots`・`cheb_eval`・`cheb_fit`・`leg_eval`・`leg_fit`。型は `Error`。
+- 登録: `src/stdlib.rs`（`SOURCES`・`RESERVED_MODULES` 83 → 85・`OPT_IN`（`Fft` は `Complex`・`Tensor`、`Polynomial` は `Complex`・`Tensor`・`Linalg`）・`opaque_record` に `Fft.Plan`）、`tests/std_argument_order.rs` の `MODULES`、`tests/std_examples.rs` の `FLOORS`（48 と 23。どの公開関数にも例がある）、`tests/fixtures/effects_sweep/Main.tz`（`spectra`・`polynomials`）、`vsc/src/core.ts`、`scripts/check-cli-docs.mjs` の `STD_PAGES`。
+
+### チケットから外れた判断
+
+「方針の最新化（2026-11-28）」の U1〜U12 と決定事項 D4〜D8 のとおり。ほかに実装の途中で決めたこと:
+
+- `Fft.Options`・`Fft.NdOptions` は `deriving (Eq)` を持たない（`Maybe<i64>`・`Maybe<[i64]>` に `Eq` の instance がない。`E1025`）。
+- `irfft`・`hfft` は NumPy と同じく、第 0 項と（偶数長の）第 `n / 2` 項の虚部を読まない。`fftfreq`・`rfftfreq` は `n <= 0` でトラップする（結果の型が `Tensor<f64>` で、`Result` ではない）。
+- `fftshift` の 4 関数は `Copy<'a>` を要る（`Tensor.roll` と同じ。`string` のテンソルは渡せない）。
+- 実数の ND の逆変換（`irfft2`・`irfftn`・`irfftn_with`）で形を与えないとき、最後の軸の実数の個数は `2 (m - 1)`。軸の一覧が空（階数 0、`axes: Maybe.Some []`）の実数の ND 変換は `LengthMismatch (1, 0)`。
+- `Polynomial.integ` は常に係数を 1 個増やす（NumPy は `[0]` の積分を `[0]` のままにする）。`roots` の重根の精度は重複度 m でおよそ ε^(1/m)（テストは 2 重根を 1e-6 で確かめる）。
+- 既存のコンパイラの振る舞いへの対処: 1 つの代入だけを持ち終了条件がデータに依る `while` に、コンパイラは `llvm.loop.unroll.enable` を付け、LLVM が展開できないと Clang が `loop not unrolled` の警告を `build`・`run` の標準エラーへ出す（利用者のコードでも起きる。このチケットでは直していない）。`std/Fft.tz` はそうした反復を再帰（`doubled_to`）と回数の決まった `for` で書き、`-O3` の native・wasm32 のビルドで警告が出ないことを確かめた。
+- `pack`（窓を密なバッファへ写す）は、形が同じなら `Tensor.to_tensor` の連続の経路（`Array.sub`）を使う。`*_parallel` は軸・長さ・スケーリングの指定を持たない（`Backward` だけ）。
+- 性能の再現用に `benchmarks/run-fft.mjs`・`benchmarks/fft/Main.tz` を足した（チケットの影響ファイルにはない）。README の機能一覧・予約名の表・テストの表に 1 行ずつ足した。
+
+### 検証（macOS arm64、Apple M1 Max、dev ビルド。機械はほかの 2 つの作業ツリーのビルドとテストで高負荷だった）
+
+- T0: `cargo fmt --all -- --check`、`cargo clippy --all-targets --locked -- -D warnings` は通過。
+- T1: `node scripts/slot.mjs -- cargo nextest run --locked` は 3813 件を実行し、3811 件が通過、2 件が失敗、4 件が skip（基準の 3800 件 + `tests/fft.rs` 9 件 + `tests/polynomial.rs` 4 件）。失敗した 2 件は `llvm::split::tests::splits_the_programs_of_the_repository_1_of_3`・`_2_of_3` で、原因はテストの補助関数（`src/llvm_split.rs` の `executable_ir_with`）がトラップの source map に利用者のソースだけを渡していたこと。`def main` を持つ `tests/fixtures/effects_sweep` と `benchmarks/fft` が std の中の並列区間（`Fft.fft_parallel` の `Parallel.for_each_chunk_with`）に届くと、その位置が std のソースを指し、`E2000 invalid_trap_source_map` になった（CLI の `build --trap-info` は std のソースも渡すので通る）。補助関数が `stdlib::sources_for` の std のソースも渡すように直し、`cargo test --locked --lib splits_the_programs_of_the_repository` の 4 件と `cargo nextest run --locked --lib` の 792 件（skip 1）が通過。直したあとの全体の T1 は流し直していない（変えたのはテストの補助関数だけ）。
+- `tests/fft.rs` 9 件（22 個の Tsuzuri のテスト: 41 種類の長さの素朴な DFT との照合、Parseval、`f32` と `f64` の照合（8209 の素数長を含む）、NumPy 2.5.1 の値（スケーリング 3 種・切り詰めと 0 埋め・軸・`rfft`／`irfft`／`hfft`／`ihfft`・2D／ND・`fftfreq`・シフト）、窓（逆順・並べ替え）、誤り、計画（`fft` と同じビット、確保 0 回）、並列と直列の一致）と `tests/polynomial.rs` 4 件（10 個のテスト）は通過。
+- E2E: `node tests/features.mjs target/debug/tsuzuri fft`（212 ケース）・`polynomial`（124 ケース）は native と wasm32 の `-O0`・`-O3` で通過（WASM の import なし、`live == 0`、IR に `fmuladd`・fast-math の旗なし）。影響のない確認として `tensor`（42）・`tensor_operators`（4）・`matrix`（529）・`parallel`（39）も通過。
+- ビットの一致: 変換のチェックサム 84 個（`fft`・`ifft`・`rfft`・`irfft`・`f32` の `fft`・`fft2` × 14 種類の長さ）が、native `-O0`・`-O3` と wasm32 `-O0`・`-O3` の 4 つで同じビットだった（手元で 1 回確かめた。CI には入れていない）。
+- `tsuzuri test --doc std`: `-O0`・`-O3` とも 1421 件が通過（`Fft` 48 件、`Polynomial` 23 件）。`-O3` の全体の実行は `loop not unrolled` の警告を 19 個出すが、`--filter Fft`・`--filter Polynomial` では 0 個で、ほかの std モジュールの既存の警告である。
+- `-O3` の警告: `tests/fixtures/fft`・`tests/fixtures/polynomial` の `--emit object` と `--target wasm32` のビルドは警告なし。
+- 名指さないプログラムの IR: 基準 `b72bccd0` のコンパイラと、`tests/fixtures/`・`examples/` の `Fft`・`Polynomial` を名指さない全プログラムの `--emit llvm`（native と wasm32、320 個の出力）を比べ、320 個すべてが 1 byte も違わなかった。
+- 文書の検査: `TSUZURI_BIN=target/debug/tsuzuri node scripts/gen-docs.mjs --check`（11 ブロック、古いもの 0）、`node scripts/check-cli-docs.mjs`（4 検査、失敗 0）、`node scripts/check-guide-lite.mjs`（87 参照、失敗 0）、`node scripts/check-links.mjs`（69 リンク、切れ 0）、`node scripts/repo-kb.mjs verify`（fresh）。Tsuzuri-Reference は `node scripts/check-docs.mjs` で 6 ページ（262 リンク、28 例、native の実行 56 回）が通過し、`check-cli-docs.mjs --reference-dir` で `Fft`・`Polynomial` の公開関数の書き漏れは 0。
+- 性能: `node benchmarks/run-fft.mjs target/release/tsuzuri --numpy`（`docs/benchmarks.md`）。
+- **確かめていないこと**: Linux・Windows・x86-64 での実行（CI に任せる）、wasm64、`--allocator host`・`small`、ASan・TSan のビルド、`tests/features.mjs` の全 suite、release ビルドでの T1、静かな機械での性能の絶対値。
+
+### 更新した文書
+
+- このリポジトリ: `docs/language.md`（`### Fft`・`### Polynomial`、予約モジュール名の一覧）、`docs/architecture.md`（`### Fft と Polynomial（NC09）`）、`docs/benchmarks.md`（`## Fft の変換の核と並列バッチ（NC09、2026-11-28）`）、`README.md`（機能一覧・予約名・テストの表）、`_features/GUIDE.md`（D-55 の表の 1 行、D-65 の「委任による決定（2026-11-28、NC09）」）、`_features/README.md`（状態 `done` とリンク）。
+- Tsuzuri-Reference（ブランチ `docs/nc09-fft-polynomial`）: `docs/stdlib/numeric/fft.md`・`docs/stdlib/numeric/polynomial.md`（新規。「引数の順序」の節つき）、`docs/index.md`、`docs/stdlib/conventions.md`、`docs/stdlib/numeric/tensor.md`（相互リンク）、`docs/modules/namespaces-and-modules.md`（予約モジュール名の一覧を `RESERVED_MODULES` から作り直した。漏れていた `ExternAddr`・`MainThread` も入った）。
+
+### 変更したファイル
+
+`std/Fft.tz`（新規）、`std/Polynomial.tz`（新規）、`src/stdlib.rs`、`tests/fft.rs`（新規）、`tests/polynomial.rs`（新規）、`tests/fft_polynomial_reference.py`（新規。NumPy の期待値を出す）、`tests/fft-polynomial-cases.mjs`（新規。JavaScript の参照）、`tests/features.mjs`、`tests/fixtures/fft/`（新規）、`tests/fixtures/polynomial/`（新規）、`tests/fixtures/effects_sweep/Main.tz`、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`src/llvm_split.rs`（テストの補助関数だけ）、`vsc/src/core.ts`、`scripts/check-cli-docs.mjs`、`benchmarks/run-fft.mjs`（新規）、`benchmarks/fft/Main.tz`（新規）、`docs/language.md`、`docs/architecture.md`、`docs/benchmarks.md`、`README.md`、`_features/GUIDE.md`、`_features/README.md`、このチケット。

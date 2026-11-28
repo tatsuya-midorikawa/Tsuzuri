@@ -14,15 +14,14 @@ union Direction =
     deriving (Eq)
 
 /// Errors returned by the transforms (NC09): a transform axis of length 0 (`EmptyAxis axis`), an axis outside
-/// the rank (`InvalidAxis (axis, rank)`), an axis listed twice, a negative length, a length that differs from
-/// what a plan or an option list expects (`LengthMismatch (expected, found)`), and a shape that does not fit.
+/// the rank (`InvalidAxis (axis, rank)`), an axis listed twice, a negative length, and a length that differs
+/// from what a plan, a buffer or an option list expects (`LengthMismatch (expected, found)`).
 union Error =
     | EmptyAxis of i64
     | InvalidAxis of (i64 * i64)
     | RepeatedAxis of i64
     | InvalidLength of i64
     | LengthMismatch of (i64 * i64)
-    | ShapeMismatch of ([i64] * [i64])
     deriving (Eq)
 
 instance Display<Error> {
@@ -33,7 +32,6 @@ instance Display<Error> {
         | Error.RepeatedAxis axis -> $"axis {axis} is listed more than once"
         | Error.InvalidLength length -> $"invalid transform length: {length}"
         | Error.LengthMismatch (expected, found) -> $"length mismatch: expected {expected}, found {found}"
-        | Error.ShapeMismatch (left, right) -> $"shape mismatch: {left} vs {right}"
 }
 
 /// Options of a one-dimensional transform: the axis (negative counts from the end), the transform length

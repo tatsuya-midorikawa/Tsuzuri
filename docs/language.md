@@ -3700,7 +3700,7 @@ Phase 3 として確定反復上限付きの片側 Hestenes-Jacobi `svd`・`svdv
 
 `Fft` は `Tensor` と `Complex` の上に構築された高速フーリエ変換の opt-in 標準モジュール（予約モジュール `Fft`）です。外部の C ライブラリに依存せず、ネイティブと WebAssembly で同じビットの結果を返します（回転因子は `f64` の `Math.cos`・`Math.sin` を 1 回ずつ呼んで要素型へ丸めたもので、反復乗算・`fast-math`・暗黙の FMA は使いません）。
 変換長は任意で、計算量は $O(n \log n)$ です。素因数が 2・3・5 だけの長さは基数 4・2・3・5 の反復の混合基数（桁反転の置換と段ごとのバタフライ）で直接変換し、それ以外の長さは Bluestein のチャープ Z 変換で、$2n - 1$ 以上の最小の $2^a 3^b 5^c$ の長さの畳み込みに置き換えます（チャープの位相 $k^2 \bmod 2n$ は整数で厳密に計算します）。要素型は `Elementary<'a>`（`f32`・`f64`）です。
-失敗はトラップではなく `Result<_, Fft.Error>`（`EmptyAxis axis`・`InvalidAxis (axis, rank)`・`RepeatedAxis axis`・`InvalidLength n`・`LengthMismatch (expected, found)`・`ShapeMismatch`）で返します。長さ 0 の変換軸は NumPy と同じく誤り（`EmptyAxis`）で、変換しない軸の長さが 0 のときは空のテンソルを返します。
+失敗はトラップではなく `Result<_, Fft.Error>`（`EmptyAxis axis`・`InvalidAxis (axis, rank)`・`RepeatedAxis axis`・`InvalidLength n`・`LengthMismatch (expected, found)`）で返します。長さ 0 の変換軸は NumPy と同じく誤り（`EmptyAxis`）で、変換しない軸の長さが 0 のときは空のテンソルを返します。
 スケーリングは `Fft.Norm`（`Backward`: 順変換は 1、逆変換は $1/n$。既定。`Ortho`: どちらも $1/\sqrt{n}$。`Forward`: 順変換が $1/n$）で、$1/n$ は乗算で掛けます。
 
 | 分類 | 関数 |

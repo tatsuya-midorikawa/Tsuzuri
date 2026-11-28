@@ -199,7 +199,6 @@ fn code result =
     | Result.Error (Fft.Error.RepeatedAxis axis) -> 300 + (axis + 5)
     | Result.Error (Fft.Error.InvalidLength length) -> 400 + (length + 50)
     | Result.Error (Fft.Error.LengthMismatch (expected, found)) -> 500 + 10 * expected + found
-    | Result.Error (Fft.Error.ShapeMismatch _) -> 600
 
 export def error_codes :: own i64 -> i64
 fn error_codes which =
