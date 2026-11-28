@@ -4017,7 +4017,7 @@ mod tests {
     fn impure_builtins_are_pinned_by_effect() {
         let by = |effect| count(|facts| facts.effect == Some(effect));
         assert_eq!(by(Effect::Io), 2);
-        assert_eq!(by(Effect::Os), 22);
+        assert_eq!(by(Effect::Os), 23);
         assert_eq!(by(Effect::Net), 7);
         assert_eq!(by(Effect::Task), 17);
         assert_eq!(by(Effect::Atomic), 96);
@@ -4029,13 +4029,13 @@ mod tests {
 
     #[test]
     fn alloc_builtins_are_pinned() {
-        assert_eq!(count(|facts| facts.alloc), 78);
+        assert_eq!(count(|facts| facts.alloc), 79);
     }
 
     #[test]
     fn trap_builtins_are_pinned() {
         assert_eq!(count(|facts| facts.trap), 60);
-        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 28);
+        assert_eq!(count(|facts| facts.exempt_trap.is_some()), 29);
     }
 
     #[test]
