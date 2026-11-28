@@ -259,6 +259,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | F13 | [アロケーターの差し替え・確保統計・freestanding 出力](_completed/F13-custom-allocators.md) | P2 | L | (F11), (E12), (E14) | done |
 | F14 | [構造的な性能表明（確保数のテスト用 API と `bench` の確保数）](_completed/F14-structural-performance-assertions.md) | P1 | L | F13, G18 | done（Phase 1・2・3） |
 | F15 | [逐次と同一の結果を保証するデータ並列（`Monoid` の還元・純粋性・提案だけの自動化）](_completed/F15-sequential-equivalent-data-parallel.md) | P3 | L | (A19), (G22), (G26) | done（全 Phase。`--report parallel` と KG の facts の `parallel`） |
+| F16 | [LLVM が展開できないループに展開ヒント `llvm.loop.unroll.enable` が付き、`build`・`run` で Clang が `loop not unrolled` の警告を出す](F16-unroll-hint-on-loops-llvm-cannot-unroll.md) | P3 | M | – | todo |
 
 ### G. ツール・開発体験
 
@@ -309,6 +310,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | G43 | [VS Code で、開いているファイルのあるプロジェクトのフォルダーを中身から順に消すと、その上のフォルダーが Testing ビューの根として残ることがある](G43-reroot-during-recursive-delete.md) | P3 | S | G40 | todo |
 | G44 | [複数ケースのアクティブパターン（`-> 'T`）の本体が、最初のエラーしか報告しない](_completed/G44-active-pattern-body-recovery.md) | P3 | S | – | done（`infer_active_result` を回復ありで検査し、本体の型のエラーをすべて 1 回で報告する。毒の認識器の節の `E1002` の連鎖は G45、edition 2027 の誤った拒否は A36） |
 | G45 | [毒になった認識器を使う節で、ペイロードの名前が `E1002` の連鎖になる](_completed/G45-poisoned-recognizer-payload-cascade.md) | P3 | S〜M | G44 | done（宣言の引数の数と、部分パターンの結果が `bool` かから決めたペイロードのパターンの名前を、字句から集めてエラー型の値に束縛する。`pattern_alternatives` は通さない） |
+| G46 | [`tsuzuri fmt` が、`if`・`elif` の枝の最後が `else` のない `if` で、その後に `elif` が続くファイルを `E2000` で拒否する](G46-formatter-elif-after-else-less-if.md) | P2 | S | – | todo |
 
 ### TZ. tzroutine（Go の goroutine に相当する並行処理。第4期）
 
@@ -470,6 +472,7 @@ P3の全7件に実装を追加しました。各チケットの初期段階の�
 | 14. 追加（2026-11-24） | 案 C（ハイブリッド）で NumPy 互換の数値計算基盤と最小の汎用言語拡張 2 点（借用演算子・汎用 `Index`）およびゼロコピー並列チャンクを整備する | ① NC01・NC02・NC03・NC04・NC15 → ② NC05・NC06 → NC07 → ③ NC08 → NC09・NC10 → ④ NC11・NC12（W13 後）・NC13・NC14。詳細は [追加チケット（2026-11-24。数値計算基盤と NumPy 互換機能：案 C）](#追加チケット2026-11-24数値計算基盤と-numpy-互換機能案-c) |
 | 15. 追加（2026-11-25） | 自然な添字・範囲・演算子（D-66）: `Index` の借用の不具合を直し、窓を返す添字に `ref` を必須にし、edition 2028 で範囲の構文を一本化して、多次元の角括弧・演算子の拡張インスタンス・複合代入を入れる。委任による決定で、添字の評価順（A38）・フィールドの排他借用（A39）・参照の被演算子（A40）・`Complex` とスカラーの演算子（NC21）・std の複製の除去（PM10）を足した | ① A37 → A38 → NC16（NC03・NC04 を含む最初のリリースの前）、NC17 Phase 1 → ② NC17 Phase 2 → NC18、NC06 →（A40）→ NC19 → NC21、NC20 Phase 1（独立）・A39 → ③ NC20 Phase 2・3 → NC17 Phase 3。PM10（_perfs）は独立。詳細は [追加チケット（2026-11-25。自然な添字・範囲・演算子）](#追加チケット2026-11-25自然な添字範囲演算子) |
 | 16. 追加（2026-11-26） | Tsuzuri だけで macOS のデスクトップアプリを書く（D-67。分岐は 2026-11-26 にすべて推奨の案で承認）: 調査で見つけた 2 つの不具合と文書の誤りを直し、Objective-C の型付きの連携、メインスレッド、framework のリンク、最低 OS 版、`.app`・署名・公証を足す | ① M21・M22・M08（承認不要）→ ② M20 Phase 1・M17・M06 Phase 1・M09 Phase 1（分岐 1 に依らない）、M17 → M15 → M16、M19 → ③ 分岐 1 の後に M01 → M02 → M03、M04・M05・M10・M23 → ④ M07 → M13・M14、M11・M12。M18 は分岐 3 で方針を改めないと決めたので着手しない（blocked）。詳細は [追加チケット（2026-11-26。Tsuzuri だけで macOS のデスクトップアプリを書く）](#追加チケット2026-11-26tsuzuri-だけで-macos-のデスクトップアプリを書く) |
+| 17. 追加（2026-11-28） | NC09〜NC11 の作業中に見つけた既存の不具合を直す | G46、F16（互いに独立）。詳細は [追加チケット（2026-11-28。NC09〜NC11 の作業中に見つけた既存の不具合）](#追加チケット2026-11-28nc09nc11-の作業中に見つけた既存の不具合) |
 
 ## 依存関係図
 
@@ -1399,3 +1402,19 @@ graph LR
   M02 --> M23
   M23 -.-> M07
 ```
+
+## 追加チケット（2026-11-28。NC09〜NC11 の作業中に見つけた既存の不具合）
+
+NC09・NC10・NC11 の実装中（PR #153）に見つけ、その PR では書き方を変えて避けた既存の不具合を、`main` の `7252006b` で再現してから起票しました。
+どちらも言語の意味を変えず、承認は要りません。再現の手順と結果、原因のコード参照は各チケットの「現状」にあります。
+
+| チケット | 種別 | 概要 |
+| --- | --- | --- |
+| [G46](G46-formatter-elif-after-else-less-if.md) | 不具合 | `if`／`elif` の枝の最後の文が `else` のない `if`（`if let` を含む）で、その直後が外側の `elif` だと、`tsuzuri fmt` が `E2000`（`formatter would change program semantics`）でファイル全体を拒否する。直後が `else` なら通る。`else`・`elif` の持ち主の決め方（`Hints::else_owners`）を直す。原因は候補で、確かめていない |
+| [F16](F16-unroll-hint-on-loops-llvm-cannot-unroll.md) | 不具合 | 代入が 1 つの `while`、自己末尾呼び出しの reduction、境界検査の残る添字の `for` に `llvm.loop.unroll.enable` が付き、LLVM が展開できないと Clang が `loop not unrolled` を標準エラーへ出す（既定の `-O3` の `build`・`run`。`tsuzuri test --doc std -O3` では 40 行）。先にヒントの効果を測り、効果が無ければヒントをやめる |
+
+### 進め方
+
+- G46 と F16 は互いに独立で、順を問わない。
+- F16 は計測（手順 1）が先で、その結果でヒントをやめるか条件を狭めるかが決まる。`benchmarks/` の 19 個のうち 9 個のプログラムがヒントを持つ。
+- 同じ作業で見つけたもののうち、Tsuzuri-Reference の網羅検査の未同期（`Linalg` のページ、`Tensor` の 140 関数、`ExternAddr`、`ZUtf8String`、`W1011`、`--framework`・`--rpath`）は、`_features/` のチケットではなく Tsuzuri-Reference の側の作業なので起票していません（Tsuzuri-Reference の PR #5 の説明に一覧があります）。
