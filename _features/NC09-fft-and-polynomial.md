@@ -40,6 +40,25 @@ NumPy の中核サブモジュールである `numpy.fft` と `numpy.polynomial`
 - **S1** Bluestein アルゴリズムのパディング長や回転因子の精度誤差が $O(N \epsilon)$ を大きく超える場合、回転因子計算を `Math.cos`/`Math.sin` の直接角度計算（反復乗算による誤差蓄積を避ける）に統一する。
 - **S2** GUIDE-LITE §9 の共通の条件。
 
+## 方針の最新化（2026-11-28）
+
+起票（HEAD `27069465`、2026-11-24）の後に A37・A38・NC16〜NC21・NS07・edition 2028 の範囲・M 系が入った。着手の前に HEAD `b72bccd0` と照らし、下のとおり方針を改めた。下の表が、この文書のほかの節より優先する。利用者は「現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して最新化して」「判断が必要なものは最高の選択肢で実装することを常に許可」と指示しており、決定はその委任による。
+
+| # | チケットの記述 | HEAD の事実 | 改めた方針 |
+| --- | --- | --- | --- |
+| U1 | 文書は `_tsuzuri/language-reference/built-in-types-and-modules/fft.md`・`polynomial.md`・`index.md` | 利用者向けの日本語リファレンスは別リポジトリ `Tsuzuri-Reference` の `docs/stdlib/...` へ移った（PR #147）。`_tsuzuri/` はもうない | ページは `Tsuzuri-Reference` の `docs/stdlib/numeric/fft.md`・`polynomial.md`（新規）。`docs/index.md`・`docs/stdlib/conventions.md`・`docs/stdlib/numeric/tensor.md` の関連箇所を直す。`scripts/check-cli-docs.mjs` の `STD_PAGES` に 2 行足す（既定の `stdlib/fft.md` ではないため）。このリポジトリは `docs/language.md` に `### Fft`・`### Polynomial` を足す |
+| U2 | `src/stdlib.rs:843` の件数、`uses` の行番号 | `RESERVED_MODULES` は 83 個で、検査は `reserves_the_d07_table`（行番号は変わった） | 現在値から +2（`Fft`・`Polynomial`）。行番号は使わない |
+| U3 | `plan :: own i64 -> own Direction -> …` の `Direction` と、`Norm = Backward \| Ortho \| Forward` | 1 つのモジュールの 2 つの共用体は同じケース名を持てない（`E1001: duplicate or reserved name 'Forward'`） | `union Direction = Direct \| Inverse`（順変換・逆変換）。`Norm` は NumPy の名前のまま |
+| U4 | `execute_into`（排他出力と作業バッファを渡して確保 0 回） | `Tensor.Mut` は `Tensor` の外から形・ストライドを読めず（`freeze` は確保する）、`pure def` は `ref mut` を取れない（`E1029`） | `execute_into :: ref Plan<'a> -> ref [Complex<'a>] -> ref mut [Complex<'a>..] -> ref mut [Complex<'a>..] -> Result<unit, Error>`（入力・作業・出力の順。書き込む出力が最後: D-59）と、その場で変換する `execute_in_place :: ref Plan<'a> -> ref mut [Complex<'a>..] -> ref mut [Complex<'a>..] -> Result<unit, Error>`（作業・データの順）を、排他スライスの通常の `def` にする。`Parallel.for_each_chunk_with` のチャンクと `Tensor.as_slice_mut` がそのまま渡せる。作業バッファの長さは `plan_work_length`。`plan`・`plan_with`・`execute` と、`ref mut` を取らない変換はすべて `pure def` |
+| U5 | 2 のべき乗は反復 Radix-2、Phase 1b で混合基数を「段階追加」 | 利用者は全 Phase の完遂を指示した | 核を 1 つにする: 桁反転の置換と段ごとのバタフライを持つ反復の混合基数 DIT（基数 4・2・3・5）。基数が 2 だけならそのまま反復 Radix-2 Cooley-Tukey なので、Phase 1a の経路は因数分解の方針を変えた同じ核で測る。基数 4 の採否と、Bluestein の畳み込み長（2 のべき乗か `{2, 3, 5}` 滑らか数か）は release ビルドの同条件の計測で決め、数値を「実装と検証」に書く |
+| U6 | 回転因子は `'a` の `Math.cos`／`Math.sin`、S1 で直接角度計算へ統一 | `Math.cos`／`Math.sin` の `f64` は native・WASM・`-O0`・`-O3` でビットが同じ。`f64 as 'a` は 1 回の正しい丸め | 最初から直接角度で作る。1 の $n$ 乗根は整数で 8 分円へ畳んでから `f64` で `Math.cos`／`Math.sin` を 1 回ずつ呼び、`'a` へ丸める（`f32` でも位相の誤差は `f64` の 1 ulp と 1 回の丸めだけ。$k = n/4$ などの軸上の値は厳密に 0・±1）。反復乗算は使わない。Bluestein の $k^2 \bmod 2n$ は `i128` で厳密に計算する |
+| U7 | `fftshift`・`fftn` の軸指定の書き方が未定 | D-65 の「最頻出の短縮名（`*_axis`）と設定レコード（`*_with`）」。NC07 の `Tensor.AxesOptions` | 1D は `*_axis` と `Fft.Options { axis, n, norm }` の `*_with`。ND は `Fft.NdOptions { axes, shape, norm }` の `*_with`（`fft2` は最後の 2 軸、`fftn` は全軸）。`fftshift_axes`・`ifftshift_axes` は軸の配列を取る。既定値の記録 `Fft.options()`・`Fft.nd_options()` を足す |
+| U8 | 誤りは `EmptyAxis axis` だけ | 軸・長さ・形の誤りが要る | `union Error = EmptyAxis of i64 \| InvalidAxis of (i64 * i64) \| RepeatedAxis of i64 \| InvalidLength of i64 \| LengthMismatch of (i64 * i64) \| ShapeMismatch of ([i64] * [i64])`（`deriving (Eq)`、`Display`）。長さ 0 の変換軸は D2 のとおり `EmptyAxis` |
+| U9 | `fft_parallel`・`fft2_parallel` だけ | 逆変換も同じ形で要る | `fft_parallel`・`ifft_parallel`（最後の軸のバッチ）と `fft2_parallel`・`ifft2_parallel`（最後の 2 軸）。直列の `fft`／`fft2` と同じ線の計算を同じ順（最後の軸が先）で呼ぶので、結果はビットまで同じ。WASM は NC15 の逐次フォールバック |
+| U10 | `Polynomial` の係数の型が未定（`MODULES` の案は `Tensor.View`・`Tensor`・`[]`） | `Linalg.lstsq`・`Linalg.eigvals` は `Tensor.View` を取り、`Elementary<'a>`（`eigvals` は `Neg<'a>` も）を要る | 係数は昇べきの配列 `['a]`（`Polynomial.eval 2.0 [1.0, 2.0, 3.0]`）、標本点とデータは `Tensor.View<'a>`、根は `[Complex<'a>]`。制約はどの関数も `Elementary<'a>`（`f32`／`f64`。`roots` は `Neg<'a>` も）。失敗は `Result<_, Polynomial.Error>`（`ZeroDivisor`・`InvalidDegree`・`InvalidRank`・`ShapeMismatch`・`EmptyData`・`Linalg of Linalg.Error`）。負の階数・負のべきは事前条件の違反としてトラップ |
+| U11 | `MODULES` の登録: `Fft` は `subject(&["Tensor.View", "Tensor"])` | `execute_into` は排他スライスが最後、`Plan` を読む関数がある | `("Fft", subject(&["Tensor.View", "Tensor", "Plan", "[]"]))`、`("Polynomial", subject(&["Tensor.View", "Tensor", "[]"]))` |
+| U12 | `tests/fft.rs`・`tests/polynomial.rs` の形 | `tests/linalg.rs` は一時ディレクトリの edition 2028 のプロジェクトを `tsuzuri test` で走らせる | 同じ形。期待値は Tsuzuri のテストの中の素朴な $O(N^2)$ DFT と、NumPy 2.5.1 が出した値（生成スクリプトはテストの注釈に書く）。native／WASM の `-O0`／`-O3` は `tests/features.mjs` の suite `fft`・`polynomial` |
+
 ## 現状（HEAD `27069465` で確認）
 
 - FFT・多項式モジュールは未存在、`RESERVED_MODULES` に未登録。
