@@ -29,6 +29,57 @@
 - 触ってはいけない: 既定 WASM のインポートなし（Phase 1 `TensorCodec` は一切の OS/WASM インポートを要しない）。`TensorCodec`/`TensorIO` を名指さないプログラムの IR。
 - 完了の見分け方: Python/NumPy の `np.save`・`np.savez`・`np.savetxt` で書き出したファイルを Tsuzuri の `TensorCodec`/`TensorIO` でそのまま読み込め、逆に Tsuzuri で書き出したファイルを Python/NumPy の `np.load` で無修正に読み込める。
 
+## 方針の最新化（2026-11-28）
+
+起票（2026-11-24、HEAD `27069465`）の後に入った変更（W11・W24・NS07・M15・NC16〜NC21・edition 2028・リファレンスの別リポジトリへの移動）と、HEAD `b72bccd0` の実装を読んで、着手前に方針を改めた。**この節が、下の「仕様」「設計」「実装手順」と食い違う箇所では、この節が正である。** 決定は利用者の委任（「あなたが考える最高の選択肢で実装することを常に許可します」）による。
+
+### 1. HEAD と食い違っていた記述
+
+| 起票時の記述 | HEAD の事実 | 改めた方針 |
+| --- | --- | --- |
+| 文書は `_tsuzuri/language-reference/built-in-types-and-modules/*.md` | 利用者向けの日本語リファレンスは別リポジトリ `Tsuzuri-Reference` の `docs/stdlib/...`。`scripts/check-cli-docs.mjs` の `STD_PAGES` もその相対パス | ページは `docs/stdlib/encoding/tensor-codec.md`（`TensorElement` も同じページ）・`docs/stdlib/encoding/tensor-io.md`。`STD_PAGES` に同じパスを足す |
+| `src/stdlib.rs:843` の件数、`src/target.rs:397`、std-table の 88 関数 | `RESERVED_MODULES` は 83（`src/stdlib.rs:1029`）。行番号と件数はどれも古い | 現在の値から数える（GUIDE-LITE §11） |
+| Windows の `mmap` は W11 の後 | W11 は done（`src/runtime/os-windows.h`） | Windows（`CreateFileW`・`CreateFileMappingW`・`MapViewOfFile`・`UnmapViewOfFile`）も Phase 2 に含める。手元では実行できないので CI（`ci:full`）で確かめる |
+| S1: Deflate が大きければ Phase 1b へ分ける | – | 分けずに、同じ PR で Phase 1b（Deflate／Inflate）まで実装する |
+| スライスや `for` の範囲 | std は edition 2028 で解析する（`Edition::LATEST`） | 範囲は `..<`・`..=` を明示して書く |
+
+### 2. `mmap` の借用スライスの作り方（D2 の再検討）
+
+起票の後に入った W24 の `extern view` と NS07 の `ExternAddr` で、非公開の組み込みが不要になるかを確かめた。
+
+- `extern view def f :: ExternAddr -> R` は、アドレスにある C レイアウトの record を**呼び出しの時点でフィールドごとに複写する**（W24 の仕様 3）。借用 `ref { r } [T]` は作れず、要素数が実行時に決まる領域も写せない。`mmap` の目的（複写しない読み取り）に合わない。
+- `ExternAddr` は利用者が外部のアドレスを渡すための型である。`MappedTensor` は不透明な record（構築とフィールド参照は `E1022`）で、アドレスは runtime から受け取った値だけが入るので、内部の表現は `i64` で足りる。
+
+よって D2 のとおり、**std の `TensorIO` だけが呼べる非公開の組み込み `TensorIO.__mmap_slice :: i64 -> i64 -> ref 'owner -> ref ['a]`**（アドレス・要素数・持ち主の借用）を足す。結果は引数の借用をすべて保持する（`Vec.__view` と同じ規則）ので、スライスは持ち主の `MappedTensor` の借用より長く生きられない。所有する `[T]` はどこにも作らない。
+
+マップと解除は、M15 の D13 の形（独立した入口、std だけが呼ぶ内部の組み込み、到達したときだけの `-D`）に合わせる。`Os.__read` などの既存の操作に番号を足すと、OS API に到達するすべてのプログラムのランタイムの object が変わるので採らない。
+
+- `Os.__map :: ref utf8string -> (i64 * [ubyte])`（`tsuzuri_os_map`。成功なら 16 バイト: アドレスと長さの little-endian の `i64`。長さ 0 のファイルはアドレス 0・長さ 0）。権限は `fs`。
+- `Os.__unmap :: i64 -> i64 -> i64`（`tsuzuri_os_unmap`。アドレスと長さ）。メモリーだけに触るので権限は要らない。
+- どちらも `os.c`・`os-windows.h`・`os-wasi.c` の `#if defined(TZ_OS_MAP)` の中に置く。WASI は `Other`（ENOSYS）を返す。
+
+`MappedTensor` は 2 段にする。資源を持つ非公開の record `Mapping { address, length }` が `Drop`（`Os.__unmap`）を持ち、`MappedTensor` はそれと検証済みのメタデータ（dtype・shape・strides・バイト位置・要素数）を持つ。マップした直後に `Mapping` を作るので、ヘッダーの検証が失敗した経路でも解除は `Drop` が 1 回だけ行う。
+
+### 3. 要素型の入口（D3）と、バイト列との変換
+
+- HEAD には浮動小数点のビット列を取り出す組み込みがない（`std/Cbor.tz` は算術で `f64` のビットを組み立てている）。算術の変換は NaN の payload を保てず、要素ごとのループになる。そこで、**std の `TensorCodec` だけが呼べる非公開の組み込みを 2 つ**足す。どちらも連続した領域の 1 回の `memcpy` である。
+  - `TensorCodec.__to_bytes :: Numeric<'a> => ref ['a] -> [ubyte]`
+  - `TensorCodec.__of_bytes :: Numeric<'a> => i64 -> i64 -> ref [ubyte] -> ['a]`（バイト位置と要素数。範囲外はトラップで、std の側が先に検証する）
+  - 対応する target（x86-64・arm64・wasm32/64）はすべて little-endian なので、メモリーのバイト列がそのまま `<` の並びになる。big-endian のファイルは、複写の前にバイト列を入れ替える。
+- 型別の入口（`encode_npy_f64` など）は 14 の dtype × 形式の数だけ関数が増えるので採らない。**`.tt` の型クラス `TensorElement`（`std/TensorElement.tt`）を足し、入口を 1 つにする**（D3 の後者の案。`NpyElement` という名前は D1 と同じ理由で使わない）。instance は `std/TensorCodec.tz` に置く（`bool`、`i8`〜`i64`、`i8u`〜`i64u`、`f16`、`f32`、`f64`、`Complex<f32>`、`Complex<f64>`）。`RESERVED_MODULES` は 3 つ増える（`TensorCodec`・`TensorIO`・`TensorElement`）。
+- 型を消した中間の値 `TensorCodec.Raw { dtype, shape, data }`（C 順・little-endian のバイト列）を足す。dtype が実行時に決まる読み込み（`decode_npy_raw`）と、要素型の違うテンソルを 1 つのアーカイブにまとめる書き出し（`encode_npz`・`encode_safetensors` の入力は `[(string * Raw)]`）に使う。起票時の `EncodedTensor` に当たる。
+
+### 4. API の整理
+
+- `.npz` と Safetensors の読み取りは、同じ `TensorCodec.Archive` を返す。`Archive` はバイト列を**所有する**（`decode_npz :: own [ubyte] -> ...`。`File.read_bytes` の結果を複写なしで渡せる。借用にすると `Result` の中の region の制約に当たる）。要素は `archive_get`・`archive_raw` で名前から取り出し、その時点で展開・検証する。
+- `Error` に `InvalidArchive of string`（ZIP・Safetensors の構造）、`CorruptData of string`（Deflate の流れ・CRC）、`UnsupportedRank of i64`（CSV の 3 次元以上）を足す。`encode_csv` は `Result` を返す。
+- Deflate・Inflate・CRC-32 は公開する（`deflate`・`inflate`・`crc32`）。`.npz` の外でも使え、Python の `zlib` と両方向で照合できる。
+- `.npz` の書き出しは決定的にする（時刻は 1980-01-01 00:00:00 の固定）。`np.savez` は現在時刻を書くので、アーカイブ全体のバイト一致は求めない。`.npy`（`np.save`）はバイト単位で一致させる。
+- `TensorIO` の型別のビュー（`view_f64` など）は、型クラスで 1 つの `view { r } :: TensorElement<'a> => ref { r } MappedTensor -> Tensor.View<'a> { r }` にする。`bool` のファイルは、0・1 以外のバイトを `bool` として読むと未定義になるので、`open` の時点で全バイトを検査する（`bool` だけ、マップした全体を 1 回読む）。
+- `Drop` の値は `let!` の後ろの継続へ捕捉できない（`E1005`）。IO の連鎖の中で使えるように、`with_mmap_npy :: own string -> own (ref MappedTensor -> 'a) -> IO<Result<'a, Error>>` も足す。
+- `open_mmap_safetensors :: own string -> own string -> IO<Result<MappedTensor, Error>>`（テンソルの名前とパス）を足す（早見の `mmap_safetensors`）。
+- Safetensors の複素数は、公開されている形式の表に確かな対応がないので、書き出しも読み込みも `UnsupportedDtype` にする。
+
 ## 目的
 
 数値計算や機械学習では、既存の Python/NumPy や外部ツールとのデータ交換（`.npy`/`.npz`/Safetensors/CSV）と、大規模重みファイルの低メモリ読み込み（`mmap`）が不可欠である。ファイル非依存の純粋変換（`TensorCodec`）とファイル I/O（`TensorIO`）を分離することで、WASM・ネットワーク越し転送・ローカルファイルのすべてで安全かつ中立な API を提供する。
