@@ -85,6 +85,10 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("std/ExternAddr.tz", include_str!("../std/ExternAddr.tz")),
     ("std/Complex.tz", include_str!("../std/Complex.tz")),
     ("std/Linalg.tz", include_str!("../std/Linalg.tz")),
+    (
+        "std/RandomTensor.tz",
+        include_str!("../std/RandomTensor.tz"),
+    ),
 ];
 
 /// Module names reserved for the standard library, whether or not a source
@@ -181,6 +185,8 @@ pub const RESERVED_MODULES: &[&str] = &[
     "Complex",
     // NC08: portable linear algebra and tensor contractions.
     "Linalg",
+    // NC10: tensors of random numbers, multivariate distributions and random reorderings.
+    "RandomTensor",
     // M01: Objective-C classes, selectors and ownership; a built-in module without a std file.
     "ObjC",
     // M09: handing work to the process main thread; a built-in module without a std file.
@@ -210,6 +216,8 @@ pub(crate) fn opaque_record(name: &str) -> bool {
             | "IO.IO"
             | "Owned.Function"
             | "Random.Pcg"
+            | "Random.Pcg64"
+            | "Random.SeedSequence"
             | "File.Handle"
             | "BigInt.BigInt"
             | "Arena.Arena"
@@ -522,6 +530,12 @@ pub(crate) const OPT_IN: &[OptIn] = &[
         names: &["Linalg"],
         aliases: &[],
         uses: &["Complex", "Tensor"],
+    },
+    OptIn {
+        module: "RandomTensor",
+        names: &["RandomTensor"],
+        aliases: &[],
+        uses: &["Tensor", "Linalg"],
     },
 ];
 
@@ -1026,7 +1040,7 @@ mod tests {
 
     #[test]
     fn reserves_the_d07_table() {
-        assert_eq!(RESERVED_MODULES.len(), 83);
+        assert_eq!(RESERVED_MODULES.len(), 84);
         assert!(RESERVED_MODULES.iter().all(|name| is_reserved_module(name)));
         assert!(is_reserved_module("Matrix"));
         assert!(is_reserved_module("MatrixView"));

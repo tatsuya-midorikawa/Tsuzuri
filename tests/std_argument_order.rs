@@ -130,7 +130,11 @@ const MODULES: &[(&str, Kind)] = &[
     ("Parallel", SingleArgument),
     ("Path", subject(&["string"])),
     ("Process", Exempt(HANDLE)),
-    ("Random", subject(&["Pcg"])),
+    ("Random", subject(&["Pcg", "Pcg64", "SeedSequence"])),
+    (
+        "RandomTensor",
+        subject(&["Random.Pcg64", "Tensor.Mut", "Tensor.View"]),
+    ),
     ("ReceiveOnly", Exempt(BUILTIN_HANDLE)),
     // `'s` is the text of the `*_text` functions, a `string` or a `utf8string` chosen by `RegexText`.
     ("Regex", text(&["string", "utf8string", "'s"], &["text"])),

@@ -81,6 +81,7 @@ Net.write: net
 Process.run: process
 Random.bytes: random
 Random.next_u64: random
+Random.pcg64_from_os: random
 Ticker.create: time
 Ticker.reset: time
 Time.monotonic_ns: time

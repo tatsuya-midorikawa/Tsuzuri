@@ -7,21 +7,41 @@
 | 規模 | M（2 Phase: Phase 1 常時ロード `std/Random.tz` のスカラー分布拡張、Phase 2 opt-in `std/RandomTensor.tz` のテンソル生成・軸シャッフル・多変量正規） |
 | 依存 | [NC01](_completed/NC01-complex-and-extended-math.md), [NC02](_completed/NC02-tensor-core-views-and-broadcasting.md), ([NC08](_completed/NC08-linalg-core-and-einsum.md)) |
 | 後続 | – |
-| 状態 | todo |
+| 状態 | done（Phase 1・2。2026-11-28） |
 | 起票 | 2026-11-24（[GUIDE D-65](GUIDE.md#d-65-数値計算基盤と-numpy-互換機能案-c-ハイブリッドnc01nc14)。HEAD `27069465` で確認） |
-| 承認 | 要承認（Phase 2 の新規 opt-in std モジュール `RandomTensor` の `RESERVED_MODULES` 登録。決定事項 D1 が要承認、Phase 1 の `std/Random.tz` 拡張は既定案） |
+| 承認 | 承認済み（D-65 の委任で決定、2026-11-28。D1 の `RandomTensor` の `RESERVED_MODULES` 登録と、「方針の最新化」の D4〜D12） |
 | 手本にする既存実装 | `std/Random.tz`（`Pcg`・`pcg_next_u32`・`pcg_next_u64` の純粋関数型設計）、`std/Array.tz`（`random_shuffle_with`/`random_shuffle_in_place_with`/`random_choice_with`）、`tests/capabilities.rs`・`tests/fixtures/capabilities/std-table.txt` |
-| 主な影響ファイル | `std/Random.tz`、`std/RandomTensor.tz`（新規・Phase 2）、`src/stdlib.rs`、`src/capabilities.rs`、`tests/capabilities.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/random_distributions.rs`（新規）、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/features.mjs`、`tests/fixtures/effects_sweep/`、`tests/fixtures/`、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`vsc/src/core.ts`、`_tsuzuri/language-reference/built-in-types-and-modules/random.md`、`_tsuzuri/language-reference/built-in-types-and-modules/random-tensor.md`（新規）、`_tsuzuri/language-reference/index.md` |
+| 主な影響ファイル | `std/Random.tz`、`std/RandomTensor.tz`（新規・Phase 2）、`src/stdlib.rs`、`src/capabilities.rs`、`tests/capabilities.rs`、`tests/fixtures/capabilities/std-table.txt`、`tests/random_distributions.rs`（新規）、`tests/std_argument_order.rs`、`tests/std_examples.rs`、`tests/features.mjs`、`tests/fixtures/effects_sweep/`、`tests/fixtures/`、`tests/random-cases.mjs`（新規）、`scripts/check-cli-docs.mjs`（`STD_PAGES`）、`vsc/src/core.ts`、`docs/language.md`、別リポジトリ Tsuzuri-Reference の `docs/stdlib/sys/random.md`・`docs/stdlib/numeric/random-tensor.md`（新規）・`docs/index.md`・`docs/stdlib/conventions.md` |
 
 ## 実装者向け早見
 
 - 範囲: `std/Random.tz` は**常時ロード**、`Tensor`/`Linalg` は **`OPT_IN`** のため、逆依存（常時ロードから opt-in への参照）を避ける 2 層構成で NumPy `numpy.random.Generator` 相当の乱数基盤を提供する（すべて `pure` 契約と既存 `Random.pcg_next_u32`・`Array.random_*_with` の流儀に揃え、`own Pcg64 -> (T * Pcg64)` の状態引き回し形式とする）:
   1. **Phase 1（`std/Random.tz`・常時ロードのまま、`Tensor`/`Linalg` に依存しない）**: 64 ビット高品質生成器 `Pcg64`（PCG-XSL-RR-128/64）と独立ストリーム分岐 `SeedSequence`（`seed_sequence_spawn`）、`pcg64_from_os`（`random` 権限）、スカラー基本ステップ（既存 `Random.next_u64` との衝突を避け `pcg64_next_u64`/`pcg64_next_f64`/`pcg64_next_i64_range`）、および全主要確率分布のスカラー生成（`pcg64_uniform`, `pcg64_standard_normal`, `pcg64_normal`, `pcg64_exponential`, `pcg64_gamma`, `pcg64_beta`, `pcg64_chisquare`, `pcg64_poisson`, `pcg64_binomial`, `pcg64_bernoulli`, `pcg64_geometric`, `pcg64_laplace`, `pcg64_lognormal`, `pcg64_standard_t`, `pcg64_f_dist`）。
   2. **Phase 2（新規 opt-in `std/RandomTensor.tz`、`uses: &["Tensor", "Linalg"]`）**: 任意形状 `Tensor` の一括分布生成（`uniform`, `normal`, `standard_normal`, `integers`, `exponential`, `gamma`, `beta`, `chisquare`, `poisson`, `binomial`, `bernoulli`, `geometric`, `laplace`, `lognormal`, `standard_t`, `f_dist`, `dirichlet`, `multivariate_normal` — いずれも `own Random.Pcg64 -> (Tensor<_> * Random.Pcg64)`）、`permutation`、`shuffle_axis`（対象 `Tensor.Mut` が最後の引数で更新後の `Random.Pcg64` を返す）、`choice_weighted`（対象 `Tensor.View` が最後の引数で `(Tensor<'a> * Random.Pcg64)` を返す）。
-- 最初に読む: ① `std/Random.tz` 全文 ② `src/stdlib.rs` の常時ロードと `OPT_IN` の境界 ③ 仕様 1〜3 ④ `tests/capabilities.rs:236`・`tests/fixtures/capabilities/std-table.txt`。
+- 最初に読む: ① `std/Random.tz` 全文 ② `src/stdlib.rs` の常時ロードと `OPT_IN` の境界 ③ 仕様 1〜3 ④ `tests/capabilities.rs` の `std_table_file_lists_the_88_functions`・`tests/fixtures/capabilities/std-table.txt`。
 - 最初に書くテスト: `tests/random_distributions.rs` でシード固定の決定論的ビット再現性（native/WASM 一致）、各分布の標本平均・標本分散・範囲の統計検定、`seed_sequence_spawn` の独立性。
 - 触ってはいけない: `std/Random.tz` から `Tensor` や `Linalg` を参照すること（全プログラムの IR が変化する）。既存の `Random.Pcg`・`Random.pcg`・`Random.pcg_next_u32`・`Random.pcg_next_u64`・`Random.bytes`・`Random.next_u64` の出力と権限契約（シード付き決定論生成器は `random` 権限不要・`pure` を保つ）。
 - 完了の見分け方: `let rng = Random.pcg64 42i64u` から `let (samples, rng) = RandomTensor.normal 0.0 1.0 [100, 10] rng` で正規乱数テンソルを生成でき、native と WASM の `-O0`・`-O3` で完全に同一のビット列が得られる。
+
+## 方針の最新化（2026-11-28）
+
+起票（2026-11-24、HEAD `27069465`）のあとに入った変更と、`main` の `b72bccd0` のコードに照らして、着手の前に次を改めました。利用者の委任（「もし現在の最新仕様と齟齬がある内容がある場合には、実装前に方針を再検討して最新化して」「あなたが考える最高の選択肢で実装することを常に許可します」）に基づく決定で、理由は「決定事項」の D4〜D12 にあります。上の表と「仕様」「設計」「実装手順」「落とし穴」の該当する文も、この節に合わせて直してあります。
+
+**HEAD と食い違っていた記述**
+
+| チケットの記述 | HEAD（`b72bccd0`）の事実と、改めた内容 |
+| --- | --- |
+| 文書は `_tsuzuri/language-reference/built-in-types-and-modules/random.md`・`random-tensor.md`・`index.md` | 利用者向けの言語リファレンスは別リポジトリ Tsuzuri-Reference に移っている（PR #147）。`Random` のページは `docs/stdlib/sys/random.md`（`STD_PAGES` の既存の値）、`RandomTensor` は数値計算の並び（`tensor.md`・`linalg.md`）に合わせて `docs/stdlib/numeric/random-tensor.md` を新設し、`STD_PAGES` には `'stdlib/numeric/random-tensor.md'` を登録する。同じ PR で `docs/language.md` も更新する（`AGENTS.md`） |
+| `src/stdlib.rs:843` の件数アサーション、`tests/capabilities.rs:236`、`std-table.txt`（88 関数） | 行番号は動いている。`RESERVED_MODULES` は 83 件（`reserves_the_d07_table`）で、84 にする。`std-table.txt` は 90 行で、`Random.pcg64_from_os: random` を足して 91 行にする。`Random.tz` の `Os.__random` の出現は 1 のまま（`pcg64_from_os` は `bytes` を呼ぶ） |
+| 範囲の書き方 | std は最新の edition（2028）で読まれ、`a .. b` は終端を含む（D-66）。実装は `..<`・`..=` を明示する。`pcg64_next_i64_range low high` と `RandomTensor.integers low high` は範囲の式ではなく 2 つの境界を取る関数で、.NET の `Random.Next(min, max)`・NumPy の `integers`・既存の `Array.random_*` と同じ半開区間 `[low, high)` にする（D10） |
+| `shuffle_axis :: own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64`（制約なし） | `Tensor.Mut` の要素を読む公開 API はすべて `Copy<'a>` を要求し、入れ替えの API はない（`Tensor.Mut` は不透明）。`Copy<'a> =>` を足す（D9） |
+| シードの展開は「HashMix ベース」、NumPy と同じ乱数列は対象外 | 展開の算法を NumPy の `SeedSequence`（公開された算法）そのものにする。分布の標本を NumPy と同じにすることは引き続き対象外（D4） |
+| `standard_normal` は Marsaglia polar か Ziggurat、`gamma` の `shape < 1` は Johnk/Ahrens-Dieter | Leva の一様乱数の比（D5）、Marsaglia-Tsang の論文の `u ** (1 / shape)`（D6）にする |
+| 最初に書くテストは `tests/random_distributions.rs` | Rust のテストは実行できる検査を `tsuzuri test` で走らせる（`tests/linalg.rs` と同じ形）。標本ごとの照合は `tests/features.mjs` の suite `random`・`random_tensor` で行い、期待値は `tests/random-cases.mjs` の BigInt のモデルが作る（モデルは NumPy 2.5.1 が出した数と照合する。D11） |
+
+**変えなかった点**: 2 層の構成（常時ロードの `Random` と opt-in の `RandomTensor`）、`own Pcg64 -> (値 * Pcg64)` の引き回し、`pcg64_*` の名前、対象を最後に置く順序（D-59）、暗黙の RNG を入れないこと（D3）、不正なパラメータのトラップ。
+
+**常時ロードの `Random` に足すことの影響**: `std/Random.tz` は全プログラムが読むので、宣言を足すと内部シンボルの通し番号がずれる（M15・M17 が `std/Env.tz` に足したときと同じ）。使わない関数の本体は出力されない。実測は「実装と検証」にある。
 
 ## 目的
 
@@ -66,23 +86,23 @@
 
 ### 2. Phase 2: `std/RandomTensor.tz`（opt-in、テンソル一括生成・多変量分布・軸操作）
 
-- `OPT_IN` 登録: `uses: &["Tensor", "Linalg"]`（ソース自身が直接参照する opt-in モジュールのみ。推移閉包は `sources_for` が自動解決する）。`RESERVED_MODULES` に `"RandomTensor"` を追加し `src/stdlib.rs:843` の件数アサーションを更新する。`scripts/check-cli-docs.mjs` の `STD_PAGES` に `RandomTensor: 'built-in-types-and-modules/random-tensor.md'` を登録。
+- `OPT_IN` 登録: `uses: &["Tensor", "Linalg"]`（ソース自身が直接参照する opt-in モジュールのみ。推移閉包は `sources_for` が自動解決する）。`RESERVED_MODULES` に `"RandomTensor"` を追加し `src/stdlib.rs` の `reserves_the_d07_table` の件数アサーションを更新する（83 → 84）。`scripts/check-cli-docs.mjs` の `STD_PAGES` に `RandomTensor: 'stdlib/numeric/random-tensor.md'` を登録。
 - 形状指定テンソル生成（すべて `pure def`、対象 `own Random.Pcg64` が最後で `(Tensor<_> * Random.Pcg64)` を返す）:
   - `uniform`, `standard_normal`, `normal`, `integers`, `exponential`, `gamma`, `beta`, `chisquare`, `laplace`, `lognormal`, `standard_t`, `f_dist`, `bernoulli`, `binomial`, `poisson`, `geometric`（例: `RandomTensor.normal loc scale shape rng -> (Tensor<f64> * Random.Pcg64)`）
   - 多変量分布: `dirichlet :: ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> (Tensor<f64> * Random.Pcg64)`、`multivariate_normal :: ref Tensor.View<f64> -> ref Tensor.View<f64> -> own [i64] -> own Random.Pcg64 -> Result<(Tensor<f64> * Random.Pcg64), Linalg.Error>`（`Linalg.cholesky` 使用）
   - 順列: `permutation :: own i64 -> own Random.Pcg64 -> (Tensor<i64> * Random.Pcg64)`
 - テンソル操作（既存の `Array.random_shuffle_in_place_with` / `Array.random_choice_with` と一貫させ、操作・書き換え対象のテンソルを最後の引数にする: D-59）:
-  - `shuffle_axis :: own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> -> Random.Pcg64`（`ref mut` 引数を取るため非 `pure` の `def`）
+  - `shuffle_axis { r } :: Copy<'a> => own i64 -> own Random.Pcg64 -> ref mut Tensor.Mut<'a> { r } -> Random.Pcg64`（`ref mut` 引数を取るため非 `pure` の `def`。`Copy` は「方針の最新化」の D9）
   - `choice_weighted :: Copy<'a> => own i64 -> own bool -> ref Tensor.View<f64> -> own Random.Pcg64 -> ref Tensor.View<'a> -> (Tensor<'a> * Random.Pcg64)`（`pure def`）
 
 ### 3. パラメータ検証
 
-- 不正な分布パラメータ（例: `scale < 0.0`、`p < 0.0 || p > 1.0`、`shape <= 0.0`、`low >= high`）は計算前に `assert` でトラップし、サイレントな `NaN` 汚染を防ぐ。
+- 不正な分布パラメータ（例: `scale < 0.0`、`p < 0.0 || p > 1.0`、`shape <= 0.0`、`low >= high`）は計算前に `assert` でトラップし、サイレントな `NaN` 汚染を防ぐ。NaN と無限大のパラメータも同じくトラップする（D8）。`RandomTensor` の関数は、形状の要素数が 0 でも先に検査する。
 
 ## 設計
 
 - `Pcg64` の 128 bit 乗算は Tsuzuri 組み込みの `i128u` 演算をそのまま使えるため、純 Tsuzuri で簡潔かつ高速に実装できる。
-- `standard_normal` は Marsaglia polar 法または Ziggurat テーブル法（テーブルは `const` 静的配列で確保なし）、`gamma` は Marsaglia-Tsang 法（`shape < 1` は Johnk/Ahrens-Dieter 変換併用）を採用し、すべての基本演算で組み込み `Math` のビット一致関数を使用する。
+- `standard_normal` は Leva の一様乱数の比（1992。表なし・状態なし。D5）、`gamma` は Marsaglia-Tsang 法（`shape < 1` は同じ論文の `gamma (shape + 1) * u ** (1 / shape)`。D6）を採用し、すべての基本演算で組み込み `Math` のビット一致関数を使用する。
 - `tests/std_argument_order.rs` の `MODULES` には `Random` を `subject(&["Pcg", "Pcg64", "SeedSequence"])`、`RandomTensor` を `subject(&["Random.Pcg64", "Tensor.Mut", "Tensor.View"])`（生成系は `Pcg64` が最後、操作系は `Tensor.Mut`/`Tensor.View` が最後）として登録する。
 
 ## 前提とする他チケットのインターフェース
@@ -99,7 +119,7 @@
 
 1. **変更**: `std/Random.tz`, `src/stdlib.rs`, `tests/capabilities.rs`, `tests/fixtures/capabilities/std-table.txt`, `tests/std_argument_order.rs`, `tests/std_examples.rs`, `tests/fixtures/effects_sweep/`。**内容**: Phase 1（`Pcg64`・`SeedSequence`・`pcg64_from_os`・全スカラー確率分布と権限表・コーパス網羅更新）を実装する。**確認**: T0、`cargo test --locked --test capabilities --test std_argument_order --test std_examples --test effects_alloc_conservative`、`tsuzuri test --doc std`、T1。
 2. **変更**: `std/RandomTensor.tz`, `src/stdlib.rs`, `tests/random_distributions.rs`, `tests/std_argument_order.rs`, `tests/std_examples.rs`, `tests/fixtures/effects_sweep/`, `scripts/check-cli-docs.mjs`, `vsc/src/core.ts`。**内容**: Phase 2（opt-in `RandomTensor` のテンソル一括生成・多変量分布・`permutation`/`shuffle_axis`/`choice_weighted`）を実装する。**確認**: T0、`tests/random_distributions.rs`、`effects_alloc_conservative`、`tsuzuri test --doc std`、T1。
-3. **変更**: `tests/fixtures/`・`tests/features.mjs`、`_tsuzuri/language-reference/built-in-types-and-modules/random.md`・`random-tensor.md`（新規）・`index.md`。**内容**: native/WASM `-O0`/`-O3` ビット一致 E2E と文書更新。**確認**: T2、`node scripts/check-docs.mjs`、`node scripts/check-cli-docs.mjs`。
+3. **変更**: `tests/fixtures/`・`tests/features.mjs`・`tests/random-cases.mjs`、`docs/language.md`、Tsuzuri-Reference の `docs/stdlib/sys/random.md`・`docs/stdlib/numeric/random-tensor.md`（新規）・`docs/index.md`・`docs/stdlib/conventions.md`。**内容**: native/WASM `-O0`/`-O3` ビット一致 E2E と文書更新。**確認**: T2、`node scripts/check-docs.mjs`、`node scripts/check-cli-docs.mjs`。
 
 ## テスト計画
 
@@ -108,7 +128,8 @@
 
 ## ドキュメント
 
-- `_tsuzuri/language-reference/built-in-types-and-modules/random.md`、`random-tensor.md`（新規）、`index.md`
+- `docs/language.md`（「環境・時刻・乱数・プロセス」「RandomTensor」ほか）
+- 別リポジトリ Tsuzuri-Reference: `docs/stdlib/sys/random.md`、`docs/stdlib/numeric/random-tensor.md`（新規）、`docs/index.md`、`docs/stdlib/conventions.md`、`docs/stdlib/numeric/tensor.md`・`linalg.md` の関連項目
 
 ## 受け入れ条件
 
@@ -118,10 +139,10 @@
 
 ## 落とし穴
 
-- `pure def` は `mut` / `ref mut` 引数を取れない（`E1029`、`src/pure_rules.rs:134-141`）。また `Random.next_u64` は既存 `IO` 関数として定義済み（`std/Random.tz:42`）のため、新関数は必ず `pcg64_*` 命名と `own Pcg64 -> (T * Pcg64)` の状態引き回し形式にすること。
-- `std/Random.tz` は常時ロードモジュールのまま保つため、`Tensor` や `Linalg` の型名を `std/Random.tz` に書いてはならない（全プログラムのコンパイルエラーまたは IR 変化を引き起こす）。また `RandomTensor` の `OPT_IN.uses` はソース内で直接名指しするモジュールのみを列挙し、`src/stdlib.rs:843` の `RESERVED_MODULES.len()` アサーションも同時更新すること。
+- `pure def` は `mut` / `ref mut` 引数を取れない（`E1029`、`src/pure_rules.rs:134-141`）。また `Random.next_u64` は既存 `IO` 関数として定義済み（`std/Random.tz` の `def next_u64`）のため、新関数は必ず `pcg64_*` 命名と `own Pcg64 -> (T * Pcg64)` の状態引き回し形式にすること。
+- `std/Random.tz` は常時ロードモジュールのまま保つため、`Tensor` や `Linalg` の型名を `std/Random.tz` に書いてはならない（全プログラムのコンパイルエラーまたは IR 変化を引き起こす）。また `RandomTensor` の `OPT_IN.uses` はソース内で直接名指しするモジュールのみを列挙し、`src/stdlib.rs` の `reserves_the_d07_table` の `RESERVED_MODULES.len()` アサーションも同時更新すること。
 - `pcg64_from_os` は `Random.bytes` 経由で `random` 権限を持つため、`tests/fixtures/capabilities/std-table.txt`（および `tests/capabilities.rs` の行数アサーション）の更新を忘れると T1 が失敗する。
-- `RandomTensor` はページ名がハイフン区切り（`random-tensor.md`）になるため、`scripts/check-cli-docs.mjs` の `STD_PAGES` 登録が必須。
+- `RandomTensor` のページは `docs/stdlib/numeric/random-tensor.md` で、既定の `stdlib/randomtensor.md` と違うため、`scripts/check-cli-docs.mjs` の `STD_PAGES` 登録が必須。
 
 ## 対象外
 
@@ -131,6 +152,18 @@
 
 ## 決定事項
 
-- **D1（要承認）**: 常時ロードの `Random` から opt-in の `Tensor`/`Linalg` への逆依存を避けるため、テンソル乱数生成・多変量分布・軸シャッフルを新規 opt-in std モジュール **`RandomTensor`**（`std/RandomTensor.tz`）へ分離し、`RESERVED_MODULES` に登録する（`D-55` へ反映）。
+- **D1（承認済み。D-65 の委任で決定、2026-11-28）**: 常時ロードの `Random` から opt-in の `Tensor`/`Linalg` への逆依存を避けるため、テンソル乱数生成・多変量分布・軸シャッフルを新規 opt-in std モジュール **`RandomTensor`**（`std/RandomTensor.tz`）へ分離し、`RESERVED_MODULES` に登録する（`D-55` へ反映）。
 - **D2（既定案）**: `pure def` 契約および既存 `Random.pcg_next_u32`・`Array.random_*_with` と完全に揃えるため、生成器は `own Pcg64 -> (値 * Pcg64)` の純粋な状態引き回し形式とし、`Random` 側の新関数名は既存 `Random.next_u64` と衝突しない `pcg64_*` に統一する。生成器のみを操作する関数では `own Pcg64` を最後の引数、既存テンソルを操作する関数（`shuffle_axis`/`choice_weighted`）では対象テンソルを最後の引数とする（D-59）。
 - **D3（既定案）**: グローバル可変の暗黙 RNG（旧 `np.random.seed()` 相当）は導入しない。必ず明示的な `Pcg64` 値または `SeedSequence` を渡すことで、純粋性・再現性・並行安全性を保証する。
+
+次の D4〜D12 は、利用者の委任（2026-11-28。「あなたが考える最高の選択肢で実装することを常に許可します」）に基づく決定です。
+
+- **D4（委任による決定、2026-11-28）**: `seed_sequence`・`seed_sequence_spawn` の混ぜ方は NumPy の `SeedSequence`（32 bit 語の hashmix、プール 4 語、`spawn_key`）と同じ算法にし、`pcg64_from_seed` は NumPy の `PCG64` と同じ手順（プールから 64 bit を 4 語取り、前半を状態、後半をストリームにして `pcg_setseq_128_srandom_r`）にする。`pcg64 seed` は `pcg64_from_seed (seed_sequence [seed])` である。この結果、`Random.pcg64 seed`・`pcg64_next_u64`・`pcg64_next_f64` の列は `numpy.random.PCG64(seed).random_raw()`・`Generator.random()` と同じになる。理由: (1) 小さい整数のシードでも状態の全ビットが混ざる、(2) 子ストリームの作り方が実績のある設計である、(3) 独立した参照（NumPy が出した数）でビット単位に検査できる。**分布の標本を NumPy と同じにすることは保証しない**（対象外のまま。NumPy の `Generator` は正規・指数・ガンマに Ziggurat を使い、Tsuzuri は使わない）。採らなかった案: 独自の SplitMix64 による展開（参照がなく、子ストリームの独立性を自分で示す必要がある）。
+- **D5（委任による決定）**: `pcg64_standard_normal` は Leva の一様乱数の比（ACM TOMS 18、1992）。表を持たず、状態を持たず、厳密で、対数は標本 80 個に 1 回ほどしか計算しない（モデルの実測で 1 標本あたり対数 0.012 回・一様乱数 2.74 個）。採らなかった案: Marsaglia polar（対で 2 個できるが、`own Pcg64 -> (f64 * Pcg64)` の形では 2 個目を捨てるので、1 標本に対数 1 回・平方根 1 回・一様乱数 2.5 個かかる）、Ziggurat（256 段の表 3 本を常時ロードの `std/Random.tz` に書くことになり、全プログラムの字句解析に載る）。
+- **D6（委任による決定）**: `gamma` の `shape < 1` は Marsaglia-Tsang の論文の方法（`shape + 1` の標本に `u ** (1 / shape)` を掛ける）。厳密で、追加は一様乱数 1 個と `Math.pow` 1 回。`beta` は両方のパラメータが 1 以下のとき Jöhnk の方法（2 つのガンマがともに 0 に丸まって `0 / 0` になるのを避ける）、それ以外は 2 つのガンマの比。`binomial` は逆関数法（`n * min p (1 - p) <= 30`）と BTPE、`poisson` は一様乱数の積（`lam < 10`）と PTRS、`geometric` は全域で逆関数法（一様乱数が 1 に近いとき止まらなくなりうる探索のループを持たない）。
+- **D7（委任による決定）**: `RandomTensor` の生成関数は、`Random` の同名のスカラー関数を行優先の順に 1 要素 1 回呼んだ結果とビット単位で同じにする。`[100, 10]` の生成は 1000 回のスカラー生成と同じで、`[50, 10]` を 2 回続けても同じになる。対で作る正規乱数などで速くする案は、分割すると列が変わるので採らない。
+- **D8（委任による決定）**: パラメータの検査は、チケットの例に加えて NaN と無限大も拒否する（`loc`・`mean` は有限、`scale`・`sigma` は 0 以上の有限、`shape`・`a`・`b`・`df` は正の有限、`p` は `[0, 1]`（`geometric` は `(0, 1]`）、`lam` は `[0, 9.223372006484771e18]`）。`scale == 0` などの退化した値は許す（`normal loc 0.0` は `loc`）。
+- **D9（委任による決定）**: `shuffle_axis` は `Copy<'a>` を要求する。`Tensor.freeze` と `Tensor.take` で並べ替えた写しを作り、`Tensor.copy_from` で書き戻す（要素数に比例する作業領域を 1 つ使う）。順序は `permutation` と同じ（`i` 番目は元の `order[i]` 番目）。`Tensor.Mut` に入れ替えの API を足す案は、`std/Tensor.tz` を変えるので採らない。
+- **D10（委任による決定）**: 整数の区間は半開 `[low, high)`。`low >= high` はトラップ。幅は 2^64 − 1 まで取れる（`i64` の最小値から最大値の 1 つ手前まで）。
+- **D11（委任による決定）**: `choice_weighted count replace weights rng source` は `source` の軸 0 の切片を選ぶ。重みは合計で割って確率にする（合計が 1 である必要はない）。非復元は、重みが正の切片ごとに率 `weight` の指数分布の時計を 1 つ引き、小さい順に `count` 個を取る（逐次の非復元抽出と同じ分布。一様乱数は `count` によらず正の重みの個数だけ使う）。`dirichlet` は、パラメータがすべて 0.1 未満のときベータ分布の連鎖で作る（ガンマがすべて 0 に丸まるのを避ける）。`multivariate_normal` の形の不一致は `Linalg.Error.ShapeMismatch`、対称正定値でない共分散は `Linalg.Error.NotPositiveDefinite` で、エラーのときは乱数を引かない。
+- **D12（委任による決定）**: D-55 に、std のモジュール `RandomTensor`（`RESERVED_MODULES` 83 → 84、`stdlib::OPT_IN`）と、std の型 `Random.Pcg64`・`Random.SeedSequence`（不透明）を登録する。新しい診断コード・予約語・組み込みはない。

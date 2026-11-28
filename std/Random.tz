@@ -85,3 +85,671 @@ fn pcg_next_u64 generator =
 	| (high, middle) ->
 		match pcg_next_u32 middle with
 		| (low, next) -> (((high as i64u) <<< 32) | (low as i64u), next)
+
+/// A PCG-XSL-RR 128/64 generator (the `pcg64` of the PCG family): 128 bits of state, 64 bits a step, period 2^128.
+/// Make one with `pcg64`, `pcg64_from_seed` or `pcg64_from_os`; the stream is odd by construction. A generator is a
+/// value: every step returns the generator to use next.
+record Pcg64 { state: i128u, increment: i128u }
+
+/// Seed material that turns any integers into well-mixed generator states and hands out independent child streams
+/// (`seed_sequence_spawn`). Make one with `seed_sequence`.
+record SeedSequence { entropy: [i32u], spawn_key: [i32u], pool: [i32u], spawned: i64 }
+
+// The 32-bit words of a seed, low word first: one word below 2^32, two above.
+private pure def seed_words :: own i64u -> own Vec<i32u> -> Vec<i32u>
+fn seed_words value words =
+	let low = Vec.push_owned (value as i32u) words
+	if value >>> 32 == 0i64u then low else Vec.push_owned ((value >>> 32) as i32u) low
+
+private pure def hash_mix :: own i32u -> own i32u -> (i32u * i32u)
+fn hash_mix value constant =
+	let next = constant * 0x931e8875i32u
+	let mixed = (value ^ constant) * next
+	(mixed ^ (mixed >>> 16), next)
+
+private pure def mix_words :: own i32u -> own i32u -> i32u
+fn mix_words left right =
+	let mixed = 0xca01f9ddi32u * left - 0x4973f715i32u * right
+	mixed ^ (mixed >>> 16)
+
+// The pool of a seed sequence: four words that every word of the entropy and of the spawn key is mixed into. A
+// sequence with a spawn key pads its entropy to four words first, so a key never reads as more entropy.
+private pure def seed_pool :: ref [i32u] -> ref [i32u] -> [i32u]
+fn seed_pool entropy spawn_key =
+	let mut gathered = Vec.empty()
+	for index in 0 ..< entropy.length do gathered = Vec.push_owned entropy[index] gathered
+	if spawn_key.length > 0 then
+		for _ in entropy.length ..< 4 do gathered = Vec.push_owned 0i32u gathered
+	for index in 0 ..< spawn_key.length do gathered = Vec.push_owned spawn_key[index] gathered
+	let words = Vec.to_array gathered
+	let mut pool = [0i32u, 0i32u, 0i32u, 0i32u]
+	let mut constant = 0x43b0d7e5i32u
+	for index in 0 ..< 4 do
+		let (mixed, next) = hash_mix (if index < words.length then words[index] else 0i32u) constant
+		constant = next
+		pool[index] = mixed
+	for source in 0 ..< 4 do
+		for target in 0 ..< 4 do
+			if source != target then
+				let (hashed, next) = hash_mix pool[source] constant
+				constant = next
+				pool[target] = mix_words pool[target] hashed
+	for source in 4 ..< words.length do
+		for target in 0 ..< 4 do
+			let (hashed, next) = hash_mix words[source] constant
+			constant = next
+			pool[target] = mix_words pool[target] hashed
+	pool
+
+// The four 64-bit words that a pool expands to: each from two 32-bit outputs, the first as the low half.
+private pure def seed_state :: ref [i32u] -> [i64u]
+fn seed_state pool =
+	let mut constant = 0x8b51f9ddi32u
+	let mut state = [0i64u, 0i64u, 0i64u, 0i64u]
+	for index in 0 ..< 8 do
+		let masked = pool[index % 4] ^ constant
+		constant = constant * 0x58f38dedi32u
+		let scaled = masked * constant
+		let word = (scaled ^ (scaled >>> 16)) as i64u
+		state[index / 2] = if index % 2 == 0 then word else state[index / 2] | (word <<< 32)
+	state
+
+/// Seed material from any number of integers. Equal inputs give equal sequences, and no integers are the same as
+/// one zero. The mixing is the one of NumPy's `SeedSequence`: `seed_sequence [a, b]` and
+/// `numpy.random.SeedSequence([a, b])` seed the same `pcg64` stream.
+///
+/// ```tsuzuri run=12368030237656201616
+/// let seed = Random.seed_sequence [1i64u, 2i64u, 3i64u]
+/// let (first, _) = Random.pcg64_next_u64 (Random.pcg64_from_seed (ref seed))
+/// first
+/// ```
+pure def seed_sequence :: own [i64u] -> SeedSequence
+fn seed_sequence entropy =
+	let mut words = Vec.empty()
+	for index in 0 ..< entropy.length do words = seed_words entropy[index] words
+	let run = Vec.to_array words
+	let key: [i32u] = []
+	let pool = seed_pool (ref run) (ref key)
+	SeedSequence { entropy: run, spawn_key: key, pool: pool, spawned: 0 }
+
+/// `count` child sequences for independent streams (one for each task or worker), and the parent to spawn from
+/// next. Children of one parent, and children of children, never repeat a stream; spawning again from the returned
+/// parent gives new children. A negative `count` traps.
+///
+/// ```tsuzuri run=3%20true
+/// let (children, parent) = Random.seed_sequence_spawn 3 (Random.seed_sequence [7i64u])
+/// let (first, _) = Random.pcg64_next_u64 (Random.pcg64_from_seed (ref children[0]))
+/// let (second, _) = Random.pcg64_next_u64 (Random.pcg64_from_seed (ref children[1]))
+/// let (own_first, _) = Random.pcg64_next_u64 (Random.pcg64_from_seed (ref parent))
+/// $"{children.length} {first != second && first != own_first}"
+/// ```
+pure def seed_sequence_spawn :: own i64 -> own SeedSequence -> ([SeedSequence] * SeedSequence)
+fn seed_sequence_spawn count parent =
+	assert (count >= 0)
+	let mut children = Vec.empty()
+	for offset in 0 ..< count do
+		let mut key = Vec.empty()
+		for index in 0 ..< parent.spawn_key.length do key = Vec.push_owned parent.spawn_key[index] key
+		let child_key = Vec.to_array (seed_words ((parent.spawned + offset) as i64u) key)
+		let pool = seed_pool (ref parent.entropy) (ref child_key)
+		let child = SeedSequence { entropy: Array.copy (ref parent.entropy), spawn_key: child_key, pool: pool, spawned: 0 }
+		children = Vec.push_owned child children
+	match parent with
+	| SeedSequence { entropy: entropy, spawn_key: spawn_key, pool: pool, spawned: spawned } ->
+		(Vec.to_array children, SeedSequence { entropy: entropy, spawn_key: spawn_key, pool: pool, spawned: spawned + count })
+
+private pure def pcg64_advance :: own i128u -> own i128u -> i128u
+fn pcg64_advance state increment = state * 47026247687942121848144207491837523525i128u + increment
+
+/// A generator from seed material: 256 bits of the sequence become the state and the stream
+/// (pcg_setseq_128_srandom_r). `numpy.random.PCG64(numpy.random.SeedSequence(...))` gives the same stream.
+///
+/// ```tsuzuri run=12368030237656201616%202047858591075935483
+/// let seed = Random.seed_sequence [1i64u, 2i64u, 3i64u]
+/// let (first, next) = Random.pcg64_next_u64 (Random.pcg64_from_seed (ref seed))
+/// let (second, _) = Random.pcg64_next_u64 next
+/// $"{first} {second}"
+/// ```
+pure def pcg64_from_seed :: ref SeedSequence -> Pcg64
+fn pcg64_from_seed seed =
+	let words = seed_state (ref seed.pool)
+	let initial = ((words[0] as i128u) <<< 64) | (words[1] as i128u)
+	let stream = ((words[2] as i128u) <<< 64) | (words[3] as i128u)
+	let increment = (stream <<< 1) | 1i128u
+	Pcg64 { state: pcg64_advance (pcg64_advance 0i128u increment + initial) increment, increment: increment }
+
+/// A generator from one seed: `pcg64_from_seed (seed_sequence [seed])`. The same seed gives the same stream on every
+/// target and at every optimization level, and it is the stream of `numpy.random.PCG64(seed)`.
+///
+/// ```tsuzuri run=14276969152011380360
+/// let (first, _) = Random.pcg64_next_u64 (Random.pcg64 42i64u)
+/// first
+/// ```
+pure def pcg64 :: own i64u -> Pcg64
+fn pcg64 seed =
+	let sequence = seed_sequence [seed]
+	pcg64_from_seed (ref sequence)
+
+private def pcg64_of_entropy :: own Result<[ubyte], Os.Error> -> Result<Pcg64, Os.Error>
+fn pcg64_of_entropy gathered =
+	match gathered with
+	| Result.Error error -> Result.Error error
+	| Result.Ok data ->
+		let mut entropy = [0i64u, 0i64u, 0i64u, 0i64u]
+		for index in 0 ..< 32 do
+			entropy[index / 8] = (entropy[index / 8] | ((data[index] as i64u) <<< (((index % 8) * 8) as i64u)))
+		let sequence = seed_sequence entropy
+		Result.Ok (pcg64_from_seed (ref sequence))
+
+/// A generator seeded with 256 bits from the operating system (`Random.bytes`).
+///
+/// ```tsuzuri
+/// let! seeded = Random.pcg64_from_os ()
+/// do! IO.writeln (match seeded with
+///     | Result.Ok generator ->
+///         let (value, _) = Random.pcg64_next_f64 generator
+///         $"{value < 1.0}"
+///     | Result.Error error -> Os.message error)
+/// ```
+def pcg64_from_os :: own unit -> IO<Result<Pcg64, Os.Error>>
+fn pcg64_from_os _unit = IO.map (\gathered -> pcg64_of_entropy gathered) (bytes 32)
+
+/// The next 64 bits and the following generator (pcg_setseq_128_xsl_rr_64_random_r).
+///
+/// ```tsuzuri run=14276969152011380360%208095878257575067585
+/// let (first, next) = Random.pcg64_next_u64 (Random.pcg64 42i64u)
+/// let (second, _) = Random.pcg64_next_u64 next
+/// $"{first} {second}"
+/// ```
+pure def pcg64_next_u64 :: own Pcg64 -> (i64u * Pcg64)
+fn pcg64_next_u64 generator =
+	let state = pcg64_advance generator.state generator.increment
+	let folded = ((state >>> 64) as i64u) ^ (state as i64u)
+	(Int.rotate_right folded ((state >>> 122) as i64), Pcg64 { state: state, increment: generator.increment })
+
+/// A number in `[0.0, 1.0)` and the following generator: the upper 53 bits of one step times 2^-53, so every result
+/// is a multiple of 2^-53 and 1.0 never comes out.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_next_f64 (Random.pcg64 42i64u)
+/// value == 0.7739560485559633
+/// ```
+pure def pcg64_next_f64 :: own Pcg64 -> (f64 * Pcg64)
+fn pcg64_next_f64 generator =
+	let (bits, next) = pcg64_next_u64 generator
+	(((bits >>> 11) as f64) * 1.1102230246251565e-16, next)
+
+/// An integer in `[low, high)`, every value equally likely (Lemire's multiply and reject, no modulo bias), and the
+/// following generator. `low >= high` traps; the span may be as wide as `i64` (2^64 - 1 values).
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_next_i64_range 10 20 (Random.pcg64 42i64u)
+/// value >= 10 && value < 20
+/// ```
+pure def pcg64_next_i64_range :: own i64 -> own i64 -> own Pcg64 -> (i64 * Pcg64)
+fn pcg64_next_i64_range low high generator =
+	assert (low < high)
+	let span = (Int.wrapping_sub high low) as i64u
+	let (first, after) = pcg64_next_u64 generator
+	let mut state = after
+	let mut product = (first as i128u) * (span as i128u)
+	if (product as i64u) < span then
+		let threshold = (Int.wrapping_sub 0i64u span) % span
+		while (product as i64u) < threshold do
+			let (bits, next) = pcg64_next_u64 state
+			state = next
+			product = (bits as i128u) * (span as i128u)
+	(Int.wrapping_add low (((product >>> 64) as i64u) as i64), state)
+
+/// A number in `[low, high)`, uniformly: `low + (high - low) * u` for one `pcg64_next_f64`. `low >= high`, a NaN
+/// and an infinite span trap. Rounding can return `high` itself when the span is far larger than `low`.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_uniform (-1.0) 3.0 (Random.pcg64 42i64u)
+/// value >= -1.0 && value < 3.0
+/// ```
+pure def pcg64_uniform :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_uniform low high generator =
+	assert (low < high && Math.is_finite (high - low))
+	let (unit, next) = pcg64_next_f64 generator
+	(low + (high - low) * unit, next)
+
+/// A standard normal number (mean 0, variance 1) by Leva's ratio of uniforms: exact, no tables, and a logarithm
+/// for about 1 sample in 80.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_standard_normal (Random.pcg64 42i64u)
+/// Math.is_finite value
+/// ```
+pure def pcg64_standard_normal :: own Pcg64 -> (f64 * Pcg64)
+fn pcg64_standard_normal generator =
+	let mut state = generator
+	let mut sample = 0.0
+	while true do
+		let (u, after_u) = pcg64_next_f64 state
+		let (w, after_w) = pcg64_next_f64 after_u
+		state = after_w
+		let v = 1.7156 * (w - 0.5)
+		let x = u - 0.449871
+		let y = Math.abs v + 0.386595
+		let q = x * x + y * (0.19600 * y - 0.25472 * x)
+		if u > 0.0 && (q < 0.27597 || (q <= 0.27846 && v * v <= (0.0 - 4.0) * u * u * Math.log u)) then
+			sample = v / u
+			break
+	(sample, state)
+
+/// A normal number with mean `loc` and standard deviation `scale`: `loc + scale * z`. A negative, NaN or infinite
+/// `scale`, and a `loc` that is not finite, trap.
+///
+/// ```tsuzuri run=10
+/// let (value, _) = Random.pcg64_normal 10.0 0.0 (Random.pcg64 42i64u)
+/// value
+/// ```
+pure def pcg64_normal :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_normal loc scale generator =
+	assert (Math.is_finite loc && scale >= 0.0 && Math.is_finite scale)
+	let (z, next) = pcg64_standard_normal generator
+	(loc + scale * z, next)
+
+/// An exponential number with mean `scale` (rate `1 / scale`) by inversion: `-scale * log (1 - u)`. A negative,
+/// NaN or infinite `scale` traps.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_exponential 2.0 (Random.pcg64 42i64u)
+/// value >= 0.0
+/// ```
+pure def pcg64_exponential :: own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_exponential scale generator =
+	assert (scale >= 0.0 && Math.is_finite scale)
+	let (unit, next) = pcg64_next_f64 generator
+	(scale * (0.0 - Math.log (1.0 - unit)), next)
+
+// Marsaglia and Tsang's method for a shape of at least 1: about 1.03 normal numbers and one uniform number a sample.
+private pure def gamma_squeeze :: own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn gamma_squeeze shape generator =
+	let d = shape - 1.0 / 3.0
+	let c = 1.0 / Math.sqrt (9.0 * d)
+	let mut state = generator
+	let mut sample = 0.0
+	while true do
+		let (x, after_x) = pcg64_standard_normal state
+		state = after_x
+		let t = 1.0 + c * x
+		if t > 0.0 then
+			let v = t * t * t
+			let (u, after_u) = pcg64_next_f64 state
+			state = after_u
+			let squared = x * x
+			if u < 1.0 - 0.0331 * squared * squared || Math.log u < 0.5 * squared + d * (1.0 - v + Math.log v) then
+				sample = d * v
+				break
+	(sample, state)
+
+// A gamma number with scale 1. A shape below 1 is the sample of `shape + 1` times `u ** (1 / shape)`.
+private pure def gamma_unit :: own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn gamma_unit shape generator =
+	if shape >= 1.0 then gamma_squeeze shape generator
+	else
+		let (boosted, after) = gamma_squeeze (shape + 1.0) generator
+		let (unit, next) = pcg64_next_f64 after
+		(boosted * Math.pow unit (1.0 / shape), next)
+
+/// A gamma number with shape `shape` and scale `scale` (mean `shape * scale`), by Marsaglia and Tsang's method.
+/// `shape <= 0`, a negative `scale`, and a NaN or an infinity in either, trap.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_gamma 2.5 1.5 (Random.pcg64 42i64u)
+/// value > 0.0
+/// ```
+pure def pcg64_gamma :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_gamma shape scale generator =
+	assert (shape > 0.0 && Math.is_finite shape && scale >= 0.0 && Math.is_finite scale)
+	let (sample, next) = gamma_unit shape generator
+	(sample * scale, next)
+
+/// A beta number in `[0, 1]` with parameters `a` and `b` (mean `a / (a + b)`): Jöhnk's method when both are at most
+/// 1, otherwise `x / (x + y)` for two gamma numbers. `a <= 0`, `b <= 0`, a NaN and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_beta 2.0 5.0 (Random.pcg64 42i64u)
+/// value >= 0.0 && value <= 1.0
+/// ```
+pure def pcg64_beta :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_beta a b generator =
+	assert (a > 0.0 && Math.is_finite a && b > 0.0 && Math.is_finite b)
+	if a <= 1.0 && b <= 1.0 then
+		let mut state = generator
+		let mut sample = 0.0
+		while true do
+			let (u, after_u) = pcg64_next_f64 state
+			let (v, after_v) = pcg64_next_f64 after_u
+			state = after_v
+			let x = Math.pow u (1.0 / a)
+			let y = Math.pow v (1.0 / b)
+			let total = x + y
+			if total <= 1.0 && u + v > 0.0 then
+				if total > 0.0 then sample = x / total
+				else
+					// Both powers underflowed: the same ratio from the logarithms.
+					let log_x = Math.log u / a
+					let log_y = Math.log v / b
+					let largest = Math.max log_x log_y
+					let shifted_x = log_x - largest
+					let shifted_y = log_y - largest
+					sample = Math.exp (shifted_x - Math.log (Math.exp shifted_x + Math.exp shifted_y))
+				break
+		(sample, state)
+	else
+		let (x, after_x) = gamma_unit a generator
+		let (y, next) = gamma_unit b after_x
+		(x / (x + y), next)
+
+/// A chi-square number with `df` degrees of freedom (mean `df`): a gamma number of shape `df / 2` and scale 2.
+/// `df <= 0`, a NaN and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_chisquare 3.0 (Random.pcg64 42i64u)
+/// value > 0.0
+/// ```
+pure def pcg64_chisquare :: own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_chisquare df generator =
+	assert (df > 0.0 && Math.is_finite df)
+	let (sample, next) = gamma_unit (df / 2.0) generator
+	(2.0 * sample, next)
+
+/// A Laplace (double exponential) number with mean `loc` and scale `scale` (variance `2 * scale * scale`), by
+/// inversion. A negative, NaN or infinite `scale`, and a `loc` that is not finite, trap.
+///
+/// ```tsuzuri run=-3
+/// let (value, _) = Random.pcg64_laplace (-3.0) 0.0 (Random.pcg64 42i64u)
+/// value
+/// ```
+pure def pcg64_laplace :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_laplace loc scale generator =
+	assert (Math.is_finite loc && scale >= 0.0 && Math.is_finite scale)
+	let mut state = generator
+	let mut sample = 0.0
+	while true do
+		let (unit, next) = pcg64_next_f64 state
+		state = next
+		if unit >= 0.5 then
+			sample = loc - scale * Math.log (2.0 - unit - unit)
+			break
+		elif unit > 0.0 then
+			sample = loc + scale * Math.log (unit + unit)
+			break
+	(sample, state)
+
+/// A log-normal number: `exp` of a normal number with mean `mean` and standard deviation `sigma`. A negative, NaN
+/// or infinite `sigma`, and a `mean` that is not finite, trap.
+///
+/// ```tsuzuri run=1
+/// let (value, _) = Random.pcg64_lognormal 0.0 0.0 (Random.pcg64 42i64u)
+/// value
+/// ```
+pure def pcg64_lognormal :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_lognormal mean sigma generator =
+	let (sample, next) = pcg64_normal mean sigma generator
+	(Math.exp sample, next)
+
+/// A Student's t number with `df` degrees of freedom: `sqrt (df / 2) * z / sqrt g` for a normal `z` and a gamma `g`
+/// of shape `df / 2`. `df <= 0`, a NaN and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_standard_t 5.0 (Random.pcg64 42i64u)
+/// Math.is_finite value
+/// ```
+pure def pcg64_standard_t :: own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_standard_t df generator =
+	assert (df > 0.0 && Math.is_finite df)
+	let (z, after) = pcg64_standard_normal generator
+	let (g, next) = gamma_unit (df / 2.0) after
+	(Math.sqrt (df / 2.0) * z / Math.sqrt g, next)
+
+/// An F number with `dfnum` and `dfden` degrees of freedom: the ratio of two chi-square numbers, each divided by
+/// its degrees of freedom. A value that is not above 0, a NaN and an infinity trap.
+///
+/// ```tsuzuri run=true
+/// let (value, _) = Random.pcg64_f_dist 4.0 12.0 (Random.pcg64 42i64u)
+/// value > 0.0
+/// ```
+pure def pcg64_f_dist :: own f64 -> own f64 -> own Pcg64 -> (f64 * Pcg64)
+fn pcg64_f_dist dfnum dfden generator =
+	assert (dfnum > 0.0 && Math.is_finite dfnum && dfden > 0.0 && Math.is_finite dfden)
+	let (above, after) = gamma_unit (dfnum / 2.0) generator
+	let (below, next) = gamma_unit (dfden / 2.0) after
+	((2.0 * above * dfden) / (2.0 * below * dfnum), next)
+
+/// `true` with probability `p`: one `pcg64_next_f64` below `p`. A `p` outside `[0, 1]` and a NaN trap.
+///
+/// ```tsuzuri run=true%20false
+/// let (always, next) = Random.pcg64_bernoulli 1.0 (Random.pcg64 42i64u)
+/// let (never, _) = Random.pcg64_bernoulli 0.0 next
+/// $"{always} {never}"
+/// ```
+pure def pcg64_bernoulli :: own f64 -> own Pcg64 -> (bool * Pcg64)
+fn pcg64_bernoulli p generator =
+	assert (p >= 0.0 && p <= 1.0)
+	let (unit, next) = pcg64_next_f64 generator
+	(unit < p, next)
+
+// The inversion of the binomial distribution, for `n * p <= 30` and `p <= 0.5`.
+private pure def binomial_inversion :: own i64 -> own f64 -> own Pcg64 -> (i64 * Pcg64)
+fn binomial_inversion n p generator =
+	let q = 1.0 - p
+	let trials = n as f64
+	let none = Math.exp (trials * Math.log q)
+	let mean = trials * p
+	let bound = (Math.min trials (mean + 10.0 * Math.sqrt (mean * q + 1.0))) as i64
+	let (first, after) = pcg64_next_f64 generator
+	let mut state = after
+	let mut unit = first
+	let mut count = 0
+	let mut mass = none
+	while unit > mass do
+		count = count + 1
+		if count > bound then
+			let (again, next) = pcg64_next_f64 state
+			state = next
+			unit = again
+			count = 0
+			mass = none
+		else
+			unit = unit - mass
+			mass = (((n - count + 1) as f64) * p * mass) / ((count as f64) * q)
+	(count, state)
+
+// One of the four correction terms of the last test of BTPE (Stirling's series).
+private pure def stirling_tail :: own f64 -> f64
+fn stirling_tail value =
+	let squared = value * value
+	(13680.0 - (462.0 - (132.0 - (99.0 - 140.0 / squared) / squared) / squared) / squared) / value / 166320.0
+
+// BTPE (Kachitvichyanukul and Schmeiser, 1988), for `n * r > 30` and `r <= 0.5`: a triangle, two parallelograms and
+// two exponential tails as the proposal, then a squeeze and the exact test.
+private pure def binomial_btpe :: own i64 -> own f64 -> own Pcg64 -> (i64 * Pcg64)
+fn binomial_btpe n r generator =
+	let trials = n as f64
+	let q = 1.0 - r
+	let spread = trials * r * q
+	let peak = trials * r + r
+	let mode = (Math.floor peak) as i64
+	let mode_value = mode as f64
+	let p1 = Math.floor (2.195 * Math.sqrt spread - 4.6 * q) + 0.5
+	let middle = mode_value + 0.5
+	let left = middle - p1
+	let right = middle + p1
+	let c = 0.134 + 20.5 / (15.3 + mode_value)
+	let left_slope = (peak - left) / (peak - left * r)
+	let left_rate = left_slope * (1.0 + left_slope / 2.0)
+	let right_slope = (right - peak) / (right * q)
+	let right_rate = right_slope * (1.0 + right_slope / 2.0)
+	let p2 = p1 * (1.0 + 2.0 * c)
+	let p3 = p2 + c / left_rate
+	let p4 = p3 + c / right_rate
+	let mut state = generator
+	let mut result = 0
+	while true do
+		let (first, after_first) = pcg64_next_f64 state
+		let (second, after_second) = pcg64_next_f64 after_first
+		state = after_second
+		let u = first * p4
+		let mut v = second
+		let mut y = 0
+		let mut accepted = false
+		let mut check = false
+		if u <= p1 then
+			y = (Math.floor (middle - p1 * v + u)) as i64
+			accepted = true
+		elif u <= p2 then
+			let x = left + (u - p1) / c
+			v = v * c + 1.0 - Math.abs (mode_value - x + 0.5) / p1
+			if v <= 1.0 then
+				y = (Math.floor x) as i64
+				check = true
+		elif u <= p3 then
+			y = (Math.floor (left + Math.log v / left_rate)) as i64
+			if y >= 0 && v != 0.0 then
+				v = v * (u - p2) * left_rate
+				check = true
+		else
+			y = (Math.floor (right - Math.log v / right_rate)) as i64
+			if y <= n && v != 0.0 then
+				v = v * (u - p3) * right_rate
+				check = true
+		if check then
+			let distance = Int.abs (y - mode)
+			let k = distance as f64
+			if distance > 20 && k < spread / 2.0 - 1.0 then
+				let rho = (k / spread) * ((k * (k / 3.0 + 0.625) + 0.16666666666666666) / spread + 0.5)
+				let t = (0.0 - k * k) / (2.0 * spread)
+				let a = Math.log v
+				if a < t - rho then accepted = true
+				elif a <= t + rho then
+					let x1 = ((y + 1) as f64)
+					let f1 = mode_value + 1.0
+					let z = ((n - mode) as f64) + 1.0
+					let w = ((n - y) as f64) + 1.0
+					let ratio = middle * Math.log (f1 / x1) + (((n - mode) as f64) + 0.5) * Math.log (z / w) + ((y - mode) as f64) * Math.log (w * r / (x1 * q))
+					let limit = ratio + stirling_tail f1 + stirling_tail z + stirling_tail x1 + stirling_tail w
+					accepted = a <= limit
+			else
+				let s = r / q
+				let a = s * (trials + 1.0)
+				let mut bound = 1.0
+				if mode < y then
+					for index in (mode + 1) ..= y do bound = bound * (a / (index as f64) - s)
+				elif mode > y then
+					for index in (y + 1) ..= mode do bound = bound / (a / (index as f64) - s)
+				accepted = v <= bound
+		if accepted then
+			result = y
+			break
+	(result, state)
+
+/// The number of successes in `n` trials that each succeed with probability `p` (mean `n * p`): inversion when
+/// `n * min p (1 - p) <= 30`, otherwise BTPE (exact, a constant number of steps on average). A negative `n`, a `p`
+/// outside `[0, 1]` and a NaN trap.
+///
+/// ```tsuzuri run=20%200
+/// let (all, next) = Random.pcg64_binomial 20 1.0 (Random.pcg64 42i64u)
+/// let (none, _) = Random.pcg64_binomial 20 0.0 next
+/// $"{all} {none}"
+/// ```
+pure def pcg64_binomial :: own i64 -> own f64 -> own Pcg64 -> (i64 * Pcg64)
+fn pcg64_binomial n p generator =
+	assert (n >= 0 && p >= 0.0 && p <= 1.0)
+	if n == 0 || p == 0.0 then (0, generator)
+	elif p <= 0.5 then
+		if p * (n as f64) <= 30.0 then binomial_inversion n p generator else binomial_btpe n p generator
+	else
+		let q = 1.0 - p
+		let (failures, next) = if q * (n as f64) <= 30.0 then binomial_inversion n q generator else binomial_btpe n q generator
+		(n - failures, next)
+
+// The logarithm of the gamma function for a positive argument: Stirling's series from 7 up, the recurrence below.
+private pure def log_gamma :: own f64 -> f64
+fn log_gamma value =
+	if value == 1.0 || value == 2.0 then 0.0
+	else
+		let steps = if value < 7.0 then (7.0 - value) as i64 else 0
+		let mut shifted = value + (steps as f64)
+		let inverse = (1.0 / shifted) * (1.0 / shifted)
+		let mut series = 0.0 - 1.39243221690590e+00
+		series = series * inverse + 1.796443723688307e-01
+		series = series * inverse - 2.955065359477124e-02
+		series = series * inverse + 6.410256410256410e-03
+		series = series * inverse - 1.917526917526918e-03
+		series = series * inverse + 8.417508417508418e-04
+		series = series * inverse - 5.952380952380952e-04
+		series = series * inverse + 7.936507936507937e-04
+		series = series * inverse - 2.777777777777778e-03
+		series = series * inverse + 8.333333333333333e-02
+		let mut result = series / shifted + 0.5 * 1.8378770664093453 + (shifted - 0.5) * Math.log shifted - shifted
+		for _ in 0 ..< steps do
+			result = result - Math.log (shifted - 1.0)
+			shifted = shifted - 1.0
+		result
+
+/// The number of events in a unit of time when they come at rate `lam` (mean and variance `lam`): products of
+/// uniform numbers below 10, otherwise Hörmann's transformed rejection (PTRS). A negative or NaN `lam`, and one
+/// above 9.223372006484771e18 (the result would not fit `i64`), trap.
+///
+/// ```tsuzuri run=0
+/// let (value, _) = Random.pcg64_poisson 0.0 (Random.pcg64 42i64u)
+/// value
+/// ```
+pure def pcg64_poisson :: own f64 -> own Pcg64 -> (i64 * Pcg64)
+fn pcg64_poisson lam generator =
+	assert (lam >= 0.0 && lam <= 9.223372006484771e18)
+	if lam == 0.0 then (0, generator)
+	elif lam < 10.0 then
+		let limit = Math.exp (0.0 - lam)
+		let mut state = generator
+		let mut count = 0
+		let mut product = 1.0
+		while true do
+			let (unit, next) = pcg64_next_f64 state
+			state = next
+			product = product * unit
+			if product > limit then count = count + 1 else break
+		(count, state)
+	else
+		let root = Math.sqrt lam
+		let log_lam = Math.log lam
+		let b = 0.931 + 2.53 * root
+		let a = 0.02483 * b - 0.059
+		let inverse_alpha = 1.1239 + 1.1328 / (b - 3.4)
+		let ratio = 0.9277 - 3.6224 / (b - 2.0)
+		let mut state = generator
+		let mut result = 0
+		while true do
+			let (first, after_first) = pcg64_next_f64 state
+			let (v, after_second) = pcg64_next_f64 after_first
+			state = after_second
+			let u = first - 0.5
+			let us = 0.5 - Math.abs u
+			let k = Math.floor ((2.0 * a / us + b) * u + lam + 0.43)
+			if us >= 0.07 && v <= ratio then
+				result = k as i64
+				break
+			elif k >= 0.0 && (us >= 0.013 || v <= us) then
+				if Math.log v + Math.log inverse_alpha - Math.log (a / (us * us) + b) <= k * log_lam - lam - log_gamma (k + 1.0) then
+					result = k as i64
+					break
+		(result, state)
+
+/// The number of the trial with the first success when each trial succeeds with probability `p` (1, 2, ...; mean
+/// `1 / p`), by inversion: `ceil (log (1 - u) / log (1 - p))`, at least 1. `p <= 0`, `p > 1` and a NaN trap. A result
+/// above the range of `i64` (a `p` below about 1e-17) is the largest `i64`.
+///
+/// ```tsuzuri run=1
+/// let (value, _) = Random.pcg64_geometric 1.0 (Random.pcg64 42i64u)
+/// value
+/// ```
+pure def pcg64_geometric :: own f64 -> own Pcg64 -> (i64 * Pcg64)
+fn pcg64_geometric p generator =
+	assert (p > 0.0 && p <= 1.0)
+	let (unit, next) = pcg64_next_f64 generator
+	let trials = (Math.ceil (Math.log (1.0 - unit) / Math.log1p (0.0 - p))) as i64
+	(Int.max 1 trials, next)
